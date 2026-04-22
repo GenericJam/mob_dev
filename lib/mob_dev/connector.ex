@@ -45,6 +45,13 @@ defmodule MobDev.Connector do
       # Start distribution on the Mac side
       ensure_local_dist(cookie)
 
+      # Activate accessibility on iOS simulators so ui_tree() returns elements.
+      # SwiftUI lazily populates its a11y tree; this one-time activation persists
+      # for the simulator session (survives app restarts).
+      tunneled
+      |> Enum.filter(&(&1.platform == :ios))
+      |> Enum.each(fn d -> IOS.enable_accessibility(d.serial) end)
+
       # Wait for nodes to come online
       IO.puts("\n  Waiting for nodes...")
       {connected, failed_wait} = wait_for_nodes(tunneled, cookie)

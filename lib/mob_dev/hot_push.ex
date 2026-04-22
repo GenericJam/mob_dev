@@ -109,6 +109,24 @@ defmodule MobDev.HotPush do
     end)
   end
 
+  @doc """
+  Returns ebin directories for runtime deps only (no dev-only tooling).
+  Used by `Deployer` so the filesystem push matches the dist push scope.
+  """
+  @spec runtime_beam_dirs() :: [String.t()]
+  def runtime_beam_dirs do
+    runtime = runtime_lib_names()
+    case File.ls("_build/dev/lib") do
+      {:ok, libs} ->
+        libs
+        |> Enum.filter(&MapSet.member?(runtime, &1))
+        |> Enum.map(&"_build/dev/lib/#{&1}/ebin")
+        |> Enum.filter(&File.dir?/1)
+      {:error, _} ->
+        []
+    end
+  end
+
   defp runtime_lib_names do
     project_app = to_string(Mix.Project.config()[:app])
 
