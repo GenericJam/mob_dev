@@ -22,8 +22,8 @@ defmodule MobDev.MixProject do
     [
       {:eqrcode, "~> 0.2"},
       {:jason, "~> 1.4"},
-      {:avatarz, "~> 0.2"},
-      {:image, "~> 0.54"},
+      {:avatarz, "~> 0.2", optional: true},
+      {:image, "~> 0.54", optional: true},
       # Dev server
       {:phoenix_live_view, "~> 1.0"},
       {:bandit, "~> 1.0"},
