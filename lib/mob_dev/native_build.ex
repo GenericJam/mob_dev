@@ -93,9 +93,9 @@ defmodule MobDev.NativeBuild do
     android_dir = Path.join(File.cwd!(), "android")
     gradlew     = Path.join(android_dir, "gradlew")
 
-    # Clear stale lock files from interrupted builds before starting.
-    # Don't pkill here — matching "gradlew assembleDebug" would race against
-    # the new Gradle process we're about to start and kill it.
+    # Stale Gradle daemon registry locks accumulate when builds are killed (Ctrl+C,
+    # force-stop, etc.) and cause subsequent runs to hang silently while the wrapper
+    # waits to acquire the lock. Clear them before every build.
     clear_stale_gradle_locks()
 
     if File.exists?(gradlew) do
@@ -122,8 +122,9 @@ defmodule MobDev.NativeBuild do
     end
   end
 
-  # Remove stale Gradle lock files left behind by interrupted builds. These cause
-  # subsequent runs to hang while the wrapper waits to acquire the lock.
+  # Remove stale Gradle lock files left behind when a build is interrupted
+  # (Ctrl+C, kill, etc.). These cause the next run to hang indefinitely while
+  # the wrapper waits to acquire the lock.
   defp clear_stale_gradle_locks do
     gradle_home = System.get_env("GRADLE_USER_HOME") ||
                   Path.join(System.user_home!(), ".gradle")
