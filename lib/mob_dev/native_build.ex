@@ -99,7 +99,7 @@ defmodule MobDev.NativeBuild do
       # NOTE: Kotlin errors (lines starting with "e: ") appear in the stream
       # above the final "* What went wrong:" summary. If the build fails,
       # scroll up — or run `cd android && ./gradlew assembleDebug` directly.
-      case System.cmd(gradlew, ["assembleDebug"],
+      case System.cmd(gradlew, ["assembleDebug", "--no-daemon"],
                       cd: android_dir, stderr_to_stdout: true, into: IO.stream()) do
         {_, 0}   -> :ok
         {_, _}   -> {:error, "Gradle failed — scroll up for Kotlin/build errors\n  (or run: cd android && ./gradlew assembleDebug)"}
