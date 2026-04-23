@@ -89,24 +89,56 @@ defmodule MobDev.NativeBuild do
 
   defp gradle_assemble do
     IO.puts("  Running Gradle assembleDebug...")
-    IO.puts("  (first build compiles SQLite from source — may take a few minutes)")
+    IO.puts("  (first build may take a few minutes while CMake compiles native code)")
     android_dir = Path.join(File.cwd!(), "android")
     gradlew     = Path.join(android_dir, "gradlew")
 
+    # Kill any stale gradlew wrapper processes from previous interrupted builds
+    # before clearing lock files — a running wrapper re-creates locks immediately.
+    System.cmd("pkill", ["-f", "gradlew assembleDebug"], stderr_to_stdout: true)
+    :timer.sleep(300)
+    clear_stale_gradle_locks()
+
     if File.exists?(gradlew) do
-      # Stream output live so the user can see progress during the long
-      # sqlite3.c / libbeam.a first-time compilation.
-      # NOTE: Kotlin errors (lines starting with "e: ") appear in the stream
-      # above the final "* What went wrong:" summary. If the build fails,
-      # scroll up — or run `cd android && ./gradlew assembleDebug` directly.
-      case System.cmd(gradlew, ["assembleDebug", "--no-daemon"],
+      # Run gradlew through bash rather than exec-ing it directly.
+      #
+      # When System.cmd exec's gradlew directly, Gradle spawns worker subprocesses
+      # that inherit the Erlang port's I/O pipes. The main JVM exits but the workers
+      # keep the pipes open, so System.cmd never receives EOF and blocks forever.
+      #
+      # Running through `bash -c` puts gradlew in bash's process group; bash manages
+      # group teardown and exits cleanly when all children finish, giving Erlang EOF.
+      #
+      # NOTE: Kotlin errors appear before "* What went wrong:" in the output.
+      # If the build fails, scroll up or run `cd android && ./gradlew assembleDebug`.
+      cmd = "#{gradlew} assembleDebug --no-daemon"
+      case System.cmd("bash", ["-c", cmd],
                       cd: android_dir, stderr_to_stdout: true, into: IO.stream()) do
         {_, 0}   -> :ok
-        {_, _}   -> {:error, "Gradle failed — scroll up for Kotlin/build errors\n  (or run: cd android && ./gradlew assembleDebug)"}
+        {_, _}   -> {:error, "Gradle failed — scroll up for errors\n  (or run: cd android && ./gradlew assembleDebug)"}
       end
     else
       {:error, "gradlew not found at #{gradlew}"}
     end
+  end
+
+  # Remove stale Gradle lock files left behind by interrupted builds. These cause
+  # subsequent runs to hang while the wrapper waits to acquire the lock.
+  defp clear_stale_gradle_locks do
+    gradle_home = System.get_env("GRADLE_USER_HOME") ||
+                  Path.join(System.user_home!(), ".gradle")
+
+    patterns = [
+      "#{gradle_home}/daemon/*/registry.bin.lock",
+      "#{gradle_home}/wrapper/dists/**/*.lck",
+      "#{gradle_home}/native/**/*.lock",
+      "#{gradle_home}/caches/**/*.lock",
+      "#{gradle_home}/caches/**/*.lck"
+    ]
+
+    Enum.each(patterns, fn pattern ->
+      Path.wildcard(pattern, match_dot: true) |> Enum.each(&File.rm/1)
+    end)
   end
 
   defp adb_install_all(apk, bundle_id) do
