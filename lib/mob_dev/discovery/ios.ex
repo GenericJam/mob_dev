@@ -162,4 +162,26 @@ defmodule MobDev.Discovery.IOS do
   def terminate_app(udid, bundle_id) do
     System.cmd("xcrun", ["simctl", "terminate", udid, bundle_id], stderr_to_stdout: true)
   end
+
+  @doc """
+  Enables the iOS accessibility system for the given simulator (or "booted").
+
+  SwiftUI lazily populates its accessibility tree only when an accessibility
+  service is active. `pegleg_nif:ui_tree/0` requires this to be called once
+  per simulator session before it can return elements. Writes the VoiceOver
+  preference into the simulator's preference store and posts the Darwin
+  notification that UIKit listens to.
+
+  Safe to call repeatedly — idempotent.
+  """
+  @spec enable_accessibility(String.t()) :: :ok
+  def enable_accessibility(udid) do
+    System.cmd("xcrun", ["simctl", "spawn", udid, "defaults", "write",
+                         "com.apple.Accessibility", "VoiceOverTouchEnabled", "-bool", "YES"],
+               stderr_to_stdout: true)
+    System.cmd("xcrun", ["simctl", "spawn", udid, "notifyutil",
+                         "-p", "com.apple.accessibility.voiceover.status.changed"],
+               stderr_to_stdout: true)
+    :ok
+  end
 end

@@ -209,6 +209,7 @@ defmodule MobDev.NativeBuild do
 
       adb.(["shell", "mkdir -p #{app_data}/otp/lib/elixir/ebin"])
       adb.(["shell", "mkdir -p #{app_data}/otp/lib/logger/ebin"])
+      adb.(["shell", "mkdir -p #{app_data}/otp/lib/eex/ebin"])
 
       case adb.(["push", "#{elixir_lib}/elixir/ebin/.", "#{app_data}/otp/lib/elixir/ebin/"]) do
         {_, 0} -> :ok
@@ -218,6 +219,11 @@ defmodule MobDev.NativeBuild do
       case adb.(["push", "#{elixir_lib}/logger/ebin/.", "#{app_data}/otp/lib/logger/ebin/"]) do
         {_, 0} -> :ok
         {out, _} -> throw({:error, "push logger failed: #{String.slice(out, -300, 300)}"})
+      end
+
+      case adb.(["push", "#{elixir_lib}/eex/ebin/.", "#{app_data}/otp/lib/eex/ebin/"]) do
+        {_, 0} -> :ok
+        {out, _} -> throw({:error, "push eex failed: #{String.slice(out, -300, 300)}"})
       end
 
       # Fix ownership so the app can read its own files.
@@ -245,9 +251,12 @@ defmodule MobDev.NativeBuild do
 
       File.mkdir_p!(Path.join(otp_tmp, "lib/elixir/ebin"))
       File.mkdir_p!(Path.join(otp_tmp, "lib/logger/ebin"))
+      File.mkdir_p!(Path.join(otp_tmp, "lib/eex/ebin"))
       System.cmd("cp", ["-r", "#{elixir_lib}/elixir/ebin/.", Path.join(otp_tmp, "lib/elixir/ebin")],
                  stderr_to_stdout: true)
       System.cmd("cp", ["-r", "#{elixir_lib}/logger/ebin/.", Path.join(otp_tmp, "lib/logger/ebin")],
+                 stderr_to_stdout: true)
+      System.cmd("cp", ["-r", "#{elixir_lib}/eex/ebin/.", Path.join(otp_tmp, "lib/eex/ebin")],
                  stderr_to_stdout: true)
 
       case System.cmd("tar", ["cf", stage_local, "-C", tmp, "otp"], stderr_to_stdout: true) do
