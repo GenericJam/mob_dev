@@ -92,6 +92,18 @@ defmodule MobDev.IconGenerator do
   end
 
   @doc """
+  Copies the bundled Mob logo (resized via `sips`) to all platform icon
+  directories in `output_dir`. Used as the default placeholder icon by
+  `mix mob.install`. No extra dependencies required.
+
+  Returns `:ok`.
+  """
+  @spec use_mob_logo(output_dir :: String.t()) :: :ok
+  def use_mob_logo(output_dir) do
+    resize_svg_for_platforms(@mob_logo_svg, output_dir)
+  end
+
+  @doc """
   Resizes an existing image at `source_path` to all platform icon sizes,
   writing them into `output_dir`.
 
@@ -148,7 +160,7 @@ defmodule MobDev.IconGenerator do
     size_to_png =
       Map.new(all_sizes, fn px ->
         tmp_png = Path.join(tmp, "mob_icon_#{px}.png")
-        {0, _} = System.cmd("sips", [
+        {_, 0} = System.cmd("sips", [
           "-s", "format", "png",
           "-z", "#{px}", "#{px}",
           svg_path, "--out", tmp_png

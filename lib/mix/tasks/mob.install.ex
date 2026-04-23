@@ -15,23 +15,22 @@ defmodule Mix.Tasks.Mob.Install do
     1. Prompts for machine-specific paths (`mob_dir`, `elixir_lib`) and writes them
        to `mob.exs` (gitignored) and `android/local.properties`
     2. Downloads and caches the pre-built OTP runtime tarballs for Android and iOS
-    3. Generates app icons (random robot avatar, or a provided source image)
+    3. Writes the Mob logo as a placeholder app icon (if no icon exists yet)
 
   ## Options
 
-    * `--no-icon`      — skip icon generation
-    * `--icon PATH`    — use an existing image instead of generating a random robot
+    * `--no-icon`      — skip icon setup entirely
+    * `--icon PATH`    — use a custom image instead of the Mob logo placeholder
 
   ## Icon output
 
     - `android/app/src/main/res/mipmap-*/ic_launcher.png`
     - `ios/Assets.xcassets/AppIcon.appiconset/icon_*.png` + `Contents.json`
-    - `icon_source.png` (1024×1024 master, when generating)
 
-  Run at any time to regenerate icons:
+  The Mob logo is written as a placeholder. Replace it any time:
 
-      mix mob.install --no-icon        # skip icons, re-run other setup steps
-      mix mob.icon                     # icon only, any time after install
+      mix mob.icon                     # generate a custom icon
+      mix mob.icon --source my_logo.png
 
   ## Under the hood
 
@@ -50,7 +49,9 @@ defmodule Mix.Tasks.Mob.Install do
       curl -L https://github.com/genericjam/mob/releases/download/<tag>/otp-android-arm64.tar.gz \
            -o ~/.mob_dev/otp-android-arm64.tar.gz
 
-  **3. Icon generation** — calls `mix mob.icon` internally (see that task for details).
+  **3. Placeholder icon** — writes the Mob logo to all platform icon sizes using
+  `sips` (macOS built-in). No extra dependencies required. Run `mix mob.icon`
+  afterwards to replace it with a custom or generated icon.
   """
 
   @switches [no_icon: :boolean, icon: :string]
@@ -69,7 +70,7 @@ defmodule Mix.Tasks.Mob.Install do
     download_otp()
 
     unless opts[:no_icon] do
-      generate_icons(project_dir, opts[:icon])
+      setup_icon(project_dir, opts[:icon])
     end
 
     Mix.shell().info("""
@@ -80,6 +81,8 @@ defmodule Mix.Tasks.Mob.Install do
         mix mob.deploy            # fast push + restart (day-to-day)
         mix mob.watch             # auto-push changes while developing
         mix mob.connect           # connect IEx to running device nodes
+
+    Run `mix mob.icon` to replace the placeholder icon with a custom one.
     """)
   end
 
@@ -223,15 +226,21 @@ defmodule Mix.Tasks.Mob.Install do
   end
   defp replace_prop(content, _key, nil), do: content
 
-  # ── Icon generation ───────────────────────────────────────────────────────────
+  # ── Icon setup ────────────────────────────────────────────────────────────────
 
-  defp generate_icons(project_dir, nil) do
-    Mix.shell().info("Generating app icon (random robot)...")
-    MobDev.IconGenerator.generate_random(project_dir)
-    Mix.shell().info([:green, "* icons written", :reset])
+  defp setup_icon(project_dir, nil) do
+    placeholder = Path.join([project_dir, "android", "app", "src", "main", "res", "mipmap-mdpi", "ic_launcher.png"])
+
+    if File.exists?(placeholder) do
+      Mix.shell().info([:cyan, "* icons already present — skipping (run `mix mob.icon` to replace)", :reset])
+    else
+      Mix.shell().info("Writing Mob logo as placeholder icon...")
+      MobDev.IconGenerator.use_mob_logo(project_dir)
+      Mix.shell().info([:green, "* placeholder icons written (run `mix mob.icon` to customise)", :reset])
+    end
   end
 
-  defp generate_icons(project_dir, source) do
+  defp setup_icon(project_dir, source) do
     unless File.exists?(source) do
       Mix.raise("Source file not found: #{source}")
     end
