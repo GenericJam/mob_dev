@@ -213,7 +213,10 @@ defmodule Mix.Tasks.Mob.Doctor do
         {:fail, "adb", "required to deploy to Android devices and emulators",
          "Install Android SDK Platform Tools:\n" <>
            "      https://developer.android.com/tools/releases/platform-tools\n" <>
-           "      or: brew install --cask android-platform-tools"}
+           if(macos?(),
+             do: "      or: brew install --cask android-platform-tools",
+             else: "      or: sudo apt install adb"
+           )}
 
       path ->
         {:ok, "adb", path, nil}
@@ -255,22 +258,47 @@ defmodule Mix.Tasks.Mob.Doctor do
     end
   end
 
+  @min_jdk 17
+
   defp check_android_build_tools do
     [
       case System.find_executable("java") do
         nil ->
-          {:fail, "java", "required by Gradle to build the Android APK",
-           "Install a JDK:\n      brew install --cask temurin\n      or install Android Studio which bundles a JDK"}
+          {:fail, "java", "required by Gradle to build the Android APK", java_install_hint()}
 
         path ->
           case System.cmd(path, ["-version"], stderr_to_stdout: true) do
             {out, _} ->
-              version = out |> String.split("\n") |> List.first() |> String.trim()
-              {:ok, "java", version, nil}
+              version_line = out |> String.split("\n") |> List.first() |> String.trim()
+
+              major =
+                case Regex.run(~r/"(\d+)/, version_line) do
+                  [_, v] -> String.to_integer(v)
+                  nil -> 0
+                end
+
+              if major >= @min_jdk do
+                {:ok, "java", version_line, nil}
+              else
+                {:fail, "java",
+                 "JDK #{major} found — JDK #{@min_jdk}+ required by Android Gradle Plugin 8.x",
+                 "Set JAVA_HOME to a JDK #{@min_jdk}+ installation:\n" <>
+                   "      #{java_install_hint()}"}
+              end
           end
       end,
       check_android_sdk()
     ]
+  end
+
+  defp java_install_hint do
+    if macos?() do
+      "brew install --cask temurin\n      or install Android Studio which bundles a JDK"
+    else
+      "sudo apt install openjdk-21-jdk\n" <>
+        "      then: export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64\n" <>
+        "      or install Android Studio which bundles a JDK"
+    end
   end
 
   defp check_android_sdk do
@@ -288,10 +316,15 @@ defmodule Mix.Tasks.Mob.Doctor do
          "Install Android Studio or set ANDROID_HOME to a valid SDK path"}
 
       true ->
+        default_path =
+          if macos?(),
+            do: "$HOME/Library/Android/sdk",
+            else: "$HOME/Android/Sdk"
+
         {:warn, "Android SDK",
          "ANDROID_HOME not set and sdk.dir not found in android/local.properties",
          "Set ANDROID_HOME in your shell profile:\n" <>
-           "      export ANDROID_HOME=$HOME/Library/Android/sdk   # macOS default\n" <>
+           "      export ANDROID_HOME=#{default_path}\n" <>
            "      or open the android/ folder in Android Studio (it writes local.properties)"}
     end
   end
