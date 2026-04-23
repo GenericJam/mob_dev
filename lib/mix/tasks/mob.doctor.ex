@@ -264,12 +264,13 @@ defmodule Mix.Tasks.Mob.Doctor do
     [
       case System.find_executable("java") do
         nil ->
-          {:fail, "java", "required by Gradle to build the Android APK", java_install_hint()}
+          {:fail, "java", "required by Gradle to build the Android APK",
+           "Install a JDK:\n      macOS:          brew install --cask temurin\n      Ubuntu/Debian:  sudo apt install openjdk-21-jdk\n      Arch:           sudo pacman -S jdk21-openjdk\n      Fedora:         sudo dnf install java-21-openjdk\n      or install Android Studio which bundles a JDK"}
 
         path ->
           case System.cmd(path, ["-version"], stderr_to_stdout: true) do
             {out, _} ->
-              version_line = out |> String.split("\n") |> List.first() |> String.trim()
+              version_line_line = out |> String.split("\n") |> List.first() |> String.trim()
 
               major =
                 case Regex.run(~r/"(\d+)/, version_line) do
@@ -278,7 +279,19 @@ defmodule Mix.Tasks.Mob.Doctor do
                 end
 
               if major >= @min_jdk do
-                {:ok, "java", version_line, nil}
+                major = Regex.run(~r/version "(\d+)/, version_line, capture: :all_but_first)
+                      |> case do
+                           [v] -> String.to_integer(v)
+                           _   -> nil
+                         end
+              # AGP 8.2.0 (used by mob) is tested through JDK 21.
+              # JDK 22+ can cause Kotlin/AGP compilation failures.
+              if is_integer(major) and major > 21 do
+                {:warn, "java", "#{version_line} — JDK #{major} detected",
+                 "AGP 8.2.0 is tested through JDK 21. JDK #{major} may cause Kotlin compilation errors.\n      Switch to JDK 17 or 21:\n        macOS:          brew install --cask temurin@21 && export JAVA_HOME=$(/usr/libexec/java_home -v 21)\n        Ubuntu/Debian:  sudo apt install openjdk-21-jdk && sudo update-alternatives --config java\n        Arch:           sudo pacman -S jdk21-openjdk && sudo archlinux-java set java-21-openjdk\n        Fedora:         sudo dnf install java-21-openjdk && sudo alternatives --config java"}
+              else
+                {:ok, "java", version_line_line, nil}
+              end
               else
                 {:fail, "java",
                  "JDK #{major} found — JDK #{@min_jdk}+ required by Android Gradle Plugin 8.x",
