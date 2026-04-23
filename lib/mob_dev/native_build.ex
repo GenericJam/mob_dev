@@ -94,12 +94,15 @@ defmodule MobDev.NativeBuild do
     gradlew     = Path.join(android_dir, "gradlew")
 
     if File.exists?(gradlew) do
-      # Stream output live (same as iOS) so the user can see progress instead
-      # of a silent hang while sqlite3.c and libbeam.a compile.
+      # Stream output live so the user can see progress during the long
+      # sqlite3.c / libbeam.a first-time compilation.
+      # NOTE: Kotlin errors (lines starting with "e: ") appear in the stream
+      # above the final "* What went wrong:" summary. If the build fails,
+      # scroll up — or run `cd android && ./gradlew assembleDebug` directly.
       case System.cmd(gradlew, ["assembleDebug"],
                       cd: android_dir, stderr_to_stdout: true, into: IO.stream()) do
         {_, 0}   -> :ok
-        {_, _}   -> {:error, "Gradle build failed — check output above"}
+        {_, _}   -> {:error, "Gradle failed — scroll up for Kotlin/build errors\n  (or run: cd android && ./gradlew assembleDebug)"}
       end
     else
       {:error, "gradlew not found at #{gradlew}"}

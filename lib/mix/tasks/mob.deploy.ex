@@ -80,6 +80,14 @@ defmodule Mix.Tasks.Mob.Deploy do
       MobDev.NativeBuild.build_all(platforms: platforms)
     end
 
+    # Skip BEAM push if native build failed — the APK/app bundle isn't installed
+    # so run-as / simctl push would fail with misleading errors.
+    if native and native_ok == false do
+      IO.puts("\n#{IO.ANSI.red()}Native build had failures — see errors above.#{IO.ANSI.reset()}")
+      IO.puts("#{IO.ANSI.yellow()}Run `mix mob.doctor` to check your environment, or `mix mob.deploy` (without --native) once the issue is fixed.#{IO.ANSI.reset()}")
+      Mix.raise("Native build failed")
+    end
+
     {deployed, failed} = MobDev.Deployer.deploy_all(restart: restart, platforms: platforms, force_fs: native)
 
     if deployed == [] and failed == [] do
@@ -101,12 +109,6 @@ defmodule Mix.Tasks.Mob.Deploy do
           IO.puts("  ✗ #{d.name || d.serial}: #{d.error}")
         end)
       end
-    end
-
-    if native and native_ok == false do
-      IO.puts("\n#{IO.ANSI.red()}Native build had failures — see errors above.#{IO.ANSI.reset()}")
-      IO.puts("#{IO.ANSI.yellow()}Run `mix mob.doctor` to check your environment, or `mix mob.deploy` (without --native) once the issue is fixed.#{IO.ANSI.reset()}")
-      Mix.raise("Native build failed")
     end
   end
 
