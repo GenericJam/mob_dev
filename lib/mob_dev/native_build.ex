@@ -93,26 +93,26 @@ defmodule MobDev.NativeBuild do
     android_dir = Path.join(File.cwd!(), "android")
     gradlew     = Path.join(android_dir, "gradlew")
 
-    # Kill any stale gradlew wrapper processes from previous interrupted builds
-    # before clearing lock files — a running wrapper re-creates locks immediately.
-    System.cmd("pkill", ["-f", "gradlew assembleDebug"], stderr_to_stdout: true)
-    :timer.sleep(300)
+    # Clear stale lock files from interrupted builds before starting.
+    # Don't pkill here — matching "gradlew assembleDebug" would race against
+    # the new Gradle process we're about to start and kill it.
     clear_stale_gradle_locks()
 
     if File.exists?(gradlew) do
-      # Run gradlew through bash rather than exec-ing it directly.
+      # Run gradlew as `bash scriptpath args` rather than exec-ing it directly
+      # or using `bash -c "cmd"`.
       #
-      # When System.cmd exec's gradlew directly, Gradle spawns worker subprocesses
-      # that inherit the Erlang port's I/O pipes. The main JVM exits but the workers
-      # keep the pipes open, so System.cmd never receives EOF and blocks forever.
+      # When System.cmd exec's gradlew directly, Gradle's worker subprocesses
+      # may inherit the Erlang port's I/O pipes. If they outlive the main JVM,
+      # the pipe stays open and System.cmd never receives EOF — hanging forever.
       #
-      # Running through `bash -c` puts gradlew in bash's process group; bash manages
-      # group teardown and exits cleanly when all children finish, giving Erlang EOF.
+      # `bash scriptpath args` keeps bash as the parent process. bash exits when
+      # the script finishes (even if exec'd children remain), cleanly closing the
+      # pipe to Erlang.
       #
       # NOTE: Kotlin errors appear before "* What went wrong:" in the output.
       # If the build fails, scroll up or run `cd android && ./gradlew assembleDebug`.
-      cmd = "#{gradlew} assembleDebug --no-daemon"
-      case System.cmd("bash", ["-c", cmd],
+      case System.cmd("bash", [gradlew, "assembleDebug", "--no-daemon"],
                       cd: android_dir, stderr_to_stdout: true, into: IO.stream()) do
         {_, 0}   -> :ok
         {_, _}   -> {:error, "Gradle failed — scroll up for errors\n  (or run: cd android && ./gradlew assembleDebug)"}
