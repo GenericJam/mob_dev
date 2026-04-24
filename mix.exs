@@ -4,11 +4,7 @@ defmodule MobDev.MixProject do
   def project do
     [
       app: :mob_dev,
-<<<<<<< HEAD
-      version: "0.2.15",
-=======
-      version: "0.2.16",
->>>>>>> c955d9c (icon_generator: replace sips with pre-built PNGs for cross-platform support)
+      version: "0.2.17",
       elixir: "~> 1.17",
       description: "Development tooling for the Mob mobile framework",
       source_url: "https://github.com/genericjam/mob_dev",
