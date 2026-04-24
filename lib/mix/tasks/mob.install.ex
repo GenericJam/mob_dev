@@ -49,9 +49,14 @@ defmodule Mix.Tasks.Mob.Install do
       curl -L https://github.com/genericjam/mob/releases/download/<tag>/otp-android-arm64.tar.gz \
            -o ~/.mob_dev/otp-android-arm64.tar.gz
 
+<<<<<<< HEAD
   **3. Placeholder icon** — writes the Mob logo to all platform icon sizes using
   `sips` (macOS built-in). No extra dependencies required. Run `mix mob.icon`
   afterwards to replace it with a custom or generated icon.
+=======
+  **3. Placeholder icon** — writes the Mob logo to all platform icon sizes (pre-built PNGs,
+  no system tools required). Run `mix mob.icon` afterwards to replace it with a custom icon.
+>>>>>>> c955d9c (icon_generator: replace sips with pre-built PNGs for cross-platform support)
   """
 
   @switches [no_icon: :boolean, icon: :string]
