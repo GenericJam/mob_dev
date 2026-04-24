@@ -1,11 +1,6 @@
 defmodule MobDev.IconGenerator do
   # Image and Avatarz are optional deps — only needed for custom/random icon generation.
-<<<<<<< HEAD
-  # When they're absent we fall back to resizing the bundled mob_logo.svg via sips
-  # (macOS built-in), which requires no extra dependencies.
-=======
   # When they're absent we fall back to the bundled pre-built mob_logo PNGs.
->>>>>>> c955d9c (icon_generator: replace sips with pre-built PNGs for cross-platform support)
   @compile {:no_warn_undefined, [Image, Avatarz, Avatarz.Sets.Robot]}
 
   @moduledoc """
@@ -13,11 +8,7 @@ defmodule MobDev.IconGenerator do
   (using Avatarz) or a provided source image (using Image).
 
   When the `image` dep is not available, falls back to the bundled Mob logo
-<<<<<<< HEAD
-  (resized via `sips`, which ships with macOS).
-=======
   (pre-built PNGs shipped with mob_dev, no system tools required).
->>>>>>> c955d9c (icon_generator: replace sips with pre-built PNGs for cross-platform support)
 
   ## Android sizes (mipmap buckets)
 
@@ -53,11 +44,7 @@ defmodule MobDev.IconGenerator do
     | App Store                 |1024  |
   """
 
-<<<<<<< HEAD
-  @mob_logo_svg :code.priv_dir(:mob_dev) |> Path.join("mob_logo.svg")
-=======
   @mob_logo_dir :code.priv_dir(:mob_dev) |> Path.join("mob_logo")
->>>>>>> c955d9c (icon_generator: replace sips with pre-built PNGs for cross-platform support)
 
   @android_sizes %{
     "mipmap-mdpi"    => 48,
@@ -99,36 +86,22 @@ defmodule MobDev.IconGenerator do
       Run `mix mob.icon` after adding `{:image, "~> 0.54"}` to your deps to
       replace it with a custom or generated icon.\n
       """)
-<<<<<<< HEAD
-      resize_svg_for_platforms(@mob_logo_svg, output_dir)
-=======
       use_mob_logo(output_dir)
->>>>>>> c955d9c (icon_generator: replace sips with pre-built PNGs for cross-platform support)
     end
   end
 
   @doc """
-<<<<<<< HEAD
-  Copies the bundled Mob logo (resized via `sips`) to all platform icon
-  directories in `output_dir`. Used as the default placeholder icon by
-  `mix mob.install`. No extra dependencies required.
-=======
   Copies the bundled Mob logo (pre-built PNGs) to all platform icon directories
   in `output_dir`. Used as the default placeholder icon by `mix mob.install`.
   No extra dependencies or system tools required.
->>>>>>> c955d9c (icon_generator: replace sips with pre-built PNGs for cross-platform support)
 
   Returns `:ok`.
   """
   @spec use_mob_logo(output_dir :: String.t()) :: :ok
   def use_mob_logo(output_dir) do
-<<<<<<< HEAD
-    resize_svg_for_platforms(@mob_logo_svg, output_dir)
-=======
     write_android_icons_from_priv(output_dir)
     write_ios_icons_from_priv(output_dir)
     :ok
->>>>>>> c955d9c (icon_generator: replace sips with pre-built PNGs for cross-platform support)
   end
 
   @doc """
@@ -163,10 +136,6 @@ defmodule MobDev.IconGenerator do
 
   # ── private ──────────────────────────────────────────────────────────────────
 
-<<<<<<< HEAD
-  # Returns true when the `image` library is loaded and available at runtime.
-=======
->>>>>>> c955d9c (icon_generator: replace sips with pre-built PNGs for cross-platform support)
   defp image_available? do
     Code.ensure_loaded?(Image)
   end
@@ -175,35 +144,6 @@ defmodule MobDev.IconGenerator do
     source = Image.open!(source_png)
     write_android_icons(source, output_dir)
     write_ios_icons(source, output_dir)
-    :ok
-  end
-
-  # Fallback path: resize an SVG to all platform sizes using sips (macOS built-in).
-  # sips can convert SVG→PNG and resize in one step, no extra deps needed.
-  defp resize_svg_for_platforms(svg_path, output_dir) do
-    all_sizes =
-      Map.values(@android_sizes) ++ @ios_sizes
-      |> Enum.uniq()
-
-    # Convert each size once into a temp PNG, then distribute to platform dirs.
-    tmp = System.tmp_dir!()
-
-    size_to_png =
-      Map.new(all_sizes, fn px ->
-        tmp_png = Path.join(tmp, "mob_icon_#{px}.png")
-        {_, 0} = System.cmd("sips", [
-          "-s", "format", "png",
-          "-z", "#{px}", "#{px}",
-          svg_path, "--out", tmp_png
-        ], stderr_to_stdout: true)
-        {px, tmp_png}
-      end)
-
-    write_android_icons_from_map(size_to_png, output_dir)
-    write_ios_icons_from_map(size_to_png, output_dir)
-
-    # Clean up temp files
-    Enum.each(size_to_png, fn {_, path} -> File.rm(path) end)
     :ok
   end
 
@@ -216,19 +156,11 @@ defmodule MobDev.IconGenerator do
     end)
   end
 
-<<<<<<< HEAD
-  defp write_android_icons_from_map(size_to_png, output_dir) do
-    Enum.each(@android_sizes, fn {bucket, px} ->
-      dest_dir = Path.join([output_dir, "android", "app", "src", "main", "res", bucket])
-      File.mkdir_p!(dest_dir)
-      File.cp!(size_to_png[px], Path.join(dest_dir, "ic_launcher.png"))
-=======
   defp write_android_icons_from_priv(output_dir) do
     Enum.each(@android_sizes, fn {bucket, px} ->
       dest_dir = Path.join([output_dir, "android", "app", "src", "main", "res", bucket])
       File.mkdir_p!(dest_dir)
       File.cp!(Path.join(@mob_logo_dir, "#{px}.png"), Path.join(dest_dir, "ic_launcher.png"))
->>>>>>> c955d9c (icon_generator: replace sips with pre-built PNGs for cross-platform support)
     end)
   end
 
@@ -244,20 +176,12 @@ defmodule MobDev.IconGenerator do
     write_ios_contents_json(dest_dir)
   end
 
-<<<<<<< HEAD
-  defp write_ios_icons_from_map(size_to_png, output_dir) do
-=======
   defp write_ios_icons_from_priv(output_dir) do
->>>>>>> c955d9c (icon_generator: replace sips with pre-built PNGs for cross-platform support)
     dest_dir = Path.join([output_dir, "ios", "Assets.xcassets", "AppIcon.appiconset"])
     File.mkdir_p!(dest_dir)
 
     Enum.each(@ios_sizes, fn px ->
-<<<<<<< HEAD
-      File.cp!(size_to_png[px], Path.join(dest_dir, "icon_#{px}.png"))
-=======
       File.cp!(Path.join(@mob_logo_dir, "#{px}.png"), Path.join(dest_dir, "icon_#{px}.png"))
->>>>>>> c955d9c (icon_generator: replace sips with pre-built PNGs for cross-platform support)
     end)
 
     write_ios_contents_json(dest_dir)
