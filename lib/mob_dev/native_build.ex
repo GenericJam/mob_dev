@@ -872,6 +872,71 @@ defmodule MobDev.NativeBuild do
     APPEOF
     rm -rf "$CRYPTO_TMP"
 
+    echo "=== Creating ssl shim ==="
+    SSL_TMP=$(mktemp -d)
+    cat > "$SSL_TMP/ssl.erl" << 'SSLEOF'
+    -module(ssl).
+    -behaviour(application).
+    -export([start/2, stop/1, start/0, stop/0,
+             connect/3, connect/4, connect/5,
+             listen/2, accept/2, accept/3,
+             close/1, send/2, recv/2, recv/3,
+             controlling_process/2, getopts/2, setopts/2,
+             peername/1, sockname/1, peercert/1,
+             negotiated_protocol/1, cipher_suites/0,
+             cipher_suites/2, cipher_suites/3,
+             versions/0, format_error/1,
+             clear_pem_cache/0, handshake/1, handshake/2, handshake/3,
+             handshake_continue/2, handshake_continue/3,
+             handshake_cancel/1, shutdown/2,
+             transport_info/1, connection_information/1,
+             connection_information/2]).
+    start(_Type, _Args) ->
+        Pid = spawn(fun() -> receive stop -> ok end end),
+        {ok, Pid}.
+    stop(_State) -> ok.
+    start() -> ok.
+    stop() -> ok.
+    connect(_, _, _) -> {error, ssl_not_supported}.
+    connect(_, _, _, _) -> {error, ssl_not_supported}.
+    connect(_, _, _, _, _) -> {error, ssl_not_supported}.
+    listen(_, _) -> {error, ssl_not_supported}.
+    accept(_, _) -> {error, ssl_not_supported}.
+    accept(_, _, _) -> {error, ssl_not_supported}.
+    close(_) -> ok.
+    send(_, _) -> {error, closed}.
+    recv(_, _) -> {error, closed}.
+    recv(_, _, _) -> {error, closed}.
+    controlling_process(_, _) -> ok.
+    getopts(_, _) -> {ok, []}.
+    setopts(_, _) -> ok.
+    peername(_) -> {error, ssl_not_supported}.
+    sockname(_) -> {error, ssl_not_supported}.
+    peercert(_) -> {error, ssl_not_supported}.
+    negotiated_protocol(_) -> {error, ssl_not_supported}.
+    cipher_suites() -> [].
+    cipher_suites(_, _) -> [].
+    cipher_suites(_, _, _) -> [].
+    versions() -> [].
+    format_error(_) -> "ssl not available on iOS (HTTP-only)".
+    clear_pem_cache() -> ok.
+    handshake(_) -> {error, ssl_not_supported}.
+    handshake(_, _) -> {error, ssl_not_supported}.
+    handshake(_, _, _) -> {error, ssl_not_supported}.
+    handshake_continue(_, _) -> {error, ssl_not_supported}.
+    handshake_continue(_, _, _) -> {error, ssl_not_supported}.
+    handshake_cancel(_) -> ok.
+    shutdown(_, _) -> ok.
+    transport_info(_) -> {error, ssl_not_supported}.
+    connection_information(_) -> {error, ssl_not_supported}.
+    connection_information(_, _) -> {error, ssl_not_supported}.
+    SSLEOF
+    erlc -o "$BEAMS_DIR" "$SSL_TMP/ssl.erl"
+    cat > "$BEAMS_DIR/ssl.app" << 'SSLAPPEOF'
+    {application,ssl,[{modules,[ssl]},{applications,[kernel,stdlib,crypto,public_key]},{description,"SSL shim for iOS (HTTP-only)"},{registered,[]},{vsn,"11.2"},{mod,{ssl,[]}}]}.
+    SSLAPPEOF
+    rm -rf "$SSL_TMP"
+
     echo "=== Copying Elixir stdlib ==="
     mkdir -p "$OTP_ROOT/lib/elixir/ebin" "$OTP_ROOT/lib/logger/ebin"
     cp "$ELIXIR_LIB/elixir/ebin/"*.beam    "$OTP_ROOT/lib/elixir/ebin/"
@@ -929,7 +994,7 @@ defmodule MobDev.NativeBuild do
     # Install the app into $OTP_ROOT/lib/app-vsn/ alongside runtime_tools, asn1 etc.
     # The -root flag makes $OTP_ROOT/lib/*/ebin available, so code:lib_dir finds it.
     echo "=== Installing app into OTP lib/ (required for code:priv_dir) ==="
-    APP_VSN=$(grep 'vsn' "$BEAMS_DIR/${APP_MODULE}.app" | grep -o '"[^"]*"' | head -1 | tr -d '"')
+    APP_VSN=$(grep -o '{vsn,"[^"]*"}' "$BEAMS_DIR/${APP_MODULE}.app" | grep -o '"[^"]*"' | tr -d '"')
     if [ -n "$APP_VSN" ]; then
         APP_LIB_DIR="$OTP_ROOT/lib/${APP_MODULE}-${APP_VSN}"
         rm -rf "$APP_LIB_DIR"

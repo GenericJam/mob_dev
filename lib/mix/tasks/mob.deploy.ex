@@ -21,9 +21,30 @@ defmodule Mix.Tasks.Mob.Deploy do
 
   ## Options
 
-    * `--native`         — build native binaries before pushing BEAMs
-    * `--no-restart`     — push BEAMs but don't restart the app
-    * `--device <id>`    — target a specific device; use `mix mob.devices` to find IDs
+    * `--native`              — build native binaries before pushing BEAMs
+    * `--no-restart`          — push BEAMs but don't restart the app
+    * `--device <id>`         — target a specific device; use `mix mob.devices` to find IDs
+    * `--schedulers <N>`      — set BEAM scheduler count (saved to mob.exs)
+    * `--beam-flags "<flags>"` — arbitrary BEAM flags string (saved to mob.exs)
+
+  ## BEAM scheduler tuning
+
+  The default native build uses `1:1` (single scheduler) for battery efficiency.
+  Override for the current deploy and all future deploys until changed:
+
+      # Pin to 2 schedulers
+      mix mob.deploy --schedulers 2
+
+      # Let BEAM auto-detect — one scheduler per logical core
+      mix mob.deploy --schedulers 0
+
+      # Arbitrary flags (replaces --schedulers)
+      mix mob.deploy --beam-flags "-S 4:4 -A 4"
+
+  The chosen value is written to `mob.exs` under `beam_flags:` and reused on
+  subsequent `mix mob.deploy` runs that don't pass either flag. The flags are
+  written alongside the BEAMs as a `mob_beam_flags` file that the native launcher
+  reads at startup — no APK/app rebuild required.
 
   ## Under the hood
 
@@ -61,7 +82,9 @@ defmodule Mix.Tasks.Mob.Deploy do
     restart: :boolean,
     android: :boolean,
     ios: :boolean,
-    device: :string
+    device: :string,
+    schedulers: :integer,
+    beam_flags: :string
   ]
 
   @impl Mix.Task
@@ -72,6 +95,7 @@ defmodule Mix.Tasks.Mob.Deploy do
     native = Keyword.get(opts, :native, false)
     device_id = opts[:device]
     platforms = resolve_platforms(opts)
+    beam_flags = resolve_beam_flags(opts)
 
     # When no --device is given and we're doing a native iOS build, auto-detect
     # a connected physical device now so both the native build and the BEAM push
@@ -115,7 +139,8 @@ defmodule Mix.Tasks.Mob.Deploy do
         platforms: platforms,
         force_fs: native,
         device: device_id,
-        ios_device: effective_device_id
+        ios_device: effective_device_id,
+        beam_flags: beam_flags
       )
 
     if deployed == [] and failed == [] do
@@ -177,4 +202,49 @@ defmodule Mix.Tasks.Mob.Deploy do
   end
 
   defp macos?, do: match?({:unix, :darwin}, :os.type())
+
+  # Resolve --schedulers / --beam-flags into a combined flags string, save to
+  # mob.exs, and return it (or the previously saved value if no flags given).
+  defp resolve_beam_flags(opts) do
+    new_flags = combine_beam_flags(opts[:schedulers], opts[:beam_flags])
+
+    if new_flags do
+      save_beam_flags(new_flags)
+      IO.puts("#{IO.ANSI.cyan()}* beam flags: #{new_flags} (saved to mob.exs)#{IO.ANSI.reset()}")
+      new_flags
+    else
+      MobDev.Config.load_mob_config()[:beam_flags]
+    end
+  end
+
+  @doc false
+  def combine_beam_flags(schedulers, flags_string) do
+    case {schedulers, flags_string} do
+      {nil, nil} -> nil
+      {n, nil} -> "-S #{n}:#{n}"
+      {nil, flags} -> String.trim(flags)
+      {n, flags} -> "-S #{n}:#{n} #{String.trim(flags)}"
+    end
+  end
+
+  # Write or update the beam_flags key in mob.exs.
+  defp save_beam_flags(flags) do
+    path = Path.join(File.cwd!(), "mob.exs")
+    unless File.exists?(path), do: Mix.raise("mob.exs not found in current directory")
+
+    content = File.read!(path)
+    updated = update_beam_flags_in_config(content, flags)
+    File.write!(path, updated)
+  end
+
+  @doc false
+  def update_beam_flags_in_config(content, flags) do
+    value = inspect(flags)
+
+    if content =~ ~r/^\s+beam_flags:/m do
+      Regex.replace(~r/^(\s+beam_flags:).*$/m, content, "  beam_flags: #{value}")
+    else
+      String.trim_trailing(content) <> "\nconfig :mob_dev, beam_flags: #{value}\n"
+    end
+  end
 end

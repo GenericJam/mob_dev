@@ -58,6 +58,7 @@ defmodule MobDev.Deployer do
     force_fs = Keyword.get(opts, :force_fs, false)
     device_id = Keyword.get(opts, :device, nil)
     ios_device_id = Keyword.get(opts, :ios_device, nil)
+    beam_flags = Keyword.get(opts, :beam_flags, nil)
     beam_dirs = collect_beam_dirs()
 
     android =
@@ -103,10 +104,18 @@ defmodule MobDev.Deployer do
               fallback =
                 case device.platform do
                   :android ->
-                    deploy_android(device, beam_dirs, restart: restart, dist_port: dist_port)
+                    deploy_android(device, beam_dirs,
+                      restart: restart,
+                      dist_port: dist_port,
+                      beam_flags: beam_flags
+                    )
 
                   :ios ->
-                    deploy_ios(device, beam_dirs, restart: restart, dist_port: dist_port)
+                    deploy_ios(device, beam_dirs,
+                      restart: restart,
+                      dist_port: dist_port,
+                      beam_flags: beam_flags
+                    )
                 end
 
               {:adb, fallback}
@@ -156,6 +165,7 @@ defmodule MobDev.Deployer do
   defp deploy_android(%Device{serial: serial} = device, beam_dirs, opts) do
     restart = Keyword.get(opts, :restart, true)
     dist_port = Keyword.get(opts, :dist_port, 9100)
+    beam_flags = Keyword.get(opts, :beam_flags, nil)
     pkg = android_package()
 
     {pm_out, _} =
@@ -169,6 +179,7 @@ defmodule MobDev.Deployer do
     else
       case push_beams_android(serial, beam_dirs) do
         :ok ->
+          write_beam_flags_android(serial, beam_flags)
           setup_exqlite_android(serial)
           setup_app_priv_android(serial)
           if restart, do: restart_android(serial, dist_port: dist_port)
@@ -178,6 +189,27 @@ defmodule MobDev.Deployer do
           {:error, reason}
       end
     end
+  end
+
+  defp write_beam_flags_android(_serial, nil), do: :ok
+
+  defp write_beam_flags_android(serial, flags) do
+    beams_dir = android_beams_dir()
+    tmp = Path.join(System.tmp_dir!(), "mob_beam_flags_#{serial}")
+    File.write!(tmp, flags)
+
+    case System.cmd("adb", ["-s", serial, "shell", "run-as", android_package(),
+                             "test", "-d", beams_dir],
+                    stderr_to_stdout: true) do
+      {_, 0} ->
+        System.cmd("adb", ["-s", serial, "push", tmp, "#{beams_dir}/mob_beam_flags"],
+                   stderr_to_stdout: true)
+      _ ->
+        :ok
+    end
+
+    File.rm(tmp)
+    :ok
   end
 
   # Ensure exqlite lives in $OTP_ROOT/lib/exqlite-VERSION/{ebin,priv} so that
@@ -577,6 +609,7 @@ defmodule MobDev.Deployer do
   defp deploy_ios_simulator(%Device{serial: udid} = device, beam_dirs, opts) do
     restart = Keyword.get(opts, :restart, true)
     dist_port = Keyword.get(opts, :dist_port, 9100)
+    beam_flags = Keyword.get(opts, :beam_flags, nil)
 
     try do
       File.mkdir_p!(ios_beams_dir())
@@ -611,6 +644,10 @@ defmodule MobDev.Deployer do
         end
       end
 
+      if beam_flags do
+        File.write!(Path.join(ios_beams_dir(), "mob_beam_flags"), beam_flags)
+      end
+
       if restart do
         IOS.terminate_app(udid, ios_bundle_id())
         :timer.sleep(300)
@@ -632,6 +669,7 @@ defmodule MobDev.Deployer do
   # semantics land the files at Documents/otp/<app>/ on device.
   defp deploy_ios_physical(%Device{serial: udid} = device, beam_dirs, opts) do
     restart = Keyword.get(opts, :restart, true)
+    beam_flags = Keyword.get(opts, :beam_flags, nil)
     bundle = ios_bundle_id()
     app = app_name()
 
@@ -664,6 +702,10 @@ defmodule MobDev.Deployer do
           {_, 0} -> :ok
           {out, _} -> IO.puts("    (warning: priv copy failed: #{out})")
         end
+      end
+
+      if beam_flags do
+        File.write!(Path.join(staging_dir, "mob_beam_flags"), beam_flags)
       end
 
       # devicectl copies the contents of --source into --destination.
