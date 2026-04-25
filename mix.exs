@@ -4,7 +4,7 @@ defmodule MobDev.MixProject do
   def project do
     [
       app: :mob_dev,
-      version: "0.2.18",
+      version: "0.3.0",
       elixir: "~> 1.17",
       description: "Development tooling for the Mob mobile framework",
       source_url: "https://github.com/genericjam/mob_dev",
@@ -43,9 +43,9 @@ defmodule MobDev.MixProject do
       extras: ["README.md": [title: "mob_dev"]],
       groups_for_modules: [
         "Mix Tasks": ~r/Mix\.Tasks\./,
-        "Server": ~r/MobDev\.Server/,
-        "Internals": ~r/MobDev/,
-      ],
+        Server: ~r/MobDev\.Server/,
+        Internals: ~r/MobDev/
+      ]
     ]
   end
 

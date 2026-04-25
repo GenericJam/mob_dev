@@ -56,6 +56,80 @@ defmodule MobDev.DeviceTest do
     end
   end
 
+  # ── display_id/1 ────────────────────────────────────────────────────────────
+
+  describe "display_id/1" do
+    test "Android: returns serial as-is" do
+      device = %Device{platform: :android, serial: "emulator-5554"}
+      assert Device.display_id(device) == "emulator-5554"
+    end
+
+    test "Android physical: returns serial as-is" do
+      device = %Device{platform: :android, serial: "R5CW3089HVB", type: :physical}
+      assert Device.display_id(device) == "R5CW3089HVB"
+    end
+
+    test "iOS simulator: returns first 8 hex chars of UDID, lowercased" do
+      device = %Device{platform: :ios, type: :simulator,
+                       serial: "78354490-EF38-44D7-A437-DD941C20524D"}
+      assert Device.display_id(device) == "78354490"
+    end
+
+    test "iOS simulator: strips hyphens before slicing" do
+      device = %Device{platform: :ios, type: :simulator, serial: "AABB-CCDD-EEFF"}
+      assert Device.display_id(device) == "aabbccdd"
+    end
+
+    test "iOS physical: returns full UDID" do
+      udid = "00008120-001A2B3C4D5E6F78"
+      device = %Device{platform: :ios, type: :physical, serial: udid}
+      assert Device.display_id(device) == udid
+    end
+  end
+
+  # ── match_id?/2 ─────────────────────────────────────────────────────────────
+
+  describe "match_id?/2" do
+    test "matches Android device by serial (exact)" do
+      device = %Device{platform: :android, serial: "emulator-5554", type: :emulator}
+      assert Device.match_id?(device, "emulator-5554")
+    end
+
+    test "matches Android device case-insensitively" do
+      device = %Device{platform: :android, serial: "R5CW3089HVB", type: :physical}
+      assert Device.match_id?(device, "r5cw3089hvb")
+    end
+
+    test "matches iOS simulator by short display_id" do
+      device = %Device{platform: :ios, type: :simulator,
+                       serial: "78354490-EF38-44D7-A437-DD941C20524D"}
+      assert Device.match_id?(device, "78354490")
+    end
+
+    test "matches iOS simulator by full UDID" do
+      udid = "78354490-EF38-44D7-A437-DD941C20524D"
+      device = %Device{platform: :ios, type: :simulator, serial: udid}
+      assert Device.match_id?(device, udid)
+    end
+
+    test "matches iOS simulator case-insensitively" do
+      device = %Device{platform: :ios, type: :simulator,
+                       serial: "78354490-EF38-44D7-A437-DD941C20524D"}
+      assert Device.match_id?(device, "78354490")
+      assert Device.match_id?(device, "78354490-EF38-44D7-A437-DD941C20524D")
+    end
+
+    test "returns false for non-matching input" do
+      device = %Device{platform: :android, serial: "emulator-5554", type: :emulator}
+      refute Device.match_id?(device, "emulator-9999")
+    end
+
+    test "returns false for partial match (no substring matching)" do
+      device = %Device{platform: :android, serial: "emulator-5554", type: :emulator}
+      refute Device.match_id?(device, "5554")
+    end
+  end
+
   # ── summary/1 ───────────────────────────────────────────────────────────────
 
   describe "summary/1" do

@@ -55,13 +55,14 @@ defmodule MobDev.Deployer do
     restart   = Keyword.get(opts, :restart, true)
     platforms = Keyword.get(opts, :platforms, [:android, :ios])
     force_fs  = Keyword.get(opts, :force_fs, false)
+    device_id = Keyword.get(opts, :device, nil)
     beam_dirs = collect_beam_dirs()
 
     android = if :android in platforms,
                 do: Android.list_devices() |> Enum.reject(&(&1.status == :unauthorized)),
                 else: []
-    ios     = if :ios in platforms, do: IOS.list_simulators(), else: []
-    all     = android ++ ios
+    ios     = if :ios in platforms, do: IOS.list_devices(), else: []
+    all     = filter_by_device_id(android ++ ios, device_id)
 
     if all == [] do
       IO.puts("  #{color(:yellow)}No devices found.#{color(:reset)}")
@@ -110,20 +111,42 @@ defmodule MobDev.Deployer do
     end
   end
 
+  # ── Device filtering ─────────────────────────────────────────────────────────
+
+  defp filter_by_device_id(devices, nil), do: devices
+  defp filter_by_device_id(devices, id) do
+    case Enum.filter(devices, &Device.match_id?(&1, id)) do
+      [] ->
+        IO.puts("  #{color(:red)}No device matched \"#{id}\".#{color(:reset)}")
+        IO.puts("  Run #{color(:cyan)}mix mob.devices#{color(:reset)} to see available device IDs.")
+        []
+      matched ->
+        matched
+    end
+  end
+
   # ── Android ─────────────────────────────────────────────────────────────────
 
   defp deploy_android(%Device{serial: serial} = device, beam_dirs, opts) do
     restart   = Keyword.get(opts, :restart, true)
     dist_port = Keyword.get(opts, :dist_port, 9100)
+    pkg       = android_package()
 
-    case push_beams_android(serial, beam_dirs) do
-      :ok ->
-        setup_exqlite_android(serial)
-        setup_app_priv_android(serial)
-        if restart, do: restart_android(serial, dist_port: dist_port)
-        {:ok, device}
-      {:error, reason} ->
-        {:error, reason}
+    {pm_out, _} = System.cmd("adb", ["-s", serial, "shell", "pm", "list", "packages", pkg],
+                              stderr_to_stdout: true)
+
+    if not String.contains?(pm_out, "package:#{pkg}") do
+      {:error, "#{pkg} is not installed on #{device.name || serial} — skipping (ABI mismatch or missing install)"}
+    else
+      case push_beams_android(serial, beam_dirs) do
+        :ok ->
+          setup_exqlite_android(serial)
+          setup_app_priv_android(serial)
+          if restart, do: restart_android(serial, dist_port: dist_port)
+          {:ok, device}
+        {:error, reason} ->
+          {:error, reason}
+      end
     end
   end
 
@@ -147,11 +170,14 @@ defmodule MobDev.Deployer do
       end
 
       if rooted? do
+        pkg = android_package()
         :timer.sleep(600)
         run_adb(["-s", serial, "shell", "mkdir -p #{exqlite_lib}/ebin #{exqlite_lib}/priv"])
         run_adb(["-s", serial, "push", "#{Path.expand(exqlite_ebin)}/.", "#{exqlite_lib}/ebin/"])
+        # Read label from cache/ (has full s0:cXXX,cYYY MCS categories on Android 15),
+        # not files/ which carries a bare s0 label.
         run_adb(["-s", serial, "shell",
-          "chcon -hR $(stat -c %C #{app_data}) #{app_data}/otp/lib/exqlite-#{vsn}"])
+          "chcon -hR $(stat -c %C /data/data/#{pkg}/cache) #{app_data}/otp/lib/exqlite-#{vsn}"])
         create_exqlite_nif_symlink(serial, exqlite_lib, :rooted)
       else
         push_exqlite_runas(serial, exqlite_ebin, exqlite_lib)
@@ -208,10 +234,9 @@ defmodule MobDev.Deployer do
         # [] → migrations silently skipped. See comment above for the full story.
         run_adb(["-s", serial, "shell", "chmod -R 755 #{device_priv}"])
         # Fix SELinux MCS categories so the app can actually open the files.
-        # adb push (as root) labels files with root's categories; chcon copies
-        # the correct context from the app's own files/ directory.
+        # Read label from cache/ (full s0:cXXX,cYYY) not files/ (bare s0 on Android 15).
         run_adb(["-s", serial, "shell",
-          "chcon -hR $(stat -c %C #{android_app_data()}) #{android_beams_dir()}"])
+          "chcon -hR $(stat -c %C /data/data/#{android_package()}/cache) #{android_beams_dir()}"])
       else
         push_priv_android_runas(serial, local_priv, device_priv)
       end
@@ -231,7 +256,9 @@ defmodule MobDev.Deployer do
       # Tar with priv/ as the top-level entry; extract relative to beams_dir so
       # the result lands at {beams_dir}/priv/repo/migrations/... etc.
       case System.cmd("tar", ["cf", stage_local, "-C", Path.dirname(local_priv),
-                               Path.basename(local_priv)], stderr_to_stdout: true) do
+                               Path.basename(local_priv)],
+                      env: [{"COPYFILE_DISABLE", "1"}],
+                      stderr_to_stdout: true) do
         {_, 0}   -> :ok
         {out, _} -> throw({:error, "tar create failed: #{out}"})
       end
@@ -244,7 +271,7 @@ defmodule MobDev.Deployer do
       run_adb(["-s", serial, "shell",
                "run-as #{android_package()} mkdir -p #{device_priv}"])
 
-      cmd = "run-as #{android_package()} tar xf #{stage_device} -C #{android_beams_dir()}"
+      cmd = "run-as #{android_package()} tar xf #{stage_device} -C #{android_beams_dir()} 2>/dev/null; true"
       case run_adb(["-s", serial, "shell", cmd]) do
         {:ok, _}    -> :ok
         {:error, r} -> throw({:error, "run-as tar failed: #{r}"})
@@ -273,6 +300,7 @@ defmodule MobDev.Deployer do
 
       # Tar with ebin/ and priv/ as top-level entries; extract to exqlite_lib/.
       case System.cmd("tar", ["cf", stage_local, "-C", tmp, "."],
+                      env: [{"COPYFILE_DISABLE", "1"}],
                       stderr_to_stdout: true) do
         {_, 0} -> :ok
         {out, _} -> throw({:error, "tar create failed: #{out}"})
@@ -284,7 +312,7 @@ defmodule MobDev.Deployer do
       end
 
       cmd = "run-as #{android_package()} mkdir -p #{exqlite_lib}/ebin #{exqlite_lib}/priv && " <>
-            "run-as #{android_package()} tar xf #{stage_device} -C #{exqlite_lib}/"
+            "run-as #{android_package()} tar xf #{stage_device} -C #{exqlite_lib}/ 2>/dev/null; true"
       case run_adb(["-s", serial, "shell", cmd]) do
         {:ok, _} -> :ok
         {:error, r} -> throw({:error, "run-as tar failed: #{r}"})
@@ -373,11 +401,10 @@ defmodule MobDev.Deployer do
         end
       end)
       # Fix SELinux MCS categories on pushed files. adb push (as root) labels
-      # files with the root process's categories, not the app's. restorecon
-      # only restores the type label — it cannot fix MCS categories. We use
-      # chcon with the context from the app's own files/ directory instead.
+      # files with root's categories; restorecon only fixes the type, not MCS.
+      # Read label from cache/ (full s0:cXXX,cYYY) not files/ (bare s0 on Android 15).
       run_adb(["-s", serial, "shell",
-        "chcon -hR $(stat -c %C #{android_app_data()}) #{android_app_data()}/otp"])
+        "chcon -hR $(stat -c %C /data/data/#{android_package()}/cache) #{android_app_data()}/otp"])
       result
     else
       # Fall back to run-as tar (non-rooted physical devices).
@@ -398,8 +425,14 @@ defmodule MobDev.Deployer do
         System.cmd("cp", ["-r", "#{dir}/.", tmp], stderr_to_stdout: true)
       end)
 
-      case System.cmd("tar", ["cf", stage_local, "-C", Path.dirname(tmp),
-                               Path.basename(tmp)], stderr_to_stdout: true) do
+      # Archive from inside tmp so there is no top-level wrapper directory.
+      # BusyBox/Toybox tar (Android ≤11) does not support --strip-components, so
+      # we avoid needing it by using `tar cf ... -C tmp .`.
+      # COPYFILE_DISABLE=1 prevents macOS from adding ._<file> AppleDouble
+      # sidecars into the archive.
+      case System.cmd("tar", ["cf", stage_local, "-C", tmp, "."],
+                      env: [{"COPYFILE_DISABLE", "1"}],
+                      stderr_to_stdout: true) do
         {_, 0} -> :ok
         {out, _} -> throw({:error, "tar create failed: #{out}"})
       end
@@ -412,8 +445,9 @@ defmodule MobDev.Deployer do
       run_adb(["-s", serial, "shell",
                "run-as #{android_package()} mkdir -p #{android_beams_dir()}"])
 
-      cmd = "run-as #{android_package()} tar xf #{stage_device} " <>
-            "-C #{android_beams_dir()}/ --strip-components=1"
+      # Redirect stderr and always exit 0: Android's Toybox tar cannot chown to
+      # macOS UID 501 and exits 1, but the files are extracted correctly.
+      cmd = "run-as #{android_package()} tar xf #{stage_device} -C #{android_beams_dir()}/ 2>/dev/null; true"
       case run_adb(["-s", serial, "shell", cmd]) do
         {:ok, _} -> :ok
         {:error, r} -> throw({:error, "run-as tar failed: #{r}"})
@@ -432,10 +466,10 @@ defmodule MobDev.Deployer do
     dist_port = Keyword.get(opts, :dist_port, 9100)
     run_adb(["-s", serial, "shell", "am", "force-stop", android_package()])
     # Heal SELinux MCS category mismatch before start — APK reinstall changes
-    # the app's category but leaves OTP files with stale labels. chcon copies
-    # the correct context from the app's own files/ directory.
+    # the app's category but leaves OTP files with stale labels.
+    # Read label from cache/ (full s0:cXXX,cYYY) not files/ (bare s0 on Android 15).
     run_adb(["-s", serial, "shell",
-      "chcon -hR $(stat -c %C #{android_app_data()}) #{android_app_data()}/otp"])
+      "chcon -hR $(stat -c %C /data/data/#{android_package()}/cache) #{android_app_data()}/otp"])
     :timer.sleep(300)
     run_adb(["-s", serial, "shell", "am", "start",
              "-n", "#{android_package()}/#{@android_activity}",
@@ -445,7 +479,14 @@ defmodule MobDev.Deployer do
 
   # ── iOS ─────────────────────────────────────────────────────────────────────
 
-  defp deploy_ios(%Device{serial: udid} = device, beam_dirs, opts) do
+  defp deploy_ios(%Device{type: :physical} = device, beam_dirs, opts) do
+    deploy_ios_physical(device, beam_dirs, opts)
+  end
+  defp deploy_ios(device, beam_dirs, opts) do
+    deploy_ios_simulator(device, beam_dirs, opts)
+  end
+
+  defp deploy_ios_simulator(%Device{serial: udid} = device, beam_dirs, opts) do
     restart   = Keyword.get(opts, :restart, true)
     dist_port = Keyword.get(opts, :dist_port, 9100)
 
@@ -486,6 +527,89 @@ defmodule MobDev.Deployer do
       {:ok, device}
     catch
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # Physical iOS deploy: push BEAMs into the app's Documents container via
+  # `xcrun devicectl`. mob_beam.m (MOB_BUNDLE_OTP build) checks
+  # Documents/otp/<app>/ at startup and prefers it over the read-only in-bundle
+  # copy, enabling fast deploys without a full Xcode rebuild.
+  #
+  # The merged staging dir is named <app> so that devicectl's directory-copy
+  # semantics land the files at Documents/otp/<app>/ on device.
+  defp deploy_ios_physical(%Device{serial: udid} = device, beam_dirs, opts) do
+    restart = Keyword.get(opts, :restart, true)
+    bundle  = ios_bundle_id()
+    app     = app_name()
+
+    # Stage all BEAMs (and priv/) into a temp dir named <app>.
+    staging_parent = Path.join(System.tmp_dir!(), "mob_ios_deploy_#{:erlang.unique_integer([:positive])}")
+    staging_dir    = Path.join(staging_parent, app)
+    File.mkdir_p!(staging_dir)
+
+    try do
+      Enum.each(beam_dirs, fn dir ->
+        case System.cmd("cp", ["-r", "#{Path.expand(dir)}/.", staging_dir],
+                        stderr_to_stdout: true) do
+          {_, 0}   -> :ok
+          {out, _} -> throw({:error, "cp failed: #{out}"})
+        end
+      end)
+
+      local_priv = Path.join(File.cwd!(), "priv")
+      if File.dir?(local_priv) do
+        priv_dest = Path.join(staging_dir, "priv")
+        File.mkdir_p!(priv_dest)
+        case System.cmd("cp", ["-r", "#{Path.expand(local_priv)}/.", priv_dest],
+                        stderr_to_stdout: true) do
+          {_, 0}   -> :ok
+          {out, _} -> IO.puts("    (warning: priv copy failed: #{out})")
+        end
+      end
+
+      # devicectl copies the contents of --source into --destination.
+      # To land BEAMs at Documents/otp/<app>/, the destination must include
+      # the app subdirectory explicitly (staging_dir naming alone is not enough).
+      case System.cmd("xcrun", [
+        "devicectl", "device", "copy", "to",
+        "--device", udid,
+        "--domain-type", "appDataContainer",
+        "--domain-identifier", bundle,
+        "--source", staging_dir,
+        "--destination", "Documents/otp/#{app}"
+      ], stderr_to_stdout: true) do
+        {_, 0}   -> :ok
+        {out, _} ->
+          reason =
+            if String.contains?(out, "ContainerLookupErrorDomain") do
+              """
+              App '#{bundle}' is not installed on this device.
+
+              To fix this, you need to build and install the app on the device first.
+              The easiest way is to open the ios/ directory in Xcode and run on device:
+
+                  open ios/*.xcodeproj    (or ios/*.xcworkspace)
+
+              Then select your device in Xcode and press Run (⌘R).
+
+              Alternatively, if you have another app with a different bundle ID already
+              installed on the device, update bundle_id in mob.exs to match it:
+
+                  config :mob_dev, bundle_id: "com.yourcompany.yourapp"
+              """
+            else
+              "devicectl copy failed: #{out}"
+            end
+          throw({:error, reason})
+      end
+
+      if restart, do: IOS.restart_app_physical(udid, bundle)
+
+      {:ok, device}
+    catch
+      {:error, reason} -> {:error, reason}
+    after
+      File.rm_rf!(staging_parent)
     end
   end
 
@@ -559,6 +683,13 @@ defmodule MobDev.Deployer do
     eex_ebin = Path.join(to_string(:code.lib_dir(:eex)), "ebin")
     stdlib_dirs = if File.dir?(eex_ebin), do: [eex_ebin], else: []
 
+    # ssl is a required OTP app (thousand_island lists it as a dependency) but the
+    # iOS and Android OTP builds omit it. ssl is pure Erlang (no NIFs), so host
+    # BEAM files run identically on both targets. For HTTP-only Phoenix at loopback,
+    # ssl starts but no TLS sockets are opened.
+    ssl_ebin = Path.join(to_string(:code.lib_dir(:ssl)), "ebin")
+    ssl_dirs = if File.dir?(ssl_ebin), do: [ssl_ebin], else: []
+
     # crypto is a required OTP app (listed in Ecto's .app) but the iOS and
     # Android OTP builds omit it (no OpenSSL). Compile a minimal shim so
     # ensure_all_started can start it. BEAM bytecode is platform-independent
@@ -568,24 +699,72 @@ defmodule MobDev.Deployer do
       _          -> []
     end
 
-    app_dirs ++ stdlib_dirs ++ shim_dirs
+    app_dirs ++ stdlib_dirs ++ ssl_dirs ++ shim_dirs
   end
 
   # Generates crypto.beam + crypto.app in a temp dir and returns {:ok, dir}.
   # Returns {:error, reason} if erlc is not available.
-  defp generate_crypto_shim do
+  @doc false
+  def generate_crypto_shim do
     dir = Path.join(System.tmp_dir!(), "mob_crypto_shim")
     File.mkdir_p!(dir)
 
     src = Path.join(dir, "crypto.erl")
     File.write!(src, """
     -module(crypto).
-    -export([strong_rand_bytes/1, hash/2, mac/4, mac/3, supports/1]).
+    -export([strong_rand_bytes/1, hash/2, mac/4, mac/3, supports/1, pbkdf2_hmac/5, exor/2]).
+
     strong_rand_bytes(N) -> rand:bytes(N).
+
     hash(_Type, Data) -> erlang:md5(Data).
+
+    %% HMAC-MD5 (ignores hash algorithm) — dev-only shim, no OpenSSL required.
+    mac(hmac, _Alg, Key, Data) -> hmac_md5(Key, Data);
     mac(_Type, _SubType, _Key, _Data) -> <<>>.
+
+    mac(hmac, Key, Data) -> hmac_md5(Key, Data);
     mac(_Type, _Key, _Data) -> <<>>.
+
     supports(_Type) -> [].
+
+    %% PBKDF2-HMAC shim using HMAC-MD5 as PRF. Not cryptographically secure;
+    %% suitable only for local dev on-device where 127.0.0.1 is the only listener.
+    pbkdf2_hmac(_Hash, Password0, Salt0, Iterations, DerivedLen) ->
+        Password = iolist_to_binary(Password0),
+        Salt     = iolist_to_binary(Salt0),
+        Blocks = (DerivedLen + 15) div 16,
+        Derived = iolist_to_binary([pbkdf2_block(Password, Salt, Iterations, I)
+                                    || I <- lists:seq(1, Blocks)]),
+        binary:part(Derived, 0, DerivedLen).
+
+    pbkdf2_block(Password, Salt, Iterations, BlockNum) ->
+        U1 = hmac_md5(Password, <<Salt/binary, BlockNum:32/big>>),
+        pbkdf2_iterate(Password, U1, Iterations - 1, U1).
+
+    pbkdf2_iterate(_Password, _Prev, 0, Acc) -> Acc;
+    pbkdf2_iterate(Password, Prev, N, Acc) ->
+        U = hmac_md5(Password, Prev),
+        pbkdf2_iterate(Password, U, N - 1, xor_bins(Acc, U)).
+
+    hmac_md5(Key0, Data0) ->
+        Key  = iolist_to_binary(Key0),
+        Data = iolist_to_binary(Data0),
+        BS = 64,
+        K = case byte_size(Key) > BS of
+            true  -> erlang:md5(Key);
+            false -> Key
+        end,
+        Pad = binary:copy(<<0>>, BS - byte_size(K)),
+        KPad = <<K/binary, Pad/binary>>,
+        IKey = << <<(X bxor 16#36)>> || <<X>> <= KPad >>,
+        OKey = << <<(X bxor 16#5c)>> || <<X>> <= KPad >>,
+        erlang:md5(<<OKey/binary, (erlang:md5(<<IKey/binary, Data/binary>>))/binary>>).
+
+    xor_bins(A, B) ->
+        list_to_binary([X bxor Y || {X, Y} <- lists:zip(binary_to_list(A), binary_to_list(B))]).
+
+    exor(A, B) ->
+        xor_bins(iolist_to_binary(A), iolist_to_binary(B)).
     """)
 
     app = "{application,crypto,[{modules,[crypto]},{applications,[kernel,stdlib]}," <>
@@ -618,5 +797,6 @@ defmodule MobDev.Deployer do
   defp color(:green),  do: IO.ANSI.green()
   defp color(:yellow), do: IO.ANSI.yellow()
   defp color(:red),    do: IO.ANSI.red()
+  defp color(:cyan),   do: IO.ANSI.cyan()
   defp color(:reset),  do: IO.ANSI.reset()
 end

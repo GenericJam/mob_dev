@@ -142,6 +142,158 @@ defmodule MobDev.EnableTest do
     end
   end
 
+  # ── inject_mob_bridge_element/1 ───────────────────────────────────────────
+
+  describe "inject_mob_bridge_element/1" do
+    test "inserts hidden div immediately after opening body tag" do
+      input = """
+      <html>
+        <body class="bg-white">
+          <%= @inner_content %>
+        </body>
+      </html>
+      """
+      result = Enable.inject_mob_bridge_element(input)
+      assert String.contains?(result, ~s(id="mob-bridge"))
+      assert String.contains?(result, ~s(phx-hook="MobHook"))
+      assert String.contains?(result, ~s(style="display:none"))
+      # must appear right after <body ...>
+      body_pos  = :binary.match(result, "<body") |> elem(0)
+      bridge_pos = :binary.match(result, "mob-bridge") |> elem(0)
+      content_pos = :binary.match(result, "@inner_content") |> elem(0)
+      assert bridge_pos > body_pos
+      assert bridge_pos < content_pos
+    end
+
+    test "preserves existing body attributes" do
+      input = ~s(<body class="bg-white antialiased" data-theme="dark">\n</body>)
+      result = Enable.inject_mob_bridge_element(input)
+      assert String.contains?(result, ~s(class="bg-white antialiased"))
+      assert String.contains?(result, ~s(data-theme="dark"))
+      assert String.contains?(result, "mob-bridge")
+    end
+
+    test "is idempotent when mob-bridge already present" do
+      input = """
+      <body>
+        <div id="mob-bridge" phx-hook="MobHook" style="display:none"></div>
+        <%= @inner_content %>
+      </body>
+      """
+      result = Enable.inject_mob_bridge_element(input)
+      assert result == input
+      # should not have a second mob-bridge
+      assert length(:binary.matches(result, "mob-bridge")) == 1
+    end
+
+    test "works with a body tag with no attributes" do
+      input = "<body>\n<%= @inner_content %>\n</body>"
+      result = Enable.inject_mob_bridge_element(input)
+      assert String.contains?(result, "mob-bridge")
+    end
+  end
+
+  # ── find_root_html/2 ──────────────────────────────────────────────────────
+
+  describe "find_root_html/2" do
+    test "finds Phoenix 1.7+ path" do
+      dir = System.tmp_dir!() |> Path.join("mob_enable_test_#{:erlang.unique_integer([:positive])}")
+      File.rm_rf!(dir)
+      path = Path.join([dir, "lib", "my_app_web", "components", "layouts", "root.html.heex"])
+      File.mkdir_p!(Path.dirname(path))
+      File.write!(path, "<html></html>")
+      assert Enable.find_root_html(dir, "my_app") == path
+    end
+
+    test "finds pre-1.7 path when 1.7+ path absent" do
+      dir = System.tmp_dir!() |> Path.join("mob_enable_test_#{:erlang.unique_integer([:positive])}")
+      File.rm_rf!(dir)
+      path = Path.join([dir, "lib", "my_app_web", "templates", "layout", "root.html.heex"])
+      File.mkdir_p!(Path.dirname(path))
+      File.write!(path, "<html></html>")
+      assert Enable.find_root_html(dir, "my_app") == path
+    end
+
+    test "returns nil when neither path exists" do
+      dir = System.tmp_dir!() |> Path.join("mob_enable_test_#{:erlang.unique_integer([:positive])}")
+      File.rm_rf!(dir)
+      File.mkdir_p!(dir)
+      assert Enable.find_root_html(dir, "my_app") == nil
+    end
+
+    test "prefers 1.7+ path when both exist" do
+      dir = System.tmp_dir!() |> Path.join("mob_enable_test_#{:erlang.unique_integer([:positive])}")
+      File.rm_rf!(dir)
+      new_path = Path.join([dir, "lib", "my_app_web", "components", "layouts", "root.html.heex"])
+      old_path = Path.join([dir, "lib", "my_app_web", "templates", "layout", "root.html.heex"])
+      File.mkdir_p!(Path.dirname(new_path))
+      File.mkdir_p!(Path.dirname(old_path))
+      File.write!(new_path, "new")
+      File.write!(old_path, "old")
+      assert Enable.find_root_html(dir, "my_app") == new_path
+    end
+  end
+
+  # ── inject_android_network_security_config/1 ─────────────────────────────
+
+  describe "inject_android_network_security_config/1" do
+    test "adds networkSecurityConfig attribute to <application> tag" do
+      input = """
+      <manifest>
+          <application
+              android:label="MyApp"
+              android:theme="@style/AppTheme">
+          </application>
+      </manifest>
+      """
+      result = Enable.inject_android_network_security_config(input)
+      assert String.contains?(result, ~s(android:networkSecurityConfig="@xml/network_security_config"))
+      assert String.contains?(result, "android:label=\"MyApp\"")
+    end
+
+    test "is idempotent when networkSecurityConfig already present" do
+      input = """
+      <manifest>
+          <application
+              android:networkSecurityConfig="@xml/network_security_config"
+              android:label="MyApp">
+          </application>
+      </manifest>
+      """
+      result = Enable.inject_android_network_security_config(input)
+      assert result == input
+      assert length(:binary.matches(result, "networkSecurityConfig")) == 1
+    end
+
+    test "only patches the first <application> tag" do
+      input = "<application>\n<application>"
+      result = Enable.inject_android_network_security_config(input)
+      assert length(:binary.matches(result, "networkSecurityConfig")) == 1
+    end
+  end
+
+  # ── network_security_config_xml/0 ────────────────────────────────────────
+
+  describe "network_security_config_xml/0" do
+    test "permits cleartext for 127.0.0.1" do
+      xml = Enable.network_security_config_xml()
+      assert String.contains?(xml, "127.0.0.1")
+      assert String.contains?(xml, "cleartextTrafficPermitted=\"true\"")
+    end
+
+    test "permits cleartext for localhost" do
+      xml = Enable.network_security_config_xml()
+      assert String.contains?(xml, "localhost")
+    end
+
+    test "is valid XML (has header and root element)" do
+      xml = Enable.network_security_config_xml()
+      assert String.starts_with?(String.trim(xml), "<?xml")
+      assert String.contains?(xml, "<network-security-config>")
+      assert String.contains?(xml, "</network-security-config>")
+    end
+  end
+
   # ── helpers ───────────────────────────────────────────────────────────────
 
   defp write_tmp_mix_exs(content) do

@@ -9,13 +9,18 @@ defmodule MobDev.OtpDownloader do
   @release_tag "otp-#{@otp_hash}"
   @base_url    "https://github.com/GenericJam/mob/releases/download/#{@release_tag}"
 
-  @android_name "otp-android-#{@otp_hash}"
-  @ios_sim_name "otp-ios-sim-#{@otp_hash}"
+  @android_name      "otp-android-#{@otp_hash}"
+  @android_arm32_name "otp-android-arm32-#{@otp_hash}"
+  @ios_sim_name      "otp-ios-sim-#{@otp_hash}"
+  @ios_device_name   "otp-ios-device-#{@otp_hash}"
 
   @doc "Ensures the Android OTP release is cached. Returns {:ok, path} or {:error, reason}."
-  @spec ensure_android() :: {:ok, String.t()} | {:error, term()}
-  def ensure_android do
-    ensure(@android_name, "#{@android_name}.tar.gz")
+  @spec ensure_android(String.t()) :: {:ok, String.t()} | {:error, term()}
+  def ensure_android(abi \\ "arm64-v8a") do
+    case abi do
+      "armeabi-v7a" -> ensure(@android_arm32_name, "#{@android_arm32_name}.tar.gz")
+      _             -> ensure(@android_name, "#{@android_name}.tar.gz")
+    end
   end
 
   @doc "Ensures the iOS simulator OTP release is cached. Returns {:ok, path} or {:error, reason}."
@@ -24,13 +29,28 @@ defmodule MobDev.OtpDownloader do
     ensure(@ios_sim_name, "#{@ios_sim_name}.tar.gz")
   end
 
+  @doc "Ensures the iOS device OTP release is cached. Returns {:ok, path} or {:error, reason}."
+  @spec ensure_ios_device() :: {:ok, String.t()} | {:error, term()}
+  def ensure_ios_device do
+    ensure(@ios_device_name, "#{@ios_device_name}.tar.gz")
+  end
+
   @doc "Returns the cached Android OTP directory path (may not exist yet)."
-  @spec android_otp_dir() :: String.t()
-  def android_otp_dir, do: cache_dir(@android_name)
+  @spec android_otp_dir(String.t()) :: String.t()
+  def android_otp_dir(abi \\ "arm64-v8a") do
+    case abi do
+      "armeabi-v7a" -> cache_dir(@android_arm32_name)
+      _             -> cache_dir(@android_name)
+    end
+  end
 
   @doc "Returns the cached iOS simulator OTP directory path (may not exist yet)."
   @spec ios_sim_otp_dir() :: String.t()
   def ios_sim_otp_dir, do: cache_dir(@ios_sim_name)
+
+  @doc "Returns the cached iOS device OTP directory path (may not exist yet)."
+  @spec ios_device_otp_dir() :: String.t()
+  def ios_device_otp_dir, do: cache_dir(@ios_device_name)
 
   # ── Private ──────────────────────────────────────────────────────────────────
 

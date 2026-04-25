@@ -11,7 +11,7 @@ defmodule MobDev.Connector do
   defp bundle_id,       do: MobDev.Config.bundle_id()
   defp android_package, do: bundle_id()
   defp ios_bundle_id,   do: bundle_id()
-  @connect_timeout  10_000   # ms to wait for node to appear
+  @connect_timeout  25_000   # ms to wait for node to appear
   @connect_interval 500      # ms between polls
 
   @doc """
@@ -38,6 +38,10 @@ defmodule MobDev.Connector do
 
       # Set up tunnels (assigns dist_port per device)
       {tunneled, failed_tunnel} = setup_tunnels(devices)
+
+      # Kill any stale simulator processes from previous sessions. A lingering
+      # BEAM holds its EPMD slot, blocking new instances from registering.
+      kill_stale_simulator_apps(tunneled)
 
       # Restart apps so they pick up tunnels and use correct node names
       Enum.each(tunneled, &restart_app/1)
@@ -97,9 +101,42 @@ defmodule MobDev.Connector do
     end)
   end
 
+  # Kill any app processes running in simulators that are NOT in our current
+  # tunneled set. A stale BEAM from a previous session holds its EPMD slot,
+  # blocking new instances of the same node name from registering.
+  defp kill_stale_simulator_apps(tunneled) do
+    active = tunneled
+      |> Enum.filter(&(&1.platform == :ios && &1.type == :simulator))
+      |> Enum.map(& &1.serial)
+      |> MapSet.new()
+
+    case System.cmd("pgrep", ["-fl", bundle_id()], stderr_to_stdout: true) do
+      {output, 0} ->
+        output
+        |> String.split("\n", trim: true)
+        |> Enum.each(fn line ->
+          with [pid_str | _] <- String.split(line, " ", parts: 2),
+               {pid, ""} <- Integer.parse(pid_str),
+               [_, udid] <- Regex.run(~r|/Devices/([0-9A-F-]{36})/|i, line),
+               false <- MapSet.member?(active, udid) do
+            System.cmd("kill", ["-9", to_string(pid)], stderr_to_stdout: true)
+          end
+        end)
+      _ -> :ok
+    end
+    :timer.sleep(300)
+  end
+
   defp restart_app(%Device{platform: :android, serial: serial, dist_port: port}) do
     IO.write("  Restarting app on #{serial}...")
     Android.restart_app(serial, android_package(), @android_activity, dist_port: port)
+    IO.puts(" done")
+  end
+
+  defp restart_app(%Device{platform: :ios, type: :physical, serial: udid}) do
+    IO.write("  Restarting app on #{udid}...")
+    # mob_beam.m discovers the USB link-local IP via getifaddrs() — no env vars needed.
+    IOS.restart_app_physical(udid, ios_bundle_id())
     IO.puts(" done")
   end
 
@@ -154,10 +191,16 @@ defmodule MobDev.Connector do
   end
 
   defp wait_for_nodes(devices, cookie) do
-    devices
-    |> Enum.reduce({[], []}, fn device, {ok, fail} ->
+    # Start all connection attempts in parallel so slow starters (simulators
+    # that need ~20s to boot their BEAM) don't consume the other devices' budget.
+    # Total wall time = max(individual connect times), not sum.
+    tasks = Enum.map(devices, fn device ->
+      {device, Task.async(fn -> wait_for_node(device.node, cookie, @connect_timeout) end)}
+    end)
+
+    Enum.reduce(tasks, {[], []}, fn {device, task}, {ok, fail} ->
       IO.write("  #{device.node} ...")
-      case wait_for_node(device.node, cookie, @connect_timeout) do
+      case Task.await(task, @connect_timeout + 2_000) do
         :ok ->
           IO.puts("  #{color(:green)}✓#{color(:reset)}")
           {ok ++ [%{device | status: :connected}], fail}

@@ -164,6 +164,55 @@ defmodule MobDev.Discovery.IOS do
   end
 
   @doc """
+  Restarts the app on a physical iOS device via xcrun devicectl.
+  Kills any other user-installed app first (they all share EPMD port 4369 and
+  only one can run at a time), then launches the target app fresh.
+  """
+  @spec restart_app_physical(String.t(), String.t()) :: {String.t(), non_neg_integer()}
+  def restart_app_physical(udid, bundle_id) do
+    kill_other_user_apps_physical(udid, bundle_id)
+
+    # --terminate-existing kills any remaining instance of *this* app atomically.
+    System.cmd("xcrun", ["devicectl", "device", "process", "launch",
+                          "--device", udid,
+                          "--terminate-existing",
+                          bundle_id],
+               stderr_to_stdout: true)
+  end
+
+  # Kill any user-installed app that is not `except_bundle`.
+  # User apps run from /private/var/containers/Bundle/Application/.
+  # All physical-device Mob apps share in-process EPMD on port 4369, so only
+  # one can run at a time. We kill the others before launching to avoid the
+  # EADDRINUSE crash that would otherwise prevent BEAM from starting.
+  defp kill_other_user_apps_physical(udid, except_bundle) do
+    {out, 0} = System.cmd("xcrun", ["devicectl", "device", "info", "processes",
+                                     "--device", udid],
+                           stderr_to_stdout: true)
+
+    out
+    |> String.split("\n")
+    |> Enum.flat_map(fn line ->
+      case Regex.run(~r/^\s*(\d+)\s+(.+Bundle\/Application\/.+\.app\/.+)$/, line) do
+        [_, pid_str, _path] -> [String.to_integer(pid_str)]
+        _                   -> []
+      end
+    end)
+    |> Enum.each(fn pid ->
+      System.cmd("xcrun", ["devicectl", "device", "process", "terminate",
+                            "--device", udid,
+                            "--pid", to_string(pid),
+                            "--kill"],
+                 stderr_to_stdout: true)
+    end)
+
+    _ = except_bundle
+    :ok
+  rescue
+    _ -> :ok
+  end
+
+  @doc """
   Enables the iOS accessibility system for the given simulator (or "booted").
 
   SwiftUI lazily populates its accessibility tree only when an accessibility

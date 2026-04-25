@@ -29,7 +29,21 @@ defmodule Mix.Tasks.Mob.Enable do
     - Generates `lib/<app>/mob_screen.ex` — a `Mob.Screen` that opens a WebView
       at `http://127.0.0.1:PORT/`
     - Injects the `MobHook` LiveView hook into `assets/js/app.js`
+    - Injects a hidden `<div id="mob-bridge" phx-hook="MobHook">` into
+      `root.html.heex` — **this is required for the hook to mount**
     - Updates `mob.exs` with `liveview_port` so `Mob.LiveView.local_url/1` works
+
+  ### Why the hidden div is required
+
+  Phoenix LiveView hooks only execute when a DOM element carrying
+  `phx-hook="MobHook"` exists in the rendered page. Registering `MobHook` in
+  `app.js` is necessary but not sufficient — without a matching DOM element the
+  hook never mounts and `window.mob` is never replaced with the LiveView-backed
+  version. Messages would silently route through the native NIF bridge instead
+  of the LiveView WebSocket, so `handle_event/3` would never fire.
+
+  See `MobDev.Enable` module doc and `guides/liveview.md` for the full
+  two-bridge architecture explanation.
 
   After running:
 
@@ -107,7 +121,9 @@ defmodule Mix.Tasks.Mob.Enable do
   defp enable("liveview", project_dir, app_name) do
     generate_mob_screen(project_dir, app_name)
     inject_mob_hook(project_dir)
+    inject_mob_bridge_element(project_dir, app_name)
     update_mob_exs(project_dir)
+    android_add_liveview_network_config(project_dir)
   end
 
   defp enable("camera", project_dir, _app_name) do
@@ -203,6 +219,30 @@ defmodule Mix.Tasks.Mob.Enable do
     end
   end
 
+  # ── LiveView: inject bridge element into root.html.heex ──────────────────
+
+  defp inject_mob_bridge_element(project_dir, app_name) do
+    path = MobDev.Enable.find_root_html(project_dir, app_name)
+
+    if path do
+      content = File.read!(path)
+
+      if String.contains?(content, "mob-bridge") do
+        Mix.shell().info("  * skip #{path} (mob-bridge already present)")
+      else
+        patched = MobDev.Enable.inject_mob_bridge_element(content)
+        File.write!(path, patched)
+        Mix.shell().info([:green, "  * patch ", :reset, path, " (added mob-bridge element)"])
+      end
+    else
+      Mix.shell().info([:yellow, "  * skip root.html.heex (not found)", :reset])
+      Mix.shell().info("    Add the following manually inside <body> in your root layout:")
+      Mix.shell().info("    " <> MobDev.Enable.mob_bridge_element())
+      Mix.shell().info("    Without this element MobHook never mounts and window.mob")
+      Mix.shell().info("    will not route through LiveView. See guides/liveview.md.")
+    end
+  end
+
   # ── LiveView: update mob.exs ──────────────────────────────────────────────
 
   defp update_mob_exs(project_dir) do
@@ -270,6 +310,40 @@ defmodule Mix.Tasks.Mob.Enable do
   end
 
   # ── Android manifest helpers ──────────────────────────────────────────────
+
+  defp android_add_liveview_network_config(project_dir) do
+    manifest = find_android_manifest(project_dir)
+
+    if manifest do
+      content = File.read!(manifest)
+
+      if String.contains?(content, "networkSecurityConfig") do
+        Mix.shell().info("  * skip #{manifest} (networkSecurityConfig already present)")
+      else
+        patched = MobDev.Enable.inject_android_network_security_config(content)
+        File.write!(manifest, patched)
+        Mix.shell().info([:green, "  * patch ", :reset, manifest,
+                          " (added networkSecurityConfig for cleartext HTTP to 127.0.0.1)"])
+      end
+
+      write_android_network_security_config(project_dir)
+    else
+      Mix.shell().info("  * skip Android (AndroidManifest.xml not found)")
+    end
+  end
+
+  defp write_android_network_security_config(project_dir) do
+    xml_dir = Path.join([project_dir, "android", "app", "src", "main", "res", "xml"])
+    path = Path.join(xml_dir, "network_security_config.xml")
+
+    if File.exists?(path) do
+      Mix.shell().info("  * skip #{path} (already exists)")
+    else
+      File.mkdir_p!(xml_dir)
+      File.write!(path, MobDev.Enable.network_security_config_xml())
+      Mix.shell().info([:green, "  * create ", :reset, path])
+    end
+  end
 
   defp android_add_permission(project_dir, permission) do
     manifest = find_android_manifest(project_dir)

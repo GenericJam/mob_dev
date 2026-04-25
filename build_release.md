@@ -31,14 +31,46 @@ releases/
     start_sasl.boot
 ```
 
-### Android (`otp-android-<hash>.tar.gz`)
+### Android arm64 (`otp-android-<hash>.tar.gz`)
 
 Built from a full cross-compiled OTP release for `aarch64-unknown-linux-android`.
-Does **not** need headers or extra static libs — those stay on the build machine.
+Needs the same extra static libs and headers as iOS (see Step 2).
 
 The ERTS helper binaries (`erl_child_setup`, `inet_gethost`, `epmd`) must be
 in `erts-<vsn>/bin/`; `mob_dev` copies them into the APK as `lib*.so` (required
 for SELinux `execve` permission on Android).
+
+### Android arm32 (`otp-android-arm32-<hash>.tar.gz`)
+
+Built from a full cross-compiled OTP release for `arm-unknown-linux-androideabi`
+(armeabi-v7a). Same structure as arm64. Required for 32-bit-only devices (e.g.
+Motorola E 2020).
+
+`asn1rt_nif.a` must be compiled separately — it is not emitted by the OTP build
+system for arm32. Build it with:
+
+```bash
+NDK=~/Library/Android/sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/darwin-x86_64/bin
+OTP_SRC=~/code/otp
+
+$NDK/armv7a-linux-androideabi21-clang \
+  -march=armv7-a -mfloat-abi=softfp -mthumb \
+  -fvisibility=hidden -fno-common -fno-strict-aliasing \
+  -fstack-protector-strong -O2 \
+  -I "$OTP_SRC/erts/arm-unknown-linux-androideabi" \
+  -I "$OTP_SRC/erts/include/arm-unknown-linux-androideabi" \
+  -I "$OTP_SRC/erts/emulator/beam" \
+  -I "$OTP_SRC/erts/include" \
+  -DHAVE_CONFIG_H \
+  -DSTATIC_ERLANG_NIF_LIBNAME=asn1rt_nif \
+  -c "$OTP_SRC/lib/asn1/c_src/asn1_erl_nif.c" \
+  -o /tmp/asn1rt_nif_arm32.o
+
+$NDK/llvm-ar rc /tmp/asn1rt_nif_arm32.a /tmp/asn1rt_nif_arm32.o
+$NDK/llvm-ranlib /tmp/asn1rt_nif_arm32.a
+```
+
+Then include it in the tarball at `erts-<vsn>/lib/asn1rt_nif.a` (see Step 2b).
 
 ### iOS simulator (`otp-ios-sim-<hash>.tar.gz`)
 

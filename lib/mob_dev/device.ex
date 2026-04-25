@@ -14,6 +14,7 @@ defmodule MobDev.Device do
     :type,        # :emulator | :simulator | :physical
     :node,        # :"mob_demo_android@127.0.0.1"
     :dist_port,   # 9100
+    :host_ip,     # Mac's USB interface IP for physical iOS (e.g. "169.254.108.90")
     :status,      # :discovered | :unauthorized | :tunneled | :connected | :error
     :error        # error message string if status == :error
   ]
@@ -40,17 +41,26 @@ defmodule MobDev.Device do
 
   @doc """
   Returns the Erlang node name atom for a device.
-  Uses 127.0.0.1 for USB-connected devices (tunneled).
 
-  Node names are `<app>_<platform>@127.0.0.1` where `<app>` is the OTP
-  application name from the current Mix project (e.g. `my_app_android@127.0.0.1`).
-
-  Multi-device support (where unique per-device names are needed) is future work
-  and will require the app to receive its node name dynamically via intent extras.
+  - Android (emulator/physical): `<app>_android@127.0.0.1`
+  - iOS simulator: `<app>_ios_<8-char-udid>@127.0.0.1` (unique per simulator,
+    matches the name mob_beam.m builds using SIMULATOR_UDID)
+  - iOS physical: `<app>_ios@<device-usb-ip>` (mob_beam.m finds IP via getifaddrs)
   """
   @spec node_name(t()) :: atom()
   def node_name(%__MODULE__{platform: :android}) do
     :"#{app_name()}_android@127.0.0.1"
+  end
+
+  def node_name(%__MODULE__{platform: :ios, host_ip: ip}) when is_binary(ip) do
+    :"#{app_name()}_ios@#{ip}"
+  end
+
+  def node_name(%__MODULE__{platform: :ios, type: :simulator, serial: serial}) do
+    # SIMULATOR_UDID has the same value as the UDID we discover from simctl.
+    # mob_beam.m takes the first 8 hex chars (lowercase) for the unique suffix.
+    short = serial |> String.replace("-", "") |> String.slice(0, 8) |> String.downcase()
+    :"#{app_name()}_ios_#{short}@127.0.0.1"
   end
 
   def node_name(%__MODULE__{platform: :ios}) do
@@ -58,6 +68,34 @@ defmodule MobDev.Device do
   end
 
   defp app_name, do: Mix.Project.config()[:app]
+
+  @doc """
+  Returns the short ID shown in `mix mob.devices` and accepted by `--device`.
+
+  - Android: the serial as-is (`emulator-5554`, `R5CW3089HVB`)
+  - iOS simulator: first 8 hex chars of the UDID, lowercased (`78354490`) —
+    same prefix used in the node name
+  - iOS physical: full UDID
+  """
+  @spec display_id(t()) :: String.t()
+  def display_id(%__MODULE__{platform: :android, serial: serial}), do: serial
+  def display_id(%__MODULE__{platform: :ios, type: :simulator, serial: serial}) do
+    serial |> String.replace("-", "") |> String.slice(0, 8) |> String.downcase()
+  end
+  def display_id(%__MODULE__{platform: :ios, serial: serial}), do: serial
+
+  @doc """
+  Returns true if `input` identifies this device.
+
+  Matches `display_id/1` or the full serial, case-insensitively. Used by
+  `mix mob.deploy --device <id>` to target a specific device.
+  """
+  @spec match_id?(t(), String.t()) :: boolean()
+  def match_id?(%__MODULE__{} = device, input) when is_binary(input) do
+    normalized = String.downcase(input)
+    String.downcase(display_id(device)) == normalized or
+      String.downcase(device.serial) == normalized
+  end
 
   @doc "Human-readable one-line summary."
   @spec summary(t()) :: String.t()

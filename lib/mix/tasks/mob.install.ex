@@ -90,9 +90,14 @@ defmodule Mix.Tasks.Mob.Install do
   defp download_otp do
     Mix.shell().info("Ensuring OTP releases are cached...")
 
-    case MobDev.OtpDownloader.ensure_android() do
-      {:ok, path}      -> Mix.shell().info([:green, "* Android OTP: #{path}", :reset])
-      {:error, reason} -> Mix.shell().error("Warning: Android OTP download failed: #{reason}")
+    case MobDev.OtpDownloader.ensure_android("arm64-v8a") do
+      {:ok, path}      -> Mix.shell().info([:green, "* Android arm64 OTP: #{path}", :reset])
+      {:error, reason} -> Mix.shell().error("Warning: Android arm64 OTP download failed: #{reason}")
+    end
+
+    case MobDev.OtpDownloader.ensure_android("armeabi-v7a") do
+      {:ok, path}      -> Mix.shell().info([:green, "* Android arm32 OTP: #{path}", :reset])
+      {:error, reason} -> Mix.shell().error("Warning: Android arm32 OTP download failed: #{reason}")
     end
 
     if match?({:unix, :darwin}, :os.type()) do
@@ -200,19 +205,22 @@ defmodule Mix.Tasks.Mob.Install do
     File.write!(path, content)
   end
 
-  defp write_local_properties(project_dir, cfg) do
+  @doc false
+  def write_local_properties(project_dir, cfg) do
     props = Path.join(project_dir, "android/local.properties")
 
     if File.exists?(props) do
       content = File.read!(props)
 
       if String.contains?(content, "/path/to/") do
-        otp_dir = MobDev.OtpDownloader.android_otp_dir()
+        otp_dir      = MobDev.OtpDownloader.android_otp_dir("arm64-v8a")
+        otp_dir_arm32 = MobDev.OtpDownloader.android_otp_dir("armeabi-v7a")
 
         new_content =
           content
-          |> replace_prop("mob.otp_release", otp_dir)
-          |> replace_prop("mob.mob_dir",     cfg[:mob_dir])
+          |> replace_prop("mob.otp_release",      otp_dir)
+          |> replace_prop("mob.otp_release_arm32", otp_dir_arm32)
+          |> replace_prop("mob.mob_dir",           cfg[:mob_dir])
 
         File.write!(props, new_content)
         Mix.shell().info([:green, "* android/local.properties configured", :reset])
@@ -220,10 +228,11 @@ defmodule Mix.Tasks.Mob.Install do
     end
   end
 
-  defp replace_prop(content, key, value) when not is_nil(value) do
+  @doc false
+  def replace_prop(content, key, value) when not is_nil(value) do
     String.replace(content, ~r/^#{Regex.escape(key)}=.*$/m, "#{key}=#{value}")
   end
-  defp replace_prop(content, _key, nil), do: content
+  def replace_prop(content, _key, nil), do: content
 
   # ── Icon setup ────────────────────────────────────────────────────────────────
 

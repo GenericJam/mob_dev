@@ -21,8 +21,9 @@ defmodule Mix.Tasks.Mob.Deploy do
 
   ## Options
 
-    * `--native`      — build native binaries before pushing BEAMs
-    * `--no-restart`  — push BEAMs but don't restart the app
+    * `--native`         — build native binaries before pushing BEAMs
+    * `--no-restart`     — push BEAMs but don't restart the app
+    * `--device <id>`    — target a specific device; use `mix mob.devices` to find IDs
 
   ## Under the hood
 
@@ -55,7 +56,8 @@ defmodule Mix.Tasks.Mob.Deploy do
       xcrun simctl install booted <app>.app
   """
 
-  @switches [native: :boolean, restart: :boolean, android: :boolean, ios: :boolean]
+  @switches [native: :boolean, restart: :boolean, android: :boolean, ios: :boolean,
+             device: :string]
 
   @impl Mix.Task
   def run(args) do
@@ -63,7 +65,16 @@ defmodule Mix.Tasks.Mob.Deploy do
 
     restart   = Keyword.get(opts, :restart, true)
     native    = Keyword.get(opts, :native, false)
+    device_id = opts[:device]
     platforms = resolve_platforms(opts)
+
+    # When no --device is given and we're doing a native iOS build, auto-detect
+    # a connected physical device now so both the native build and the BEAM push
+    # target the same device (not all simulators + the phone).
+    effective_device_id =
+      device_id ||
+        (if native and :ios in platforms,
+           do: MobDev.NativeBuild.detect_physical_ios())
 
     IO.puts("")
 
@@ -77,7 +88,7 @@ defmodule Mix.Tasks.Mob.Deploy do
     IO.puts("\n#{IO.ANSI.cyan()}Deploying to devices...#{IO.ANSI.reset()}\n")
 
     native_ok = if native do
-      MobDev.NativeBuild.build_all(platforms: platforms)
+      MobDev.NativeBuild.build_all(platforms: platforms, device: effective_device_id)
     end
 
     # Skip BEAM push if native build failed — the APK/app bundle isn't installed
@@ -88,7 +99,7 @@ defmodule Mix.Tasks.Mob.Deploy do
       Mix.raise("Native build failed")
     end
 
-    {deployed, failed} = MobDev.Deployer.deploy_all(restart: restart, platforms: platforms, force_fs: native)
+    {deployed, failed} = MobDev.Deployer.deploy_all(restart: restart, platforms: platforms, force_fs: native, device: effective_device_id)
 
     if deployed == [] and failed == [] do
       IO.puts("#{IO.ANSI.yellow()}No devices found.#{IO.ANSI.reset()}")

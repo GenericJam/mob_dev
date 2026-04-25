@@ -72,7 +72,7 @@ defmodule MobDev.Discovery.Android do
   defp getprop(serial, prop) do
     case run_adb(["-s", serial, "shell", "getprop", prop]) do
       {:ok, val} -> String.trim(val)
-      _          -> nil
+      _ -> nil
     end
   end
 
@@ -96,8 +96,11 @@ defmodule MobDev.Discovery.Android do
   Runs `chcon` before `am start` to heal any SELinux MCS category mismatch on OTP
   files. This mismatch happens when the APK is reinstalled and Android assigns a new
   MCS category to the package — files pushed via `adb push` retain the old label and
-  the BEAM can't access them. The `chcon` copies the correct context from the app's
-  own `files/` directory (which `installd` always keeps up to date).
+  the BEAM can't access them.
+
+  The label is copied from the app's `cache/` directory, not `files/`. On Android 15
+  the `files/` directory itself lacks MCS categories (`s0` only), whereas `cache/`
+  always carries the full `s0:cXXX,cYYY` label that installd assigns to the package.
 
   The `chcon` requires root (`adb root`) — it's silently skipped on non-rooted devices
   where the OTP files were pushed with the correct label to begin with.
@@ -107,12 +110,11 @@ defmodule MobDev.Discovery.Android do
   def restart_app(serial, package, activity, opts \\ []) do
     dist_port = Keyword.get(opts, :dist_port, 9100)
     app_data  = "/data/data/#{package}/files"
+    app_cache = "/data/data/#{package}/cache"
     run_adb(["-s", serial, "shell", "am", "force-stop", package])
-    # Heal SELinux MCS category mismatch: APK reinstall changes the app's assigned
-    # category but leaves OTP files with the old label. This causes the BEAM to crash
-    # on launch (symlink creation fails with EACCES, then erl_start aborts).
+    # Read MCS label from cache/ (has full s0:cXXX,cYYY) not files/ (bare s0 on Android 15).
     run_adb(["-s", serial, "shell",
-             "chcon -hR $(stat -c %C #{app_data}) #{app_data}/otp"])
+             "chcon -hR $(stat -c %C #{app_cache}) #{app_data}/otp"])
     :timer.sleep(300)
     run_adb(["-s", serial, "shell", "am", "start",
              "-n", "#{package}/#{activity}",
@@ -120,9 +122,11 @@ defmodule MobDev.Discovery.Android do
   end
 
   defp run_adb(args) do
-    case System.cmd("adb", args, stderr_to_stdout: true) do
-      {output, 0} -> {:ok, output}
-      {output, _} -> {:error, output}
+    cmd = Enum.join(["adb" | args], " ")
+    case System.cmd("sh", ["-c", "timeout 8 #{cmd}"], stderr_to_stdout: true) do
+      {output, 0}   -> {:ok, output}
+      {_output, 124} -> {:error, "adb timed out"}
+      {output, _}   -> {:error, output}
     end
   end
 end
