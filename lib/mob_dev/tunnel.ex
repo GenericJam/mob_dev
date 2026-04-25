@@ -52,6 +52,7 @@ defmodule MobDev.Tunnel do
       {:ok, device_ip} ->
         d = %{device | dist_port: dist_port, host_ip: device_ip, status: :tunneled}
         {:ok, %{d | node: Device.node_name(d)}}
+
       {:error, reason} ->
         {:error, "device usb ip: #{reason}"}
     end
@@ -89,9 +90,10 @@ defmodule MobDev.Tunnel do
   # Kill any stale iproxy process on a given port. Called from teardown to clean
   # up any lingering iproxy from previous sessions (before the direct USB approach).
   defp kill_iproxy(port) do
-    System.cmd("sh", ["-c",
-      "lsof -ti tcp:#{port} | xargs kill -9 2>/dev/null; true"],
-      stderr_to_stdout: true)
+    System.cmd("sh", ["-c", "lsof -ti tcp:#{port} | xargs kill -9 2>/dev/null; true"],
+      stderr_to_stdout: true
+    )
+
     :ok
   end
 
@@ -108,11 +110,16 @@ defmodule MobDev.Tunnel do
   # from Mac at that IP — no iproxy needed.
   defp device_usb_ip do
     case read_resolved_usb_ip() do
-      {:ok, _} = ok -> ok
+      {:ok, _} = ok ->
+        ok
+
       {:error, _} ->
         ping_incomplete_usb_ips()
+
         case read_resolved_usb_ip() do
-          {:ok, _} = ok -> ok
+          {:ok, _} = ok ->
+            ok
+
           {:error, _} ->
             {:error, "no device USB IP in ARP — is the device connected via USB?"}
         end
@@ -122,7 +129,8 @@ defmodule MobDev.Tunnel do
   defp read_resolved_usb_ip do
     case System.cmd("arp", ["-a"], stderr_to_stdout: true) do
       {out, 0} ->
-        ip = out
+        ip =
+          out
           |> String.split("\n")
           |> Enum.find_value(fn line ->
             # Match resolved entries: kevins-iphone.local (169.254.x.x) at aa:bb:cc... on enN
@@ -131,10 +139,12 @@ defmodule MobDev.Tunnel do
               _ -> nil
             end
           end)
+
         case ip do
           nil -> {:error, :not_found}
-          ip  -> {:ok, ip}
+          ip -> {:ok, ip}
         end
+
       _ ->
         {:error, :arp_failed}
     end
@@ -149,10 +159,12 @@ defmodule MobDev.Tunnel do
           case Regex.run(~r/\((169\.254\.\d+\.\d+)\) at \(incomplete\)/, line) do
             [_, ip] ->
               System.cmd("ping", ["-c", "1", "-t", "2", ip], stderr_to_stdout: true)
+
             _ ->
               :ok
           end
         end)
+
       _ ->
         :ok
     end
@@ -162,8 +174,7 @@ defmodule MobDev.Tunnel do
 
   # adb reverse tcp:remote tcp:local  (device→Mac)
   defp reverse(serial, device_port, local_port) do
-    case run_adb(["-s", serial, "reverse",
-                  "tcp:#{device_port}", "tcp:#{local_port}"]) do
+    case run_adb(["-s", serial, "reverse", "tcp:#{device_port}", "tcp:#{local_port}"]) do
       {:ok, _} -> :ok
       {:error, reason} -> {:error, "reverse #{device_port}: #{reason}"}
     end
@@ -171,8 +182,7 @@ defmodule MobDev.Tunnel do
 
   # adb forward tcp:local tcp:remote  (Mac→device)
   defp forward(serial, local_port, device_port) do
-    case run_adb(["-s", serial, "forward",
-                  "tcp:#{local_port}", "tcp:#{device_port}"]) do
+    case run_adb(["-s", serial, "forward", "tcp:#{local_port}", "tcp:#{device_port}"]) do
       {:ok, _} -> :ok
       {:error, reason} -> {:error, "forward #{local_port}→#{device_port}: #{reason}"}
     end
@@ -180,10 +190,11 @@ defmodule MobDev.Tunnel do
 
   defp run_adb(args) do
     cmd = Enum.join(["adb" | args], " ")
+
     case System.cmd("sh", ["-c", "timeout 8 #{cmd}"], stderr_to_stdout: true) do
-      {output, 0}   -> {:ok, String.trim(output)}
+      {output, 0} -> {:ok, String.trim(output)}
       {_output, 124} -> {:error, "adb timed out"}
-      {output, _}   -> {:error, String.trim(output)}
+      {output, _} -> {:error, String.trim(output)}
     end
   end
 end

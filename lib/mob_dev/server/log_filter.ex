@@ -30,28 +30,32 @@ defmodule MobDev.Server.LogFilter do
   # ── Device filter ─────────────────────────────────────────────────────────────
 
   @spec by_device([line()], filter()) :: [line()]
-  def by_device(lines, :all),    do: lines
-  def by_device(lines, :app),    do: Enum.filter(lines, & &1.mob)
-  def by_device(lines, serial),  do: Enum.filter(lines, &(&1.serial == serial))
+  def by_device(lines, :all), do: lines
+  def by_device(lines, :app), do: Enum.filter(lines, & &1.mob)
+  def by_device(lines, serial), do: Enum.filter(lines, &(&1.serial == serial))
 
   @spec by_device?(line(), filter()) :: boolean()
-  def by_device?(_, :all),      do: true
-  def by_device?(line, :app),   do: line.mob
+  def by_device?(_, :all), do: true
+  def by_device?(line, :app), do: line.mob
   def by_device?(line, serial), do: line.serial == serial
 
   # ── Text filter ───────────────────────────────────────────────────────────────
 
   @spec by_text([line()], String.t()) :: [line()]
-  def by_text(lines, ""),   do: lines
+  def by_text(lines, ""), do: lines
   def by_text(lines, text), do: Enum.filter(lines, &by_text?(&1, text))
 
   @spec by_text?(line(), String.t()) :: boolean()
   def by_text?(_, ""), do: true
+
   def by_text?(line, text) do
     terms = text |> String.split(",") |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
+
     case terms do
-      [] -> true
-      _  ->
+      [] ->
+        true
+
+      _ ->
         haystack = String.downcase((line.message || "") <> " " <> (line.raw || ""))
         Enum.any?(terms, &String.contains?(haystack, String.downcase(&1)))
     end

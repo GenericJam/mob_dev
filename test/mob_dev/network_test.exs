@@ -27,9 +27,9 @@ defmodule MobDev.NetworkTest do
     end
 
     test "matches 172.16.x.x through 172.31.x.x" do
-      assert Network.first_lan_ip([{172, 16, 0, 1}])  == {172, 16, 0, 1}
-      assert Network.first_lan_ip([{172, 31, 0, 1}])  == {172, 31, 0, 1}
-      assert Network.first_lan_ip([{172, 20, 5, 1}])  == {172, 20, 5, 1}
+      assert Network.first_lan_ip([{172, 16, 0, 1}]) == {172, 16, 0, 1}
+      assert Network.first_lan_ip([{172, 31, 0, 1}]) == {172, 31, 0, 1}
+      assert Network.first_lan_ip([{172, 20, 5, 1}]) == {172, 20, 5, 1}
     end
 
     test "does not match 172.15.x.x (just below private range)" do

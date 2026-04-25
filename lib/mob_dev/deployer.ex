@@ -30,18 +30,19 @@ defmodule MobDev.Deployer do
 
   @android_activity ".MainActivity"
 
-  defp app_name,          do: Mix.Project.config()[:app] |> to_string()
-  defp bundle_id,         do: MobDev.Config.bundle_id()
-  defp android_package,   do: bundle_id()
-  defp android_app_data,  do: "/data/data/#{android_package()}/files"
+  defp app_name, do: Mix.Project.config()[:app] |> to_string()
+  defp bundle_id, do: MobDev.Config.bundle_id()
+  defp android_package, do: bundle_id()
+  defp android_app_data, do: "/data/data/#{android_package()}/files"
   defp android_beams_dir, do: "#{android_app_data()}/otp/#{app_name()}"
-  defp ios_bundle_id,     do: bundle_id()
+  defp ios_bundle_id, do: bundle_id()
+
   defp ios_beams_dir do
     # mob_beam.m hardcodes /tmp/otp-ios-sim as OTP_ROOT.
     # If that directory exists (manually set up or from a prior native deploy),
     # deploy beams there so the running BEAM picks them up immediately.
     # Fall back to the cache dir otherwise (e.g. fresh machine before first --native).
-    tmp_path   = Path.join("/tmp/otp-ios-sim", app_name())
+    tmp_path = Path.join("/tmp/otp-ios-sim", app_name())
     cache_path = Path.join(MobDev.OtpDownloader.ios_sim_otp_dir(), app_name())
     if File.dir?("/tmp/otp-ios-sim"), do: tmp_path, else: cache_path
   end
@@ -52,17 +53,19 @@ defmodule MobDev.Deployer do
   """
   @spec deploy_all(keyword()) :: {[Device.t()], [Device.t()]}
   def deploy_all(opts \\ []) do
-    restart   = Keyword.get(opts, :restart, true)
+    restart = Keyword.get(opts, :restart, true)
     platforms = Keyword.get(opts, :platforms, [:android, :ios])
-    force_fs  = Keyword.get(opts, :force_fs, false)
+    force_fs = Keyword.get(opts, :force_fs, false)
     device_id = Keyword.get(opts, :device, nil)
     beam_dirs = collect_beam_dirs()
 
-    android = if :android in platforms,
-                do: Android.list_devices() |> Enum.reject(&(&1.status == :unauthorized)),
-                else: []
-    ios     = if :ios in platforms, do: IOS.list_devices(), else: []
-    all     = filter_by_device_id(android ++ ios, device_id)
+    android =
+      if :android in platforms,
+        do: Android.list_devices() |> Enum.reject(&(&1.status == :unauthorized)),
+        else: []
+
+    ios = if :ios in platforms, do: IOS.list_devices(), else: []
+    all = filter_by_device_id(android ++ ios, device_id)
 
     if all == [] do
       IO.puts("  #{color(:yellow)}No devices found.#{color(:reset)}")
@@ -77,36 +80,45 @@ defmodule MobDev.Deployer do
       # after a native build/install where the old BEAM process is dead.
       dist_nodes = if force_fs, do: [], else: connect_dist(all)
 
-      results = all |> Enum.with_index() |> Enum.map(fn {device, idx} ->
-        IO.write("  #{device.name || device.serial}  →  pushing...")
-        dist_port = Tunnel.dist_port(idx)
-        node      = Device.node_name(device)
+      results =
+        all
+        |> Enum.with_index()
+        |> Enum.map(fn {device, idx} ->
+          IO.write("  #{device.name || device.serial}  →  pushing...")
+          dist_port = Tunnel.dist_port(idx)
+          node = Device.node_name(device)
 
-        {method, result} =
-          if node in dist_nodes do
-            {:dist, push_via_dist(node, device)}
-          else
-            fallback = case device.platform do
-              :android -> deploy_android(device, beam_dirs, restart: restart, dist_port: dist_port)
-              :ios     -> deploy_ios(device, beam_dirs, restart: restart, dist_port: dist_port)
+          {method, result} =
+            if node in dist_nodes do
+              {:dist, push_via_dist(node, device)}
+            else
+              fallback =
+                case device.platform do
+                  :android ->
+                    deploy_android(device, beam_dirs, restart: restart, dist_port: dist_port)
+
+                  :ios ->
+                    deploy_ios(device, beam_dirs, restart: restart, dist_port: dist_port)
+                end
+
+              {:adb, fallback}
             end
-            {:adb, fallback}
-          end
 
-        case result do
-          {:ok, d} ->
-            suffix = if method == :dist, do: " (dist, no restart)", else: ""
-            IO.puts(" #{color(:green)}✓#{suffix}#{color(:reset)}")
-            {:ok, d}
-          {:error, reason} ->
-            IO.puts(" #{color(:red)}✗#{color(:reset)}")
-            IO.puts("    #{color(:red)}#{reason}#{color(:reset)}")
-            {:error, %{device | status: :error, error: reason}}
-        end
-      end)
+          case result do
+            {:ok, d} ->
+              suffix = if method == :dist, do: " (dist, no restart)", else: ""
+              IO.puts(" #{color(:green)}✓#{suffix}#{color(:reset)}")
+              {:ok, d}
+
+            {:error, reason} ->
+              IO.puts(" #{color(:red)}✗#{color(:reset)}")
+              IO.puts("    #{color(:red)}#{reason}#{color(:reset)}")
+              {:error, %{device | status: :error, error: reason}}
+          end
+        end)
 
       deployed = for {:ok, d} <- results, do: d
-      failed   = for {:error, d} <- results, do: d
+      failed = for {:error, d} <- results, do: d
       {deployed, failed}
     end
   end
@@ -114,12 +126,18 @@ defmodule MobDev.Deployer do
   # ── Device filtering ─────────────────────────────────────────────────────────
 
   defp filter_by_device_id(devices, nil), do: devices
+
   defp filter_by_device_id(devices, id) do
     case Enum.filter(devices, &Device.match_id?(&1, id)) do
       [] ->
         IO.puts("  #{color(:red)}No device matched \"#{id}\".#{color(:reset)}")
-        IO.puts("  Run #{color(:cyan)}mix mob.devices#{color(:reset)} to see available device IDs.")
+
+        IO.puts(
+          "  Run #{color(:cyan)}mix mob.devices#{color(:reset)} to see available device IDs."
+        )
+
         []
+
       matched ->
         matched
     end
@@ -128,15 +146,18 @@ defmodule MobDev.Deployer do
   # ── Android ─────────────────────────────────────────────────────────────────
 
   defp deploy_android(%Device{serial: serial} = device, beam_dirs, opts) do
-    restart   = Keyword.get(opts, :restart, true)
+    restart = Keyword.get(opts, :restart, true)
     dist_port = Keyword.get(opts, :dist_port, 9100)
-    pkg       = android_package()
+    pkg = android_package()
 
-    {pm_out, _} = System.cmd("adb", ["-s", serial, "shell", "pm", "list", "packages", pkg],
-                              stderr_to_stdout: true)
+    {pm_out, _} =
+      System.cmd("adb", ["-s", serial, "shell", "pm", "list", "packages", pkg],
+        stderr_to_stdout: true
+      )
 
     if not String.contains?(pm_out, "package:#{pkg}") do
-      {:error, "#{pkg} is not installed on #{device.name || serial} — skipping (ABI mismatch or missing install)"}
+      {:error,
+       "#{pkg} is not installed on #{device.name || serial} — skipping (ABI mismatch or missing install)"}
     else
       case push_beams_android(serial, beam_dirs) do
         :ok ->
@@ -144,6 +165,7 @@ defmodule MobDev.Deployer do
           setup_app_priv_android(serial)
           if restart, do: restart_android(serial, dist_port: dist_port)
           {:ok, device}
+
         {:error, reason} ->
           {:error, reason}
       end
@@ -160,14 +182,14 @@ defmodule MobDev.Deployer do
     with vsn when is_binary(vsn) <- exqlite_version(),
          exqlite_ebin when exqlite_ebin != nil <-
            Path.wildcard("_build/dev/lib/exqlite/ebin") |> List.first() do
-
-      app_data    = android_app_data()
+      app_data = android_app_data()
       exqlite_lib = "#{app_data}/otp/lib/exqlite-#{vsn}"
 
-      rooted? = case run_adb(["-s", serial, "root"]) do
-        {:ok, out} -> out =~ "restarting" or out =~ "already running as root"
-        _          -> false
-      end
+      rooted? =
+        case run_adb(["-s", serial, "root"]) do
+          {:ok, out} -> out =~ "restarting" or out =~ "already running as root"
+          _ -> false
+        end
 
       if rooted? do
         pkg = android_package()
@@ -176,14 +198,20 @@ defmodule MobDev.Deployer do
         run_adb(["-s", serial, "push", "#{Path.expand(exqlite_ebin)}/.", "#{exqlite_lib}/ebin/"])
         # Read label from cache/ (has full s0:cXXX,cYYY MCS categories on Android 15),
         # not files/ which carries a bare s0 label.
-        run_adb(["-s", serial, "shell",
-          "chcon -hR $(stat -c %C /data/data/#{pkg}/cache) #{app_data}/otp/lib/exqlite-#{vsn}"])
+        run_adb([
+          "-s",
+          serial,
+          "shell",
+          "chcon -hR $(stat -c %C /data/data/#{pkg}/cache) #{app_data}/otp/lib/exqlite-#{vsn}"
+        ])
+
         create_exqlite_nif_symlink(serial, exqlite_lib, :rooted)
       else
         push_exqlite_runas(serial, exqlite_ebin, exqlite_lib)
       end
     else
-      _ -> :ok  # exqlite not present or version unknown — skip silently
+      # exqlite not present or version unknown — skip silently
+      _ -> :ok
     end
   end
 
@@ -217,13 +245,15 @@ defmodule MobDev.Deployer do
   # directories (r-x for other) while keeping files at their pushed permissions.
   defp setup_app_priv_android(serial) do
     local_priv = Path.join(File.cwd!(), "priv")
+
     if File.dir?(local_priv) do
       device_priv = "#{android_beams_dir()}/priv"
 
-      rooted? = case run_adb(["-s", serial, "root"]) do
-        {:ok, out} -> out =~ "restarting" or out =~ "already running as root"
-        _          -> false
-      end
+      rooted? =
+        case run_adb(["-s", serial, "root"]) do
+          {:ok, out} -> out =~ "restarting" or out =~ "already running as root"
+          _ -> false
+        end
 
       if rooted? do
         :timer.sleep(600)
@@ -235,12 +265,17 @@ defmodule MobDev.Deployer do
         run_adb(["-s", serial, "shell", "chmod -R 755 #{device_priv}"])
         # Fix SELinux MCS categories so the app can actually open the files.
         # Read label from cache/ (full s0:cXXX,cYYY) not files/ (bare s0 on Android 15).
-        run_adb(["-s", serial, "shell",
-          "chcon -hR $(stat -c %C /data/data/#{android_package()}/cache) #{android_beams_dir()}"])
+        run_adb([
+          "-s",
+          serial,
+          "shell",
+          "chcon -hR $(stat -c %C /data/data/#{android_package()}/cache) #{android_beams_dir()}"
+        ])
       else
         push_priv_android_runas(serial, local_priv, device_priv)
       end
     end
+
     :ok
   end
 
@@ -249,31 +284,34 @@ defmodule MobDev.Deployer do
   # owned by the app user (u0_a0) so no chmod is needed — the app can read its
   # own files without any extra permission fixup.
   defp push_priv_android_runas(serial, local_priv, device_priv) do
-    stage_local  = Path.join(System.tmp_dir!(), "mob_priv_#{serial}.tar")
+    stage_local = Path.join(System.tmp_dir!(), "mob_priv_#{serial}.tar")
     stage_device = "/data/local/tmp/mob_priv.tar"
 
     try do
       # Tar with priv/ as the top-level entry; extract relative to beams_dir so
       # the result lands at {beams_dir}/priv/repo/migrations/... etc.
-      case System.cmd("tar", ["cf", stage_local, "-C", Path.dirname(local_priv),
-                               Path.basename(local_priv)],
-                      env: [{"COPYFILE_DISABLE", "1"}],
-                      stderr_to_stdout: true) do
-        {_, 0}   -> :ok
+      case System.cmd(
+             "tar",
+             ["cf", stage_local, "-C", Path.dirname(local_priv), Path.basename(local_priv)],
+             env: [{"COPYFILE_DISABLE", "1"}],
+             stderr_to_stdout: true
+           ) do
+        {_, 0} -> :ok
         {out, _} -> throw({:error, "tar create failed: #{out}"})
       end
 
       case run_adb(["-s", serial, "push", stage_local, stage_device]) do
-        {:ok, _}    -> :ok
+        {:ok, _} -> :ok
         {:error, r} -> throw({:error, "adb push failed: #{r}"})
       end
 
-      run_adb(["-s", serial, "shell",
-               "run-as #{android_package()} mkdir -p #{device_priv}"])
+      run_adb(["-s", serial, "shell", "run-as #{android_package()} mkdir -p #{device_priv}"])
 
-      cmd = "run-as #{android_package()} tar xf #{stage_device} -C #{android_beams_dir()} 2>/dev/null; true"
+      cmd =
+        "run-as #{android_package()} tar xf #{stage_device} -C #{android_beams_dir()} 2>/dev/null; true"
+
       case run_adb(["-s", serial, "shell", cmd]) do
-        {:ok, _}    -> :ok
+        {:ok, _} -> :ok
         {:error, r} -> throw({:error, "run-as tar failed: #{r}"})
       end
 
@@ -287,21 +325,24 @@ defmodule MobDev.Deployer do
   end
 
   defp push_exqlite_runas(serial, exqlite_ebin, exqlite_lib) do
-    stage_local  = Path.join(System.tmp_dir!(), "mob_exqlite_#{serial}.tar")
+    stage_local = Path.join(System.tmp_dir!(), "mob_exqlite_#{serial}.tar")
     stage_device = "/data/local/tmp/mob_exqlite.tar"
-    tmp          = Path.join(System.tmp_dir!(), "mob_exqlite_stage_#{serial}")
+    tmp = Path.join(System.tmp_dir!(), "mob_exqlite_stage_#{serial}")
 
     try do
       File.rm_rf!(tmp)
       File.mkdir_p!(Path.join(tmp, "ebin"))
       File.mkdir_p!(Path.join(tmp, "priv"))
+
       System.cmd("cp", ["-r", "#{exqlite_ebin}/.", Path.join(tmp, "ebin")],
-                 stderr_to_stdout: true)
+        stderr_to_stdout: true
+      )
 
       # Tar with ebin/ and priv/ as top-level entries; extract to exqlite_lib/.
       case System.cmd("tar", ["cf", stage_local, "-C", tmp, "."],
-                      env: [{"COPYFILE_DISABLE", "1"}],
-                      stderr_to_stdout: true) do
+             env: [{"COPYFILE_DISABLE", "1"}],
+             stderr_to_stdout: true
+           ) do
         {_, 0} -> :ok
         {out, _} -> throw({:error, "tar create failed: #{out}"})
       end
@@ -311,8 +352,10 @@ defmodule MobDev.Deployer do
         {:error, r} -> throw({:error, "adb push failed: #{r}"})
       end
 
-      cmd = "run-as #{android_package()} mkdir -p #{exqlite_lib}/ebin #{exqlite_lib}/priv && " <>
-            "run-as #{android_package()} tar xf #{stage_device} -C #{exqlite_lib}/ 2>/dev/null; true"
+      cmd =
+        "run-as #{android_package()} mkdir -p #{exqlite_lib}/ebin #{exqlite_lib}/priv && " <>
+          "run-as #{android_package()} tar xf #{stage_device} -C #{exqlite_lib}/ 2>/dev/null; true"
+
       case run_adb(["-s", serial, "shell", cmd]) do
         {:ok, _} -> :ok
         {:error, r} -> throw({:error, "run-as tar failed: #{r}"})
@@ -341,15 +384,16 @@ defmodule MobDev.Deployer do
         apk_path = path_out |> String.trim() |> String.replace_prefix("package:", "")
         native_lib_dir = apk_path |> Path.dirname() |> Path.join("lib/arm64")
         nif_target = "#{native_lib_dir}/libsqlite3_nif.so"
-        nif_link   = "#{exqlite_lib}/priv/sqlite3_nif.so"
+        nif_link = "#{exqlite_lib}/priv/sqlite3_nif.so"
 
-        cmd = case mode do
-          :runas  -> "run-as #{android_package()} ln -sf #{nif_target} #{nif_link}"
-          :rooted -> "ln -sf #{nif_target} #{nif_link}"
-        end
+        cmd =
+          case mode do
+            :runas -> "run-as #{android_package()} ln -sf #{nif_target} #{nif_link}"
+            :rooted -> "ln -sf #{nif_target} #{nif_link}"
+          end
 
         case run_adb(["-s", serial, "shell", cmd]) do
-          {:ok, _}    -> :ok
+          {:ok, _} -> :ok
           {:error, e} -> IO.puts("    (warning: exqlite NIF symlink failed: #{e})")
         end
 
@@ -374,9 +418,13 @@ defmodule MobDev.Deployer do
                   [_, vsn] -> vsn
                   _ -> nil
                 end
-              _ -> nil
+
+              _ ->
+                nil
             end
-          [] -> nil
+
+          [] ->
+            nil
         end
     end
   end
@@ -385,26 +433,34 @@ defmodule MobDev.Deployer do
     # Try adb root first (works on emulators and eng builds).
     # Check the output text — non-rooted devices return exit 0 with
     # "cannot run as root in production builds".
-    rooted? = case run_adb(["-s", serial, "root"]) do
-      {:ok, out} -> out =~ "restarting" or out =~ "already running as root"
-      _          -> false
-    end
+    rooted? =
+      case run_adb(["-s", serial, "root"]) do
+        {:ok, out} -> out =~ "restarting" or out =~ "already running as root"
+        _ -> false
+      end
 
     if rooted? do
       :timer.sleep(600)
       run_adb(["-s", serial, "shell", "mkdir -p #{android_beams_dir()}"])
-      result = Enum.reduce_while(beam_dirs, :ok, fn dir, _ ->
-        case run_adb(["-s", serial, "push", "#{Path.expand(dir)}/.",
-                      "#{android_beams_dir()}/"]) do
-          {:ok, _}        -> {:cont, :ok}
-          {:error, reason} -> {:halt, {:error, "push failed: #{reason}"}}
-        end
-      end)
+
+      result =
+        Enum.reduce_while(beam_dirs, :ok, fn dir, _ ->
+          case run_adb(["-s", serial, "push", "#{Path.expand(dir)}/.", "#{android_beams_dir()}/"]) do
+            {:ok, _} -> {:cont, :ok}
+            {:error, reason} -> {:halt, {:error, "push failed: #{reason}"}}
+          end
+        end)
+
       # Fix SELinux MCS categories on pushed files. adb push (as root) labels
       # files with root's categories; restorecon only fixes the type, not MCS.
       # Read label from cache/ (full s0:cXXX,cYYY) not files/ (bare s0 on Android 15).
-      run_adb(["-s", serial, "shell",
-        "chcon -hR $(stat -c %C /data/data/#{android_package()}/cache) #{android_app_data()}/otp"])
+      run_adb([
+        "-s",
+        serial,
+        "shell",
+        "chcon -hR $(stat -c %C /data/data/#{android_package()}/cache) #{android_app_data()}/otp"
+      ])
+
       result
     else
       # Fall back to run-as tar (non-rooted physical devices).
@@ -431,8 +487,9 @@ defmodule MobDev.Deployer do
       # COPYFILE_DISABLE=1 prevents macOS from adding ._<file> AppleDouble
       # sidecars into the archive.
       case System.cmd("tar", ["cf", stage_local, "-C", tmp, "."],
-                      env: [{"COPYFILE_DISABLE", "1"}],
-                      stderr_to_stdout: true) do
+             env: [{"COPYFILE_DISABLE", "1"}],
+             stderr_to_stdout: true
+           ) do
         {_, 0} -> :ok
         {out, _} -> throw({:error, "tar create failed: #{out}"})
       end
@@ -442,12 +499,18 @@ defmodule MobDev.Deployer do
         {:error, r} -> throw({:error, "adb push failed: #{r}"})
       end
 
-      run_adb(["-s", serial, "shell",
-               "run-as #{android_package()} mkdir -p #{android_beams_dir()}"])
+      run_adb([
+        "-s",
+        serial,
+        "shell",
+        "run-as #{android_package()} mkdir -p #{android_beams_dir()}"
+      ])
 
       # Redirect stderr and always exit 0: Android's Toybox tar cannot chown to
       # macOS UID 501 and exits 1, but the files are extracted correctly.
-      cmd = "run-as #{android_package()} tar xf #{stage_device} -C #{android_beams_dir()}/ 2>/dev/null; true"
+      cmd =
+        "run-as #{android_package()} tar xf #{stage_device} -C #{android_beams_dir()}/ 2>/dev/null; true"
+
       case run_adb(["-s", serial, "shell", cmd]) do
         {:ok, _} -> :ok
         {:error, r} -> throw({:error, "run-as tar failed: #{r}"})
@@ -468,12 +531,28 @@ defmodule MobDev.Deployer do
     # Heal SELinux MCS category mismatch before start — APK reinstall changes
     # the app's category but leaves OTP files with stale labels.
     # Read label from cache/ (full s0:cXXX,cYYY) not files/ (bare s0 on Android 15).
-    run_adb(["-s", serial, "shell",
-      "chcon -hR $(stat -c %C /data/data/#{android_package()}/cache) #{android_app_data()}/otp"])
+    run_adb([
+      "-s",
+      serial,
+      "shell",
+      "chcon -hR $(stat -c %C /data/data/#{android_package()}/cache) #{android_app_data()}/otp"
+    ])
+
     :timer.sleep(300)
-    run_adb(["-s", serial, "shell", "am", "start",
-             "-n", "#{android_package()}/#{@android_activity}",
-             "--ei", "mob_dist_port", to_string(dist_port)])
+
+    run_adb([
+      "-s",
+      serial,
+      "shell",
+      "am",
+      "start",
+      "-n",
+      "#{android_package()}/#{@android_activity}",
+      "--ei",
+      "mob_dist_port",
+      to_string(dist_port)
+    ])
+
     :ok
   end
 
@@ -482,18 +561,21 @@ defmodule MobDev.Deployer do
   defp deploy_ios(%Device{type: :physical} = device, beam_dirs, opts) do
     deploy_ios_physical(device, beam_dirs, opts)
   end
+
   defp deploy_ios(device, beam_dirs, opts) do
     deploy_ios_simulator(device, beam_dirs, opts)
   end
 
   defp deploy_ios_simulator(%Device{serial: udid} = device, beam_dirs, opts) do
-    restart   = Keyword.get(opts, :restart, true)
+    restart = Keyword.get(opts, :restart, true)
     dist_port = Keyword.get(opts, :dist_port, 9100)
 
     try do
       File.mkdir_p!(ios_beams_dir())
+
       Enum.each(beam_dirs, fn dir ->
         abs_dir = Path.expand(dir)
+
         case System.cmd("cp", ["-r", "#{abs_dir}/.", ios_beams_dir()], stderr_to_stdout: true) do
           {_, 0} -> :ok
           {out, _} -> throw({:error, "cp failed: #{out}"})
@@ -508,12 +590,15 @@ defmodule MobDev.Deployer do
       # No chmod is needed: cp on macOS preserves source permissions and the
       # simulator shares the Mac filesystem (no SELinux, no ownership mismatch).
       local_priv = Path.join(File.cwd!(), "priv")
+
       if File.dir?(local_priv) do
         priv_dest = Path.join(ios_beams_dir(), "priv")
         File.mkdir_p!(priv_dest)
+
         case System.cmd("cp", ["-r", "#{Path.expand(local_priv)}/.", priv_dest],
-                        stderr_to_stdout: true) do
-          {_, 0}   -> :ok
+               stderr_to_stdout: true
+             ) do
+          {_, 0} -> :ok
           {out, _} -> IO.puts("    (warning: iOS priv push failed: #{out})")
         end
       end
@@ -539,30 +624,36 @@ defmodule MobDev.Deployer do
   # semantics land the files at Documents/otp/<app>/ on device.
   defp deploy_ios_physical(%Device{serial: udid} = device, beam_dirs, opts) do
     restart = Keyword.get(opts, :restart, true)
-    bundle  = ios_bundle_id()
-    app     = app_name()
+    bundle = ios_bundle_id()
+    app = app_name()
 
     # Stage all BEAMs (and priv/) into a temp dir named <app>.
-    staging_parent = Path.join(System.tmp_dir!(), "mob_ios_deploy_#{:erlang.unique_integer([:positive])}")
-    staging_dir    = Path.join(staging_parent, app)
+    staging_parent =
+      Path.join(System.tmp_dir!(), "mob_ios_deploy_#{:erlang.unique_integer([:positive])}")
+
+    staging_dir = Path.join(staging_parent, app)
     File.mkdir_p!(staging_dir)
 
     try do
       Enum.each(beam_dirs, fn dir ->
         case System.cmd("cp", ["-r", "#{Path.expand(dir)}/.", staging_dir],
-                        stderr_to_stdout: true) do
-          {_, 0}   -> :ok
+               stderr_to_stdout: true
+             ) do
+          {_, 0} -> :ok
           {out, _} -> throw({:error, "cp failed: #{out}"})
         end
       end)
 
       local_priv = Path.join(File.cwd!(), "priv")
+
       if File.dir?(local_priv) do
         priv_dest = Path.join(staging_dir, "priv")
         File.mkdir_p!(priv_dest)
+
         case System.cmd("cp", ["-r", "#{Path.expand(local_priv)}/.", priv_dest],
-                        stderr_to_stdout: true) do
-          {_, 0}   -> :ok
+               stderr_to_stdout: true
+             ) do
+          {_, 0} -> :ok
           {out, _} -> IO.puts("    (warning: priv copy failed: #{out})")
         end
       end
@@ -570,15 +661,27 @@ defmodule MobDev.Deployer do
       # devicectl copies the contents of --source into --destination.
       # To land BEAMs at Documents/otp/<app>/, the destination must include
       # the app subdirectory explicitly (staging_dir naming alone is not enough).
-      case System.cmd("xcrun", [
-        "devicectl", "device", "copy", "to",
-        "--device", udid,
-        "--domain-type", "appDataContainer",
-        "--domain-identifier", bundle,
-        "--source", staging_dir,
-        "--destination", "Documents/otp/#{app}"
-      ], stderr_to_stdout: true) do
-        {_, 0}   -> :ok
+      case System.cmd(
+             "xcrun",
+             [
+               "devicectl",
+               "device",
+               "copy",
+               "to",
+               "--device",
+               udid,
+               "--domain-type",
+               "appDataContainer",
+               "--domain-identifier",
+               bundle,
+               "--source",
+               staging_dir,
+               "--destination",
+               "Documents/otp/#{app}"
+             ], stderr_to_stdout: true) do
+        {_, 0} ->
+          :ok
+
         {out, _} ->
           reason =
             if String.contains?(out, "ContainerLookupErrorDomain") do
@@ -600,6 +703,7 @@ defmodule MobDev.Deployer do
             else
               "devicectl copy failed: #{out}"
             end
+
           throw({:error, reason})
       end
 
@@ -619,6 +723,7 @@ defmodule MobDev.Deployer do
   # connected node atoms. Devices that don't respond are left for the adb fallback.
   defp connect_dist(devices) do
     ensure_local_dist()
+
     Enum.flat_map(devices, fn device ->
       node = Device.node_name(device)
       Node.set_cookie(node, @cookie)
@@ -659,6 +764,7 @@ defmodule MobDev.Deployer do
   # code WAS pushed correctly, the screen just had no trigger to repaint.
   defp push_via_dist(node, device) do
     {_pushed, failed} = HotPush.push_all([node])
+
     if failed == [] do
       # Best-effort: ignored if no screen is currently registered (nav edge
       # cases, app in background, etc.).
@@ -694,10 +800,11 @@ defmodule MobDev.Deployer do
     # Android OTP builds omit it (no OpenSSL). Compile a minimal shim so
     # ensure_all_started can start it. BEAM bytecode is platform-independent
     # so erlc on the Mac produces a .beam that runs on both targets.
-    shim_dirs = case generate_crypto_shim() do
-      {:ok, dir} -> [dir]
-      _          -> []
-    end
+    shim_dirs =
+      case generate_crypto_shim() do
+        {:ok, dir} -> [dir]
+        _ -> []
+      end
 
     app_dirs ++ stdlib_dirs ++ ssl_dirs ++ shim_dirs
   end
@@ -710,6 +817,7 @@ defmodule MobDev.Deployer do
     File.mkdir_p!(dir)
 
     src = Path.join(dir, "crypto.erl")
+
     File.write!(src, """
     -module(crypto).
     -export([strong_rand_bytes/1, hash/2, mac/4, mac/3, supports/1, pbkdf2_hmac/5, exor/2]).
@@ -767,9 +875,11 @@ defmodule MobDev.Deployer do
         xor_bins(iolist_to_binary(A), iolist_to_binary(B)).
     """)
 
-    app = "{application,crypto,[{modules,[crypto]},{applications,[kernel,stdlib]}," <>
-          "{description,\"Crypto shim for mobile (no OpenSSL; uses rand:bytes)\"}," <>
-          "{registered,[]},{vsn,\"5.6\"}]}."
+    app =
+      "{application,crypto,[{modules,[crypto]},{applications,[kernel,stdlib]}," <>
+        "{description,\"Crypto shim for mobile (no OpenSSL; uses rand:bytes)\"}," <>
+        "{registered,[]},{vsn,\"5.6\"}]}."
+
     File.write!(Path.join(dir, "crypto.app"), app)
 
     case System.cmd("erlc", ["-o", dir, src], stderr_to_stdout: true) do
@@ -794,9 +904,9 @@ defmodule MobDev.Deployer do
     end
   end
 
-  defp color(:green),  do: IO.ANSI.green()
+  defp color(:green), do: IO.ANSI.green()
   defp color(:yellow), do: IO.ANSI.yellow()
-  defp color(:red),    do: IO.ANSI.red()
-  defp color(:cyan),   do: IO.ANSI.cyan()
-  defp color(:reset),  do: IO.ANSI.reset()
+  defp color(:red), do: IO.ANSI.red()
+  defp color(:cyan), do: IO.ANSI.cyan()
+  defp color(:reset), do: IO.ANSI.reset()
 end

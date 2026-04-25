@@ -17,11 +17,13 @@ defmodule MobDev.Server.WatchWorker do
 
   alias MobDev.HotPush
 
-  @pubsub    MobDev.PubSub
-  @topic     "watch"
-  @cookie    :mob_secret
-  @interval  500    # ms between source polls
-  @debounce  300    # ms to wait after first change before compiling
+  @pubsub MobDev.PubSub
+  @topic "watch"
+  @cookie :mob_secret
+  # ms between source polls
+  @interval 500
+  # ms to wait after first change before compiling
+  @debounce 300
 
   # ── Public API ──────────────────────────────────────────────────────────────
 
@@ -52,10 +54,10 @@ defmodule MobDev.Server.WatchWorker do
   end
 
   def handle_call(:start, _from, state) do
-    nodes   = connect_nodes()
+    nodes = connect_nodes()
     sources = snapshot_sources()
-    timer   = schedule_tick()
-    state   = %{state | watching: true, sources: sources, nodes: nodes, timer: timer}
+    timer = schedule_tick()
+    state = %{state | watching: true, sources: sources, nodes: nodes, timer: timer}
     broadcast({:watch_status, :watching})
     Logger.info("WatchWorker: started, #{length(nodes)} node(s) connected")
     {:reply, :ok, state}
@@ -100,9 +102,9 @@ defmodule MobDev.Server.WatchWorker do
           push_info = %{
             pushed: pushed,
             failed: failed,
-            nodes:  nodes,
-            files:  Enum.map(changed, &Path.relative_to_cwd/1),
-            at:     DateTime.utc_now()
+            nodes: nodes,
+            files: Enum.map(changed, &Path.relative_to_cwd/1),
+            at: DateTime.utc_now()
           }
 
           if pushed > 0 or failed != [] do
@@ -131,7 +133,7 @@ defmodule MobDev.Server.WatchWorker do
 
   defp reconnect(nodes) do
     alive = Enum.filter(nodes, &(Node.connect(&1) == true))
-    new   = connect_nodes()
+    new = connect_nodes()
     Enum.uniq(alive ++ new)
   end
 
@@ -143,10 +145,12 @@ defmodule MobDev.Server.WatchWorker do
   defp snapshot_sources do
     Path.wildcard("lib/**/*.ex")
     |> Map.new(fn path ->
-      mtime = case File.stat(path, time: :posix) do
-        {:ok, %{mtime: t}} -> t
-        _ -> 0
-      end
+      mtime =
+        case File.stat(path, time: :posix) do
+          {:ok, %{mtime: t}} -> t
+          _ -> 0
+        end
+
       {path, mtime}
     end)
   end

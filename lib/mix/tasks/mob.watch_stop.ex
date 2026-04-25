@@ -26,17 +26,24 @@ defmodule Mix.Tasks.Mob.WatchStop do
     case File.read(pid_file) do
       {:ok, contents} ->
         pid = String.trim(contents)
+
         case System.cmd("kill", [pid], stderr_to_stdout: true) do
           {_, 0} ->
             File.rm(pid_file)
             IO.puts("#{IO.ANSI.green()}mob.watch stopped (pid #{pid})#{IO.ANSI.reset()}")
+
           {out, _} ->
             File.rm(pid_file)
-            IO.puts("#{IO.ANSI.yellow()}kill failed (process may have already exited): #{String.trim(out)}#{IO.ANSI.reset()}")
+
+            IO.puts(
+              "#{IO.ANSI.yellow()}kill failed (process may have already exited): #{String.trim(out)}#{IO.ANSI.reset()}"
+            )
         end
 
       {:error, _} ->
-        IO.puts("#{IO.ANSI.yellow()}mob.watch is not running (no PID file found)#{IO.ANSI.reset()}")
+        IO.puts(
+          "#{IO.ANSI.yellow()}mob.watch is not running (no PID file found)#{IO.ANSI.reset()}"
+        )
     end
   end
 end

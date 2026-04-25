@@ -51,7 +51,10 @@ defmodule MobDev.ConnectorTest do
     test "sets cookie when Node.start succeeds" do
       # Requires distribution — only run with --only integration.
       # Ensures the success path doesn't raise.
-      case Node.start(:"connector_test_#{System.unique_integer([:positive])}@127.0.0.1", :longnames) do
+      case Node.start(
+             :"connector_test_#{System.unique_integer([:positive])}@127.0.0.1",
+             :longnames
+           ) do
         {:ok, _} ->
           Connector.handle_dist_start({:ok, self()}, :test_cookie)
           assert Node.get_cookie() == :test_cookie
@@ -68,9 +71,16 @@ defmodule MobDev.ConnectorTest do
     @tag :integration
     test "sets cookie on already_started" do
       # already_started means distribution is running — cookie update should succeed.
-      case Node.start(:"connector_test2_#{System.unique_integer([:positive])}@127.0.0.1", :longnames) do
+      case Node.start(
+             :"connector_test2_#{System.unique_integer([:positive])}@127.0.0.1",
+             :longnames
+           ) do
         result when result in [{:ok, self()}, {:error, {:already_started, self()}}] ->
-          Connector.handle_dist_start({:error, {:already_started, self()}}, :already_started_cookie)
+          Connector.handle_dist_start(
+            {:error, {:already_started, self()}},
+            :already_started_cookie
+          )
+
           assert Node.get_cookie() == :already_started_cookie
 
         {:error, _} ->

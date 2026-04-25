@@ -110,7 +110,9 @@ defmodule Mix.Tasks.Mob.Gen.LiveScreen do
     screen_module = "#{module_name}.#{name}Screen"
     web_module = "#{module_name}Web"
 
-    live_path = Path.join([project_dir, "lib", "#{app_name}_web", "live", "#{snake_name}_live.ex"])
+    live_path =
+      Path.join([project_dir, "lib", "#{app_name}_web", "live", "#{snake_name}_live.ex"])
+
     screen_path = Path.join([project_dir, "lib", app_name, "screens", "#{snake_name}_screen.ex"])
 
     write_file(live_path, live_view_template(live_module, web_module, name, snake_name))

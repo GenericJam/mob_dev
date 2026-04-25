@@ -66,10 +66,11 @@ defmodule Mix.Tasks.Mob.Connect do
 
   @impl Mix.Task
   def run(args) do
-    {opts, _, _} = OptionParser.parse(args,
-      switches: [iex: :boolean, cookie: :string, name: :string],
-      aliases:  [c: :cookie, n: :name]
-    )
+    {opts, _, _} =
+      OptionParser.parse(args,
+        switches: [iex: :boolean, cookie: :string, name: :string],
+        aliases: [c: :cookie, n: :name]
+      )
 
     no_iex = Keyword.get(opts, :iex, true) == false
     cookie = opts |> Keyword.get(:cookie, "mob_secret") |> String.to_atom()
@@ -93,7 +94,10 @@ defmodule Mix.Tasks.Mob.Connect do
   end
 
   defp start_iex(connected, cookie, local_name) do
-    IO.puts("\n#{IO.ANSI.cyan()}Starting IEx (connected to #{length(connected)} device(s))...#{IO.ANSI.reset()}")
+    IO.puts(
+      "\n#{IO.ANSI.cyan()}Starting IEx (connected to #{length(connected)} device(s))...#{IO.ANSI.reset()}"
+    )
+
     IO.puts("  Node.list()       — see connected nodes")
     IO.puts("  nl(MyModule)      — hot-push code to all nodes")
     IO.puts("")

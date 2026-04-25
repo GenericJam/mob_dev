@@ -8,7 +8,7 @@ defmodule MobDev.Discovery.Android do
   def list_devices do
     case System.find_executable("adb") do
       nil -> []
-      _   -> do_list()
+      _ -> do_list()
     end
   end
 
@@ -19,7 +19,8 @@ defmodule MobDev.Discovery.Android do
         |> parse_devices_output()
         |> Enum.map(&enrich/1)
 
-      {:error, _} -> []
+      {:error, _} ->
+        []
     end
   end
 
@@ -32,7 +33,8 @@ defmodule MobDev.Discovery.Android do
   def parse_devices_output(output) do
     output
     |> String.split("\n")
-    |> Enum.drop(1)  # skip "List of devices attached" header
+    # skip "List of devices attached" header
+    |> Enum.drop(1)
     |> Enum.reject(&(String.trim(&1) == ""))
     |> Enum.map(&parse_device_line/1)
     |> Enum.reject(&is_nil/1)
@@ -47,25 +49,35 @@ defmodule MobDev.Discovery.Android do
       [serial, rest] ->
         cond do
           String.contains?(rest, "unauthorized") ->
-            %Device{platform: :android, serial: serial, status: :unauthorized,
-                    error: "USB debugging not authorized — check device for prompt"}
+            %Device{
+              platform: :android,
+              serial: serial,
+              status: :unauthorized,
+              error: "USB debugging not authorized — check device for prompt"
+            }
+
           String.contains?(rest, "offline") ->
             nil
+
           String.starts_with?(rest, "device") or String.starts_with?(rest, "no permissions") ->
             type = if String.starts_with?(serial, "emulator"), do: :emulator, else: :physical
             %Device{platform: :android, serial: serial, type: type, status: :discovered}
+
           true ->
             nil
         end
-      _ -> nil
+
+      _ ->
+        nil
     end
   end
 
   defp enrich(%Device{status: :unauthorized} = d), do: d
+
   defp enrich(%Device{serial: serial} = d) do
-    name    = getprop(serial, "ro.product.model")
+    name = getprop(serial, "ro.product.model")
     version = getprop(serial, "ro.build.version.release")
-    node    = Device.node_name(d)
+    node = Device.node_name(d)
     %{d | name: name, version: "Android #{version}", node: node}
   end
 
@@ -82,11 +94,18 @@ defmodule MobDev.Discovery.Android do
   """
   @spec developer_mode(String.t()) :: :enabled | :disabled | :unknown
   def developer_mode(serial) do
-    case run_adb(["-s", serial, "shell", "settings", "get", "global",
-                  "development_settings_enabled"]) do
+    case run_adb([
+           "-s",
+           serial,
+           "shell",
+           "settings",
+           "get",
+           "global",
+           "development_settings_enabled"
+         ]) do
       {:ok, "1\n"} -> :enabled
       {:ok, "0\n"} -> :disabled
-      _            -> :unknown
+      _ -> :unknown
     end
   end
 
@@ -109,24 +128,34 @@ defmodule MobDev.Discovery.Android do
           {:ok, String.t()} | {:error, String.t()}
   def restart_app(serial, package, activity, opts \\ []) do
     dist_port = Keyword.get(opts, :dist_port, 9100)
-    app_data  = "/data/data/#{package}/files"
+    app_data = "/data/data/#{package}/files"
     app_cache = "/data/data/#{package}/cache"
     run_adb(["-s", serial, "shell", "am", "force-stop", package])
     # Read MCS label from cache/ (has full s0:cXXX,cYYY) not files/ (bare s0 on Android 15).
-    run_adb(["-s", serial, "shell",
-             "chcon -hR $(stat -c %C #{app_cache}) #{app_data}/otp"])
+    run_adb(["-s", serial, "shell", "chcon -hR $(stat -c %C #{app_cache}) #{app_data}/otp"])
     :timer.sleep(300)
-    run_adb(["-s", serial, "shell", "am", "start",
-             "-n", "#{package}/#{activity}",
-             "--ei", "mob_dist_port", to_string(dist_port)])
+
+    run_adb([
+      "-s",
+      serial,
+      "shell",
+      "am",
+      "start",
+      "-n",
+      "#{package}/#{activity}",
+      "--ei",
+      "mob_dist_port",
+      to_string(dist_port)
+    ])
   end
 
   defp run_adb(args) do
     cmd = Enum.join(["adb" | args], " ")
+
     case System.cmd("sh", ["-c", "timeout 8 #{cmd}"], stderr_to_stdout: true) do
-      {output, 0}   -> {:ok, output}
+      {output, 0} -> {:ok, output}
       {_output, 124} -> {:error, "adb timed out"}
-      {output, _}   -> {:error, output}
+      {output, _} -> {:error, output}
     end
   end
 end

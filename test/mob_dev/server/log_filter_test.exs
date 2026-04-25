@@ -7,14 +7,14 @@ defmodule MobDev.Server.LogFilterTest do
 
   defp line(attrs) do
     %{
-      id:      System.unique_integer([:positive]),
-      serial:  "ABC123",
-      level:   "I",
-      tag:     nil,
+      id: System.unique_integer([:positive]),
+      serial: "ABC123",
+      level: "I",
+      tag: nil,
       message: "hello",
-      raw:     "I/Tag(1): hello",
-      mob:     false,
-      ts:      "12:00:00"
+      raw: "I/Tag(1): hello",
+      mob: false,
+      ts: "12:00:00"
     }
     |> Map.merge(attrs)
   end
@@ -28,8 +28,8 @@ defmodule MobDev.Server.LogFilterTest do
     end
 
     test ":app returns only mob-tagged lines" do
-      mob_line  = line(%{mob: true})
-      sys_line  = line(%{mob: false})
+      mob_line = line(%{mob: true})
+      sys_line = line(%{mob: false})
       assert LogFilter.by_device([mob_line, sys_line], :app) == [mob_line]
     end
 
@@ -56,7 +56,7 @@ defmodule MobDev.Server.LogFilterTest do
     end
 
     test "matches message substring (case-insensitive)" do
-      match    = line(%{message: "Tap me pressed — count is now 1", raw: ""})
+      match = line(%{message: "Tap me pressed — count is now 1", raw: ""})
       no_match = line(%{message: "set_root: pushed node", raw: ""})
       result = LogFilter.by_text([match, no_match], "tap")
       assert result == [match]
@@ -64,9 +64,9 @@ defmodule MobDev.Server.LogFilterTest do
 
     test "match is case-insensitive" do
       l = line(%{message: "[INFO] something happened", raw: ""})
-      assert LogFilter.by_text([l], "info")  == [l]
-      assert LogFilter.by_text([l], "INFO")  == [l]
-      assert LogFilter.by_text([l], "Info")  == [l]
+      assert LogFilter.by_text([l], "info") == [l]
+      assert LogFilter.by_text([l], "INFO") == [l]
+      assert LogFilter.by_text([l], "Info") == [l]
     end
 
     test "matches raw field when message doesn't match" do
@@ -75,7 +75,7 @@ defmodule MobDev.Server.LogFilterTest do
     end
 
     test "comma-separated terms are OR'd" do
-      info_line  = line(%{message: "[info] tap pressed", raw: ""})
+      info_line = line(%{message: "[info] tap pressed", raw: ""})
       error_line = line(%{message: "[error] crash", raw: ""})
       debug_line = line(%{message: "[debug] verbose", raw: ""})
       result = LogFilter.by_text([info_line, error_line, debug_line], "info, error")
@@ -98,7 +98,7 @@ defmodule MobDev.Server.LogFilterTest do
     end
 
     test "filter by log level tag like [info]" do
-      info  = line(%{message: "[info] counter incremented", raw: ""})
+      info = line(%{message: "[info] counter incremented", raw: ""})
       error = line(%{message: "[error] nif failed", raw: ""})
       other = line(%{message: "set_root pushed", raw: ""})
       assert LogFilter.by_text([info, error, other], "[info]") == [info]
@@ -109,9 +109,9 @@ defmodule MobDev.Server.LogFilterTest do
 
   describe "apply/3" do
     test "combines device filter and text filter with AND logic" do
-      a = line(%{serial: "DEV1", mob: true,  message: "tap pressed", raw: ""})
-      b = line(%{serial: "DEV1", mob: true,  message: "set_root",    raw: ""})
-      c = line(%{serial: "DEV2", mob: true,  message: "tap pressed", raw: ""})
+      a = line(%{serial: "DEV1", mob: true, message: "tap pressed", raw: ""})
+      b = line(%{serial: "DEV1", mob: true, message: "set_root", raw: ""})
+      c = line(%{serial: "DEV2", mob: true, message: "tap pressed", raw: ""})
 
       # Device DEV1 AND text "tap"
       assert LogFilter.apply([a, b, c], "DEV1", "tap") == [a]
@@ -123,9 +123,9 @@ defmodule MobDev.Server.LogFilterTest do
     end
 
     test ":app device + text filter" do
-      mob_tap   = line(%{mob: true,  message: "tap",      raw: ""})
-      mob_other = line(%{mob: true,  message: "set_root", raw: ""})
-      sys_tap   = line(%{mob: false, message: "tap",      raw: ""})
+      mob_tap = line(%{mob: true, message: "tap", raw: ""})
+      mob_other = line(%{mob: true, message: "set_root", raw: ""})
+      sys_tap = line(%{mob: false, message: "tap", raw: ""})
       result = LogFilter.apply([mob_tap, mob_other, sys_tap], :app, "tap")
       assert result == [mob_tap]
     end

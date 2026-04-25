@@ -22,23 +22,39 @@ defmodule MobDev.DeployerTest do
 
     test "shim exports pbkdf2_hmac/5" do
       {:ok, dir} = Deployer.generate_crypto_shim()
-      {:ok, {_, chunks}} = :beam_lib.chunks(Path.join(dir, "crypto.beam") |> String.to_charlist(), [:exports])
+
+      {:ok, {_, chunks}} =
+        :beam_lib.chunks(Path.join(dir, "crypto.beam") |> String.to_charlist(), [:exports])
+
       exports = chunks[:exports]
       assert {:pbkdf2_hmac, 5} in exports
     end
 
     test "shim exports exor/2" do
       {:ok, dir} = Deployer.generate_crypto_shim()
-      {:ok, {_, chunks}} = :beam_lib.chunks(Path.join(dir, "crypto.beam") |> String.to_charlist(), [:exports])
+
+      {:ok, {_, chunks}} =
+        :beam_lib.chunks(Path.join(dir, "crypto.beam") |> String.to_charlist(), [:exports])
+
       exports = chunks[:exports]
       assert {:exor, 2} in exports
     end
 
     test "shim exports strong_rand_bytes/1, mac/4, mac/3, hash/2, supports/1" do
       {:ok, dir} = Deployer.generate_crypto_shim()
-      {:ok, {_, chunks}} = :beam_lib.chunks(Path.join(dir, "crypto.beam") |> String.to_charlist(), [:exports])
+
+      {:ok, {_, chunks}} =
+        :beam_lib.chunks(Path.join(dir, "crypto.beam") |> String.to_charlist(), [:exports])
+
       exports = chunks[:exports]
-      for {name, arity} <- [{:strong_rand_bytes, 1}, {:mac, 4}, {:mac, 3}, {:hash, 2}, {:supports, 1}] do
+
+      for {name, arity} <- [
+            {:strong_rand_bytes, 1},
+            {:mac, 4},
+            {:mac, 3},
+            {:hash, 2},
+            {:supports, 1}
+          ] do
         assert {name, arity} in exports, "expected #{name}/#{arity} in exports"
       end
     end

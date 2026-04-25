@@ -57,24 +57,25 @@ defmodule Mix.Tasks.Mob.Server do
     {:ok, _} = Application.ensure_all_started(:phoenix_live_view)
 
     children = [
-      {Phoenix.PubSub,                  name: MobDev.PubSub},
+      {Phoenix.PubSub, name: MobDev.PubSub},
       MobDev.Server.LogBuffer,
       MobDev.Server.ElixirLogBuffer,
       MobDev.Server.Endpoint,
       MobDev.Server.DevicePoller,
       MobDev.Server.LogStreamerSupervisor,
       MobDev.Server.WatchWorker,
-      {Task.Supervisor,                  name: MobDev.Server.TaskSupervisor}
+      {Task.Supervisor, name: MobDev.Server.TaskSupervisor}
     ]
 
-    {:ok, sup} = Supervisor.start_link(children, strategy: :one_for_one, name: MobDev.Server.Supervisor)
+    {:ok, sup} =
+      Supervisor.start_link(children, strategy: :one_for_one, name: MobDev.Server.Supervisor)
 
     # Attach the Elixir logger handler now that PubSub and the buffer are up
     MobDev.Server.ElixirLogger.attach()
 
     local_url = "http://localhost:#{port}"
     IO.puts("")
-    IO.puts("#{IO.ANSI.cyan()}=== Mob Dev Server ===#{ IO.ANSI.reset()}")
+    IO.puts("#{IO.ANSI.cyan()}=== Mob Dev Server ===#{IO.ANSI.reset()}")
     IO.puts("  #{IO.ANSI.green()}#{local_url}#{IO.ANSI.reset()}")
 
     if lan_ip do
@@ -91,10 +92,17 @@ defmodule Mix.Tasks.Mob.Server do
       # Unlink the supervisor from this task process so it survives after run/1 returns.
       # Without this the supervisor exits when the Mix task process exits.
       Process.unlink(sup)
-      IO.puts("  #{IO.ANSI.green()}IEx ready.#{IO.ANSI.reset()} Elixir log output appears in the dashboard → Elixir panel.")
+
+      IO.puts(
+        "  #{IO.ANSI.green()}IEx ready.#{IO.ANSI.reset()} Elixir log output appears in the dashboard → Elixir panel."
+      )
+
       IO.puts("")
     else
-      IO.puts("  Tip: run #{IO.ANSI.cyan()}iex -S mix mob.server#{IO.ANSI.reset()} for an interactive terminal.")
+      IO.puts(
+        "  Tip: run #{IO.ANSI.cyan()}iex -S mix mob.server#{IO.ANSI.reset()} for an interactive terminal."
+      )
+
       IO.puts("  Press Ctrl+C to stop.")
       IO.puts("")
       Process.sleep(:infinity)
@@ -106,9 +114,9 @@ defmodule Mix.Tasks.Mob.Server do
     Application.put_env(:mob_dev, :dashboard_lan_url, lan_url)
 
     Application.put_env(:mob_dev, MobDev.Server.Endpoint,
-      adapter:  Bandit.PhoenixAdapter,
+      adapter: Bandit.PhoenixAdapter,
       http: [ip: {0, 0, 0, 0}, port: port],
-      url:  [host: "localhost", port: port],
+      url: [host: "localhost", port: port],
       server: true,
       live_view: [signing_salt: "mob_dev_server_salt"],
       secret_key_base: String.duplicate("mob_dev_secret_key_base_not_for_production_", 2)
@@ -116,14 +124,16 @@ defmodule Mix.Tasks.Mob.Server do
   end
 
   defp open_browser(url) do
-    cmd = case :os.type() do
-      {:unix, :darwin} -> "open"
-      {:unix, _}       -> "xdg-open"
-      {:win32, _}      -> "start"
-    end
+    cmd =
+      case :os.type() do
+        {:unix, :darwin} -> "open"
+        {:unix, _} -> "xdg-open"
+        {:win32, _} -> "start"
+      end
 
     Task.start(fn ->
-      :timer.sleep(500)   # brief pause so the server is up before the browser hits it
+      # brief pause so the server is up before the browser hits it
+      :timer.sleep(500)
       System.cmd(cmd, [url], stderr_to_stdout: true)
     end)
   end

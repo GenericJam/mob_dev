@@ -45,8 +45,10 @@ defmodule MobDev.IconGeneratorTest do
 
     test "includes common iPhone sizes" do
       sizes = IconGenerator.ios_sizes()
-      assert 120 in sizes   # iPhone App 2x / Spotlight 3x
-      assert 180 in sizes   # iPhone App 3x
+      # iPhone App 2x / Spotlight 3x
+      assert 120 in sizes
+      # iPhone App 3x
+      assert 180 in sizes
     end
 
     test "all values are positive integers" do
@@ -80,6 +82,7 @@ defmodule MobDev.IconGeneratorTest do
     test "writes all Android mipmap buckets", %{tmp: tmp} do
       source = write_test_png(tmp)
       IconGenerator.generate_from_source(source, tmp)
+
       Enum.each(IconGenerator.android_sizes(), fn {bucket, _px} ->
         path = Path.join(tmp, "android/app/src/main/res/#{bucket}/ic_launcher.png")
         assert File.exists?(path), "Missing: #{path}"
@@ -89,6 +92,7 @@ defmodule MobDev.IconGeneratorTest do
     test "writes iOS icons for each size", %{tmp: tmp} do
       source = write_test_png(tmp)
       IconGenerator.generate_from_source(source, tmp)
+
       Enum.each(IconGenerator.ios_sizes(), fn px ->
         path = Path.join(tmp, "ios/Assets.xcassets/AppIcon.appiconset/icon_#{px}.png")
         assert File.exists?(path), "Missing icon_#{px}.png"
@@ -113,10 +117,11 @@ defmodule MobDev.IconGeneratorTest do
     test "Android icons are square (not squashed)", %{tmp: tmp} do
       source = write_test_png(tmp)
       IconGenerator.generate_from_source(source, tmp)
+
       Enum.each(IconGenerator.android_sizes(), fn {bucket, px} ->
         path = Path.join(tmp, "android/app/src/main/res/#{bucket}/ic_launcher.png")
         img = Image.open!(path)
-        assert Image.width(img) == px,  "#{bucket}: width #{Image.width(img)} != #{px}"
+        assert Image.width(img) == px, "#{bucket}: width #{Image.width(img)} != #{px}"
         assert Image.height(img) == px, "#{bucket}: height #{Image.height(img)} != #{px}"
       end)
     end
@@ -124,10 +129,11 @@ defmodule MobDev.IconGeneratorTest do
     test "iOS icons are square (not squashed)", %{tmp: tmp} do
       source = write_test_png(tmp)
       IconGenerator.generate_from_source(source, tmp)
+
       Enum.each(IconGenerator.ios_sizes(), fn px ->
         path = Path.join(tmp, "ios/Assets.xcassets/AppIcon.appiconset/icon_#{px}.png")
         img = Image.open!(path)
-        assert Image.width(img) == px,  "icon_#{px}: width #{Image.width(img)} != #{px}"
+        assert Image.width(img) == px, "icon_#{px}: width #{Image.width(img)} != #{px}"
         assert Image.height(img) == px, "icon_#{px}: height #{Image.height(img)} != #{px}"
       end)
     end

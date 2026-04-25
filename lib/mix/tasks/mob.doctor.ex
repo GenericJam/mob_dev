@@ -275,7 +275,7 @@ defmodule Mix.Tasks.Mob.Doctor do
               major =
                 case Regex.run(~r/version "(\d+)/, version_line, capture: :all_but_first) do
                   [v] -> String.to_integer(v)
-                  _   -> 0
+                  _ -> 0
                 end
 
               cond do

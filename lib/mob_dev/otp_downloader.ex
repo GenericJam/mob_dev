@@ -5,21 +5,21 @@ defmodule MobDev.OtpDownloader do
   Artifacts are cached at `~/.mob/cache/` and reused across projects.
   """
 
-  @otp_hash    "73ba6e0f"
+  @otp_hash "73ba6e0f"
   @release_tag "otp-#{@otp_hash}"
-  @base_url    "https://github.com/GenericJam/mob/releases/download/#{@release_tag}"
+  @base_url "https://github.com/GenericJam/mob/releases/download/#{@release_tag}"
 
-  @android_name      "otp-android-#{@otp_hash}"
+  @android_name "otp-android-#{@otp_hash}"
   @android_arm32_name "otp-android-arm32-#{@otp_hash}"
-  @ios_sim_name      "otp-ios-sim-#{@otp_hash}"
-  @ios_device_name   "otp-ios-device-#{@otp_hash}"
+  @ios_sim_name "otp-ios-sim-#{@otp_hash}"
+  @ios_device_name "otp-ios-device-#{@otp_hash}"
 
   @doc "Ensures the Android OTP release is cached. Returns {:ok, path} or {:error, reason}."
   @spec ensure_android(String.t()) :: {:ok, String.t()} | {:error, term()}
   def ensure_android(abi \\ "arm64-v8a") do
     case abi do
       "armeabi-v7a" -> ensure(@android_arm32_name, "#{@android_arm32_name}.tar.gz")
-      _             -> ensure(@android_name, "#{@android_name}.tar.gz")
+      _ -> ensure(@android_name, "#{@android_name}.tar.gz")
     end
   end
 
@@ -40,7 +40,7 @@ defmodule MobDev.OtpDownloader do
   def android_otp_dir(abi \\ "arm64-v8a") do
     case abi do
       "armeabi-v7a" -> cache_dir(@android_arm32_name)
-      _             -> cache_dir(@android_name)
+      _ -> cache_dir(@android_name)
     end
   end
 
@@ -78,11 +78,12 @@ defmodule MobDev.OtpDownloader do
     base =
       System.get_env("MOB_CACHE_DIR") ||
         Path.join([System.get_env("HOME"), ".mob", "cache"])
+
     Path.join(base, name)
   end
 
   defp download_and_extract(name, tarball, dest_dir) do
-    url      = "#{@base_url}/#{tarball}"
+    url = "#{@base_url}/#{tarball}"
     tmp_file = Path.join(System.tmp_dir!(), tarball)
 
     IO.puts("  Downloading #{name} OTP release...")
@@ -106,8 +107,9 @@ defmodule MobDev.OtpDownloader do
 
   defp download(url, dest) do
     case System.cmd("curl", ["-L", "--fail", "--progress-bar", "-o", dest, url],
-                    stderr_to_stdout: false) do
-      {_, 0}    -> :ok
+           stderr_to_stdout: false
+         ) do
+      {_, 0} -> :ok
       {out, rc} -> {:error, "curl failed (exit #{rc}): #{String.trim(out)}"}
     end
   end
@@ -116,20 +118,23 @@ defmodule MobDev.OtpDownloader do
     File.mkdir_p!(dest_dir)
     # The tarball extracts into a single top-level directory; strip it with --strip-components=1.
     case System.cmd("tar", ["xzf", tarball, "-C", dest_dir, "--strip-components=1"],
-                    stderr_to_stdout: true) do
-      {_, 0}    -> :ok
+           stderr_to_stdout: true
+         ) do
+      {_, 0} -> :ok
       {out, rc} -> {:error, "tar failed (exit #{rc}): #{String.trim(out)}"}
     end
   end
 
   defp verify_erts(dir) do
     case Path.wildcard(Path.join(dir, "erts-*")) do
-      [_ | _] -> :ok
+      [_ | _] ->
+        :ok
+
       [] ->
         {:error,
          "OTP extraction produced no erts-* directory in #{dir}.\n" <>
-         "       The tarball may have an unexpected layout.\n" <>
-         "       Run `mix mob.doctor` for diagnosis, or report at https://github.com/GenericJam/mob/issues"}
+           "       The tarball may have an unexpected layout.\n" <>
+           "       Run `mix mob.doctor` for diagnosis, or report at https://github.com/GenericJam/mob/issues"}
     end
   end
 end

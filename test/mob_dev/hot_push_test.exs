@@ -72,5 +72,4 @@ defmodule MobDev.HotPushTest do
       assert pushed < total_beams
     end
   end
-
 end

@@ -47,10 +47,10 @@ defmodule MobDev.IconGenerator do
   @mob_logo_dir :code.priv_dir(:mob_dev) |> Path.join("mob_logo")
 
   @android_sizes %{
-    "mipmap-mdpi"    => 48,
-    "mipmap-hdpi"    => 72,
-    "mipmap-xhdpi"   => 96,
-    "mipmap-xxhdpi"  => 144,
+    "mipmap-mdpi" => 48,
+    "mipmap-hdpi" => 72,
+    "mipmap-xhdpi" => 96,
+    "mipmap-xxhdpi" => 144,
     "mipmap-xxxhdpi" => 192
   }
 
@@ -86,6 +86,7 @@ defmodule MobDev.IconGenerator do
       Run `mix mob.icon` after adding `{:image, "~> 0.54"}` to your deps to
       replace it with a custom or generated icon.\n
       """)
+
       use_mob_logo(output_dir)
     end
   end
@@ -190,31 +191,31 @@ defmodule MobDev.IconGenerator do
   defp write_ios_contents_json(dest_dir) do
     images =
       [
-        %{idiom: "iphone", scale: "2x", size: "20x20",   px: 40},
-        %{idiom: "iphone", scale: "3x", size: "20x20",   px: 60},
-        %{idiom: "iphone", scale: "2x", size: "29x29",   px: 58},
-        %{idiom: "iphone", scale: "3x", size: "29x29",   px: 87},
-        %{idiom: "iphone", scale: "2x", size: "40x40",   px: 80},
-        %{idiom: "iphone", scale: "3x", size: "40x40",   px: 120},
-        %{idiom: "iphone", scale: "2x", size: "60x60",   px: 120},
-        %{idiom: "iphone", scale: "3x", size: "60x60",   px: 180},
-        %{idiom: "ipad",   scale: "1x", size: "20x20",   px: 20},
-        %{idiom: "ipad",   scale: "2x", size: "20x20",   px: 40},
-        %{idiom: "ipad",   scale: "1x", size: "29x29",   px: 29},
-        %{idiom: "ipad",   scale: "2x", size: "29x29",   px: 58},
-        %{idiom: "ipad",   scale: "1x", size: "40x40",   px: 40},
-        %{idiom: "ipad",   scale: "2x", size: "40x40",   px: 80},
-        %{idiom: "ipad",   scale: "1x", size: "76x76",   px: 76},
-        %{idiom: "ipad",   scale: "2x", size: "76x76",   px: 152},
-        %{idiom: "ipad",   scale: "2x", size: "83.5x83.5", px: 167},
+        %{idiom: "iphone", scale: "2x", size: "20x20", px: 40},
+        %{idiom: "iphone", scale: "3x", size: "20x20", px: 60},
+        %{idiom: "iphone", scale: "2x", size: "29x29", px: 58},
+        %{idiom: "iphone", scale: "3x", size: "29x29", px: 87},
+        %{idiom: "iphone", scale: "2x", size: "40x40", px: 80},
+        %{idiom: "iphone", scale: "3x", size: "40x40", px: 120},
+        %{idiom: "iphone", scale: "2x", size: "60x60", px: 120},
+        %{idiom: "iphone", scale: "3x", size: "60x60", px: 180},
+        %{idiom: "ipad", scale: "1x", size: "20x20", px: 20},
+        %{idiom: "ipad", scale: "2x", size: "20x20", px: 40},
+        %{idiom: "ipad", scale: "1x", size: "29x29", px: 29},
+        %{idiom: "ipad", scale: "2x", size: "29x29", px: 58},
+        %{idiom: "ipad", scale: "1x", size: "40x40", px: 40},
+        %{idiom: "ipad", scale: "2x", size: "40x40", px: 80},
+        %{idiom: "ipad", scale: "1x", size: "76x76", px: 76},
+        %{idiom: "ipad", scale: "2x", size: "76x76", px: 152},
+        %{idiom: "ipad", scale: "2x", size: "83.5x83.5", px: 167},
         %{idiom: "ios-marketing", scale: "1x", size: "1024x1024", px: 1024}
       ]
       |> Enum.map(fn %{idiom: idiom, scale: scale, size: size, px: px} ->
         %{
           "filename" => "icon_#{px}.png",
-          "idiom"    => idiom,
-          "scale"    => scale,
-          "size"     => size
+          "idiom" => idiom,
+          "scale" => scale,
+          "size" => size
         }
       end)
 

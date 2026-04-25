@@ -8,19 +8,19 @@ defmodule MobDev.Server.LogStreamerTest do
       line = "I/MobBeam( 1234): Starting BEAM with module=mob_demo, argc=18"
       result = LogStreamer.parse_line(line, "ZY22K6BSJM")
 
-      assert result.level   == "I"
-      assert result.tag     == "MobBeam"
+      assert result.level == "I"
+      assert result.tag == "MobBeam"
       assert result.message == "Starting BEAM with module=mob_demo, argc=18"
-      assert result.serial  == "ZY22K6BSJM"
-      assert result.mob     == true
+      assert result.serial == "ZY22K6BSJM"
+      assert result.mob == true
     end
 
     test "marks mob tags as mob: true" do
       line = "E/MobNif( 999): enif_get_long failed"
       result = LogStreamer.parse_line(line, "serial")
-      assert result.mob   == true
+      assert result.mob == true
       assert result.level == "E"
-      assert result.tag   == "MobNif"
+      assert result.tag == "MobNif"
     end
 
     test "marks non-mob tags as mob: false" do
@@ -33,9 +33,9 @@ defmodule MobDev.Server.LogStreamerTest do
     test "marks Elixir tag as mob: true" do
       line = "I/Elixir  (24617): Tap me pressed — count is now 1"
       result = LogStreamer.parse_line(line, "serial")
-      assert result.mob     == true
-      assert result.tag     == "Elixir"
-      assert result.level   == "I"
+      assert result.mob == true
+      assert result.tag == "Elixir"
+      assert result.level == "I"
       assert result.message == "Tap me pressed — count is now 1"
     end
 
@@ -56,11 +56,12 @@ defmodule MobDev.Server.LogStreamerTest do
       line = "[2024-01-01 12:00:00] Some iOS syslog line from #{app}"
       result = LogStreamer.parse_line(line, "sim-udid")
 
-      assert result.serial  == "sim-udid"
-      assert result.level   == "I"
-      assert result.tag     == nil
+      assert result.serial == "sim-udid"
+      assert result.level == "I"
+      assert result.tag == nil
       assert result.message == line
-      assert result.mob     == true   # contains the current app name
+      # contains the current app name
+      assert result.mob == true
     end
 
     test "unparsed line without mob content is mob: false" do
@@ -76,7 +77,10 @@ defmodule MobDev.Server.LogStreamerTest do
 
     test "iOS syslog Logger output with current app name is mob: true" do
       app_camel = Mix.Project.config()[:app] |> to_string() |> Macro.camelize()
-      line = "2026-04-14 07:45:04.099 #{app_camel}[1234:5678] [info] Tap me pressed — count is now 1"
+
+      line =
+        "2026-04-14 07:45:04.099 #{app_camel}[1234:5678] [info] Tap me pressed — count is now 1"
+
       result = LogStreamer.parse_line(line, "sim-udid")
       assert result.mob == true
     end

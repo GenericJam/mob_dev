@@ -7,16 +7,26 @@ defmodule MobDev.Device do
 
   @enforce_keys [:platform, :serial]
   defstruct [
-    :platform,    # :android | :ios
-    :serial,      # "emulator-5554" | "R5CW3089HVB" | "78354490-EF38-..."
-    :name,        # "Pixel 8" | "iPhone 17"
-    :version,     # "Android 15" | "iOS 18"
-    :type,        # :emulator | :simulator | :physical
-    :node,        # :"mob_demo_android@127.0.0.1"
-    :dist_port,   # 9100
-    :host_ip,     # Mac's USB interface IP for physical iOS (e.g. "169.254.108.90")
-    :status,      # :discovered | :unauthorized | :tunneled | :connected | :error
-    :error        # error message string if status == :error
+    # :android | :ios
+    :platform,
+    # "emulator-5554" | "R5CW3089HVB" | "78354490-EF38-..."
+    :serial,
+    # "Pixel 8" | "iPhone 17"
+    :name,
+    # "Android 15" | "iOS 18"
+    :version,
+    # :emulator | :simulator | :physical
+    :type,
+    # :"mob_demo_android@127.0.0.1"
+    :node,
+    # 9100
+    :dist_port,
+    # Mac's USB interface IP for physical iOS (e.g. "169.254.108.90")
+    :host_ip,
+    # :discovered | :unauthorized | :tunneled | :connected | :error
+    :status,
+    # error message string if status == :error
+    :error
   ]
 
   @doc """
@@ -79,9 +89,11 @@ defmodule MobDev.Device do
   """
   @spec display_id(t()) :: String.t()
   def display_id(%__MODULE__{platform: :android, serial: serial}), do: serial
+
   def display_id(%__MODULE__{platform: :ios, type: :simulator, serial: serial}) do
     serial |> String.replace("-", "") |> String.slice(0, 8) |> String.downcase()
   end
+
   def display_id(%__MODULE__{platform: :ios, serial: serial}), do: serial
 
   @doc """
@@ -93,6 +105,7 @@ defmodule MobDev.Device do
   @spec match_id?(t(), String.t()) :: boolean()
   def match_id?(%__MODULE__{} = device, input) when is_binary(input) do
     normalized = String.downcase(input)
+
     String.downcase(display_id(device)) == normalized or
       String.downcase(device.serial) == normalized
   end
@@ -100,20 +113,24 @@ defmodule MobDev.Device do
   @doc "Human-readable one-line summary."
   @spec summary(t()) :: String.t()
   def summary(%__MODULE__{} = d) do
-    type_label = case d.type do
-      :emulator  -> "emulator"
-      :simulator -> "simulator"
-      :physical  -> "physical"
-      nil        -> "device"
-    end
-    status_icon = case d.status do
-      :connected   -> "✓"
-      :tunneled    -> "⟳"
-      :discovered  -> "·"
-      :unauthorized -> "✗"
-      :error       -> "!"
-      _            -> "?"
-    end
+    type_label =
+      case d.type do
+        :emulator -> "emulator"
+        :simulator -> "simulator"
+        :physical -> "physical"
+        nil -> "device"
+      end
+
+    status_icon =
+      case d.status do
+        :connected -> "✓"
+        :tunneled -> "⟳"
+        :discovered -> "·"
+        :unauthorized -> "✗"
+        :error -> "!"
+        _ -> "?"
+      end
+
     name = d.name || d.serial
     version = if d.version, do: " (#{d.version})", else: ""
     "#{status_icon} #{name}#{version}  [#{type_label}]  #{d.serial}"

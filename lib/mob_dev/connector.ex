@@ -8,11 +8,13 @@ defmodule MobDev.Connector do
 
   @android_activity ".MainActivity"
 
-  defp bundle_id,       do: MobDev.Config.bundle_id()
+  defp bundle_id, do: MobDev.Config.bundle_id()
   defp android_package, do: bundle_id()
-  defp ios_bundle_id,   do: bundle_id()
-  @connect_timeout  25_000   # ms to wait for node to appear
-  @connect_interval 500      # ms between polls
+  defp ios_bundle_id, do: bundle_id()
+  # ms to wait for node to appear
+  @connect_timeout 25_000
+  # ms between polls
+  @connect_interval 500
 
   @doc """
   Discovers all connected devices, sets up tunnels, restarts apps, and waits
@@ -62,13 +64,17 @@ defmodule MobDev.Connector do
 
       # Report failures
       all_failed = failed_tunnel ++ failed_wait
+
       Enum.each(all_failed, fn d ->
         IO.puts("  #{color(:red)}✗ #{d.name || d.serial}: #{d.error}#{color(:reset)}")
         print_fix_hint(d)
       end)
 
       if connected != [] do
-        IO.puts("\n#{color(:green)}Connected cluster (#{length(connected)} node(s)):#{color(:reset)}")
+        IO.puts(
+          "\n#{color(:green)}Connected cluster (#{length(connected)} node(s)):#{color(:reset)}"
+        )
+
         Enum.each(connected, fn d ->
           IO.puts("  #{color(:green)}✓#{color(:reset)} #{d.node}  [port #{d.dist_port}]")
         end)
@@ -80,7 +86,7 @@ defmodule MobDev.Connector do
 
   defp discover_all do
     android = Android.list_devices()
-    ios     = IOS.list_devices()
+    ios = IOS.list_devices()
     android ++ ios
   end
 
@@ -90,10 +96,12 @@ defmodule MobDev.Connector do
     |> Enum.with_index()
     |> Enum.reduce({[], []}, fn {device, idx}, {ok, fail} ->
       IO.write("  #{device.name || device.serial}  →  tunneling...")
+
       case Tunnel.setup(device, idx) do
         {:ok, d} ->
           IO.puts("  #{color(:green)}✓#{color(:reset)}")
           {ok ++ [d], fail}
+
         {:error, reason} ->
           IO.puts("  #{color(:red)}✗#{color(:reset)}")
           {ok, fail ++ [%{device | status: :error, error: reason}]}
@@ -105,7 +113,8 @@ defmodule MobDev.Connector do
   # tunneled set. A stale BEAM from a previous session holds its EPMD slot,
   # blocking new instances of the same node name from registering.
   defp kill_stale_simulator_apps(tunneled) do
-    active = tunneled
+    active =
+      tunneled
       |> Enum.filter(&(&1.platform == :ios && &1.type == :simulator))
       |> Enum.map(& &1.serial)
       |> MapSet.new()
@@ -122,8 +131,11 @@ defmodule MobDev.Connector do
             System.cmd("kill", ["-9", to_string(pid)], stderr_to_stdout: true)
           end
         end)
-      _ -> :ok
+
+      _ ->
+        :ok
     end
+
     :timer.sleep(300)
   end
 
@@ -164,7 +176,8 @@ defmodule MobDev.Connector do
   def start_epmd do
     System.cmd("epmd", ["-daemon"], stderr_to_stdout: true)
   rescue
-    _ -> :ok  # epmd not in PATH — Node.start will surface a clear error
+    # epmd not in PATH — Node.start will surface a clear error
+    _ -> :ok
   end
 
   # Handle the return value of Node.start/2.
@@ -194,16 +207,19 @@ defmodule MobDev.Connector do
     # Start all connection attempts in parallel so slow starters (simulators
     # that need ~20s to boot their BEAM) don't consume the other devices' budget.
     # Total wall time = max(individual connect times), not sum.
-    tasks = Enum.map(devices, fn device ->
-      {device, Task.async(fn -> wait_for_node(device.node, cookie, @connect_timeout) end)}
-    end)
+    tasks =
+      Enum.map(devices, fn device ->
+        {device, Task.async(fn -> wait_for_node(device.node, cookie, @connect_timeout) end)}
+      end)
 
     Enum.reduce(tasks, {[], []}, fn {device, task}, {ok, fail} ->
       IO.write("  #{device.node} ...")
+
       case Task.await(task, @connect_timeout + 2_000) do
         :ok ->
           IO.puts("  #{color(:green)}✓#{color(:reset)}")
           {ok ++ [%{device | status: :connected}], fail}
+
         {:error, reason} ->
           IO.puts("  #{color(:red)}✗#{color(:reset)}")
           {ok, fail ++ [%{device | status: :error, error: reason}]}
@@ -217,11 +233,15 @@ defmodule MobDev.Connector do
 
   defp wait_for_node(node, cookie, timeout) do
     Node.set_cookie(node, cookie)
+
     case Node.connect(node) do
-      true  -> :ok
+      true ->
+        :ok
+
       false ->
         :timer.sleep(@connect_interval)
         wait_for_node(node, cookie, timeout - @connect_interval)
+
       :ignored ->
         {:error, "local node not alive (distribution not started)"}
     end
@@ -229,14 +249,17 @@ defmodule MobDev.Connector do
 
   defp print_discovered(devices) do
     android = Enum.filter(devices, &(&1.platform == :android))
-    ios     = Enum.filter(devices, &(&1.platform == :ios))
+    ios = Enum.filter(devices, &(&1.platform == :ios))
 
     if android != [] do
       IO.puts("  #{color(:blue)}Android#{color(:reset)}")
+
       Enum.each(android, fn d ->
-        status = if d.status == :unauthorized,
-          do: "#{color(:red)}unauthorized#{color(:reset)}",
-          else: "found"
+        status =
+          if d.status == :unauthorized,
+            do: "#{color(:red)}unauthorized#{color(:reset)}",
+            else: "found"
+
         IO.puts("  ├── #{d.name || d.serial}  #{d.serial}  #{status}")
         if d.status == :unauthorized, do: IO.puts("  │   #{d.error}")
       end)
@@ -244,10 +267,12 @@ defmodule MobDev.Connector do
 
     if ios != [] do
       IO.puts("  #{color(:blue)}iOS#{color(:reset)}")
+
       Enum.each(ios, fn d ->
         IO.puts("  ├── #{d.name || d.serial}  #{d.serial}  found")
       end)
     end
+
     IO.puts("")
   end
 
@@ -266,10 +291,10 @@ defmodule MobDev.Connector do
 
   defp print_fix_hint(_), do: :ok
 
-  defp color(:red),    do: IO.ANSI.red()
-  defp color(:green),  do: IO.ANSI.green()
+  defp color(:red), do: IO.ANSI.red()
+  defp color(:green), do: IO.ANSI.green()
   defp color(:yellow), do: IO.ANSI.yellow()
-  defp color(:blue),   do: IO.ANSI.cyan()
-  defp color(:cyan),   do: IO.ANSI.cyan()
-  defp color(:reset),  do: IO.ANSI.reset()
+  defp color(:blue), do: IO.ANSI.cyan()
+  defp color(:cyan), do: IO.ANSI.cyan()
+  defp color(:reset), do: IO.ANSI.reset()
 end

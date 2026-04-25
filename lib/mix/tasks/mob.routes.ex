@@ -52,9 +52,9 @@ defmodule Mix.Tasks.Mob.Routes do
 
     Mix.Task.run("compile")
 
-    refs      = collect_nav_refs()
+    refs = collect_nav_refs()
     {ok, bad} = Enum.split_with(refs, fn r -> r.valid end)
-    skipped   = Enum.filter(refs, fn r -> r.skipped end)
+    skipped = Enum.filter(refs, fn r -> r.skipped end)
 
     total = length(refs) - length(skipped)
     IO.puts("")
@@ -66,20 +66,31 @@ defmodule Mix.Tasks.Mob.Routes do
     end
 
     if bad == [] do
-      IO.puts("#{IO.ANSI.green()}✓ #{total} navigation reference(s) valid" <>
-              skipped_note(skipped) <> "#{IO.ANSI.reset()}")
+      IO.puts(
+        "#{IO.ANSI.green()}✓ #{total} navigation reference(s) valid" <>
+          skipped_note(skipped) <> "#{IO.ANSI.reset()}"
+      )
     else
-      IO.puts("#{IO.ANSI.red()}✗ #{length(bad)} unresolvable navigation destination(s):#{IO.ANSI.reset()}\n")
+      IO.puts(
+        "#{IO.ANSI.red()}✗ #{length(bad)} unresolvable navigation destination(s):#{IO.ANSI.reset()}\n"
+      )
+
       Enum.each(bad, fn %{file: file, line: line, fn_name: fn_name, dest: dest} ->
-        IO.puts("  #{IO.ANSI.yellow()}#{file}:#{line}#{IO.ANSI.reset()}  " <>
-                "#{fn_name}(socket, #{inspect(dest)})")
+        IO.puts(
+          "  #{IO.ANSI.yellow()}#{file}:#{line}#{IO.ANSI.reset()}  " <>
+            "#{fn_name}(socket, #{inspect(dest)})"
+        )
+
         IO.puts("    Module #{inspect(dest)} could not be loaded.")
       end)
 
       if skipped != [] do
         IO.puts("")
-        IO.puts("  #{IO.ANSI.cyan()}#{length(skipped)} dynamic/named destination(s) skipped " <>
-                "(cannot verify at compile time)#{IO.ANSI.reset()}")
+
+        IO.puts(
+          "  #{IO.ANSI.cyan()}#{length(skipped)} dynamic/named destination(s) skipped " <>
+            "(cannot verify at compile time)#{IO.ANSI.reset()}"
+        )
       end
     end
 
@@ -96,40 +107,47 @@ defmodule Mix.Tasks.Mob.Routes do
       case File.read(file) do
         {:ok, source} ->
           case Code.string_to_quoted(source, file: file, columns: false) do
-            {:ok, ast}  -> extract_nav_calls(ast, file)
+            {:ok, ast} -> extract_nav_calls(ast, file)
             {:error, _} -> []
           end
-        {:error, _} -> []
+
+        {:error, _} ->
+          []
       end
     end)
   end
 
   defp extract_nav_calls(ast, file) do
-    {_, refs} = Macro.prewalk(ast, [], fn node, acc ->
-      case nav_call(node) do
-        {fn_name, meta, dest_ast} ->
-          dest    = resolve_dest(dest_ast)
-          {valid, skipped} = classify(dest)
-          ref = %{
-            file:    file,
-            line:    Keyword.get(meta, :line, 0),
-            fn_name: fn_name,
-            dest:    dest,
-            valid:   valid,
-            skipped: skipped
-          }
-          {node, [ref | acc]}
+    {_, refs} =
+      Macro.prewalk(ast, [], fn node, acc ->
+        case nav_call(node) do
+          {fn_name, meta, dest_ast} ->
+            dest = resolve_dest(dest_ast)
+            {valid, skipped} = classify(dest)
 
-        nil ->
-          {node, acc}
-      end
-    end)
+            ref = %{
+              file: file,
+              line: Keyword.get(meta, :line, 0),
+              fn_name: fn_name,
+              dest: dest,
+              valid: valid,
+              skipped: skipped
+            }
+
+            {node, [ref | acc]}
+
+          nil ->
+            {node, acc}
+        end
+      end)
 
     refs
   end
 
   # Mob.Socket.push_screen / reset_to / pop_to with at least 2 args
-  defp nav_call({{:., meta, [{:__aliases__, _, [:Mob, :Socket]}, fn_name]}, _, [_socket, dest | _]})
+  defp nav_call(
+         {{:., meta, [{:__aliases__, _, [:Mob, :Socket]}, fn_name]}, _, [_socket, dest | _]}
+       )
        when fn_name in @nav_fns,
        do: {fn_name, meta, dest}
 
@@ -143,27 +161,31 @@ defmodule Mix.Tasks.Mob.Routes do
   # ── Destination resolution ───────────────────────────────────────────────────
 
   defp resolve_dest({:__aliases__, _, parts}), do: Module.concat(parts)
-  defp resolve_dest(atom) when is_atom(atom),  do: atom
-  defp resolve_dest(_),                         do: :dynamic
+  defp resolve_dest(atom) when is_atom(atom), do: atom
+  defp resolve_dest(_), do: :dynamic
 
-  defp classify(:dynamic),      do: {true, true}   # skip — dynamic value
+  # skip — dynamic value
+  defp classify(:dynamic), do: {true, true}
+
   defp classify(dest) when is_atom(dest) do
     # Plain lowercase atoms (e.g. :main) are registered names — runtime only.
     name = Atom.to_string(dest)
+
     if String.match?(name, ~r/^[a-z]/) do
-      {true, true}   # registered name atom — skip
+      # registered name atom — skip
+      {true, true}
     else
       # Uppercase module atom — check if loadable
       case Code.ensure_loaded(dest) do
         {:module, _} -> {true, false}
-        _            -> {false, false}
+        _ -> {false, false}
       end
     end
   end
 
   # ── Helpers ──────────────────────────────────────────────────────────────────
 
-  defp skipped_note([]),      do: ""
+  defp skipped_note([]), do: ""
   defp skipped_note(skipped), do: " (#{length(skipped)} dynamic/named skipped) "
 
   defp return(has_errors, strict) do

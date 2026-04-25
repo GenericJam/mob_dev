@@ -91,18 +91,24 @@ defmodule Mix.Tasks.Mob.Install do
     Mix.shell().info("Ensuring OTP releases are cached...")
 
     case MobDev.OtpDownloader.ensure_android("arm64-v8a") do
-      {:ok, path}      -> Mix.shell().info([:green, "* Android arm64 OTP: #{path}", :reset])
-      {:error, reason} -> Mix.shell().error("Warning: Android arm64 OTP download failed: #{reason}")
+      {:ok, path} ->
+        Mix.shell().info([:green, "* Android arm64 OTP: #{path}", :reset])
+
+      {:error, reason} ->
+        Mix.shell().error("Warning: Android arm64 OTP download failed: #{reason}")
     end
 
     case MobDev.OtpDownloader.ensure_android("armeabi-v7a") do
-      {:ok, path}      -> Mix.shell().info([:green, "* Android arm32 OTP: #{path}", :reset])
-      {:error, reason} -> Mix.shell().error("Warning: Android arm32 OTP download failed: #{reason}")
+      {:ok, path} ->
+        Mix.shell().info([:green, "* Android arm32 OTP: #{path}", :reset])
+
+      {:error, reason} ->
+        Mix.shell().error("Warning: Android arm32 OTP download failed: #{reason}")
     end
 
     if match?({:unix, :darwin}, :os.type()) do
       case MobDev.OtpDownloader.ensure_ios_sim() do
-        {:ok, path}      -> Mix.shell().info([:green, "* iOS OTP: #{path}", :reset])
+        {:ok, path} -> Mix.shell().info([:green, "* iOS OTP: #{path}", :reset])
         {:error, reason} -> Mix.shell().error("Warning: iOS OTP download failed: #{reason}")
       end
     end
@@ -123,10 +129,11 @@ defmodule Mix.Tasks.Mob.Install do
         []
       end
 
-    missing = Enum.filter(@required_keys, fn key ->
-      val = cfg[key]
-      is_nil(val) or (is_binary(val) and String.contains?(val, "/path/to/"))
-    end)
+    missing =
+      Enum.filter(@required_keys, fn key ->
+        val = cfg[key]
+        is_nil(val) or (is_binary(val) and String.contains?(val, "/path/to/"))
+      end)
 
     if missing != [] do
       defaults = detect_defaults(project_dir)
@@ -158,7 +165,7 @@ defmodule Mix.Tasks.Mob.Install do
   defp detect_defaults(project_dir) do
     %{
       elixir_lib: detect_elixir_lib(),
-      mob_dir:    detect_mob_dir(project_dir)
+      mob_dir: detect_mob_dir(project_dir)
     }
   end
 
@@ -171,6 +178,7 @@ defmodule Mix.Tasks.Mob.Install do
   # Falls back to deps/mob for Hex installs.
   defp detect_mob_dir(project_dir) do
     mix_exs = Path.join(project_dir, "mix.exs")
+
     with {:ok, content} <- File.read(mix_exs),
          [_, rel] <- Regex.run(~r/\{:mob,\s+path:\s+"([^"]+)"/, content) do
       Path.expand(rel, project_dir)
@@ -183,6 +191,7 @@ defmodule Mix.Tasks.Mob.Install do
 
   defp prompt_path(key, detected) do
     label = prompt_label(key)
+
     if detected do
       input = Mix.shell().prompt("  #{label} [#{detected}]:") |> String.trim()
       if input == "", do: detected, else: input
@@ -191,7 +200,7 @@ defmodule Mix.Tasks.Mob.Install do
     end
   end
 
-  defp prompt_label(:mob_dir),    do: "mob library path"
+  defp prompt_label(:mob_dir), do: "mob library path"
   defp prompt_label(:elixir_lib), do: "Elixir lib path"
 
   defp write_mob_exs(path, cfg) do
@@ -213,14 +222,14 @@ defmodule Mix.Tasks.Mob.Install do
       content = File.read!(props)
 
       if String.contains?(content, "/path/to/") do
-        otp_dir      = MobDev.OtpDownloader.android_otp_dir("arm64-v8a")
+        otp_dir = MobDev.OtpDownloader.android_otp_dir("arm64-v8a")
         otp_dir_arm32 = MobDev.OtpDownloader.android_otp_dir("armeabi-v7a")
 
         new_content =
           content
-          |> replace_prop("mob.otp_release",      otp_dir)
+          |> replace_prop("mob.otp_release", otp_dir)
           |> replace_prop("mob.otp_release_arm32", otp_dir_arm32)
-          |> replace_prop("mob.mob_dir",           cfg[:mob_dir])
+          |> replace_prop("mob.mob_dir", cfg[:mob_dir])
 
         File.write!(props, new_content)
         Mix.shell().info([:green, "* android/local.properties configured", :reset])
@@ -232,19 +241,39 @@ defmodule Mix.Tasks.Mob.Install do
   def replace_prop(content, key, value) when not is_nil(value) do
     String.replace(content, ~r/^#{Regex.escape(key)}=.*$/m, "#{key}=#{value}")
   end
+
   def replace_prop(content, _key, nil), do: content
 
   # ── Icon setup ────────────────────────────────────────────────────────────────
 
   defp setup_icon(project_dir, nil) do
-    placeholder = Path.join([project_dir, "android", "app", "src", "main", "res", "mipmap-mdpi", "ic_launcher.png"])
+    placeholder =
+      Path.join([
+        project_dir,
+        "android",
+        "app",
+        "src",
+        "main",
+        "res",
+        "mipmap-mdpi",
+        "ic_launcher.png"
+      ])
 
     if File.exists?(placeholder) do
-      Mix.shell().info([:cyan, "* icons already present — skipping (run `mix mob.icon` to replace)", :reset])
+      Mix.shell().info([
+        :cyan,
+        "* icons already present — skipping (run `mix mob.icon` to replace)",
+        :reset
+      ])
     else
       Mix.shell().info("Writing Mob logo as placeholder icon...")
       MobDev.IconGenerator.use_mob_logo(project_dir)
-      Mix.shell().info([:green, "* placeholder icons written (run `mix mob.icon` to customise)", :reset])
+
+      Mix.shell().info([
+        :green,
+        "* placeholder icons written (run `mix mob.icon` to customise)",
+        :reset
+      ])
     end
   end
 
@@ -252,6 +281,7 @@ defmodule Mix.Tasks.Mob.Install do
     unless File.exists?(source) do
       Mix.raise("Source file not found: #{source}")
     end
+
     Mix.shell().info("Generating app icon from #{source}...")
     MobDev.IconGenerator.generate_from_source(source, project_dir)
     Mix.shell().info([:green, "* icons written", :reset])

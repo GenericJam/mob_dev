@@ -67,7 +67,7 @@ defmodule Mix.Tasks.Mob.Provision do
     IO.puts("")
 
     check_signing_identity!()
-    team_id   = resolve_team_id()
+    team_id = resolve_team_id()
     bundle_id = check_bundle_id!()
 
     IO.puts("")
@@ -91,7 +91,11 @@ defmodule Mix.Tasks.Mob.Provision do
     IO.puts("")
     IO.puts("Next step: #{cyan()}mix mob.deploy --native#{reset()}")
     IO.puts("")
-    IO.puts("#{faint()}Free Apple ID profiles expire every 7 days — re-run mix mob.provision when that happens.")
+
+    IO.puts(
+      "#{faint()}Free Apple ID profiles expire every 7 days — re-run mix mob.provision when that happens."
+    )
+
     IO.puts("Paid Developer Program profiles last 1 year.#{reset()}")
   end
 
@@ -99,7 +103,8 @@ defmodule Mix.Tasks.Mob.Provision do
 
   defp check_signing_identity! do
     case System.cmd("security", ["find-identity", "-v", "-p", "codesigning"],
-                    stderr_to_stdout: true) do
+           stderr_to_stdout: true
+         ) do
       {output, 0} ->
         identities =
           Regex.scan(~r/\d+\) [0-9A-F]+ "([^"]+)"/, output)
@@ -110,6 +115,7 @@ defmodule Mix.Tasks.Mob.Provision do
         case identities do
           [] ->
             IO.puts("  #{red()}✗#{reset()} Apple Development certificate — not found in keychain")
+
             Mix.raise("""
 
             No Apple Development signing certificate found.
@@ -125,7 +131,9 @@ defmodule Mix.Tasks.Mob.Provision do
             IO.puts("  #{green()}✓#{reset()} Signing certificate — #{faint()}#{id}#{reset()}")
 
           many ->
-            IO.puts("  #{green()}✓#{reset()} Signing certificate — #{faint()}#{hd(many)}#{reset()} (#{length(many)} found, using first)")
+            IO.puts(
+              "  #{green()}✓#{reset()} Signing certificate — #{faint()}#{hd(many)}#{reset()} (#{length(many)} found, using first)"
+            )
         end
 
       _ ->
@@ -142,16 +150,27 @@ defmodule Mix.Tasks.Mob.Provision do
         team
 
       team = team_from_any_profile() ->
-        IO.puts("  #{green()}✓#{reset()} Team ID — #{team} #{faint()}(auto-detected from existing profile)#{reset()}")
+        IO.puts(
+          "  #{green()}✓#{reset()} Team ID — #{team} #{faint()}(auto-detected from existing profile)#{reset()}"
+        )
+
         team
 
       true ->
         IO.puts("  #{yellow()}?#{reset()} Team ID — could not auto-detect")
-        IO.puts("     Find yours at #{cyan()}https://developer.apple.com/account#{reset()} → Membership → Team ID")
+
+        IO.puts(
+          "     Find yours at #{cyan()}https://developer.apple.com/account#{reset()} → Membership → Team ID"
+        )
+
         team = Mix.shell().prompt("  Enter Team ID:") |> String.trim()
+
         unless Regex.match?(~r/^[A-Z0-9]{10}$/, team) do
-          Mix.raise("Invalid Team ID '#{team}' — expected 10 uppercase alphanumeric characters (e.g. Q89CW299G8)")
+          Mix.raise(
+            "Invalid Team ID '#{team}' — expected 10 uppercase alphanumeric characters (e.g. Q89CW299G8)"
+          )
         end
+
         team
     end
   end
@@ -165,12 +184,13 @@ defmodule Mix.Tasks.Mob.Provision do
     Enum.flat_map(profile_dirs, &Path.wildcard(Path.join(&1, "*.mobileprovision")))
     |> Enum.find_value(fn path ->
       with {:ok, data} <- File.read(path),
-           {s, _}      <- :binary.match(data, "<?xml"),
-           {e, len}    <- :binary.match(data, "</plist>") do
+           {s, _} <- :binary.match(data, "<?xml"),
+           {e, len} <- :binary.match(data, "</plist>") do
         xml = binary_part(data, s, e - s + len)
+
         case Regex.run(~r/<key>TeamIdentifier<\/key>\s*<array>\s*<string>([^<]+)<\/string>/, xml) do
           [_, team] -> String.trim(team)
-          _         -> nil
+          _ -> nil
         end
       else
         _ -> nil
@@ -187,7 +207,7 @@ defmodule Mix.Tasks.Mob.Provision do
   # ── File generation ───────────────────────────────────────────────────────────
 
   defp generate_xcodeproj(bundle_id, team_id) do
-    proj_dir  = "ios/Provision.xcodeproj"
+    proj_dir = "ios/Provision.xcodeproj"
     proj_file = Path.join(proj_dir, "project.pbxproj")
 
     needs_write =
@@ -212,6 +232,7 @@ defmodule Mix.Tasks.Mob.Provision do
 
     unless File.exists?(path) do
       IO.puts("  Writing ios/MobProvision.swift...")
+
       File.write!(path, """
       import SwiftUI
 
@@ -229,9 +250,12 @@ defmodule Mix.Tasks.Mob.Provision do
 
   defp run_xcodebuild! do
     args = [
-      "-project", "ios/Provision.xcodeproj",
-      "-target", "MobProvision",
-      "-destination", "generic/platform=iOS",
+      "-project",
+      "ios/Provision.xcodeproj",
+      "-target",
+      "MobProvision",
+      "-destination",
+      "generic/platform=iOS",
       "-allowProvisioningUpdates",
       "-allowProvisioningDeviceRegistration",
       "SYMROOT=/tmp/mob_provision_build",
@@ -244,6 +268,7 @@ defmodule Mix.Tasks.Mob.Provision do
     if rc != 0 do
       # On failure, show the full output so the user can diagnose
       IO.puts(output)
+
       Mix.raise("""
 
       xcodebuild provisioning failed (exit #{rc}).
@@ -280,15 +305,22 @@ defmodule Mix.Tasks.Mob.Provision do
         case File.read(path) do
           {:ok, data} ->
             String.contains?(data, bundle_id) or
-              Regex.match?(~r/<key>application-identifier<\/key>\s*<string>[^<]+\.\*<\/string>/, data)
-          _ -> false
+              Regex.match?(
+                ~r/<key>application-identifier<\/key>\s*<string>[^<]+\.\*<\/string>/,
+                data
+              )
+
+          _ ->
+            false
         end
       end)
 
     if found do
       IO.puts("  #{green()}✓#{reset()} Provisioning profile ready")
     else
-      IO.puts("  #{yellow()}⚠#{reset()}  Profile not found — re-run `mix mob.provision` if deploy fails")
+      IO.puts(
+        "  #{yellow()}⚠#{reset()}  Profile not found — re-run `mix mob.provision` if deploy fails"
+      )
     end
   end
 
@@ -471,11 +503,11 @@ defmodule Mix.Tasks.Mob.Provision do
   # ── ANSI helpers ──────────────────────────────────────────────────────────────
 
   defp macos?, do: match?({:unix, :darwin}, :os.type())
-  defp green,  do: IO.ANSI.green()
+  defp green, do: IO.ANSI.green()
   defp yellow, do: IO.ANSI.yellow()
-  defp red,    do: IO.ANSI.red()
-  defp cyan,   do: IO.ANSI.cyan()
+  defp red, do: IO.ANSI.red()
+  defp cyan, do: IO.ANSI.cyan()
   defp bright, do: IO.ANSI.bright()
-  defp faint,  do: IO.ANSI.faint()
-  defp reset,  do: IO.ANSI.reset()
+  defp faint, do: IO.ANSI.faint()
+  defp reset, do: IO.ANSI.reset()
 end

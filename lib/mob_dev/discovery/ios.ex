@@ -13,7 +13,7 @@ defmodule MobDev.Discovery.IOS do
   def list_simulators do
     case System.find_executable("xcrun") do
       nil -> []
-      _   -> do_list_simulators()
+      _ -> do_list_simulators()
     end
   end
 
@@ -22,7 +22,7 @@ defmodule MobDev.Discovery.IOS do
   def list_physical do
     case System.find_executable("ideviceinfo") do
       nil -> []
-      _   -> do_list_physical()
+      _ -> do_list_physical()
     end
   end
 
@@ -34,9 +34,10 @@ defmodule MobDev.Discovery.IOS do
 
   defp do_list_simulators do
     case System.cmd("xcrun", ["simctl", "list", "devices", "booted", "--json"],
-                    stderr_to_stdout: true) do
+           stderr_to_stdout: true
+         ) do
       {output, 0} -> parse_simctl_json(output)
-      _           -> []
+      _ -> []
     end
   rescue
     # Jason not available — fall back to simpler text parsing
@@ -60,10 +61,9 @@ defmodule MobDev.Discovery.IOS do
   end
 
   defp list_simulators_text do
-    case System.cmd("xcrun", ["simctl", "list", "devices", "booted"],
-                    stderr_to_stdout: true) do
+    case System.cmd("xcrun", ["simctl", "list", "devices", "booted"], stderr_to_stdout: true) do
       {output, 0} -> parse_simctl_text(output)
-      _           -> []
+      _ -> []
     end
   end
 
@@ -85,34 +85,41 @@ defmodule MobDev.Discovery.IOS do
       [_, name, udid] ->
         d = %Device{
           platform: :ios,
-          serial:   udid,
-          name:     name,
-          type:     :simulator,
-          status:   :booted,
+          serial: udid,
+          name: name,
+          type: :simulator,
+          status: :booted
         }
+
         [%{d | node: Device.node_name(d)}]
-      _ -> []
+
+      _ ->
+        []
     end
   end
 
   defp sim_to_device(%{"udid" => udid, "name" => name, "state" => "Booted"}, version) do
     d = %Device{
       platform: :ios,
-      serial:   udid,
-      name:     name,
-      version:  version,
-      type:     :simulator,
-      status:   :booted,
+      serial: udid,
+      name: name,
+      version: version,
+      type: :simulator,
+      status: :booted
     }
+
     %{d | node: Device.node_name(d)}
   end
+
   defp sim_to_device(_, _), do: nil
 
   @doc "Parses a CoreSimulator runtime key into a human-readable version string. Exposed for testing."
   @spec parse_runtime_version(String.t()) :: String.t()
   def parse_runtime_version(runtime) do
     case Regex.run(~r/iOS-(\d+)-(\d+)/, runtime) do
-      [_, major, minor] -> "iOS #{major}.#{minor}"
+      [_, major, minor] ->
+        "iOS #{major}.#{minor}"
+
       _ ->
         # "com.apple.CoreSimulator.SimRuntime.iOS-18-0" style
         runtime |> String.split(".") |> List.last() |> String.replace("-", ".")
@@ -125,23 +132,27 @@ defmodule MobDev.Discovery.IOS do
         udid = String.trim(udid)
         name = ideviceinfo(udid, "DeviceName")
         version = ideviceinfo(udid, "ProductVersion")
+
         d = %Device{
           platform: :ios,
-          serial:   udid,
-          name:     name,
-          version:  "iOS #{version}",
-          type:     :physical,
-          status:   :discovered,
+          serial: udid,
+          name: name,
+          version: "iOS #{version}",
+          type: :physical,
+          status: :discovered
         }
+
         [%{d | node: Device.node_name(d)}]
-      _ -> []
+
+      _ ->
+        []
     end
   end
 
   defp ideviceinfo(_udid, key) do
     case System.cmd("ideviceinfo", ["-k", key], stderr_to_stdout: true) do
       {val, 0} -> String.trim(val)
-      _        -> nil
+      _ -> nil
     end
   end
 
@@ -154,8 +165,9 @@ defmodule MobDev.Discovery.IOS do
     dist_port = Keyword.get(opts, :dist_port, 9100)
     # xcrun simctl passes SIMCTL_CHILD_* env vars to the launched app (prefix stripped).
     System.cmd("xcrun", ["simctl", "launch", udid, bundle_id],
-               stderr_to_stdout: true,
-               env: [{"SIMCTL_CHILD_MOB_DIST_PORT", to_string(dist_port)}])
+      stderr_to_stdout: true,
+      env: [{"SIMCTL_CHILD_MOB_DIST_PORT", to_string(dist_port)}]
+    )
   end
 
   @spec terminate_app(String.t(), String.t()) :: {String.t(), non_neg_integer()}
@@ -173,11 +185,18 @@ defmodule MobDev.Discovery.IOS do
     kill_other_user_apps_physical(udid, bundle_id)
 
     # --terminate-existing kills any remaining instance of *this* app atomically.
-    System.cmd("xcrun", ["devicectl", "device", "process", "launch",
-                          "--device", udid,
-                          "--terminate-existing",
-                          bundle_id],
-               stderr_to_stdout: true)
+    System.cmd(
+      "xcrun",
+      [
+        "devicectl",
+        "device",
+        "process",
+        "launch",
+        "--device",
+        udid,
+        "--terminate-existing",
+        bundle_id
+      ], stderr_to_stdout: true)
   end
 
   # Kill any user-installed app that is not `except_bundle`.
@@ -186,24 +205,33 @@ defmodule MobDev.Discovery.IOS do
   # one can run at a time. We kill the others before launching to avoid the
   # EADDRINUSE crash that would otherwise prevent BEAM from starting.
   defp kill_other_user_apps_physical(udid, except_bundle) do
-    {out, 0} = System.cmd("xcrun", ["devicectl", "device", "info", "processes",
-                                     "--device", udid],
-                           stderr_to_stdout: true)
+    {out, 0} =
+      System.cmd("xcrun", ["devicectl", "device", "info", "processes", "--device", udid],
+        stderr_to_stdout: true
+      )
 
     out
     |> String.split("\n")
     |> Enum.flat_map(fn line ->
       case Regex.run(~r/^\s*(\d+)\s+(.+Bundle\/Application\/.+\.app\/.+)$/, line) do
         [_, pid_str, _path] -> [String.to_integer(pid_str)]
-        _                   -> []
+        _ -> []
       end
     end)
     |> Enum.each(fn pid ->
-      System.cmd("xcrun", ["devicectl", "device", "process", "terminate",
-                            "--device", udid,
-                            "--pid", to_string(pid),
-                            "--kill"],
-                 stderr_to_stdout: true)
+      System.cmd(
+        "xcrun",
+        [
+          "devicectl",
+          "device",
+          "process",
+          "terminate",
+          "--device",
+          udid,
+          "--pid",
+          to_string(pid),
+          "--kill"
+        ], stderr_to_stdout: true)
     end)
 
     _ = except_bundle
@@ -225,12 +253,31 @@ defmodule MobDev.Discovery.IOS do
   """
   @spec enable_accessibility(String.t()) :: :ok
   def enable_accessibility(udid) do
-    System.cmd("xcrun", ["simctl", "spawn", udid, "defaults", "write",
-                         "com.apple.Accessibility", "VoiceOverTouchEnabled", "-bool", "YES"],
-               stderr_to_stdout: true)
-    System.cmd("xcrun", ["simctl", "spawn", udid, "notifyutil",
-                         "-p", "com.apple.accessibility.voiceover.status.changed"],
-               stderr_to_stdout: true)
+    System.cmd(
+      "xcrun",
+      [
+        "simctl",
+        "spawn",
+        udid,
+        "defaults",
+        "write",
+        "com.apple.Accessibility",
+        "VoiceOverTouchEnabled",
+        "-bool",
+        "YES"
+      ], stderr_to_stdout: true)
+
+    System.cmd(
+      "xcrun",
+      [
+        "simctl",
+        "spawn",
+        udid,
+        "notifyutil",
+        "-p",
+        "com.apple.accessibility.voiceover.status.changed"
+      ], stderr_to_stdout: true)
+
     :ok
   end
 end

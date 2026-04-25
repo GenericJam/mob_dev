@@ -28,15 +28,16 @@ defmodule MobDev.HotPush do
       |> Enum.flat_map(fn {device, idx} ->
         case Tunnel.setup(device, idx) do
           {:ok, d} -> [d]
-          _        -> []
+          _ -> []
         end
       end)
       |> Enum.flat_map(fn device ->
         ensure_local_dist(cookie)
         Node.set_cookie(device.node, cookie)
+
         case Node.connect(device.node) do
           true -> [device.node]
-          _    -> []
+          _ -> []
         end
       end)
 
@@ -68,10 +69,12 @@ defmodule MobDev.HotPush do
   def snapshot_beams do
     runtime_beam_paths()
     |> Map.new(fn path ->
-      mtime = case File.stat(path, time: :posix) do
-        {:ok, %{mtime: t}} -> t
-        _ -> 0
-      end
+      mtime =
+        case File.stat(path, time: :posix) do
+          {:ok, %{mtime: t}} -> t
+          _ -> 0
+        end
+
       {path, mtime}
     end)
   end
@@ -85,10 +88,12 @@ defmodule MobDev.HotPush do
     beams =
       runtime_beam_paths()
       |> Enum.filter(fn path ->
-        current_mtime = case File.stat(path, time: :posix) do
-          {:ok, %{mtime: t}} -> t
-          _ -> 0
-        end
+        current_mtime =
+          case File.stat(path, time: :posix) do
+            {:ok, %{mtime: t}} -> t
+            _ -> 0
+          end
+
         current_mtime != Map.get(snapshot, path, 0)
       end)
 
@@ -102,6 +107,7 @@ defmodule MobDev.HotPush do
   # their transitive deps (resolved via OTP .app files).
   defp runtime_beam_paths do
     runtime = runtime_lib_names()
+
     Path.wildcard("_build/dev/lib/*/ebin/*.beam")
     |> Enum.filter(fn path ->
       lib = path |> Path.split() |> Enum.at(-3)
@@ -116,12 +122,14 @@ defmodule MobDev.HotPush do
   @spec runtime_beam_dirs() :: [String.t()]
   def runtime_beam_dirs do
     runtime = runtime_lib_names()
+
     case File.ls("_build/dev/lib") do
       {:ok, libs} ->
         libs
         |> Enum.filter(&MapSet.member?(runtime, &1))
         |> Enum.map(&"_build/dev/lib/#{&1}/ebin")
         |> Enum.filter(&File.dir?/1)
+
       {:error, _} ->
         []
     end
@@ -151,9 +159,13 @@ defmodule MobDev.HotPush do
             case :file.consult(String.to_charlist(app_file)) do
               {:ok, [{:application, _app, props}]} ->
                 (props[:applications] || []) |> Enum.map(&to_string/1)
-              _ -> []
+
+              _ ->
+                []
             end
-          [] -> []
+
+          [] ->
+            []
         end
       end)
       |> MapSet.new()
@@ -168,13 +180,15 @@ defmodule MobDev.HotPush do
 
   # Returns the app name as a string if this dep is a runtime dep, else [].
   defp dep_runtime_name(dep) do
-    {app, opts} = case dep do
-      {app, _version, opts} when is_list(opts) -> {app, opts}
-      {app, opts}           when is_list(opts) -> {app, opts}
-      {app, _version}                          -> {app, []}
-      app                   when is_atom(app)  -> {app, []}
-    end
-    only    = Keyword.get(opts, :only)
+    {app, opts} =
+      case dep do
+        {app, _version, opts} when is_list(opts) -> {app, opts}
+        {app, opts} when is_list(opts) -> {app, opts}
+        {app, _version} -> {app, []}
+        app when is_atom(app) -> {app, []}
+      end
+
+    only = Keyword.get(opts, :only)
     runtime = Keyword.get(opts, :runtime, true)
     dev_only = only == :dev or only == [:dev] or (is_list(only) and only == [:dev])
     if dev_only or not runtime, do: [], else: [to_string(app)]
@@ -185,29 +199,35 @@ defmodule MobDev.HotPush do
   defp push_beams(_nodes, []), do: {0, []}
 
   defp push_beams(nodes, beam_files) do
-    results = Enum.map(beam_files, fn path ->
-      module = beam_path_to_module(path)
-      case File.read(path) do
-        {:ok, binary} -> load_on_nodes(nodes, module, path, binary)
-        {:error, reason} -> {:error, {module, reason}}
-      end
-    end)
+    results =
+      Enum.map(beam_files, fn path ->
+        module = beam_path_to_module(path)
 
-    pushed  = Enum.count(results, &match?(:ok, &1))
-    failed  = for {:error, pair} <- results, do: pair
+        case File.read(path) do
+          {:ok, binary} -> load_on_nodes(nodes, module, path, binary)
+          {:error, reason} -> {:error, {module, reason}}
+        end
+      end)
+
+    pushed = Enum.count(results, &match?(:ok, &1))
+    failed = for {:error, pair} <- results, do: pair
     {pushed, failed}
   end
 
   defp load_on_nodes(nodes, module, path, binary) do
     fname = String.to_charlist(path)
-    errors = Enum.flat_map(nodes, fn node ->
-      case :rpc.call(node, :code, :load_binary, [module, fname, binary]) do
-        {:module, ^module}       -> []
-        {:error, :on_load_failure} -> []  # NIF modules already loaded — safe to ignore
-        {:badrpc, reason}        -> [{node, reason}]
-        {:error, reason}         -> [{node, reason}]
-      end
-    end)
+
+    errors =
+      Enum.flat_map(nodes, fn node ->
+        case :rpc.call(node, :code, :load_binary, [module, fname, binary]) do
+          {:module, ^module} -> []
+          # NIF modules already loaded — safe to ignore
+          {:error, :on_load_failure} -> []
+          {:badrpc, reason} -> [{node, reason}]
+          {:error, reason} -> [{node, reason}]
+        end
+      end)
+
     if errors == [], do: :ok, else: {:error, {module, errors}}
   end
 

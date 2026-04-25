@@ -26,6 +26,7 @@ defmodule MobDev.Config do
   """
   def load_mob_config do
     config_file = Path.join(File.cwd!(), "mob.exs")
+
     if File.exists?(config_file),
       do: Config.Reader.read!(config_file) |> Keyword.get(:mob_dev, []),
       else: []
@@ -35,9 +36,11 @@ defmodule MobDev.Config do
 
   defp detect_from_ios_plist do
     plist = Path.join([File.cwd!(), "ios", "Info.plist"])
+
     with true <- File.exists?(plist),
          {:ok, content} <- File.read(plist),
-         [_, id] <- Regex.run(~r/<key>CFBundleIdentifier<\/key>\s*<string>([^<]+)<\/string>/, content) do
+         [_, id] <-
+           Regex.run(~r/<key>CFBundleIdentifier<\/key>\s*<string>([^<]+)<\/string>/, content) do
       id
     else
       _ -> nil
@@ -46,11 +49,12 @@ defmodule MobDev.Config do
 
   defp detect_from_android_gradle do
     gradle = Path.join([File.cwd!(), "android", "app", "build.gradle"])
+
     with true <- File.exists?(gradle),
          {:ok, content} <- File.read(gradle),
          match when match != nil <-
            Regex.run(~r/applicationId\s+["']([^"']+)["']/, content) ||
-           Regex.run(~r/applicationId\s*=\s*["']([^"']+)["']/, content) do
+             Regex.run(~r/applicationId\s*=\s*["']([^"']+)["']/, content) do
       Enum.at(match, 1)
     else
       _ -> nil

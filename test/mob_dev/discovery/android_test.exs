@@ -12,6 +12,7 @@ defmodule MobDev.Discovery.AndroidTest do
       List of devices attached
       emulator-5554\tdevice product:sdk_gphone64_arm64 model:sdk_gphone64_arm64 transport_id:1
       """
+
       [device] = Android.parse_devices_output(output)
       assert device.serial == "emulator-5554"
       assert device.platform == :android
@@ -24,6 +25,7 @@ defmodule MobDev.Discovery.AndroidTest do
       List of devices attached
       R5CW3089HVB\tdevice product:moto transport_id:2
       """
+
       [device] = Android.parse_devices_output(output)
       assert device.serial == "R5CW3089HVB"
       assert device.type == :physical
@@ -35,6 +37,7 @@ defmodule MobDev.Discovery.AndroidTest do
       List of devices attached
       R5CW3089HVB\tunauthorized
       """
+
       [device] = Android.parse_devices_output(output)
       assert device.serial == "R5CW3089HVB"
       assert device.status == :unauthorized
@@ -46,6 +49,7 @@ defmodule MobDev.Discovery.AndroidTest do
       List of devices attached
       emulator-5556\toffline
       """
+
       assert Android.parse_devices_output(output) == []
     end
 
@@ -60,6 +64,7 @@ defmodule MobDev.Discovery.AndroidTest do
       emulator-5554\tdevice product:sdk transport_id:1
       R5CW3089HVB\tdevice product:moto transport_id:2
       """
+
       devices = Android.parse_devices_output(output)
       assert length(devices) == 2
       serials = Enum.map(devices, & &1.serial)
@@ -72,6 +77,7 @@ defmodule MobDev.Discovery.AndroidTest do
       List of devices attached
       192.168.1.5:5555\tdevice product:moto transport_id:3
       """
+
       [device] = Android.parse_devices_output(output)
       assert device.serial == "192.168.1.5:5555"
       assert device.type == :physical
@@ -83,6 +89,7 @@ defmodule MobDev.Discovery.AndroidTest do
       emulator-5554\tdevice transport_id:1
       ABCD1234\tdevice transport_id:2
       """
+
       devices = Android.parse_devices_output(output)
       emulator = Enum.find(devices, &(&1.serial == "emulator-5554"))
       physical = Enum.find(devices, &(&1.serial == "ABCD1234"))
@@ -95,6 +102,7 @@ defmodule MobDev.Discovery.AndroidTest do
       List of devices attached
       emulator-5554\tdevice transport_id:1
       """
+
       [device] = Android.parse_devices_output(output)
       assert %Device{} = device
     end

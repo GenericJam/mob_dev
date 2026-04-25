@@ -102,8 +102,10 @@ defmodule Mix.Tasks.Mob.Enable do
     unknown = features -- @valid_features
 
     if unknown != [] do
-      Mix.raise("Unknown feature(s): #{Enum.join(unknown, ", ")}. " <>
-                "Valid: #{Enum.join(@valid_features, ", ")}")
+      Mix.raise(
+        "Unknown feature(s): #{Enum.join(unknown, ", ")}. " <>
+          "Valid: #{Enum.join(@valid_features, ", ")}"
+      )
     end
 
     app_name = read_app_name(project_dir)
@@ -127,14 +129,17 @@ defmodule Mix.Tasks.Mob.Enable do
   end
 
   defp enable("camera", project_dir, _app_name) do
-    ios_add_plist_key(project_dir, "NSCameraUsageDescription",
-      "This app uses the camera.")
+    ios_add_plist_key(project_dir, "NSCameraUsageDescription", "This app uses the camera.")
     android_add_permission(project_dir, "android.permission.CAMERA")
   end
 
   defp enable("photo_library", project_dir, _app_name) do
-    ios_add_plist_key(project_dir, "NSPhotoLibraryAddUsageDescription",
-      "This app saves photos to your library.")
+    ios_add_plist_key(
+      project_dir,
+      "NSPhotoLibraryAddUsageDescription",
+      "This app saves photos to your library."
+    )
+
     android_noop("photo_library", "no manifest change needed on API 29+")
   end
 
@@ -145,14 +150,25 @@ defmodule Mix.Tasks.Mob.Enable do
   end
 
   defp enable("location", project_dir, _app_name) do
-    ios_add_plist_key(project_dir, "NSLocationWhenInUseUsageDescription",
-      "This app uses your location.")
+    ios_add_plist_key(
+      project_dir,
+      "NSLocationWhenInUseUsageDescription",
+      "This app uses your location."
+    )
+
     android_add_permission(project_dir, "android.permission.ACCESS_FINE_LOCATION")
   end
 
   defp enable("notifications", _project_dir, _app_name) do
-    android_noop("notifications", "POST_NOTIFICATIONS is requested at runtime, no manifest key needed")
-    ios_noop("notifications", "iOS notification permission is requested at runtime, no plist key needed")
+    android_noop(
+      "notifications",
+      "POST_NOTIFICATIONS is requested at runtime, no manifest key needed"
+    )
+
+    ios_noop(
+      "notifications",
+      "iOS notification permission is requested at runtime, no plist key needed"
+    )
   end
 
   # ── LiveView: generate MobScreen ─────────────────────────────────────────
@@ -264,6 +280,7 @@ defmodule Mix.Tasks.Mob.Enable do
 
       #{liveview_line}
       """)
+
       Mix.shell().info([:green, "  * create ", :reset, path])
     end
   end
@@ -280,8 +297,7 @@ defmodule Mix.Tasks.Mob.Enable do
         Mix.shell().info("  * skip #{plist} (#{key} already present)")
       else
         entry = build_plist_entry(key, value, opts)
-        patched = String.replace(content, "</dict>\n</plist>",
-          "#{entry}\n</dict>\n</plist>")
+        patched = String.replace(content, "</dict>\n</plist>", "#{entry}\n</dict>\n</plist>")
         File.write!(plist, patched)
         Mix.shell().info([:green, "  * patch ", :reset, plist, " (added #{key})"])
       end
@@ -301,7 +317,9 @@ defmodule Mix.Tasks.Mob.Enable do
       nil ->
         Path.wildcard(Path.join(project_dir, "ios/**/Info.plist"))
         |> List.first()
-      path -> path
+
+      path ->
+        path
     end)
   end
 
@@ -322,8 +340,14 @@ defmodule Mix.Tasks.Mob.Enable do
       else
         patched = MobDev.Enable.inject_android_network_security_config(content)
         File.write!(manifest, patched)
-        Mix.shell().info([:green, "  * patch ", :reset, manifest,
-                          " (added networkSecurityConfig for cleartext HTTP to 127.0.0.1)"])
+
+        Mix.shell().info([
+          :green,
+          "  * patch ",
+          :reset,
+          manifest,
+          " (added networkSecurityConfig for cleartext HTTP to 127.0.0.1)"
+        ])
       end
 
       write_android_network_security_config(project_dir)
@@ -355,7 +379,9 @@ defmodule Mix.Tasks.Mob.Enable do
       if String.contains?(content, permission) do
         Mix.shell().info("  * skip #{manifest} (#{permission} already present)")
       else
-        patched = String.replace(content, "<application", "#{tag}\n    <application", global: false)
+        patched =
+          String.replace(content, "<application", "#{tag}\n    <application", global: false)
+
         File.write!(manifest, patched)
         Mix.shell().info([:green, "  * patch ", :reset, manifest, " (added #{permission})"])
       end
@@ -375,16 +401,20 @@ defmodule Mix.Tasks.Mob.Enable do
       else
         provider_xml =
           "        <provider\n" <>
-          "            android:name=\"androidx.core.content.FileProvider\"\n" <>
-          "            android:authorities=\"${applicationId}.fileprovider\"\n" <>
-          "            android:exported=\"false\"\n" <>
-          "            android:grantUriPermissions=\"true\">\n" <>
-          "            <meta-data\n" <>
-          "                android:name=\"android.support.FILE_PROVIDER_PATHS\"\n" <>
-          "                android:resource=\"@xml/file_provider_paths\"/>\n" <>
-          "        </provider>"
-        patched = String.replace(content, "</application>",
-          "#{provider_xml}\n    </application>", global: false)
+            "            android:name=\"androidx.core.content.FileProvider\"\n" <>
+            "            android:authorities=\"${applicationId}.fileprovider\"\n" <>
+            "            android:exported=\"false\"\n" <>
+            "            android:grantUriPermissions=\"true\">\n" <>
+            "            <meta-data\n" <>
+            "                android:name=\"android.support.FILE_PROVIDER_PATHS\"\n" <>
+            "                android:resource=\"@xml/file_provider_paths\"/>\n" <>
+            "        </provider>"
+
+        patched =
+          String.replace(content, "</application>", "#{provider_xml}\n    </application>",
+            global: false
+          )
+
         File.write!(manifest, patched)
         Mix.shell().info([:green, "  * patch ", :reset, manifest, " (added FileProvider)"])
 
@@ -403,6 +433,7 @@ defmodule Mix.Tasks.Mob.Enable do
       Mix.shell().info("  * skip #{path} (already exists)")
     else
       File.mkdir_p!(xml_dir)
+
       File.write!(path, """
       <?xml version="1.0" encoding="utf-8"?>
       <paths>
@@ -411,6 +442,7 @@ defmodule Mix.Tasks.Mob.Enable do
           <external-files-path name="mob_external" path="." />
       </paths>
       """)
+
       Mix.shell().info([:green, "  * create ", :reset, path])
     end
   end

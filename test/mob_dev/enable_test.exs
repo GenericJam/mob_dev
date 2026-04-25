@@ -40,6 +40,7 @@ defmodule MobDev.EnableTest do
         ]
       end
       """
+
       path = write_tmp_mix_exs(content)
       assert Enable.read_app_name_from(path) == "phoenix_demo"
     end
@@ -70,6 +71,7 @@ defmodule MobDev.EnableTest do
       let liveSocket = new LiveSocket("/live", Socket, {hooks: {}})
       liveSocket.connect()
       """
+
       result = Enable.inject_mob_hook(input)
       assert String.contains?(result, "hooks: {MobHook}")
       assert String.contains?(result, "const MobHook")
@@ -84,6 +86,7 @@ defmodule MobDev.EnableTest do
 
       let liveSocket = new LiveSocket("/live", Socket, {hooks: {Hooks}})
       """
+
       result = Enable.inject_mob_hook(input)
       assert String.contains?(result, "hooks: {MobHook,")
       assert String.contains?(result, "Hooks}")
@@ -96,6 +99,7 @@ defmodule MobDev.EnableTest do
 
       let liveSocket = new LiveSocket("/live", Socket, {hooks: {}})
       """
+
       result = Enable.inject_mob_hook(input)
       lines = String.split(result, "\n")
 
@@ -114,6 +118,7 @@ defmodule MobDev.EnableTest do
       const liveSocket = new LiveSocket("/live", Socket, {hooks: {}})
       liveSocket.connect()
       """
+
       result = Enable.inject_mob_hook(input)
       assert String.contains?(result, "const MobHook")
       assert String.contains?(result, "hooks: {MobHook}")
@@ -126,6 +131,7 @@ defmodule MobDev.EnableTest do
       const MobHook = { mounted() {} }
       let liveSocket = new LiveSocket("/live", Socket, {hooks: {MobHook}})
       """
+
       # The task guards against double-injection via String.contains?(content, "MobHook"),
       # but inject_mob_hook itself would add a second definition. This test documents the
       # expectation that the task layer does the idempotency guard, not this function.
@@ -153,12 +159,13 @@ defmodule MobDev.EnableTest do
         </body>
       </html>
       """
+
       result = Enable.inject_mob_bridge_element(input)
       assert String.contains?(result, ~s(id="mob-bridge"))
       assert String.contains?(result, ~s(phx-hook="MobHook"))
       assert String.contains?(result, ~s(style="display:none"))
       # must appear right after <body ...>
-      body_pos  = :binary.match(result, "<body") |> elem(0)
+      body_pos = :binary.match(result, "<body") |> elem(0)
       bridge_pos = :binary.match(result, "mob-bridge") |> elem(0)
       content_pos = :binary.match(result, "@inner_content") |> elem(0)
       assert bridge_pos > body_pos
@@ -180,6 +187,7 @@ defmodule MobDev.EnableTest do
         <%= @inner_content %>
       </body>
       """
+
       result = Enable.inject_mob_bridge_element(input)
       assert result == input
       # should not have a second mob-bridge
@@ -197,7 +205,9 @@ defmodule MobDev.EnableTest do
 
   describe "find_root_html/2" do
     test "finds Phoenix 1.7+ path" do
-      dir = System.tmp_dir!() |> Path.join("mob_enable_test_#{:erlang.unique_integer([:positive])}")
+      dir =
+        System.tmp_dir!() |> Path.join("mob_enable_test_#{:erlang.unique_integer([:positive])}")
+
       File.rm_rf!(dir)
       path = Path.join([dir, "lib", "my_app_web", "components", "layouts", "root.html.heex"])
       File.mkdir_p!(Path.dirname(path))
@@ -206,7 +216,9 @@ defmodule MobDev.EnableTest do
     end
 
     test "finds pre-1.7 path when 1.7+ path absent" do
-      dir = System.tmp_dir!() |> Path.join("mob_enable_test_#{:erlang.unique_integer([:positive])}")
+      dir =
+        System.tmp_dir!() |> Path.join("mob_enable_test_#{:erlang.unique_integer([:positive])}")
+
       File.rm_rf!(dir)
       path = Path.join([dir, "lib", "my_app_web", "templates", "layout", "root.html.heex"])
       File.mkdir_p!(Path.dirname(path))
@@ -215,14 +227,18 @@ defmodule MobDev.EnableTest do
     end
 
     test "returns nil when neither path exists" do
-      dir = System.tmp_dir!() |> Path.join("mob_enable_test_#{:erlang.unique_integer([:positive])}")
+      dir =
+        System.tmp_dir!() |> Path.join("mob_enable_test_#{:erlang.unique_integer([:positive])}")
+
       File.rm_rf!(dir)
       File.mkdir_p!(dir)
       assert Enable.find_root_html(dir, "my_app") == nil
     end
 
     test "prefers 1.7+ path when both exist" do
-      dir = System.tmp_dir!() |> Path.join("mob_enable_test_#{:erlang.unique_integer([:positive])}")
+      dir =
+        System.tmp_dir!() |> Path.join("mob_enable_test_#{:erlang.unique_integer([:positive])}")
+
       File.rm_rf!(dir)
       new_path = Path.join([dir, "lib", "my_app_web", "components", "layouts", "root.html.heex"])
       old_path = Path.join([dir, "lib", "my_app_web", "templates", "layout", "root.html.heex"])
@@ -246,8 +262,14 @@ defmodule MobDev.EnableTest do
           </application>
       </manifest>
       """
+
       result = Enable.inject_android_network_security_config(input)
-      assert String.contains?(result, ~s(android:networkSecurityConfig="@xml/network_security_config"))
+
+      assert String.contains?(
+               result,
+               ~s(android:networkSecurityConfig="@xml/network_security_config")
+             )
+
       assert String.contains?(result, "android:label=\"MyApp\"")
     end
 
@@ -260,6 +282,7 @@ defmodule MobDev.EnableTest do
           </application>
       </manifest>
       """
+
       result = Enable.inject_android_network_security_config(input)
       assert result == input
       assert length(:binary.matches(result, "networkSecurityConfig")) == 1

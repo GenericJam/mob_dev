@@ -57,6 +57,7 @@ defmodule Mix.Tasks.Mob.Icon do
         unless File.exists?(source) do
           Mix.raise("Source file not found: #{source}")
         end
+
         Mix.shell().info("Resizing icon from #{source}...")
         MobDev.IconGenerator.generate_from_source(source, project_dir)
     end

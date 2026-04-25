@@ -56,15 +56,20 @@ defmodule Mix.Tasks.Mob.Deploy do
       xcrun simctl install booted <app>.app
   """
 
-  @switches [native: :boolean, restart: :boolean, android: :boolean, ios: :boolean,
-             device: :string]
+  @switches [
+    native: :boolean,
+    restart: :boolean,
+    android: :boolean,
+    ios: :boolean,
+    device: :string
+  ]
 
   @impl Mix.Task
   def run(args) do
     {opts, _, _} = OptionParser.parse(args, switches: @switches)
 
-    restart   = Keyword.get(opts, :restart, true)
-    native    = Keyword.get(opts, :native, false)
+    restart = Keyword.get(opts, :restart, true)
+    native = Keyword.get(opts, :native, false)
     device_id = opts[:device]
     platforms = resolve_platforms(opts)
 
@@ -73,8 +78,8 @@ defmodule Mix.Tasks.Mob.Deploy do
     # target the same device (not all simulators + the phone).
     effective_device_id =
       device_id ||
-        (if native and :ios in platforms,
-           do: MobDev.NativeBuild.detect_physical_ios())
+        if native and :ios in platforms,
+          do: MobDev.NativeBuild.detect_physical_ios()
 
     IO.puts("")
 
@@ -87,19 +92,30 @@ defmodule Mix.Tasks.Mob.Deploy do
     Mix.Task.run("compile")
     IO.puts("\n#{IO.ANSI.cyan()}Deploying to devices...#{IO.ANSI.reset()}\n")
 
-    native_ok = if native do
-      MobDev.NativeBuild.build_all(platforms: platforms, device: effective_device_id)
-    end
+    native_ok =
+      if native do
+        MobDev.NativeBuild.build_all(platforms: platforms, device: effective_device_id)
+      end
 
     # Skip BEAM push if native build failed — the APK/app bundle isn't installed
     # so run-as / simctl push would fail with misleading errors.
     if native and native_ok == false do
       IO.puts("\n#{IO.ANSI.red()}Native build had failures — see errors above.#{IO.ANSI.reset()}")
-      IO.puts("#{IO.ANSI.yellow()}Run `mix mob.doctor` to check your environment, or `mix mob.deploy` (without --native) once the issue is fixed.#{IO.ANSI.reset()}")
+
+      IO.puts(
+        "#{IO.ANSI.yellow()}Run `mix mob.doctor` to check your environment, or `mix mob.deploy` (without --native) once the issue is fixed.#{IO.ANSI.reset()}"
+      )
+
       Mix.raise("Native build failed")
     end
 
-    {deployed, failed} = MobDev.Deployer.deploy_all(restart: restart, platforms: platforms, force_fs: native, device: effective_device_id)
+    {deployed, failed} =
+      MobDev.Deployer.deploy_all(
+        restart: restart,
+        platforms: platforms,
+        force_fs: native,
+        device: effective_device_id
+      )
 
     if deployed == [] and failed == [] do
       IO.puts("#{IO.ANSI.yellow()}No devices found.#{IO.ANSI.reset()}")
@@ -107,15 +123,21 @@ defmodule Mix.Tasks.Mob.Deploy do
     else
       if deployed != [] do
         IO.puts("\n#{IO.ANSI.green()}Deployed to #{length(deployed)} device(s)#{IO.ANSI.reset()}")
+
         if restart do
-          IO.puts("Apps restarted. Run #{IO.ANSI.cyan()}mix mob.connect#{IO.ANSI.reset()} to open IEx.")
+          IO.puts(
+            "Apps restarted. Run #{IO.ANSI.cyan()}mix mob.connect#{IO.ANSI.reset()} to open IEx."
+          )
         else
-          IO.puts("BEAMs pushed. In IEx: #{IO.ANSI.cyan()}nl(MyModule)#{IO.ANSI.reset()} to hot-load.")
+          IO.puts(
+            "BEAMs pushed. In IEx: #{IO.ANSI.cyan()}nl(MyModule)#{IO.ANSI.reset()} to hot-load."
+          )
         end
       end
 
       if failed != [] do
         IO.puts("\n#{IO.ANSI.red()}Failed on #{length(failed)} device(s)#{IO.ANSI.reset()}")
+
         Enum.each(failed, fn d ->
           IO.puts("  ✗ #{d.name || d.serial}: #{d.error}")
         end)
@@ -125,20 +147,31 @@ defmodule Mix.Tasks.Mob.Deploy do
 
   defp resolve_platforms(opts) do
     android = opts[:android]
-    ios     = opts[:ios]
+    ios = opts[:ios]
 
     cond do
-      android && ios   -> [:android, :ios]
-      android          -> [:android]
-      ios              ->
+      android && ios ->
+        [:android, :ios]
+
+      android ->
+        [:android]
+
+      ios ->
         if macos?() do
           [:ios]
         else
-          IO.puts("#{IO.ANSI.yellow()}Warning: --ios is only supported on macOS. Skipping iOS.#{IO.ANSI.reset()}")
+          IO.puts(
+            "#{IO.ANSI.yellow()}Warning: --ios is only supported on macOS. Skipping iOS.#{IO.ANSI.reset()}"
+          )
+
           []
         end
-      macos?()         -> [:android, :ios]
-      true             -> [:android]
+
+      macos?() ->
+        [:android, :ios]
+
+      true ->
+        [:android]
     end
   end
 

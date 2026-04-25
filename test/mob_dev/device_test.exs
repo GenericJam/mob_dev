@@ -70,8 +70,12 @@ defmodule MobDev.DeviceTest do
     end
 
     test "iOS simulator: returns first 8 hex chars of UDID, lowercased" do
-      device = %Device{platform: :ios, type: :simulator,
-                       serial: "78354490-EF38-44D7-A437-DD941C20524D"}
+      device = %Device{
+        platform: :ios,
+        type: :simulator,
+        serial: "78354490-EF38-44D7-A437-DD941C20524D"
+      }
+
       assert Device.display_id(device) == "78354490"
     end
 
@@ -101,8 +105,12 @@ defmodule MobDev.DeviceTest do
     end
 
     test "matches iOS simulator by short display_id" do
-      device = %Device{platform: :ios, type: :simulator,
-                       serial: "78354490-EF38-44D7-A437-DD941C20524D"}
+      device = %Device{
+        platform: :ios,
+        type: :simulator,
+        serial: "78354490-EF38-44D7-A437-DD941C20524D"
+      }
+
       assert Device.match_id?(device, "78354490")
     end
 
@@ -113,8 +121,12 @@ defmodule MobDev.DeviceTest do
     end
 
     test "matches iOS simulator case-insensitively" do
-      device = %Device{platform: :ios, type: :simulator,
-                       serial: "78354490-EF38-44D7-A437-DD941C20524D"}
+      device = %Device{
+        platform: :ios,
+        type: :simulator,
+        serial: "78354490-EF38-44D7-A437-DD941C20524D"
+      }
+
       assert Device.match_id?(device, "78354490")
       assert Device.match_id?(device, "78354490-EF38-44D7-A437-DD941C20524D")
     end
@@ -134,20 +146,38 @@ defmodule MobDev.DeviceTest do
 
   describe "summary/1" do
     test "includes device name when set" do
-      device = %Device{platform: :android, serial: "emulator-5554",
-                       name: "Pixel 8", type: :emulator, status: :discovered}
+      device = %Device{
+        platform: :android,
+        serial: "emulator-5554",
+        name: "Pixel 8",
+        type: :emulator,
+        status: :discovered
+      }
+
       assert Device.summary(device) =~ "Pixel 8"
     end
 
     test "falls back to serial when name is nil" do
-      device = %Device{platform: :android, serial: "emulator-5554",
-                       type: :emulator, status: :discovered}
+      device = %Device{
+        platform: :android,
+        serial: "emulator-5554",
+        type: :emulator,
+        status: :discovered
+      }
+
       assert Device.summary(device) =~ "emulator-5554"
     end
 
     test "includes version when set" do
-      device = %Device{platform: :android, serial: "s", name: "Pixel",
-                       version: "Android 15", type: :emulator, status: :discovered}
+      device = %Device{
+        platform: :android,
+        serial: "s",
+        name: "Pixel",
+        version: "Android 15",
+        type: :emulator,
+        status: :discovered
+      }
+
       assert Device.summary(device) =~ "Android 15"
     end
 

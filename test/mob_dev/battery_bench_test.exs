@@ -88,38 +88,53 @@ defmodule MobDev.BatteryBenchTest do
 
   describe "iOS option parsing" do
     test "parses all supported switches" do
-      {opts, _, _} = OptionParser.parse(
-        ~w[--duration 3600 --device ABC-123 --no-beam --preset nerves
+      {opts, _, _} =
+        OptionParser.parse(
+          ~w[--duration 3600 --device ABC-123 --no-beam --preset nerves
            --flags -sbwt\ none --no-build --scheme MyApp --dry-run],
-        switches: [duration: :integer, device: :string, no_beam: :boolean,
-                   preset: :string, flags: :string, no_build: :boolean,
-                   scheme: :string, dry_run: :boolean]
-      )
+          switches: [
+            duration: :integer,
+            device: :string,
+            no_beam: :boolean,
+            preset: :string,
+            flags: :string,
+            no_build: :boolean,
+            scheme: :string,
+            dry_run: :boolean
+          ]
+        )
 
       assert opts[:duration] == 3600
-      assert opts[:device]   == "ABC-123"
-      assert opts[:no_beam]  == true
-      assert opts[:preset]   == "nerves"
+      assert opts[:device] == "ABC-123"
+      assert opts[:no_beam] == true
+      assert opts[:preset] == "nerves"
       assert opts[:no_build] == true
-      assert opts[:scheme]   == "MyApp"
-      assert opts[:dry_run]  == true
+      assert opts[:scheme] == "MyApp"
+      assert opts[:dry_run] == true
     end
   end
 
   describe "Android option parsing" do
     test "parses all supported switches" do
-      {opts, _, _} = OptionParser.parse(
-        ~w[--duration 600 --device 192.168.1.5:5555 --no-beam --no-build --dry-run],
-        switches: [duration: :integer, device: :string, no_beam: :boolean,
-                   preset: :string, flags: :string, no_build: :boolean,
-                   dry_run: :boolean]
-      )
+      {opts, _, _} =
+        OptionParser.parse(
+          ~w[--duration 600 --device 192.168.1.5:5555 --no-beam --no-build --dry-run],
+          switches: [
+            duration: :integer,
+            device: :string,
+            no_beam: :boolean,
+            preset: :string,
+            flags: :string,
+            no_build: :boolean,
+            dry_run: :boolean
+          ]
+        )
 
       assert opts[:duration] == 600
-      assert opts[:device]   == "192.168.1.5:5555"
-      assert opts[:no_beam]  == true
+      assert opts[:device] == "192.168.1.5:5555"
+      assert opts[:no_beam] == true
       assert opts[:no_build] == true
-      assert opts[:dry_run]  == true
+      assert opts[:dry_run] == true
     end
   end
 end

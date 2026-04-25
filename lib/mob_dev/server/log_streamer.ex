@@ -10,7 +10,8 @@ defmodule MobDev.Server.LogStreamer do
 
   @topic "logs"
 
-  defstruct ports: %{}   # serial => port
+  # serial => port
+  defstruct ports: %{}
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
@@ -34,20 +35,23 @@ defmodule MobDev.Server.LogStreamer do
   @spec handle_info(term(), %__MODULE__{}) :: {:noreply, %__MODULE__{}}
   def handle_info({:devices_updated, devices}, state) do
     current_serials = MapSet.new(Map.keys(state.ports))
-    new_serials     = MapSet.new(Enum.map(devices, & &1.serial))
+    new_serials = MapSet.new(Enum.map(devices, & &1.serial))
 
     # Stop ports for disconnected devices
     removed = MapSet.difference(current_serials, new_serials)
-    ports = Enum.reduce(removed, state.ports, fn serial, acc ->
-      if port = acc[serial] do
-        Port.close(port)
-      end
-      Map.delete(acc, serial)
-    end)
+
+    ports =
+      Enum.reduce(removed, state.ports, fn serial, acc ->
+        if port = acc[serial] do
+          Port.close(port)
+        end
+
+        Map.delete(acc, serial)
+      end)
 
     # Open ports for newly connected devices
     added = MapSet.difference(new_serials, current_serials)
-    new_devices = Enum.filter(devices, &(MapSet.member?(added, &1.serial)))
+    new_devices = Enum.filter(devices, &MapSet.member?(added, &1.serial))
     ports = Enum.reduce(new_devices, ports, &open_port_for/2)
 
     {:noreply, %{state | ports: ports}}
@@ -81,8 +85,11 @@ defmodule MobDev.Server.LogStreamer do
       {:noreply, state}
     else
       devices = MobDev.Server.DevicePoller.get_devices()
+
       case Enum.find(devices, &(&1.serial == serial)) do
-        nil    -> {:noreply, state}
+        nil ->
+          {:noreply, state}
+
         device ->
           broadcast_restart(serial)
           ports = open_port_for(device, state.ports)
@@ -95,6 +102,7 @@ defmodule MobDev.Server.LogStreamer do
 
   defp broadcast_line(port, line, state) do
     serial = Enum.find_value(state.ports, fn {s, p} -> if p == port, do: s end)
+
     if serial do
       parsed = parse_line(line, serial)
       MobDev.Server.LogBuffer.push(parsed)
@@ -104,16 +112,17 @@ defmodule MobDev.Server.LogStreamer do
 
   defp broadcast_restart(serial) do
     line = %{
-      id:      unique_id(),
-      serial:  serial,
-      level:   "I",
-      tag:     nil,
+      id: unique_id(),
+      serial: serial,
+      level: "I",
+      tag: nil,
       message: "── Restart ──",
-      raw:     "",
-      mob:     true,
+      raw: "",
+      mob: true,
       restart: true,
-      ts:      time_string()
+      ts: time_string()
     }
+
     MobDev.Server.LogBuffer.push(line)
     Phoenix.PubSub.broadcast(MobDev.PubSub, @topic, {:log_line, serial, line})
   end
@@ -129,9 +138,18 @@ defmodule MobDev.Server.LogStreamer do
   defp open_port_for(%{platform: :ios, serial: udid}, ports) do
     # Stream iOS simulator log, filter to mob-relevant output.
     # Process name is the binary name ("MobDemo"), not the bundle ID.
-    args = ["simctl", "spawn", udid, "log", "stream",
-            "--predicate", "process == 'MobDemo'",
-            "--style", "syslog"]
+    args = [
+      "simctl",
+      "spawn",
+      udid,
+      "log",
+      "stream",
+      "--predicate",
+      "process == 'MobDemo'",
+      "--style",
+      "syslog"
+    ]
+
     port = open_port("xcrun", args)
     Map.put(ports, udid, port)
   end
@@ -140,8 +158,11 @@ defmodule MobDev.Server.LogStreamer do
 
   defp open_port(cmd, args) do
     executable = System.find_executable(cmd) || cmd
-    Port.open({:spawn_executable, executable},
-      [:binary, :exit_status, {:args, args}, {:line, 4096}])
+
+    Port.open(
+      {:spawn_executable, executable},
+      [:binary, :exit_status, {:args, args}, {:line, 4096}]
+    )
   end
 
   # ── Log line parsing ─────────────────────────────────────────────────────────
@@ -157,39 +178,42 @@ defmodule MobDev.Server.LogStreamer do
     case Regex.run(~r/^([EWIDVF])\/([^\(]+)\(\s*\d+\):\s*(.*)$/, String.trim(raw)) do
       [_, level, tag, message] ->
         %{
-          id:      unique_id(),
-          serial:  serial,
-          level:   level,
-          tag:     String.trim(tag),
+          id: unique_id(),
+          serial: serial,
+          level: level,
+          tag: String.trim(tag),
           message: message,
-          raw:     raw,
-          mob:     mob_tag?(tag),
-          ts:      time_string()
+          raw: raw,
+          mob: mob_tag?(tag),
+          ts: time_string()
         }
+
       nil ->
         # iOS syslog or unparsed line
         %{
-          id:      unique_id(),
-          serial:  serial,
-          level:   "I",
-          tag:     nil,
+          id: unique_id(),
+          serial: serial,
+          level: "I",
+          tag: nil,
           message: String.trim(raw),
-          raw:     raw,
-          mob:     mob_line?(raw),
-          ts:      time_string()
+          raw: raw,
+          mob: mob_line?(raw),
+          ts: time_string()
         }
     end
   end
 
   defp mob_tag?(tag) do
     tag = String.trim(tag)
+
     tag in ["MobBeam", "MobNif", "MobDist", "MobBridge", "Elixir"] or
       String.starts_with?(tag, "Mob")
   end
 
   defp mob_line?(line) do
-    app       = Mix.Project.config()[:app] |> to_string()
+    app = Mix.Project.config()[:app] |> to_string()
     app_camel = app |> Macro.camelize()
+
     String.contains?(line, "MobBeam") or
       String.contains?(line, "MobNIF") or
       String.contains?(line, "MobBridge") or

@@ -158,10 +158,12 @@ defmodule MobDev.Enable do
   """
   def find_root_html(project_dir, app_name) do
     web = app_name <> "_web"
+
     candidates = [
       Path.join([project_dir, "lib", web, "components", "layouts", "root.html.heex"]),
       Path.join([project_dir, "lib", web, "templates", "layout", "root.html.heex"])
     ]
+
     Enum.find(candidates, &File.exists?/1)
   end
 

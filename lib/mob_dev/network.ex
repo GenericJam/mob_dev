@@ -12,7 +12,9 @@ defmodule MobDev.Network do
         ifaces
         |> Enum.map(fn {ip, _broadcast, _mask} -> ip end)
         |> first_lan_ip()
-      _ -> nil
+
+      _ ->
+        nil
     end
   end
 
@@ -22,9 +24,9 @@ defmodule MobDev.Network do
 
   @doc "Returns true if the IP tuple is a private LAN address (non-loopback)."
   @spec lan_ip?(:inet.ip_address()) :: boolean()
-  def lan_ip?({127, _, _, _}),    do: false
-  def lan_ip?({10, _, _, _}),     do: true
-  def lan_ip?({172, b, _, _}),    do: b >= 16 and b <= 31
-  def lan_ip?({192, 168, _, _}),  do: true
-  def lan_ip?(_),                 do: false
+  def lan_ip?({127, _, _, _}), do: false
+  def lan_ip?({10, _, _, _}), do: true
+  def lan_ip?({172, b, _, _}), do: b >= 16 and b <= 31
+  def lan_ip?({192, 168, _, _}), do: true
+  def lan_ip?(_), do: false
 end

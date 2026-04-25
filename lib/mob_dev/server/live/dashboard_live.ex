@@ -3,12 +3,12 @@ defmodule MobDev.Server.DashboardLive do
 
   alias MobDev.Server.{LogFilter, WatchWorker}
 
-  @log_limit       500
-  @elixir_limit    200
-  @log_topic       "logs"
-  @elixir_topic    "elixir_logs"
-  @device_topic    "devices"
-  @watch_topic     "watch"
+  @log_limit 500
+  @elixir_limit 200
+  @log_topic "logs"
+  @elixir_topic "elixir_logs"
+  @device_topic "devices"
+  @watch_topic "watch"
 
   @impl Phoenix.LiveView
   @spec mount(map(), map(), Phoenix.LiveView.Socket.t()) :: {:ok, Phoenix.LiveView.Socket.t()}
@@ -20,10 +20,12 @@ defmodule MobDev.Server.DashboardLive do
       Phoenix.PubSub.subscribe(MobDev.PubSub, @watch_topic)
     end
 
-    devices       = MobDev.Server.DevicePoller.get_devices()
-    all_lines     = MobDev.Server.LogBuffer.get()   # newest-first list
-    elixir_lines  = MobDev.Server.ElixirLogBuffer.get()
-    lan_url       = Application.get_env(:mob_dev, :dashboard_lan_url)
+    devices = MobDev.Server.DevicePoller.get_devices()
+    # newest-first list
+    all_lines = MobDev.Server.LogBuffer.get()
+    elixir_lines = MobDev.Server.ElixirLogBuffer.get()
+    lan_url = Application.get_env(:mob_dev, :dashboard_lan_url)
+
     {qr_small, qr_large} =
       if lan_url do
         encoded = EQRCode.encode(lan_url)
@@ -37,22 +39,24 @@ defmodule MobDev.Server.DashboardLive do
     socket =
       socket
       |> assign(
-        devices:          devices,
-        all_log_lines:    all_lines,
-        log_filter:       :app,
-        text_filter:      "",
-        deploying:        %{},   # serial => :update | :first_deploy
-        deploy_output:    %{},   # serial => [line, ...]
-        lan_url:          lan_url,
-        qr_small:         qr_small,
-        qr_large:         qr_large,
-        watch_active:     watch.watching,
-        watch_nodes:      watch.nodes,
-        watch_last_push:  watch.last_push,
-        all_elixir_lines:   elixir_lines,
+        devices: devices,
+        all_log_lines: all_lines,
+        log_filter: :app,
+        text_filter: "",
+        # serial => :update | :first_deploy
+        deploying: %{},
+        # serial => [line, ...]
+        deploy_output: %{},
+        lan_url: lan_url,
+        qr_small: qr_small,
+        qr_large: qr_large,
+        watch_active: watch.watching,
+        watch_nodes: watch.nodes,
+        watch_last_push: watch.last_push,
+        all_elixir_lines: elixir_lines,
         elixir_text_filter: ""
       )
-      |> stream(:log_lines,    LogFilter.apply(all_lines, :app, "") |> Enum.reverse())
+      |> stream(:log_lines, LogFilter.apply(all_lines, :app, "") |> Enum.reverse())
       |> stream(:elixir_lines, Enum.reverse(elixir_lines))
 
     {:ok, socket}
@@ -61,7 +65,8 @@ defmodule MobDev.Server.DashboardLive do
   # ── PubSub handlers ──────────────────────────────────────────────────────────
 
   @impl Phoenix.LiveView
-  @spec handle_info(term(), Phoenix.LiveView.Socket.t()) :: {:noreply, Phoenix.LiveView.Socket.t()}
+  @spec handle_info(term(), Phoenix.LiveView.Socket.t()) ::
+          {:noreply, Phoenix.LiveView.Socket.t()}
   def handle_info({:devices_updated, devices}, socket) do
     {:noreply, assign(socket, :devices, devices)}
   end
@@ -69,24 +74,28 @@ defmodule MobDev.Server.DashboardLive do
   def handle_info({:log_line, _serial, line}, socket) do
     all_lines = [line | socket.assigns.all_log_lines] |> Enum.take(@log_limit)
     socket = assign(socket, :all_log_lines, all_lines)
+
     socket =
       if LogFilter.matches?(line, socket.assigns.log_filter, socket.assigns.text_filter) do
         stream_insert(socket, :log_lines, line, at: -1, limit: @log_limit)
       else
         socket
       end
+
     {:noreply, socket}
   end
 
   def handle_info({:elixir_log_line, line}, socket) do
     all = [line | socket.assigns.all_elixir_lines] |> Enum.take(@elixir_limit)
     socket = assign(socket, :all_elixir_lines, all)
+
     socket =
       if elixir_matches?(line, socket.assigns.elixir_text_filter) do
         stream_insert(socket, :elixir_lines, line, at: -1, limit: @elixir_limit)
       else
         socket
       end
+
     {:noreply, socket}
   end
 
@@ -100,7 +109,13 @@ defmodule MobDev.Server.DashboardLive do
 
   def handle_info({:deploy_line, serial, line}, socket) do
     output = Map.get(socket.assigns.deploy_output, serial, [])
-    {:noreply, assign(socket, :deploy_output, Map.put(socket.assigns.deploy_output, serial, [line | output]))}
+
+    {:noreply,
+     assign(
+       socket,
+       :deploy_output,
+       Map.put(socket.assigns.deploy_output, serial, [line | output])
+     )}
   end
 
   def handle_info({:deploy_done, serial}, socket) do
@@ -111,14 +126,18 @@ defmodule MobDev.Server.DashboardLive do
   # ── Events ───────────────────────────────────────────────────────────────────
 
   @impl Phoenix.LiveView
-  @spec handle_event(String.t(), map(), Phoenix.LiveView.Socket.t()) :: {:noreply, Phoenix.LiveView.Socket.t()}
+  @spec handle_event(String.t(), map(), Phoenix.LiveView.Socket.t()) ::
+          {:noreply, Phoenix.LiveView.Socket.t()}
   def handle_event("deploy", %{"serial" => serial, "mode" => mode}, socket) do
     deploying = Map.put(socket.assigns.deploying, serial, String.to_atom(mode))
     device = Enum.find(socket.assigns.devices, &(&1.serial == serial))
-    socket = assign(socket,
-      deploying:     deploying,
-      deploy_output: Map.put(socket.assigns.deploy_output, serial, [])
-    )
+
+    socket =
+      assign(socket,
+        deploying: deploying,
+        deploy_output: Map.put(socket.assigns.deploy_output, serial, [])
+      )
+
     spawn_deploy(serial, String.to_atom(mode), device.platform, self())
     {:noreply, socket}
   end
@@ -129,57 +148,76 @@ defmodule MobDev.Server.DashboardLive do
     else
       WatchWorker.start_watching()
     end
+
     {:noreply, socket}
   end
 
   def handle_event("set_log_filter", %{"filter" => raw_filter}, socket) do
-    filter = case raw_filter do
-      "all" -> :all
-      "app" -> :app
-      serial -> serial
-    end
-    filtered = LogFilter.apply(socket.assigns.all_log_lines, filter, socket.assigns.text_filter) |> Enum.reverse()
+    filter =
+      case raw_filter do
+        "all" -> :all
+        "app" -> :app
+        serial -> serial
+      end
+
+    filtered =
+      LogFilter.apply(socket.assigns.all_log_lines, filter, socket.assigns.text_filter)
+      |> Enum.reverse()
+
     socket =
       socket
       |> assign(:log_filter, filter)
       |> stream(:log_lines, filtered, reset: true)
+
     {:noreply, socket}
   end
 
   # phx-change on a <form> sends {name => value} pairs; the input is named "text_filter".
   def handle_event("set_text_filter", %{"text_filter" => text}, socket) do
-    filtered = LogFilter.apply(socket.assigns.all_log_lines, socket.assigns.log_filter, text) |> Enum.reverse()
+    filtered =
+      LogFilter.apply(socket.assigns.all_log_lines, socket.assigns.log_filter, text)
+      |> Enum.reverse()
+
     socket =
       socket
       |> assign(:text_filter, text)
       |> stream(:log_lines, filtered, reset: true)
+
     {:noreply, socket}
   end
 
   def handle_event("clear_text_filter", _, socket) do
-    filtered = LogFilter.apply(socket.assigns.all_log_lines, socket.assigns.log_filter, "") |> Enum.reverse()
+    filtered =
+      LogFilter.apply(socket.assigns.all_log_lines, socket.assigns.log_filter, "")
+      |> Enum.reverse()
+
     socket =
       socket
       |> assign(:text_filter, "")
       |> stream(:log_lines, filtered, reset: true)
+
     {:noreply, socket}
   end
 
   def handle_event("clear_logs", _, socket) do
     MobDev.Server.LogBuffer.clear()
+
     socket =
       socket
       |> assign(:all_log_lines, [])
       |> stream(:log_lines, [], reset: true)
+
     {:noreply, socket}
   end
 
   def handle_event("set_elixir_text_filter", %{"elixir_text_filter" => text}, socket) do
     filtered = apply_elixir_filter(socket.assigns.all_elixir_lines, text)
+
     socket =
       socket
       |> assign(:elixir_text_filter, text)
       |> stream(:elixir_lines, filtered, reset: true)
+
     {:noreply, socket}
   end
 
@@ -188,15 +226,18 @@ defmodule MobDev.Server.DashboardLive do
       socket
       |> assign(:elixir_text_filter, "")
       |> stream(:elixir_lines, Enum.reverse(socket.assigns.all_elixir_lines), reset: true)
+
     {:noreply, socket}
   end
 
   def handle_event("clear_elixir_logs", _, socket) do
     MobDev.Server.ElixirLogBuffer.clear()
+
     socket =
       socket
       |> assign(:all_elixir_lines, [])
       |> stream(:elixir_lines, [], reset: true)
+
     {:noreply, socket}
   end
 
@@ -205,19 +246,29 @@ defmodule MobDev.Server.DashboardLive do
   defp spawn_deploy(serial, mode, platform, lv_pid) do
     mix = System.find_executable("mix") || "mix"
     platform_flag = if platform == :ios, do: "--ios", else: "--android"
-    args = case mode do
-      :first_deploy -> ["mob.deploy", "--native", platform_flag]
-      :update       -> ["mob.deploy", platform_flag]
-    end
+
+    args =
+      case mode do
+        :first_deploy -> ["mob.deploy", "--native", platform_flag]
+        :update -> ["mob.deploy", platform_flag]
+      end
+
     _ = serial
 
     Task.start(fn ->
       # Stream output line by line via a Port so the UI updates in real time
-      port = Port.open({:spawn_executable, mix},
-        [:binary, :exit_status, :stderr_to_stdout,
-         {:args, args},
-         {:line, 2048},
-         {:cd, File.cwd!()}])
+      port =
+        Port.open(
+          {:spawn_executable, mix},
+          [
+            :binary,
+            :exit_status,
+            :stderr_to_stdout,
+            {:args, args},
+            {:line, 2048},
+            {:cd, File.cwd!()}
+          ]
+        )
 
       stream_port(port, serial, lv_pid)
       send(lv_pid, {:deploy_done, serial})
@@ -229,6 +280,7 @@ defmodule MobDev.Server.DashboardLive do
       {^port, {:data, {:eol, line}}} ->
         send(lv_pid, {:deploy_line, serial, line})
         stream_port(port, serial, lv_pid)
+
       {^port, {:exit_status, _}} ->
         :done
     after
@@ -238,12 +290,12 @@ defmodule MobDev.Server.DashboardLive do
 
   # ── Helpers ──────────────────────────────────────────────────────────────────
 
-
   # Elixir log filter — matches message or module name; comma separates OR terms
   defp elixir_matches?(_line, ""), do: true
+
   defp elixir_matches?(line, filter) do
     terms = filter |> String.split(",") |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
-    text  = [line.message, inspect(line.module)] |> Enum.join(" ") |> String.downcase()
+    text = [line.message, inspect(line.module)] |> Enum.join(" ") |> String.downcase()
     Enum.any?(terms, &String.contains?(text, String.downcase(&1)))
   end
 
@@ -256,16 +308,18 @@ defmodule MobDev.Server.DashboardLive do
   defp level_class("E"), do: "log-E"
   defp level_class("W"), do: "log-W"
   defp level_class("I"), do: "log-I"
-  defp level_class(_),   do: "log-D"
+  defp level_class(_), do: "log-D"
 
   defp platform_badge(:android), do: {"Android", "bg-green-900 text-green-300"}
-  defp platform_badge(:ios),     do: {"iOS",     "bg-blue-900 text-blue-300"}
-  defp platform_badge(_),        do: {"?",       "bg-zinc-700 text-zinc-300"}
+  defp platform_badge(:ios), do: {"iOS", "bg-blue-900 text-blue-300"}
+  defp platform_badge(_), do: {"?", "bg-zinc-700 text-zinc-300"}
 
   defp short_serial(serial) do
     if String.contains?(serial, ":"),
-      do: serial,                         # IP:port — show as-is
-      else: String.slice(serial, -8, 8)   # USB serial — last 8 chars is enough
+      # IP:port — show as-is
+      do: serial,
+      # USB serial — last 8 chars is enough
+      else: String.slice(serial, -8, 8)
   end
 
   # ── Template ─────────────────────────────────────────────────────────────────
