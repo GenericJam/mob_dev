@@ -735,7 +735,12 @@ defmodule MobDev.NativeBuild do
 
     # ── Config from mob.exs (set by mix mob.deploy --native) ─────────────────────
     MOB_DIR="${MOB_DIR:?MOB_DIR not set}"
-    ELIXIR_LIB="${MOB_ELIXIR_LIB:?MOB_ELIXIR_LIB not set}"
+    # Always use the Elixir lib dir that matches the running `elixir` binary so
+    # the bundled Elixir stdlib matches the version that compiled the BEAMs.
+    ELIXIR_LIB=$(elixir -e "IO.puts(Path.dirname(to_string(:code.lib_dir(:elixir))))" 2>/dev/null)
+    if [ -z "$ELIXIR_LIB" ] || [ ! -d "$ELIXIR_LIB/elixir/ebin" ]; then
+        ELIXIR_LIB="${MOB_ELIXIR_LIB:?MOB_ELIXIR_LIB not set}"
+    fi
     OTP_ROOT="${MOB_IOS_DEVICE_OTP_ROOT:?MOB_IOS_DEVICE_OTP_ROOT not set}"
     EPMD_BUILD_SRC="${MOB_IOS_EPMD_BUILD_SRC:-/tmp/otp_ios_device_build/otp}"
     BUNDLE_ID="${MOB_IOS_BUNDLE_ID:?bundle_id not set in mob.exs}"
@@ -876,21 +881,47 @@ defmodule MobDev.NativeBuild do
     cp "$ELIXIR_LIB/eex/ebin/"*.beam  "$BEAMS_DIR/"
     cp "$ELIXIR_LIB/eex/ebin/eex.app" "$BEAMS_DIR/"
 
-    echo "=== Copying runtime_tools OTP library ==="
-    RUNTIME_TOOLS_SRC=$(elixir -e "IO.puts(:code.lib_dir(:runtime_tools))" 2>/dev/null)
-    if [ -n "$RUNTIME_TOOLS_SRC" ] && [ -d "$RUNTIME_TOOLS_SRC/ebin" ]; then
-        RUNTIME_TOOLS_VSN=$(basename "$RUNTIME_TOOLS_SRC")
-        mkdir -p "$OTP_ROOT/lib/$RUNTIME_TOOLS_VSN/ebin"
-        cp "$RUNTIME_TOOLS_SRC/ebin/"*.beam "$OTP_ROOT/lib/$RUNTIME_TOOLS_VSN/ebin/"
-        cp "$RUNTIME_TOOLS_SRC/ebin/runtime_tools.app" "$OTP_ROOT/lib/$RUNTIME_TOOLS_VSN/ebin/"
-    else
-        echo "Warning: runtime_tools not found on host — skipping"
-    fi
+    # Phoenix and its deps require several OTP standard libraries beyond what the
+    # Mob iOS OTP tarball bundles. Copy them from the host OTP installation.
+    # - runtime_tools: listed in Phoenix apps' extra_applications
+    # - asn1: required by public_key (asn1rt_nif is already statically linked)
+    # - public_key: required by Phoenix for cookie/cert infrastructure
+    copy_otp_lib() {
+        local APP="$1"
+        local SRC
+        SRC=$(elixir -e "IO.puts(:code.lib_dir(:${APP}))" 2>/dev/null)
+        if [ -n "$SRC" ] && [ -d "$SRC/ebin" ]; then
+            local VSN
+            VSN=$(basename "$SRC")
+            mkdir -p "$OTP_ROOT/lib/$VSN/ebin"
+            cp "$SRC/ebin/"*.beam "$OTP_ROOT/lib/$VSN/ebin/"
+            cp "$SRC/ebin/${APP}.app" "$OTP_ROOT/lib/$VSN/ebin/"
+            echo "  + $VSN"
+        else
+            echo "  ! $APP not found on host — skipping"
+        fi
+    }
+    echo "=== Copying OTP standard libraries (Phoenix deps) ==="
+    copy_otp_lib runtime_tools
+    copy_otp_lib asn1
+    copy_otp_lib public_key
 
     echo "=== Copying migrations ==="
     mkdir -p "$BEAMS_DIR/priv/repo/migrations"
     if ls priv/repo/migrations/*.exs >/dev/null 2>&1; then
         cp priv/repo/migrations/*.exs "$BEAMS_DIR/priv/repo/migrations/"
+    fi
+
+    echo "=== Building and bundling static assets ==="
+    if [ -d "assets" ]; then
+        mix assets.build
+        if [ -d "priv/static" ]; then
+            mkdir -p "$BEAMS_DIR/priv/static"
+            rsync -a "priv/static/" "$BEAMS_DIR/priv/static/"
+            echo "  Static assets: $(du -sh priv/static | cut -f1)"
+        fi
+    else
+        echo "  No assets/ dir — skipping static build"
     fi
 
     echo "=== Copying logos ==="

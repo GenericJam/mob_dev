@@ -80,14 +80,14 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
 
       # Install and launch
       xcrun devicectl device install app --device UDID /path/to/App.app
-      xcrun devicectl device launch app --terminate-existing --device UDID \\
+      xcrun devicectl device process launch --terminate-existing --device UDID \\
         com.example.myapp                   # → captures PID
 
       # Lock screen
       idevicediagnostics -u UDID sleep
 
       # Poll battery every 10s
-      ideviceinfo -u UDID -q com.apple.mobile.battery -k CurrentCapacity
+      ideviceinfo -u UDID -q com.apple.mobile.battery -k BatteryCurrentCapacity
       ideviceinfo -u UDID -q com.apple.mobile.battery -k BatteryMaxCapacity
 
       # Stop app
@@ -185,7 +185,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
     # ── Pre-run checks ─────────────────────────────────────────────────────────
 
     max_mah = read_max_capacity_mah(udid)
-    battery = read_battery(udid, max_mah)
+    battery = read_battery_required(udid, max_mah)
     unit = if max_mah, do: "mAh", else: "%"
 
     IO.puts("")
@@ -206,19 +206,19 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
     pid = launch_app!(udid, pkg)
     :timer.sleep(3000)
 
+    total_min = div(duration, 60)
+    start_b = read_battery_required(udid, max_mah)
+    start_val = battery_value(start_b, max_mah)
+    start_time = System.monotonic_time(:second)
+
+    IO.puts("Start:  #{format_battery(start_b, max_mah)}")
+
     IO.puts("=== Locking screen ===")
     lock_screen(udid)
 
     IO.puts("")
     IO.puts("Running for #{div(duration, 60)} min — do not touch the phone...")
     IO.puts("")
-
-    total_min = div(duration, 60)
-    start_b = read_battery(udid, max_mah)
-    start_val = battery_value(start_b, max_mah)
-    start_time = System.monotonic_time(:second)
-
-    IO.puts("Start:  #{format_battery(start_b, max_mah)}")
     IO.puts("")
 
     Enum.each(1..duration, fn i ->
@@ -226,24 +226,30 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
 
       if rem(i, 10) == 0 do
         elapsed_sec = System.monotonic_time(:second) - start_time
-        current_b = read_battery(udid, max_mah)
-        current_val = battery_value(current_b, max_mah)
-        drain = start_val - current_val
         elapsed_min = Float.round(elapsed_sec / 60, 1)
         ts = time_string()
 
-        rate_str =
-          if elapsed_sec > 30 do
-            rate = Float.round(drain * 3600 / elapsed_sec, 1)
-            " @ #{rate} #{unit}/hr"
-          else
-            ""
-          end
+        case read_battery(udid, max_mah) do
+          nil ->
+            IO.puts("  [#{ts}] #{elapsed_min}/#{total_min} min — device unreachable (screen locked?)")
 
-        IO.puts(
-          "  [#{ts}] #{elapsed_min}/#{total_min} min — #{format_battery(current_b, max_mah)}  " <>
-            "(−#{Float.round(drain * 1.0, 1)} #{unit}#{rate_str})"
-        )
+          current_b ->
+            current_val = battery_value(current_b, max_mah)
+            drain = start_val - current_val
+
+            rate_str =
+              if elapsed_sec > 30 do
+                rate = Float.round(drain * 3600 / elapsed_sec, 1)
+                " @ #{rate} #{unit}/hr"
+              else
+                ""
+              end
+
+            IO.puts(
+              "  [#{ts}] #{elapsed_min}/#{total_min} min — #{format_battery(current_b, max_mah)}  " <>
+                "(−#{Float.round(drain * 1.0, 1)} #{unit}#{rate_str})"
+            )
+        end
       end
     end)
 
@@ -254,7 +260,8 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
     if pid, do: terminate_app(udid, pid)
     :timer.sleep(1000)
 
-    end_b = read_battery(udid, max_mah)
+    IO.puts("  Unlock the phone to read final battery level...")
+    end_b = read_battery_required(udid, max_mah, 1, 60)
     end_val = battery_value(end_b, max_mah)
     drain = start_val - end_val
     elapsed_actual = System.monotonic_time(:second) - start_time
@@ -490,8 +497,8 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
            [
              "devicectl",
              "device",
+             "process",
              "launch",
-             "app",
              "--terminate-existing",
              "--device",
              udid,
@@ -570,42 +577,52 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
     end
   end
 
-  # Returns %{pct: integer, mah: integer | nil}
+  # Returns %{pct: integer, mah: integer | nil} or nil if device unreachable.
   defp read_battery(udid, max_mah) do
-    pct =
-      case ideviceinfo(udid, "CurrentCapacity") do
-        {:ok, val} ->
-          case Integer.parse(val) do
-            {n, _} -> n
-            :error -> read_battery_pct_fallback(udid)
-          end
+    case read_battery_pct(udid) do
+      nil ->
+        nil
 
-        _ ->
-          read_battery_pct_fallback(udid)
-      end
-
-    mah = if max_mah, do: round(max_mah * pct / 100), else: nil
-    %{pct: pct, mah: mah}
+      pct ->
+        mah = if max_mah, do: round(max_mah * pct / 100), else: nil
+        %{pct: pct, mah: mah}
+    end
   end
 
-  # Fallback: try the key without domain qualifier
-  defp read_battery_pct_fallback(udid) do
-    case System.cmd("ideviceinfo", ["-u", udid, "-k", "BatteryCurrentCapacity"],
-           stderr_to_stdout: true
-         ) do
-      {out, 0} ->
-        case Integer.parse(String.trim(out)) do
-          {n, _} ->
-            n
-
-          :error ->
-            Mix.raise(
-              "Could not read battery from device #{udid}. Check device is unlocked and trusted."
-            )
+  # Returns integer % or nil if the device is unreachable (e.g. screen locked,
+  # iOS USB restriction active). Callers that need a definite value should use
+  # read_battery_required/2 which retries before raising.
+  defp read_battery_pct(udid) do
+    case ideviceinfo(udid, "BatteryCurrentCapacity") do
+      {:ok, val} ->
+        case Integer.parse(val) do
+          {n, _} when n >= 0 -> n
+          _ -> nil
         end
 
-      {out, _} ->
-        Mix.raise("ideviceinfo failed for #{udid}: #{String.trim(out)}")
+      {:error, _} ->
+        nil
+    end
+  end
+
+  # Like read_battery but retries up to max_attempts times (2s apart) before raising.
+  # Used for the mandatory start/end readings.
+  defp read_battery_required(udid, max_mah), do: read_battery_required(udid, max_mah, 1, 5)
+  defp read_battery_required(udid, max_mah, attempt, max_attempts) do
+    case read_battery_pct(udid) do
+      nil when attempt < max_attempts ->
+        :timer.sleep(2000)
+        read_battery_required(udid, max_mah, attempt + 1, max_attempts)
+
+      nil ->
+        Mix.raise(
+          "Could not read battery from device #{udid} after #{attempt} attempts. " <>
+            "Check device is unlocked and trusted (Settings → Privacy & Security → USB Accessories)."
+        )
+
+      pct ->
+        mah = if max_mah, do: round(max_mah * pct / 100), else: nil
+        %{pct: pct, mah: mah}
     end
   end
 
@@ -613,8 +630,12 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
     case System.cmd("ideviceinfo", ["-u", udid, "-q", @battery_domain, "-k", key],
            stderr_to_stdout: true
          ) do
-      {out, 0} -> {:ok, String.trim(out)}
-      {out, _} -> {:error, String.trim(out)}
+      {out, 0} ->
+        val = String.trim(out)
+        if val == "", do: {:error, "empty"}, else: {:ok, val}
+
+      {out, _} ->
+        {:error, String.trim(out)}
     end
   end
 
