@@ -924,6 +924,25 @@ defmodule MobDev.NativeBuild do
         echo "  No assets/ dir — skipping static build"
     fi
 
+    # Plug.Static (from: :app_name) resolves the priv dir via code:lib_dir/1, which
+    # requires a code-path entry named "app_name-vsn" (not just "app_name").
+    # Install the app into $OTP_ROOT/lib/app-vsn/ alongside runtime_tools, asn1 etc.
+    # The -root flag makes $OTP_ROOT/lib/*/ebin available, so code:lib_dir finds it.
+    echo "=== Installing app into OTP lib/ (required for code:priv_dir) ==="
+    APP_VSN=$(grep 'vsn' "$BEAMS_DIR/${APP_MODULE}.app" | grep -o '"[^"]*"' | head -1 | tr -d '"')
+    if [ -n "$APP_VSN" ]; then
+        APP_LIB_DIR="$OTP_ROOT/lib/${APP_MODULE}-${APP_VSN}"
+        rm -rf "$APP_LIB_DIR"
+        mkdir -p "$APP_LIB_DIR/ebin"
+        cp "$BEAMS_DIR/${APP_MODULE}.app" "$APP_LIB_DIR/ebin/"
+        if [ -d "$BEAMS_DIR/priv" ]; then
+            rsync -a "$BEAMS_DIR/priv/" "$APP_LIB_DIR/priv/"
+        fi
+        echo "  + ${APP_MODULE}-${APP_VSN}"
+    else
+        echo "  ! Could not read version — code:priv_dir(:${APP_MODULE}) may not work"
+    fi
+
     echo "=== Copying logos ==="
     cp "$MOB_DIR/assets/logo/logo_dark.png"  "$OTP_ROOT/mob_logo_dark.png"  2>/dev/null || true
     cp "$MOB_DIR/assets/logo/logo_light.png" "$OTP_ROOT/mob_logo_light.png" 2>/dev/null || true
