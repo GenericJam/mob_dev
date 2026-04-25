@@ -812,6 +812,7 @@ defmodule MobDev.Deployer do
   # Generates crypto.beam + crypto.app in a temp dir and returns {:ok, dir}.
   # Returns {:error, reason} if erlc is not available.
   @doc false
+  @spec generate_crypto_shim() :: {:ok, String.t()} | {:error, term()}
   def generate_crypto_shim do
     dir = Path.join(System.tmp_dir!(), "mob_crypto_shim")
     File.mkdir_p!(dir)

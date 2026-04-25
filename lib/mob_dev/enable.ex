@@ -94,6 +94,7 @@ defmodule MobDev.Enable do
   @doc """
   Returns the MobHook JS constant to inject into app.js.
   """
+  @spec mob_hook_js() :: String.t()
   def mob_hook_js, do: @mob_hook_js
 
   @doc """
@@ -101,6 +102,7 @@ defmodule MobDev.Enable do
 
   See the module doc for why this element is required.
   """
+  @spec mob_bridge_element() :: String.t()
   def mob_bridge_element, do: @mob_bridge_element
 
   @doc """
@@ -113,6 +115,7 @@ defmodule MobDev.Enable do
   Returns the patched JS string. Idempotency (skip if already present) is
   handled by the calling task, not by this function.
   """
+  @spec inject_mob_hook(String.t()) :: String.t()
   def inject_mob_hook(content) do
     content
     |> insert_hook_definition()
@@ -130,6 +133,7 @@ defmodule MobDev.Enable do
   Returns the patched HTML string unchanged if `id="mob-bridge"` is already
   present.
   """
+  @spec inject_mob_bridge_element(String.t()) :: String.t()
   def inject_mob_bridge_element(content) do
     if String.contains?(content, "mob-bridge") do
       content
@@ -156,6 +160,7 @@ defmodule MobDev.Enable do
 
   Returns the path string or `nil` if neither file exists.
   """
+  @spec find_root_html(String.t(), String.t()) :: String.t() | nil
   def find_root_html(project_dir, app_name) do
     web = app_name <> "_web"
 
@@ -171,6 +176,7 @@ defmodule MobDev.Enable do
   Reads the `app:` atom from the given `mix.exs` path and returns the app
   name as a string, or raises.
   """
+  @spec read_app_name_from(String.t()) :: String.t()
   def read_app_name_from(mix_exs_path) do
     case File.read(mix_exs_path) do
       {:ok, content} ->
@@ -190,6 +196,7 @@ defmodule MobDev.Enable do
   Options:
     - `type: :bool` — emits `<true/>` or `<false/>` instead of `<string>`
   """
+  @spec build_plist_entry(String.t(), term(), keyword()) :: String.t()
   def build_plist_entry(key, value, opts \\ []) do
     if opts[:type] == :bool do
       "\t<key>#{key}</key>\n\t<#{value}/>"
@@ -209,6 +216,7 @@ defmodule MobDev.Enable do
   """
 
   @doc "Returns the XML content for the Android network security config."
+  @spec network_security_config_xml() :: String.t()
   def network_security_config_xml, do: @network_security_config_xml
 
   @doc """
@@ -217,6 +225,7 @@ defmodule MobDev.Enable do
 
   Idempotent — returns the content unchanged if the attribute is already present.
   """
+  @spec inject_android_network_security_config(String.t()) :: String.t()
   def inject_android_network_security_config(manifest_content) do
     if String.contains?(manifest_content, "networkSecurityConfig") do
       manifest_content

@@ -1,3 +1,4 @@
+# credo:disable-for-this-file Jump.CredoChecks.VacuousTest
 defmodule MobDev.BatteryBenchTest do
   use ExUnit.Case, async: true
 
@@ -66,7 +67,6 @@ defmodule MobDev.BatteryBenchTest do
         {cflags, header_dir} = unquote(mod).resolve_build_flags(flags: "-sbwt none -S 1:1")
 
         assert cflags =~ "-DBEAM_USE_CUSTOM_FLAGS"
-        assert is_binary(header_dir)
         assert File.dir?(header_dir)
 
         header = File.read!(Path.join(header_dir, "mob_beam_flags.h"))

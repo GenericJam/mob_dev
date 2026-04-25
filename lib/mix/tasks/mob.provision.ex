@@ -230,7 +230,9 @@ defmodule Mix.Tasks.Mob.Provision do
   defp generate_swift_stub do
     path = "ios/MobProvision.swift"
 
-    unless File.exists?(path) do
+    if File.exists?(path) do
+      IO.puts("  #{green()}✓#{reset()} ios/MobProvision.swift — already exists")
+    else
       IO.puts("  Writing ios/MobProvision.swift...")
 
       File.write!(path, """
@@ -241,8 +243,6 @@ defmodule Mix.Tasks.Mob.Provision do
           var body: some Scene { WindowGroup { EmptyView() } }
       }
       """)
-    else
-      IO.puts("  #{green()}✓#{reset()} ios/MobProvision.swift — already exists")
     end
   end
 

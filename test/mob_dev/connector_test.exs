@@ -15,8 +15,10 @@ defmodule MobDev.ConnectorTest do
 
     test "is safe to call multiple times" do
       # epmd -daemon is idempotent — subsequent calls exit 0 immediately.
-      Connector.start_epmd()
-      Connector.start_epmd()
+      r1 = Connector.start_epmd()
+      r2 = Connector.start_epmd()
+      assert r1 == :ok or match?({_, _}, r1)
+      assert r2 == :ok or match?({_, _}, r2)
     end
   end
 

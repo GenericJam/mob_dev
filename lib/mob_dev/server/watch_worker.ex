@@ -27,18 +27,23 @@ defmodule MobDev.Server.WatchWorker do
 
   # ── Public API ──────────────────────────────────────────────────────────────
 
+  @spec start_link(term()) :: GenServer.on_start()
   def start_link(_), do: GenServer.start_link(__MODULE__, :ok, name: __MODULE__)
 
   @doc "Start watching. Idempotent — safe to call when already watching."
+  @spec start_watching() :: term()
   def start_watching, do: GenServer.call(__MODULE__, :start)
 
   @doc "Stop watching."
+  @spec stop_watching() :: term()
   def stop_watching, do: GenServer.call(__MODULE__, :stop)
 
   @doc "Returns %{watching: bool, nodes: [node()], last_push: map | nil}."
+  @spec status() :: map()
   def status, do: GenServer.call(__MODULE__, :status)
 
   @doc "Subscribe the calling process to watch PubSub events."
+  @spec subscribe() :: :ok | {:error, term()}
   def subscribe, do: Phoenix.PubSub.subscribe(@pubsub, @topic)
 
   # ── GenServer ────────────────────────────────────────────────────────────────

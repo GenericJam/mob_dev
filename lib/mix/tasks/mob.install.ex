@@ -215,6 +215,7 @@ defmodule Mix.Tasks.Mob.Install do
   end
 
   @doc false
+  @spec write_local_properties(String.t(), keyword()) :: :ok | nil
   def write_local_properties(project_dir, cfg) do
     props = Path.join(project_dir, "android/local.properties")
 
@@ -238,6 +239,7 @@ defmodule Mix.Tasks.Mob.Install do
   end
 
   @doc false
+  @spec replace_prop(String.t(), String.t(), String.t() | nil) :: String.t()
   def replace_prop(content, key, value) when not is_nil(value) do
     String.replace(content, ~r/^#{Regex.escape(key)}=.*$/m, "#{key}=#{value}")
   end

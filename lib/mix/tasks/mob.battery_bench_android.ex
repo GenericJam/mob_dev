@@ -297,6 +297,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
 
   # Returns {extra_cpp_flags_string, header_temp_dir_or_nil}
   @doc false
+  @spec resolve_build_flags(keyword()) :: {String.t(), String.t() | nil}
   def resolve_build_flags(opts) do
     cond do
       opts[:no_beam] ->
@@ -333,6 +334,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
   end
 
   @doc false
+  @spec describe_mode(keyword()) :: String.t()
   def describe_mode(opts) do
     cond do
       opts[:no_beam] -> "no-beam (baseline)"

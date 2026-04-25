@@ -15,20 +15,26 @@ defmodule MobDev.Server.ElixirLogger do
   @topic "elixir_logs"
 
   @doc "Attach the handler to OTP's logger. Call after the server supervisor starts."
+  @spec attach() :: :ok | {:error, term()}
   def attach do
     :logger.add_handler(@handler_id, __MODULE__, %{})
   end
 
   @doc "Detach the handler."
+  @spec detach() :: :ok | {:error, term()}
   def detach do
     :logger.remove_handler(@handler_id)
   end
 
   # ── OTP logger callbacks ──────────────────────────────────────────────────
 
+  @spec adding_handler(map()) :: {:ok, map()}
   def adding_handler(config), do: {:ok, config}
+
+  @spec removing_handler(map()) :: :ok
   def removing_handler(_config), do: :ok
 
+  @spec log(map(), map()) :: :ok
   def log(%{level: level, msg: msg, meta: meta} = _event, _config) do
     # Only capture Elixir Logger events (domain: [:elixir])
     if elixir_domain?(meta) do

@@ -173,6 +173,7 @@ defmodule MobDev.Connector do
   # epmd -daemon exits 0 immediately in that case.
   # Public for testing.
   @doc false
+  @spec start_epmd() :: {String.t(), non_neg_integer()} | :ok
   def start_epmd do
     System.cmd("epmd", ["-daemon"], stderr_to_stdout: true)
   rescue
@@ -183,6 +184,7 @@ defmodule MobDev.Connector do
   # Handle the return value of Node.start/2.
   # Public for testing.
   @doc false
+  @spec handle_dist_start({:ok, term()} | {:error, term()}, atom()) :: :ok
   def handle_dist_start({:ok, _}, cookie),
     do: Node.set_cookie(cookie)
 

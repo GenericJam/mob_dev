@@ -64,7 +64,6 @@ defmodule MobDev.DeployerTest do
       :code.add_patha(String.to_charlist(dir))
       # Call via apply to avoid compile-time crypto dependency
       result = apply(:crypto, :pbkdf2_hmac, [:sha256, "password", "salt", 1000, 32])
-      assert is_binary(result)
       assert byte_size(result) == 32
       :code.del_path(String.to_charlist(dir))
     end
@@ -90,7 +89,6 @@ defmodule MobDev.DeployerTest do
       {:ok, dir} = Deployer.generate_crypto_shim()
       :code.add_patha(String.to_charlist(dir))
       result = apply(:crypto, :mac, [:hmac, :sha256, "key", "data"])
-      assert is_binary(result)
       assert byte_size(result) > 0
       :code.del_path(String.to_charlist(dir))
     end

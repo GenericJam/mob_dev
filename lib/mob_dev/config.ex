@@ -13,6 +13,7 @@ defmodule MobDev.Config do
     3. `android/app/build.gradle` — `applicationId`
     4. Generated default: `"com.mob.<app_name>"`
   """
+  @spec bundle_id() :: String.t()
   def bundle_id do
     load_mob_config()[:bundle_id] ||
       detect_from_ios_plist() ||
@@ -24,6 +25,7 @@ defmodule MobDev.Config do
   Reads the `mob_dev` section from `mob.exs` in the current directory.
   Returns an empty keyword list if the file does not exist.
   """
+  @spec load_mob_config() :: keyword()
   def load_mob_config do
     config_file = Path.join(File.cwd!(), "mob.exs")
 

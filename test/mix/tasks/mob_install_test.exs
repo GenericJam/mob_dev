@@ -86,8 +86,8 @@ defmodule Mix.Tasks.Mob.InstallTest do
     end
 
     test "does nothing when local.properties does not exist", %{dir: dir} do
-      # Should not raise
       Install.write_local_properties(dir, mob_dir: dir)
+      refute File.exists?(props_path(dir))
     end
   end
 end
