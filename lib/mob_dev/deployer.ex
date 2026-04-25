@@ -57,15 +57,23 @@ defmodule MobDev.Deployer do
     platforms = Keyword.get(opts, :platforms, [:android, :ios])
     force_fs = Keyword.get(opts, :force_fs, false)
     device_id = Keyword.get(opts, :device, nil)
+    ios_device_id = Keyword.get(opts, :ios_device, nil)
     beam_dirs = collect_beam_dirs()
 
     android =
       if :android in platforms,
-        do: Android.list_devices() |> Enum.reject(&(&1.status == :unauthorized)),
+        do:
+          Android.list_devices()
+          |> Enum.reject(&(&1.status == :unauthorized))
+          |> filter_by_device_id(device_id),
         else: []
 
-    ios = if :ios in platforms, do: IOS.list_devices(), else: []
-    all = filter_by_device_id(android ++ ios, device_id)
+    ios =
+      if :ios in platforms,
+        do: IOS.list_devices() |> filter_by_device_id(ios_device_id || device_id),
+        else: []
+
+    all = android ++ ios
 
     if all == [] do
       IO.puts("  #{color(:yellow)}No devices found.#{color(:reset)}")

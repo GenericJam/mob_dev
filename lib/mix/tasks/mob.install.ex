@@ -8,7 +8,7 @@ defmodule Mix.Tasks.Mob.Install do
 
   Must be run from inside the project directory (the one containing `mix.exs`).
 
-      mix mob.install [--no-icon] [--icon PATH]
+      mix mob.install [--icon PATH]
 
   ## What it does
 
@@ -19,7 +19,6 @@ defmodule Mix.Tasks.Mob.Install do
 
   ## Options
 
-    * `--no-icon`      — skip icon setup entirely
     * `--icon PATH`    — use a custom image instead of the Mob logo placeholder
 
   ## Icon output
@@ -53,7 +52,7 @@ defmodule Mix.Tasks.Mob.Install do
   no system tools required). Run `mix mob.icon` afterwards to replace it with a custom icon.
   """
 
-  @switches [no_icon: :boolean, icon: :string]
+  @switches [icon: :string]
 
   @impl Mix.Task
   def run(argv) do
@@ -67,10 +66,7 @@ defmodule Mix.Tasks.Mob.Install do
 
     configure_paths(project_dir)
     download_otp()
-
-    unless opts[:no_icon] do
-      setup_icon(project_dir, opts[:icon])
-    end
+    setup_icon(project_dir, opts[:icon])
 
     Mix.shell().info("""
 

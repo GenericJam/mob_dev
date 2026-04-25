@@ -876,6 +876,17 @@ defmodule MobDev.NativeBuild do
     cp "$ELIXIR_LIB/eex/ebin/"*.beam  "$BEAMS_DIR/"
     cp "$ELIXIR_LIB/eex/ebin/eex.app" "$BEAMS_DIR/"
 
+    echo "=== Copying runtime_tools OTP library ==="
+    RUNTIME_TOOLS_SRC=$(elixir -e "IO.puts(:code.lib_dir(:runtime_tools))" 2>/dev/null)
+    if [ -n "$RUNTIME_TOOLS_SRC" ] && [ -d "$RUNTIME_TOOLS_SRC/ebin" ]; then
+        RUNTIME_TOOLS_VSN=$(basename "$RUNTIME_TOOLS_SRC")
+        mkdir -p "$OTP_ROOT/lib/$RUNTIME_TOOLS_VSN/ebin"
+        cp "$RUNTIME_TOOLS_SRC/ebin/"*.beam "$OTP_ROOT/lib/$RUNTIME_TOOLS_VSN/ebin/"
+        cp "$RUNTIME_TOOLS_SRC/ebin/runtime_tools.app" "$OTP_ROOT/lib/$RUNTIME_TOOLS_VSN/ebin/"
+    else
+        echo "Warning: runtime_tools not found on host — skipping"
+    fi
+
     echo "=== Copying migrations ==="
     mkdir -p "$BEAMS_DIR/priv/repo/migrations"
     if ls priv/repo/migrations/*.exs >/dev/null 2>&1; then

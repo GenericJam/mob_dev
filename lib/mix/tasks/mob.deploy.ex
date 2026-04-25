@@ -114,7 +114,8 @@ defmodule Mix.Tasks.Mob.Deploy do
         restart: restart,
         platforms: platforms,
         force_fs: native,
-        device: effective_device_id
+        device: device_id,
+        ios_device: effective_device_id
       )
 
     if deployed == [] and failed == [] do
