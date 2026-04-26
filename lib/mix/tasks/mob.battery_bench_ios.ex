@@ -136,7 +136,11 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
         given when is_binary(given) ->
           # Hardware UDID has no hyphens in the first segment (e.g. 00008110-...)
           # CoreDevice UUID has the standard 8-4-4-4-12 UUID format.
-          hw = if String.match?(given, ~r/^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}/), do: nil, else: given
+          hw =
+            if String.match?(given, ~r/^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}/),
+              do: nil,
+              else: given
+
           {hw, given}
 
         nil ->
@@ -149,9 +153,14 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
               List connected devices with: idevice_id -l
               """)
 
-            {usb, nil}  -> {usb, usb}
-            {nil, wifi} -> {nil, wifi}
-            {usb, wifi} -> {usb, wifi}
+            {usb, nil} ->
+              {usb, usb}
+
+            {nil, wifi} ->
+              {nil, wifi}
+
+            {usb, wifi} ->
+              {usb, wifi}
           end
       end
 
@@ -208,8 +217,14 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
     # Best-effort: nil means RPC won't be available.
     IO.puts("  Connecting to device BEAM...")
     node = connect_beam_node(device_id)
-    if node, do: IO.puts("  BEAM connected: #{node}"),
-             else: IO.puts("  (BEAM not reachable — will use ideviceinfo only)")
+
+    if node do
+      IO.puts("  BEAM connected: #{node}")
+      IO.puts("  Starting background keep-alive (silent audio session)...")
+      :rpc.call(node, :mob_nif, :background_keep_alive, [], 5000)
+    else
+      IO.puts("  (BEAM not reachable — will use ideviceinfo only, screen must stay on)")
+    end
 
     max_mah = read_max_capacity_mah(hw_udid)
     battery = read_battery_required(hw_udid, max_mah, node)
@@ -238,9 +253,19 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
     IO.puts("Start:  #{format_battery(start_b, max_mah)}")
     IO.puts("")
     IO.puts(">>> Unplug the USB cable now (if connected) — then press Enter to start.")
-    IO.puts("    Keep the screen on for continuous readings.")
-    IO.puts("    You can lock the screen, but battery reads will pause until you unlock.")
+
+    if node do
+      IO.puts("    You can lock the screen — the BEAM will keep running.")
+    else
+      IO.puts("    Keep the screen on (BEAM not connected, no background keep-alive).")
+    end
+
     IO.gets("")
+
+    if node do
+      IO.puts("=== Locking screen ===")
+      lock_screen(hw_udid)
+    end
 
     IO.puts("Running for #{div(duration, 60)} min...")
     IO.puts("")
@@ -256,7 +281,9 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
 
         case read_battery(hw_udid, max_mah, node) do
           nil ->
-            IO.puts("  [#{ts}] #{elapsed_min}/#{total_min} min — (screen locked — unlock to resume readings)")
+            IO.puts(
+              "  [#{ts}] #{elapsed_min}/#{total_min} min — (screen locked — unlock to resume readings)"
+            )
 
           current_b ->
             current_val = battery_value(current_b, max_mah)
@@ -282,6 +309,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
 
     IO.puts("")
     IO.puts("=== Collecting results ===")
+    if node, do: :rpc.call(node, :mob_nif, :background_stop, [], 5000)
     if pid, do: terminate_app(udid, pid)
     :timer.sleep(1000)
 
@@ -344,6 +372,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
           {:ok, {kind, path}} -> detect_scheme!(kind, path)
           :error -> Macro.camelize(app_name())
         end
+
     duration = opts[:duration] || 1800
 
     # Validate preset / flags (raises on bad preset name)
@@ -533,7 +562,9 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
              "--device",
              udid,
              bundle_id
-           ], stderr_to_stdout: true) do
+           ],
+           stderr_to_stdout: true
+         ) do
       {out, 0} ->
         case Regex.run(~r/\bprocess identifier\s+(\d+)/i, out) ||
                Regex.run(~r/\bpid[:\s]+(\d+)/i, out) ||
@@ -563,13 +594,37 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
              udid,
              "--pid",
              to_string(pid)
-           ], stderr_to_stdout: true) do
+           ],
+           stderr_to_stdout: true
+         ) do
       {_, 0} ->
         :ok
 
       {out, _} ->
         # Non-fatal — app may have already exited
         IO.puts("  terminate warning: #{String.trim(out)}")
+    end
+  end
+
+  # ── Screen lock ──────────────────────────────────────────────────────────────
+
+  defp lock_screen(nil) do
+    IO.puts("  No hardware UDID — please lock the phone manually, then press Enter.")
+    IO.gets("")
+  end
+
+  defp lock_screen(udid) do
+    case System.cmd("idevicediagnostics", ["-u", udid, "sleep"], stderr_to_stdout: true) do
+      {_, 0} ->
+        IO.puts("  Screen locked.")
+        :timer.sleep(1000)
+
+      _ ->
+        IO.puts(
+          "  Could not lock screen automatically — please lock it manually, then press Enter."
+        )
+
+        IO.gets("")
     end
   end
 
@@ -604,7 +659,9 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
       device = device || List.first(MobDev.Discovery.IOS.list_physical())
 
       case device do
-        nil -> nil
+        nil ->
+          nil
+
         d ->
           Node.set_cookie(d.node, :mob_secret)
           if Node.connect(d.node), do: d.node, else: nil
@@ -622,7 +679,8 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
 
     try do
       case System.cmd("xcrun", ["devicectl", "list", "devices", "--json-output", tmp],
-                     stderr_to_stdout: true) do
+             stderr_to_stdout: true
+           ) do
         {_, 0} ->
           conn =
             tmp
@@ -684,7 +742,9 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
   # Returns %{pct: integer, mah: integer | nil} or nil if device unreachable.
   defp read_battery(udid, max_mah, node) do
     case read_battery_pct(udid, node) do
-      nil -> nil
+      nil ->
+        nil
+
       pct ->
         mah = if max_mah, do: round(max_mah * pct / 100), else: nil
         %{pct: pct, mah: mah}
@@ -699,8 +759,14 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
     usb_result =
       if System.find_executable("ideviceinfo") do
         case ideviceinfo(udid, "BatteryCurrentCapacity") do
-          {:ok, val} -> case Integer.parse(val) do {n, _} when n >= 0 -> n; _ -> nil end
-          {:error, _} -> nil
+          {:ok, val} ->
+            case Integer.parse(val) do
+              {n, _} when n >= 0 -> n
+              _ -> nil
+            end
+
+          {:error, _} ->
+            nil
         end
       end
 
@@ -708,6 +774,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
   end
 
   defp rpc_battery_level(nil), do: nil
+
   defp rpc_battery_level(node) do
     case :rpc.call(node, :mob_nif, :battery_level, [], 5000) do
       n when is_integer(n) and n >= 0 -> n
@@ -727,6 +794,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
 
       nil ->
         device_str = if udid, do: "device #{udid}", else: "device"
+
         Mix.raise(
           "Could not read battery from #{device_str} after #{attempt} attempts.\n" <>
             "  USB:  no hardware UDID available (idevice_id -l returned nothing).\n" <>
@@ -775,7 +843,12 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
     case System.find_executable("idevice_id") &&
            System.cmd("idevice_id", ["-l"], stderr_to_stdout: true) do
       {out, 0} ->
-        out |> String.split("\n") |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == "")) |> List.first()
+        out
+        |> String.split("\n")
+        |> Enum.map(&String.trim/1)
+        |> Enum.reject(&(&1 == ""))
+        |> List.first()
+
       _ ->
         nil
     end
@@ -797,8 +870,10 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
           |> get_in(["result", "devices"])
           |> List.wrap()
           |> Enum.find_value(fn dev ->
-            state = get_in(dev, ["connectionProperties", "tunnelState"]) ||
-                    get_in(dev, ["connectionProperties", "transportType"])
+            state =
+              get_in(dev, ["connectionProperties", "tunnelState"]) ||
+                get_in(dev, ["connectionProperties", "transportType"])
+
             if state not in [nil, "unavailable"] do
               dev["identifier"]
             end
@@ -818,8 +893,10 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
     # Try USB (ideviceinfo), then devicectl (works over WiFi for paired devices)
     usb_ok =
       System.find_executable("ideviceinfo") &&
-        match?({_, 0}, System.cmd("ideviceinfo", ["-u", udid, "-k", "DeviceName"],
-          stderr_to_stdout: true))
+        match?(
+          {_, 0},
+          System.cmd("ideviceinfo", ["-u", udid, "-k", "DeviceName"], stderr_to_stdout: true)
+        )
 
     usb_ok || devicectl_ok?(udid)
   end

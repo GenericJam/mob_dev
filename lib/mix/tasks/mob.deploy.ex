@@ -218,6 +218,7 @@ defmodule Mix.Tasks.Mob.Deploy do
   end
 
   @doc false
+  @spec combine_beam_flags(pos_integer() | nil, String.t() | nil) :: String.t() | nil
   def combine_beam_flags(schedulers, flags_string) do
     case {schedulers, flags_string} do
       {nil, nil} -> nil
@@ -238,6 +239,7 @@ defmodule Mix.Tasks.Mob.Deploy do
   end
 
   @doc false
+  @spec update_beam_flags_in_config(String.t(), String.t() | nil) :: String.t()
   def update_beam_flags_in_config(content, flags) do
     value = inspect(flags)
 

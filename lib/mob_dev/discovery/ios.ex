@@ -329,7 +329,9 @@ defmodule MobDev.Discovery.IOS do
         udid,
         "--terminate-existing",
         bundle_id
-      ], stderr_to_stdout: true)
+      ],
+      stderr_to_stdout: true
+    )
   end
 
   # Kill any user-installed app that is not `except_bundle`.
@@ -364,7 +366,9 @@ defmodule MobDev.Discovery.IOS do
           "--pid",
           to_string(pid),
           "--kill"
-        ], stderr_to_stdout: true)
+        ],
+        stderr_to_stdout: true
+      )
     end)
 
     _ = except_bundle
@@ -398,7 +402,9 @@ defmodule MobDev.Discovery.IOS do
         "VoiceOverTouchEnabled",
         "-bool",
         "YES"
-      ], stderr_to_stdout: true)
+      ],
+      stderr_to_stdout: true
+    )
 
     System.cmd(
       "xcrun",
@@ -409,7 +415,9 @@ defmodule MobDev.Discovery.IOS do
         "notifyutil",
         "-p",
         "com.apple.accessibility.voiceover.status.changed"
-      ], stderr_to_stdout: true)
+      ],
+      stderr_to_stdout: true
+    )
 
     :ok
   end

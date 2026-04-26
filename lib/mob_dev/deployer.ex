@@ -179,6 +179,7 @@ defmodule MobDev.Deployer do
     else
       case push_beams_android(serial, beam_dirs) do
         :ok ->
+          sync_elixir_stdlib_android(serial)
           write_beam_flags_android(serial, beam_flags)
           setup_exqlite_android(serial)
           setup_app_priv_android(serial)
@@ -191,6 +192,50 @@ defmodule MobDev.Deployer do
     end
   end
 
+  # If the Elixir stdlib on the device was installed by a different Elixir version
+  # than the host (e.g. after `asdf` upgrade), regex literals and other stdlib
+  # internals will be incompatible. Detect the mismatch and push updated BEAMs.
+  defp sync_elixir_stdlib_android(serial) do
+    host_vsn = System.version()
+    pkg = android_package()
+    app_data = android_app_data()
+    elixir_app = "#{app_data}/otp/lib/elixir/ebin/elixir.app"
+
+    device_vsn =
+      case run_adb(["-s", serial, "shell", "run-as #{pkg} cat #{elixir_app}"]) do
+        {:ok, content} ->
+          case Regex.run(~r/\{vsn,"([^"]+)"\}/, content) do
+            [_, v] -> v
+            _ -> nil
+          end
+
+        _ ->
+          nil
+      end
+
+    if device_vsn != host_vsn do
+      Mix.shell().info([
+        :yellow,
+        "* Elixir version mismatch (device: #{device_vsn || "unknown"}, host: #{host_vsn}) — syncing stdlib...",
+        :reset
+      ])
+
+      elixir_lib = :code.lib_dir(:elixir) |> to_string() |> Path.dirname()
+
+      Enum.each([:elixir, :logger, :eex], fn app ->
+        src = Path.join(elixir_lib, "#{app}/ebin")
+        dst = "#{app_data}/otp/lib/#{app}/ebin"
+
+        if File.dir?(src) do
+          run_adb(["-s", serial, "shell", "run-as #{pkg} mkdir -p #{dst}"])
+          run_adb(["-s", serial, "push", "#{src}/.", "#{dst}/"])
+        end
+      end)
+
+      Mix.shell().info([:green, "* Elixir stdlib synced to #{host_vsn}", :reset])
+    end
+  end
+
   defp write_beam_flags_android(_serial, nil), do: :ok
 
   defp write_beam_flags_android(serial, flags) do
@@ -198,12 +243,16 @@ defmodule MobDev.Deployer do
     tmp = Path.join(System.tmp_dir!(), "mob_beam_flags_#{serial}")
     File.write!(tmp, flags)
 
-    case System.cmd("adb", ["-s", serial, "shell", "run-as", android_package(),
-                             "test", "-d", beams_dir],
-                    stderr_to_stdout: true) do
+    case System.cmd(
+           "adb",
+           ["-s", serial, "shell", "run-as", android_package(), "test", "-d", beams_dir],
+           stderr_to_stdout: true
+         ) do
       {_, 0} ->
         System.cmd("adb", ["-s", serial, "push", tmp, "#{beams_dir}/mob_beam_flags"],
-                   stderr_to_stdout: true)
+          stderr_to_stdout: true
+        )
+
       _ ->
         :ok
     end
@@ -728,7 +777,9 @@ defmodule MobDev.Deployer do
                staging_dir,
                "--destination",
                "Documents/otp/#{app}"
-             ], stderr_to_stdout: true) do
+             ],
+             stderr_to_stdout: true
+           ) do
         {_, 0} ->
           :ok
 
