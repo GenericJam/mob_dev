@@ -6,13 +6,15 @@ defmodule MobDev.Tunnel do
     adb reverse tcp:4369 tcp:4369   — Android BEAM registers in Mac's EPMD
     adb forward tcp:<dist> tcp:9100 — Mac reaches device's dist port
 
-  Physical iOS (direct USB networking — no iproxy):
-    The device has a USB Ethernet interface with a link-local 169.254.x.x IP.
-    mob_beam.m finds this IP via getifaddrs() and starts the BEAM as
-    mob_qa_ios@<device-ip>. The device's in-process EPMD binds 0.0.0.0:4369
-    so the Mac can query it at <device-ip>:4369 directly over USB. The dist
-    port is also directly reachable. Mac connects to mob_qa_ios@<device-ip>.
-    The device IP is discovered from the Mac's ARP table.
+  Physical iOS (direct networking — USB preferred, WiFi/LAN fallback):
+    mob_beam.m finds the device's own IP via getifaddrs() and starts the BEAM
+    as mob_qa_ios@<device-ip>. The in-process EPMD binds 0.0.0.0:4369 so Mac
+    can query it at <device-ip>:4369. The dist port is directly reachable.
+
+    Connection priority (mirrors mob_beam.m priority):
+      1. USB link-local (169.254.x.x) — detected from Mac ARP table
+      2. WiFi/LAN (10.x, 172.16-31.x, 192.168.x) — EPMD scan of ARP table
+      3. Tailscale (100.64-127.x) — EPMD scan of ARP table
 
   iOS simulator:
     Shares Mac network stack — no tunnels needed.
@@ -42,12 +44,16 @@ defmodule MobDev.Tunnel do
     end
   end
 
-  def setup(%Device{platform: :ios, type: :physical, serial: _udid} = device, index) do
+  def setup(%Device{platform: :ios, type: :physical, host_ip: ip} = device, _index)
+      when not is_nil(ip) do
+    # IP already known from WiFi/LAN discovery — no ARP lookup needed.
+    # dist_port was set during discovery (parsed from EPMD). Node name already set.
+    {:ok, %{device | status: :tunneled}}
+  end
+
+  def setup(%Device{platform: :ios, type: :physical} = device, index) do
     dist_port = @base_dist_port + index
-    # Physical device: BEAM finds its own USB link-local (169.254.x.x) IP via
-    # getifaddrs() and uses it as the node hostname. The device's in-process EPMD
-    # binds on 0.0.0.0:4369 so Mac can query it directly at the device's USB IP.
-    # The dist port is also directly reachable — no iproxy required.
+    # IP not yet known — device was discovered via USB. Find the USB link-local IP.
     case device_usb_ip() do
       {:ok, device_ip} ->
         d = %{device | dist_port: dist_port, host_ip: device_ip, status: :tunneled}

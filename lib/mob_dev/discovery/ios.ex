@@ -17,12 +17,38 @@ defmodule MobDev.Discovery.IOS do
     end
   end
 
-  @doc "Returns connected physical iOS devices (requires libimobiledevice)."
+  @doc """
+  Returns connected physical iOS devices.
+
+  Always runs both USB discovery (`ideviceinfo`) and a LAN EPMD scan in
+  parallel. The LAN scan finds the device's actual node IP (which is WiFi-first
+  since mob_beam.m prefers a stable LAN address). The USB scan provides the
+  UDID and device name. Results are merged: one device with the correct WiFi IP
+  and full USB metadata.
+
+  If only one path finds the device, that result is used directly — so this
+  works on USB-only setups and WiFi-only setups equally.
+  """
   @spec list_physical() :: [Device.t()]
   def list_physical do
-    case System.find_executable("ideviceinfo") do
-      nil -> []
-      _ -> do_list_physical()
+    lan = scan_lan_for_physical()
+    usb = if System.find_executable("ideviceinfo"), do: do_list_physical(), else: []
+
+    case {lan, usb} do
+      # Both found a single device — merge WiFi IP with USB name/serial.
+      {[lan_dev], [usb_dev]} ->
+        [%{lan_dev | serial: usb_dev.serial, name: usb_dev.name, version: usb_dev.version}]
+
+      # LAN found devices, USB didn't (or multiple — can't safely correlate).
+      {[_ | _], _} ->
+        lan
+
+      # USB found devices, LAN didn't (USB-only, no WiFi).
+      {[], [_ | _]} ->
+        usb
+
+      {[], []} ->
+        []
     end
   end
 
@@ -30,6 +56,31 @@ defmodule MobDev.Discovery.IOS do
   @spec list_devices() :: [Device.t()]
   def list_devices do
     list_simulators() ++ list_physical()
+  end
+
+  @doc """
+  Queries EPMD at a specific IP for any `*_ios` node and returns a Device, or
+  nil if no iOS BEAM node is reachable there. Used for direct connection when
+  the IP is already known (e.g. from xcrun devicectl) and ARP may not be warm.
+  """
+  @spec find_physical_at(String.t()) :: Device.t() | nil
+  def find_physical_at(ip) do
+    case query_ios_epmd(ip) do
+      {:ok, short_name, dist_port} ->
+        %Device{
+          platform: :ios,
+          type: :physical,
+          serial: ip,
+          name: "iPhone (#{ip})",
+          host_ip: ip,
+          dist_port: dist_port,
+          status: :discovered,
+          node: :"#{short_name}@#{ip}"
+        }
+
+      _ ->
+        nil
+    end
   end
 
   defp do_list_simulators do
@@ -153,6 +204,88 @@ defmodule MobDev.Discovery.IOS do
     case System.cmd("ideviceinfo", ["-k", key], stderr_to_stdout: true) do
       {val, 0} -> String.trim(val)
       _ -> nil
+    end
+  end
+
+  # Scan the local ARP table for any host running an iOS EPMD node (*_ios).
+  # Builds a Device using the node name and IP directly from the EPMD response,
+  # so the app name in the Mix project running mob_dev is irrelevant.
+  defp scan_lan_for_physical do
+    lan_ips =
+      case System.cmd("arp", ["-a"], stderr_to_stdout: true) do
+        {out, 0} ->
+          out
+          |> String.split("\n")
+          |> Enum.flat_map(fn line ->
+            case Regex.run(~r/\((\d+\.\d+\.\d+\.\d+)\) at [0-9a-f]{2}:[0-9a-f]{2}/, line) do
+              [_, ip] -> if String.starts_with?(ip, "169.254."), do: [], else: [ip]
+              _ -> []
+            end
+          end)
+
+        _ ->
+          []
+      end
+
+    Enum.flat_map(lan_ips, fn ip ->
+      case query_ios_epmd(ip) do
+        {:ok, short_name, dist_port} ->
+          node = :"#{short_name}@#{ip}"
+
+          d = %Device{
+            platform: :ios,
+            type: :physical,
+            serial: ip,
+            name: "iPhone (#{ip})",
+            host_ip: ip,
+            dist_port: dist_port,
+            status: :discovered,
+            node: node
+          }
+
+          [d]
+
+        _ ->
+          []
+      end
+    end)
+  end
+
+  # Query EPMD at ip:4369 for any *_ios node.
+  # Returns {:ok, short_name, dist_port} using the actual name from EPMD,
+  # so the result is independent of which Mix project is running mob_dev.
+  defp query_ios_epmd(ip) do
+    host = String.to_charlist(ip)
+
+    case :gen_tcp.connect(host, 4369, [:binary, active: false], 1000) do
+      {:ok, s} ->
+        :gen_tcp.send(s, <<0, 1, ?n>>)
+
+        result =
+          case :gen_tcp.recv(s, 0, 1000) do
+            {:ok, <<_::32, names::binary>>} ->
+              names
+              |> String.split("\n")
+              |> Enum.find_value(fn line ->
+                case Regex.run(~r/name ([a-z0-9_]+_ios[^\s]*) at port (\d+)/i, line) do
+                  [_, short_name, port] -> {:ok, short_name, String.to_integer(port)}
+                  _ -> nil
+                end
+              end)
+              |> case do
+                nil -> {:error, :not_ios_node}
+                found -> found
+              end
+
+            _ ->
+              {:error, :recv_failed}
+          end
+
+        :gen_tcp.close(s)
+        result
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

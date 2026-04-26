@@ -21,7 +21,7 @@ defmodule MobDev.Device do
     :node,
     # 9100
     :dist_port,
-    # Mac's USB interface IP for physical iOS (e.g. "169.254.108.90")
+    # Device IP for physical iOS: USB link-local (169.254.x.x), WiFi LAN, or Tailscale
     :host_ip,
     # :discovered | :unauthorized | :tunneled | :connected | :error
     :status,
@@ -55,7 +55,7 @@ defmodule MobDev.Device do
   - Android (emulator/physical): `<app>_android@127.0.0.1`
   - iOS simulator: `<app>_ios_<8-char-udid>@127.0.0.1` (unique per simulator,
     matches the name mob_beam.m builds using SIMULATOR_UDID)
-  - iOS physical: `<app>_ios@<device-usb-ip>` (mob_beam.m finds IP via getifaddrs)
+  - iOS physical: `<app>_ios@<device-ip>` (mob_beam.m finds IP: USB > WiFi/LAN > Tailscale)
   """
   @spec node_name(t()) :: atom()
   def node_name(%__MODULE__{platform: :android}) do

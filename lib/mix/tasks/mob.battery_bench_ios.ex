@@ -128,24 +128,42 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
     duration = opts[:duration] || 1800
     no_build = opts[:no_build] || false
 
-    udid =
-      case opts[:device] || auto_detect_device() do
-        nil ->
-          Mix.raise("""
-          No iOS device found. Options:
-            Connect an iPhone/iPad via USB and accept "Trust This Computer"
-            mix mob.battery_bench_ios --device UDID
-          List connected devices with: idevice_id -l
-          """)
+    # hw_udid: hardware UDID for libimobiledevice tools (USB only, may be nil over WiFi).
+    # device_id: identifier for xcrun devicectl (works over WiFi for paired devices).
+    # --device accepts either; if given, use it for both.
+    {hw_udid, device_id} =
+      case opts[:device] do
+        given when is_binary(given) ->
+          # Hardware UDID has no hyphens in the first segment (e.g. 00008110-...)
+          # CoreDevice UUID has the standard 8-4-4-4-12 UUID format.
+          hw = if String.match?(given, ~r/^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}/), do: nil, else: given
+          {hw, given}
 
-        d ->
-          d
+        nil ->
+          case {auto_detect_usb(), auto_detect_wifi()} do
+            {nil, nil} ->
+              Mix.raise("""
+              No iOS device found. Options:
+                Connect an iPhone/iPad via USB and accept "Trust This Computer"
+                mix mob.battery_bench_ios --device UDID
+              List connected devices with: idevice_id -l
+              """)
+
+            {usb, nil}  -> {usb, usb}
+            {nil, wifi} -> {nil, wifi}
+            {usb, wifi} -> {usb, wifi}
+          end
       end
+
+    # device_id is what we pass to xcrun devicectl (install, launch, terminate).
+    udid = device_id
 
     pkg = MobDev.Config.bundle_id()
     cfg = MobDev.Config.load_mob_config()
 
-    scheme = opts[:scheme] || cfg[:ios_scheme] || default_scheme()
+    # Hoist workspace discovery so scheme auto-detection can query xcodebuild -list.
+    {workspace_kind, workspace_path} = find_workspace!()
+    scheme = opts[:scheme] || cfg[:ios_scheme] || detect_scheme!(workspace_kind, workspace_path)
 
     IO.puts("")
     IO.puts("=== Mob Battery Benchmark (iOS) ===")
@@ -158,11 +176,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
     IO.puts("")
 
     unless device_ok?(udid) do
-      Mix.raise("""
-      Cannot reach device #{udid}.
-      Check: ideviceinfo -u #{udid} -k DeviceName
-      The device must be connected via USB and trusted on this Mac.
-      """)
+      Mix.raise("Cannot reach device #{udid} — check it is paired and on the same network.")
     end
 
     # ── Build ──────────────────────────────────────────────────────────────────
@@ -173,7 +187,6 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
       {other_cflags, header_dir} = resolve_build_flags(opts)
 
       IO.puts("=== Building iOS app ===")
-      {workspace_kind, workspace_path} = find_workspace!()
       app_path = build_app(workspace_kind, workspace_path, scheme, other_cflags, derived_data)
 
       IO.puts("=== Installing on device ===")
@@ -182,10 +195,24 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
       if header_dir, do: File.rm_rf!(header_dir)
     end
 
+    # ── Launch app first so the BEAM is reachable for all battery reads ──────────
+
+    IO.puts("=== Launching app ===")
+    pid = launch_app!(udid, pkg)
+    :timer.sleep(3000)
+
     # ── Pre-run checks ─────────────────────────────────────────────────────────
 
-    max_mah = read_max_capacity_mah(udid)
-    battery = read_battery_required(udid, max_mah)
+    # Connect to the phone's BEAM — used as fallback when ideviceinfo is
+    # unavailable (WiFi-only mode) and for battery reads when screen is locked.
+    # Best-effort: nil means RPC won't be available.
+    IO.puts("  Connecting to device BEAM...")
+    node = connect_beam_node(device_id)
+    if node, do: IO.puts("  BEAM connected: #{node}"),
+             else: IO.puts("  (BEAM not reachable — will use ideviceinfo only)")
+
+    max_mah = read_max_capacity_mah(hw_udid)
+    battery = read_battery_required(hw_udid, max_mah, node)
     unit = if max_mah, do: "mAh", else: "%"
 
     IO.puts("")
@@ -202,22 +229,20 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
     end
 
     IO.puts("")
-    IO.puts("=== Launching app ===")
-    pid = launch_app!(udid, pkg)
-    :timer.sleep(3000)
 
     total_min = div(duration, 60)
-    start_b = read_battery_required(udid, max_mah)
+    start_b = read_battery_required(hw_udid, max_mah, node)
     start_val = battery_value(start_b, max_mah)
     start_time = System.monotonic_time(:second)
 
     IO.puts("Start:  #{format_battery(start_b, max_mah)}")
-
-    IO.puts("=== Locking screen ===")
-    lock_screen(udid)
-
     IO.puts("")
-    IO.puts("Running for #{div(duration, 60)} min — do not touch the phone...")
+    IO.puts(">>> Unplug the USB cable now (if connected) — then press Enter to start.")
+    IO.puts("    Keep the screen on for continuous readings.")
+    IO.puts("    You can lock the screen, but battery reads will pause until you unlock.")
+    IO.gets("")
+
+    IO.puts("Running for #{div(duration, 60)} min...")
     IO.puts("")
     IO.puts("")
 
@@ -229,9 +254,9 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
         elapsed_min = Float.round(elapsed_sec / 60, 1)
         ts = time_string()
 
-        case read_battery(udid, max_mah) do
+        case read_battery(hw_udid, max_mah, node) do
           nil ->
-            IO.puts("  [#{ts}] #{elapsed_min}/#{total_min} min — device unreachable (screen locked?)")
+            IO.puts("  [#{ts}] #{elapsed_min}/#{total_min} min — (screen locked — unlock to resume readings)")
 
           current_b ->
             current_val = battery_value(current_b, max_mah)
@@ -261,7 +286,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
     :timer.sleep(1000)
 
     IO.puts("  Unlock the phone to read final battery level...")
-    end_b = read_battery_required(udid, max_mah, 1, 60)
+    end_b = read_battery_required(hw_udid, max_mah, node, 1, 60)
     end_val = battery_value(end_b, max_mah)
     drain = start_val - end_val
     elapsed_actual = System.monotonic_time(:second) - start_time
@@ -293,18 +318,17 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
   # ── Prerequisites ─────────────────────────────────────────────────────────────
 
   defp check_prerequisites! do
-    unless System.find_executable("ideviceinfo") do
-      Mix.raise("""
-      ideviceinfo not found. Install libimobiledevice:
-
-          brew install libimobiledevice
-
-      This is required to read battery levels from the device.
-      """)
-    end
-
     unless System.find_executable("xcrun") do
       Mix.raise("xcrun not found. Install Xcode command-line tools: xcode-select --install")
+    end
+
+    # ideviceinfo is needed for USB battery reads but not strictly required —
+    # WiFi mode falls back to Erlang distribution RPC. Warn but don't abort.
+    unless System.find_executable("ideviceinfo") do
+      IO.puts("""
+      Note: ideviceinfo not found (brew install libimobiledevice).
+      Battery readings will use Erlang distribution over WiFi instead.
+      """)
     end
   end
 
@@ -313,7 +337,13 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
   defp dry_run!(opts) do
     cfg = MobDev.Config.load_mob_config()
     pkg = MobDev.Config.bundle_id()
-    scheme = opts[:scheme] || cfg[:ios_scheme] || default_scheme()
+
+    scheme =
+      opts[:scheme] || cfg[:ios_scheme] ||
+        case find_workspace() do
+          {:ok, {kind, path}} -> detect_scheme!(kind, path)
+          :error -> Macro.camelize(app_name())
+        end
     duration = opts[:duration] || 1800
 
     # Validate preset / flags (raises on bad preset name)
@@ -543,27 +573,101 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
     end
   end
 
-  # ── Screen lock ──────────────────────────────────────────────────────────────
+  # ── Battery readings ─────────────────────────────────────────────────────────
 
-  defp lock_screen(udid) do
-    case System.cmd("idevicediagnostics", ["-u", udid, "sleep"], stderr_to_stdout: true) do
-      {_, 0} ->
-        IO.puts("  Screen locked.")
-        :timer.sleep(1000)
+  # Establish Erlang distribution to the running app on the device.
+  # Returns the node atom if connected, nil otherwise.
+  # Retries up to 5 times (2s apart) to allow the BEAM to start after app launch.
+  #
+  # device_id: CoreDevice UUID — used to resolve the phone's IP via xcrun devicectl
+  # so we can query EPMD directly without relying on the ARP cache (which may not
+  # have the WiFi IP when all prior communication was over USB).
+  defp connect_beam_node(device_id) do
+    unless Node.alive?() do
+      Node.start(:"mob_bench@127.0.0.1", :longnames)
+      Node.set_cookie(:mob_secret)
+    end
 
-      _ ->
-        IO.puts("""
-          Could not lock screen automatically (idevicediagnostics sleep).
-          Please lock the phone manually now, then press Enter.
-        """)
+    Enum.find_value(0..4, fn attempt ->
+      if attempt > 0 do
+        IO.puts("  (waiting for BEAM... attempt #{attempt + 1}/5)")
+        :timer.sleep(2000)
+      end
 
-        IO.gets("")
+      # Prefer direct IP from devicectl — bypasses ARP cache miss that happens
+      # when all prior communication was over USB rather than WiFi.
+      device =
+        with ip when is_binary(ip) <- device_ip_from_devicectl(device_id) do
+          MobDev.Discovery.IOS.find_physical_at(ip)
+        end
+
+      device = device || List.first(MobDev.Discovery.IOS.list_physical())
+
+      case device do
+        nil -> nil
+        d ->
+          Node.set_cookie(d.node, :mob_secret)
+          if Node.connect(d.node), do: d.node, else: nil
+      end
+    end)
+  end
+
+  # Returns the device's IP by extracting its mDNS hostname from xcrun devicectl
+  # output and resolving it. Falls back to nil if devicectl is unavailable or
+  # the device isn't found.
+  defp device_ip_from_devicectl(nil), do: nil
+
+  defp device_ip_from_devicectl(device_id) do
+    tmp = Path.join(System.tmp_dir!(), "mob_bench_devlist_#{System.os_time(:millisecond)}.json")
+
+    try do
+      case System.cmd("xcrun", ["devicectl", "list", "devices", "--json-output", tmp],
+                     stderr_to_stdout: true) do
+        {_, 0} ->
+          conn =
+            tmp
+            |> File.read!()
+            |> Jason.decode!()
+            |> get_in(["result", "devices"])
+            |> List.wrap()
+            |> Enum.find_value(fn dev ->
+              if dev["identifier"] == device_id, do: dev["connectionProperties"]
+            end)
+
+          cond do
+            is_nil(conn) ->
+              nil
+
+            is_binary(conn["tunnelIPAddress"]) ->
+              conn["tunnelIPAddress"]
+
+            true ->
+              hostname =
+                conn["localHostnames"]
+                |> List.wrap()
+                |> List.first()
+
+              case hostname && :inet.gethostbyname(String.to_charlist(hostname)) do
+                {:ok, {:hostent, _, _, :inet, 4, [addr | _]}} ->
+                  addr |> Tuple.to_list() |> Enum.join(".")
+
+                _ ->
+                  nil
+              end
+          end
+
+        _ ->
+          nil
+      end
+    rescue
+      _ -> nil
+    after
+      File.rm(tmp)
     end
   end
 
-  # ── Battery readings ─────────────────────────────────────────────────────────
-
   # Returns the max design capacity in mAh, or nil if unavailable.
+  # Only readable via USB (ideviceinfo); WiFi RPC returns percentage only.
   defp read_max_capacity_mah(udid) do
     case ideviceinfo(udid, "BatteryMaxCapacity") do
       {:ok, val} ->
@@ -578,46 +682,56 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
   end
 
   # Returns %{pct: integer, mah: integer | nil} or nil if device unreachable.
-  defp read_battery(udid, max_mah) do
-    case read_battery_pct(udid) do
-      nil ->
-        nil
-
+  defp read_battery(udid, max_mah, node) do
+    case read_battery_pct(udid, node) do
+      nil -> nil
       pct ->
         mah = if max_mah, do: round(max_mah * pct / 100), else: nil
         %{pct: pct, mah: mah}
     end
   end
 
-  # Returns integer % or nil if the device is unreachable (e.g. screen locked,
-  # iOS USB restriction active). Callers that need a definite value should use
-  # read_battery_required/2 which retries before raising.
-  defp read_battery_pct(udid) do
-    case ideviceinfo(udid, "BatteryCurrentCapacity") do
-      {:ok, val} ->
-        case Integer.parse(val) do
-          {n, _} when n >= 0 -> n
-          _ -> nil
+  # Returns integer % or nil.
+  # Tries USB (ideviceinfo) first; falls back to Erlang RPC (mob_nif:battery_level/0)
+  # when USB is unavailable — e.g. screen locked with iOS USB restriction, or
+  # cable unplugged entirely.
+  defp read_battery_pct(udid, node) do
+    usb_result =
+      if System.find_executable("ideviceinfo") do
+        case ideviceinfo(udid, "BatteryCurrentCapacity") do
+          {:ok, val} -> case Integer.parse(val) do {n, _} when n >= 0 -> n; _ -> nil end
+          {:error, _} -> nil
         end
+      end
 
-      {:error, _} ->
-        nil
+    usb_result || rpc_battery_level(node)
+  end
+
+  defp rpc_battery_level(nil), do: nil
+  defp rpc_battery_level(node) do
+    case :rpc.call(node, :mob_nif, :battery_level, [], 5000) do
+      n when is_integer(n) and n >= 0 -> n
+      _ -> nil
     end
   end
 
   # Like read_battery but retries up to max_attempts times (2s apart) before raising.
-  # Used for the mandatory start/end readings.
-  defp read_battery_required(udid, max_mah), do: read_battery_required(udid, max_mah, 1, 5)
-  defp read_battery_required(udid, max_mah, attempt, max_attempts) do
-    case read_battery_pct(udid) do
+  defp read_battery_required(udid, max_mah, node),
+    do: read_battery_required(udid, max_mah, node, 1, 5)
+
+  defp read_battery_required(udid, max_mah, node, attempt, max_attempts) do
+    case read_battery_pct(udid, node) do
       nil when attempt < max_attempts ->
         :timer.sleep(2000)
-        read_battery_required(udid, max_mah, attempt + 1, max_attempts)
+        read_battery_required(udid, max_mah, node, attempt + 1, max_attempts)
 
       nil ->
+        device_str = if udid, do: "device #{udid}", else: "device"
         Mix.raise(
-          "Could not read battery from device #{udid} after #{attempt} attempts. " <>
-            "Check device is unlocked and trusted (Settings → Privacy & Security → USB Accessories)."
+          "Could not read battery from #{device_str} after #{attempt} attempts.\n" <>
+            "  USB:  no hardware UDID available (idevice_id -l returned nothing).\n" <>
+            "  WiFi: BEAM not reachable — ensure the app is running and on the same network.\n" <>
+            "        Run `mix mob.connect --no-iex` to verify the node is visible."
         )
 
       pct ->
@@ -626,16 +740,22 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
     end
   end
 
+  defp ideviceinfo(nil, _key), do: {:error, :no_hardware_udid}
+
   defp ideviceinfo(udid, key) do
-    case System.cmd("ideviceinfo", ["-u", udid, "-q", @battery_domain, "-k", key],
-           stderr_to_stdout: true
-         ) do
+    case System.find_executable("ideviceinfo") &&
+           System.cmd("ideviceinfo", ["-u", udid, "-q", @battery_domain, "-k", key],
+             stderr_to_stdout: true
+           ) do
       {out, 0} ->
         val = String.trim(out)
         if val == "", do: {:error, "empty"}, else: {:ok, val}
 
-      {out, _} ->
+      {out, _} when is_binary(out) ->
         {:error, String.trim(out)}
+
+      _ ->
+        {:error, "ideviceinfo not available"}
     end
   end
 
@@ -651,30 +771,162 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
 
   # ── Device detection ─────────────────────────────────────────────────────────
 
-  defp auto_detect_device do
-    case System.cmd("idevice_id", ["-l"], stderr_to_stdout: true) do
+  defp auto_detect_usb do
+    case System.find_executable("idevice_id") &&
+           System.cmd("idevice_id", ["-l"], stderr_to_stdout: true) do
       {out, 0} ->
-        out
-        |> String.split("\n")
-        |> Enum.map(&String.trim/1)
-        |> Enum.reject(&(&1 == ""))
-        |> List.first()
-
+        out |> String.split("\n") |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == "")) |> List.first()
       _ ->
         nil
     end
   end
 
+  # Finds the CoreDevice UUID of a connected (including WiFi-paired) iOS device
+  # via `xcrun devicectl list devices --json-output`.
+  defp auto_detect_wifi do
+    tmp = Path.join(System.tmp_dir!(), "mob_devicectl_list_#{System.os_time(:millisecond)}.json")
+
+    try do
+      case System.cmd("xcrun", ["devicectl", "list", "devices", "--json-output", tmp],
+             stderr_to_stdout: true
+           ) do
+        {_, 0} ->
+          tmp
+          |> File.read!()
+          |> Jason.decode!()
+          |> get_in(["result", "devices"])
+          |> List.wrap()
+          |> Enum.find_value(fn dev ->
+            state = get_in(dev, ["connectionProperties", "tunnelState"]) ||
+                    get_in(dev, ["connectionProperties", "transportType"])
+            if state not in [nil, "unavailable"] do
+              dev["identifier"]
+            end
+          end)
+
+        _ ->
+          nil
+      end
+    rescue
+      _ -> nil
+    after
+      File.rm(tmp)
+    end
+  end
+
   defp device_ok?(udid) do
-    case System.cmd("ideviceinfo", ["-u", udid, "-k", "DeviceName"], stderr_to_stdout: true) do
-      {_, 0} -> true
+    # Try USB (ideviceinfo), then devicectl (works over WiFi for paired devices)
+    usb_ok =
+      System.find_executable("ideviceinfo") &&
+        match?({_, 0}, System.cmd("ideviceinfo", ["-u", udid, "-k", "DeviceName"],
+          stderr_to_stdout: true))
+
+    usb_ok || devicectl_ok?(udid)
+  end
+
+  defp devicectl_ok?(identifier) do
+    tmp = Path.join(System.tmp_dir!(), "mob_devicectl_check_#{System.os_time(:millisecond)}.json")
+
+    try do
+      case System.cmd("xcrun", ["devicectl", "list", "devices", "--json-output", tmp],
+             stderr_to_stdout: true
+           ) do
+        {_, 0} ->
+          tmp
+          |> File.read!()
+          |> Jason.decode!()
+          |> get_in(["result", "devices"])
+          |> List.wrap()
+          |> Enum.any?(fn dev ->
+            dev["identifier"] == identifier &&
+              get_in(dev, ["connectionProperties", "tunnelState"]) not in [nil, "unavailable"]
+          end)
+
+        _ ->
+          false
+      end
+    rescue
       _ -> false
+    after
+      File.rm(tmp)
     end
   end
 
   # ── Misc ─────────────────────────────────────────────────────────────────────
 
-  defp default_scheme, do: app_name() |> Macro.camelize()
+  # Query xcodebuild -list to find the scheme name instead of guessing from the
+  # Elixir app name — the Xcode project/scheme name often differs from the Mix
+  # app atom (e.g. project "Provision" scheme "MobProvision" vs app :smoke_test).
+  defp detect_scheme!(workspace_kind, workspace_path) do
+    type_flag =
+      case workspace_kind do
+        :workspace -> ["-workspace", workspace_path]
+        :project -> ["-project", workspace_path]
+      end
+
+    case System.cmd("xcodebuild", type_flag ++ ["-list"], stderr_to_stdout: true) do
+      {output, 0} ->
+        schemes =
+          output
+          |> String.split("\n")
+          |> Enum.drop_while(&(not String.contains?(&1, "Schemes:")))
+          |> Enum.drop(1)
+          |> Enum.take_while(&String.match?(&1, ~r/^\s+\S/))
+          |> Enum.map(&String.trim/1)
+          |> Enum.reject(&(&1 == ""))
+
+        camelized = Macro.camelize(app_name())
+
+        case schemes do
+          [] ->
+            Mix.raise(
+              "No schemes found in #{Path.basename(workspace_path)}. " <>
+                "Use --scheme NAME or set ios_scheme in mob.exs."
+            )
+
+          [single] ->
+            single
+
+          multiple ->
+            if camelized in multiple do
+              camelized
+            else
+              Mix.raise("""
+              Multiple schemes found in #{Path.basename(workspace_path)}:
+                #{Enum.join(multiple, "\n  ")}
+
+              Use --scheme NAME to select one, or add to mob.exs:
+                config :mob_dev, ios_scheme: "YourSchemeName"
+              """)
+            end
+        end
+
+      {output, _} ->
+        fallback = Macro.camelize(app_name())
+        IO.puts("  (warning: xcodebuild -list failed, assuming scheme \"#{fallback}\")")
+        IO.puts("  #{String.trim(output)}")
+        fallback
+    end
+  end
+
+  # Non-raising variant used by dry_run! where ios/ may not exist.
+  defp find_workspace do
+    ios_dir = Path.join(File.cwd!(), "ios")
+
+    if File.dir?(ios_dir) do
+      workspaces = Path.wildcard(Path.join(ios_dir, "*.xcworkspace"))
+      projects = Path.wildcard(Path.join(ios_dir, "*.xcodeproj"))
+
+      case {workspaces, projects} do
+        {[ws | _], _} -> {:ok, {:workspace, ws}}
+        {[], [proj | _]} -> {:ok, {:project, proj}}
+        _ -> :error
+      end
+    else
+      :error
+    end
+  end
+
   defp app_name, do: Mix.Project.config()[:app] |> to_string()
 
   defp time_string do

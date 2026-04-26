@@ -43,6 +43,46 @@ defmodule Mix.Tasks.Mob.Connect do
   This is the recommended setup when working alongside an agent — the agent uses
   Tidewave to execute `Mob.Test.*` calls in the same running session.
 
+  ## iOS physical device connectivity
+
+  Physical iPhones support three connection modes. The BEAM picks the right one
+  automatically at startup based on which network interfaces are present:
+
+  | Priority | Connection | Node name | When |
+  |----------|------------|-----------|------|
+  | 1 | WiFi / LAN | `<app>_ios@10.0.0.x` | On the same network as the Mac |
+  | 1 | Tailscale  | `<app>_ios@100.x.x.x` | Any network — see below |
+  | 2 | USB only   | `<app>_ios@169.254.x.x` | Cable plugged in, no WiFi |
+  | 3 | None       | `<app>_ios@127.0.0.1` | No network |
+
+  WiFi is preferred over USB so the node IP stays stable across cable plug/unplug.
+  Plugging or unplugging the USB cable does not change the node name as long as
+  WiFi is available. The node only falls back to the USB link-local address when
+  there is no WiFi at all.
+
+  **The node name is still fixed at app launch.** If distribution isn't working,
+  force-quit the app on the iPhone and relaunch it so it picks up the current
+  network state.
+
+  **USB** is the default and works with no setup. Plug in the cable and run
+  `mix mob.connect`.
+
+  **WiFi** works automatically when the Mac and iPhone are on the same network. If
+  it doesn't connect, check: was the app last launched with USB plugged in? If so,
+  force-quit and relaunch the app (without USB), then run `mix mob.connect` again.
+  Public WiFi and corporate networks often block device-to-device traffic (client
+  isolation) — use Tailscale in those environments.
+
+  **Tailscale** lets you connect over any network including cellular. It is a free
+  mesh VPN (free for personal use at tailscale.com). Install it on both the Mac
+  and iPhone, sign in to the same account, and `mix mob.connect` works the same
+  way regardless of what network either device is on. Tailscale must be active on
+  the iPhone before the app launches — the node name is fixed at BEAM startup.
+
+  **Personal Hotspot** (iPhone sharing its cellular connection as WiFi) also works
+  automatically — the Mac connects to the hotspot and the LAN detection picks up
+  the `172.20.10.x` address.
+
   ## Under the hood
 
   `mix mob.connect` is a convenience wrapper around standard Erlang distribution setup:
@@ -52,6 +92,9 @@ defmodule Mix.Tasks.Mob.Connect do
       adb forward tcp:9100 tcp:9100   # dist port: Mac → device
 
       # iOS simulator shares the Mac's network stack — no tunnelling needed
+
+      # iOS physical: BEAM registers its own in-process EPMD on the device;
+      # Mac connects directly to the device IP (USB link-local, WiFi, or Tailscale)
 
       # Then, in Elixir:
       Node.start(:"mob_dev@127.0.0.1", :longnames)
