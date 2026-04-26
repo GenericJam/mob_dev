@@ -722,6 +722,11 @@ defmodule MobDev.Deployer do
     bundle = ios_bundle_id()
     app = app_name()
 
+    # When discovered via WiFi-only EPMD scan the serial is the IP address, which
+    # xcrun devicectl does not accept as a --device argument. Resolve to a hardware
+    # UDID before proceeding.
+    udid = resolve_ios_udid_if_ip(udid)
+
     # Stage all BEAMs (and priv/) into a temp dir named <app>.
     staging_parent =
       Path.join(System.tmp_dir!(), "mob_ios_deploy_#{:erlang.unique_integer([:positive])}")
@@ -815,6 +820,76 @@ defmodule MobDev.Deployer do
       {:error, reason} -> {:error, reason}
     after
       File.rm_rf!(staging_parent)
+    end
+  end
+
+  # ── iOS WiFi UDID resolution ──────────────────────────────────────────────────
+
+  # When a physical device was discovered only via LAN EPMD scan (no USB), its
+  # serial is the IP address. xcrun devicectl requires a hardware UDID or
+  # CoreDevice UUID for --device. This function resolves an IP to a UDID.
+  defp resolve_ios_udid_if_ip(udid) do
+    if Regex.match?(~r/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/, udid) do
+      resolve_udid_from_ip(udid) || udid
+    else
+      udid
+    end
+  end
+
+  defp resolve_udid_from_ip(ip) do
+    # Strategy 1: idevice_id -n lists network-connected device UDIDs.
+    # If exactly one is found, it must be the WiFi-only device we're targeting.
+    # Strategy 2: xcrun devicectl list devices, subtract known USB devices.
+    from_idevice_id_network(ip) ||
+      from_devicectl_list(ip)
+  end
+
+  defp from_idevice_id_network(_ip) do
+    with true <- not is_nil(System.find_executable("idevice_id")),
+         {out, 0} <- System.cmd("idevice_id", ["-n"], stderr_to_stdout: true),
+         udids <-
+           out |> String.split("\n") |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == "")),
+         [single] <- udids do
+      single
+    else
+      _ -> nil
+    end
+  end
+
+  defp from_devicectl_list(_ip) do
+    usb_udids =
+      if System.find_executable("idevice_id") do
+        case System.cmd("idevice_id", ["-l"], stderr_to_stdout: true) do
+          {out, 0} ->
+            out
+            |> String.split("\n")
+            |> Enum.map(&String.trim/1)
+            |> Enum.reject(&(&1 == ""))
+            |> MapSet.new()
+
+          _ ->
+            MapSet.new()
+        end
+      else
+        MapSet.new()
+      end
+
+    with {json, 0} <-
+           System.cmd("xcrun", ["devicectl", "list", "devices", "--json-output", "-"],
+             stderr_to_stdout: true
+           ),
+         {:ok, data} <- Jason.decode(json),
+         devices <- get_in(data, ["result", "devices"]) || [],
+         wifi_only <-
+           Enum.reject(devices, fn d ->
+             hw_udid = get_in(d, ["hardwareProperties", "udid"]) || ""
+             MapSet.member?(usb_udids, hw_udid)
+           end),
+         [device] <- wifi_only,
+         udid when not is_nil(udid) <- get_in(device, ["hardwareProperties", "udid"]) do
+      udid
+    else
+      _ -> nil
     end
   end
 

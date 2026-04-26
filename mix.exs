@@ -4,8 +4,8 @@ defmodule MobDev.MixProject do
   def project do
     [
       app: :mob_dev,
-      version: "0.3.7",
-      elixir: "~> 1.17",
+      version: "0.3.8",
+      elixir: "~> 1.19",
       description: "Development tooling for the Mob mobile framework",
       source_url: "https://github.com/genericjam/mob_dev",
       deps: deps(),

@@ -110,15 +110,24 @@ Use this hash everywhere below as `<hash>`.
 
 ---
 
-## Step 2 — Build the Android tarball
+## Step 2 — Build the Android tarballs (arm64 + arm32)
 
-The Android OTP release lives at `bin/aarch64-unknown-linux-android/` and
-the release dir (wherever `make install` put it — check the previous release
-for the path, typically `/tmp/otp-android` or similar).
+The Android OTP release lives at the cross-compiled install dir (typically
+`/tmp/otp-android` for arm64, `/tmp/otp-android-arm32` for arm32 — check
+where the previous build left it).
+
+**Before tarballing**, make sure you have a project with exqlite compiled
+(`_build/dev/lib/exqlite/ebin/` must exist — run `mix deps.get && mix compile`
+from any app that uses ecto_sqlite3). The exqlite BEAMs are platform-independent
+bytecode and can be bundled directly; the native `.so` is already in the APK and
+is symlinked at runtime by `mob_beam.c`.
+
+### arm64
 
 ```bash
 OTP_SRC=~/code/otp
 OTP_RELEASE=/tmp/otp-android   # adjust if different
+EXQLITE_BUILD=~/code/mob_test_liveview/_build/dev/lib/exqlite  # any project with exqlite
 HASH=<hash>
 STAGE=$(mktemp -d)
 
@@ -140,11 +149,71 @@ cp "$OTP_SRC/erts/emulator/beam/erl_drv_nif.h"                                  
 cp "$OTP_SRC/erts/include/aarch64-unknown-linux-android/erl_int_sizes_config.h"   "$ERTS_INC/"
 cp "$OTP_SRC/erts/include/erl_fixed_size_int_types.h"                             "$ERTS_INC/"
 
+# Add host Elixir stdlib (elixir, logger, eex) so the device starts with the
+# correct version. Without this, Elixir version drift causes Regex.safe_run
+# crashes when the host is upgraded between native deploys.
+ELIXIR_LIB=$(elixir -e "IO.puts(:code.lib_dir(:elixir))" | xargs dirname)
+for app in elixir logger eex; do
+    mkdir -p "$STAGE/lib/$app/ebin"
+    cp "$ELIXIR_LIB/$app/ebin/"* "$STAGE/lib/$app/ebin/"
+done
+echo "Bundled Elixir $(elixir --version | grep Elixir | awk '{print $2}')"
+
+# Add exqlite BEAMs. The .so NIF is in the APK (symlinked at runtime by mob_beam.c);
+# only the ebin/ bytecode goes in the tarball.
+EXQLITE_VSN=$(grep '"exqlite"' "$EXQLITE_BUILD/../../../mix.lock" | grep -o '"[0-9][^"]*"' | head -1 | tr -d '"')
+EXQLITE_LIB="$STAGE/lib/exqlite-$EXQLITE_VSN"
+mkdir -p "$EXQLITE_LIB/ebin" "$EXQLITE_LIB/priv"
+cp "$EXQLITE_BUILD/ebin/"* "$EXQLITE_LIB/ebin/"
+echo "Bundled exqlite $EXQLITE_VSN"
+
 BASE=$(basename $STAGE)
 tar czf "/tmp/otp-android-$HASH.tar.gz" -C "$(dirname $STAGE)" "$BASE"
 
 # Verify
 tar tzf "/tmp/otp-android-$HASH.tar.gz" | grep "\.a$\|\.h$"
+tar tzf "/tmp/otp-android-$HASH.tar.gz" | grep "lib/elixir/ebin/elixir.app"
+tar tzf "/tmp/otp-android-$HASH.tar.gz" | grep "lib/exqlite"
+```
+
+### arm32
+
+Repeat the same steps with the arm32 OTP release and the arm32 asn1rt_nif.a (see
+prerequisites above for how to build it). The Elixir and exqlite BEAMs are the same
+— bytecode is architecture-independent.
+
+```bash
+OTP_RELEASE_ARM32=/tmp/otp-android-arm32   # adjust if different
+STAGE32=$(mktemp -d)
+
+cp -r "$OTP_RELEASE_ARM32/." "$STAGE32"
+
+ERTS_LIB32="$STAGE32/erts-16.3/lib"
+cp "$OTP_SRC/erts/emulator/zstd/obj/arm-unknown-linux-androideabi/opt/libzstd.a"   "$ERTS_LIB32/"
+cp "$OTP_SRC/erts/emulator/pcre/obj/arm-unknown-linux-androideabi/opt/libepcre.a"  "$ERTS_LIB32/"
+cp "$OTP_SRC/erts/emulator/ryu/obj/arm-unknown-linux-androideabi/opt/libryu.a"    "$ERTS_LIB32/"
+cp /tmp/asn1rt_nif_arm32.a "$ERTS_LIB32/asn1rt_nif.a"
+
+ERTS_INC32="$STAGE32/erts-16.3/include"
+mkdir -p "$ERTS_INC32"
+cp "$OTP_SRC/erts/emulator/beam/erl_nif.h"                                          "$ERTS_INC32/"
+cp "$OTP_SRC/erts/emulator/beam/erl_nif_api_funcs.h"                                "$ERTS_INC32/"
+cp "$OTP_SRC/erts/emulator/beam/erl_drv_nif.h"                                      "$ERTS_INC32/"
+cp "$OTP_SRC/erts/include/arm-unknown-linux-androideabi/erl_int_sizes_config.h"     "$ERTS_INC32/"
+cp "$OTP_SRC/erts/include/erl_fixed_size_int_types.h"                               "$ERTS_INC32/"
+
+# Same Elixir and exqlite BEAMs (bytecode is arch-independent)
+for app in elixir logger eex; do
+    mkdir -p "$STAGE32/lib/$app/ebin"
+    cp "$ELIXIR_LIB/$app/ebin/"* "$STAGE32/lib/$app/ebin/"
+done
+mkdir -p "$STAGE32/lib/exqlite-$EXQLITE_VSN/ebin" "$STAGE32/lib/exqlite-$EXQLITE_VSN/priv"
+cp "$EXQLITE_BUILD/ebin/"* "$STAGE32/lib/exqlite-$EXQLITE_VSN/ebin/"
+
+BASE32=$(basename $STAGE32)
+tar czf "/tmp/otp-android-arm32-$HASH.tar.gz" -C "$(dirname $STAGE32)" "$BASE32"
+tar tzf "/tmp/otp-android-arm32-$HASH.tar.gz" | grep "lib/elixir/ebin/elixir.app"
+tar tzf "/tmp/otp-android-arm32-$HASH.tar.gz" | grep "lib/exqlite"
 ```
 
 ---
@@ -178,6 +247,15 @@ cp "$OTP_SRC/erts/emulator/beam/erl_drv_nif.h"                                 "
 cp "$OTP_SRC/erts/include/aarch64-apple-iossimulator/erl_int_sizes_config.h"   "$ERTS_INC/"
 cp "$OTP_SRC/erts/include/erl_fixed_size_int_types.h"                          "$ERTS_INC/"
 
+# Add host Elixir stdlib (same reasoning as Android — bake in so fresh installs
+# start with the correct version and don't hit Regex.safe_run crashes).
+ELIXIR_LIB=$(elixir -e "IO.puts(:code.lib_dir(:elixir))" | xargs dirname)
+for app in elixir logger eex; do
+    mkdir -p "$STAGE/lib/$app/ebin"
+    cp "$ELIXIR_LIB/$app/ebin/"* "$STAGE/lib/$app/ebin/"
+done
+echo "Bundled Elixir $(elixir --version | grep Elixir | awk '{print $2}')"
+
 # List any app-specific BEAM dirs to exclude (ls $OTP_ROOT | grep -vE "^(erts|lib|releases|misc|usr)$")
 BASE=$(basename $STAGE)
 tar czf "/tmp/otp-ios-sim-$HASH.tar.gz" \
@@ -189,6 +267,7 @@ tar czf "/tmp/otp-ios-sim-$HASH.tar.gz" \
 # Verify
 tar tzf "/tmp/otp-ios-sim-$HASH.tar.gz" | grep "\.a$"
 tar tzf "/tmp/otp-ios-sim-$HASH.tar.gz" | grep "\.h$"
+tar tzf "/tmp/otp-ios-sim-$HASH.tar.gz" | grep "lib/elixir/ebin/elixir.app"
 ```
 
 ---
@@ -206,9 +285,10 @@ gh release create "otp-$HASH" \
     --title "OTP pre-built runtime $HASH" \
     --notes "Pre-built OTP for Android (aarch64-linux-android) and iOS simulator (aarch64-apple-iossimulator). OTP source commit: $HASH."
 
-# Upload tarballs
+# Upload tarballs (all three)
 gh release upload "otp-$HASH" \
     "/tmp/otp-android-$HASH.tar.gz" \
+    "/tmp/otp-android-arm32-$HASH.tar.gz" \
     "/tmp/otp-ios-sim-$HASH.tar.gz" \
     --repo GenericJam/mob
 
