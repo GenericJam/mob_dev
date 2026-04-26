@@ -222,17 +222,75 @@ defmodule MobDev.Deployer do
 
       elixir_lib = :code.lib_dir(:elixir) |> to_string() |> Path.dirname()
 
-      Enum.each([:elixir, :logger, :eex], fn app ->
-        src = Path.join(elixir_lib, "#{app}/ebin")
-        dst = "#{app_data}/otp/lib/#{app}/ebin"
+      rooted? =
+        case run_adb(["-s", serial, "root"]) do
+          {:ok, out} when is_binary(out) ->
+            if out =~ "restarting" or out =~ "already running as root" do
+              :timer.sleep(600)
+              true
+            else
+              false
+            end
 
-        if File.dir?(src) do
-          run_adb(["-s", serial, "shell", "run-as #{pkg} mkdir -p #{dst}"])
-          run_adb(["-s", serial, "push", "#{src}/.", "#{dst}/"])
+          _ ->
+            false
         end
-      end)
+
+      if rooted? do
+        Enum.each([:elixir, :logger, :eex], fn app ->
+          src = Path.join(elixir_lib, "#{app}/ebin")
+          dst = "#{app_data}/otp/lib/#{app}/ebin"
+
+          if File.dir?(src) do
+            run_adb(["-s", serial, "shell", "mkdir -p #{dst}"])
+            run_adb(["-s", serial, "push", "#{src}/.", "#{dst}/"])
+          end
+        end)
+      else
+        sync_elixir_stdlib_android_runas(serial, pkg, app_data, elixir_lib)
+      end
 
       Mix.shell().info([:green, "* Elixir stdlib synced to #{host_vsn}", :reset])
+    end
+  end
+
+  # Non-rooted path: stage elixir/logger/eex ebin into a tar on /data/local/tmp,
+  # then extract into the app sandbox via `run-as`. Files created by run-as are
+  # owned by the app user so they can be overwritten on the next sync.
+  defp sync_elixir_stdlib_android_runas(serial, pkg, app_data, elixir_lib) do
+    stage_local = Path.join(System.tmp_dir!(), "mob_elixir_#{serial}.tar")
+    stage_device = "/data/local/tmp/mob_elixir.tar"
+
+    try do
+      tmp = Path.join(System.tmp_dir!(), "mob_elixir_stage_#{serial}")
+      File.rm_rf!(tmp)
+
+      for app <- [:elixir, :logger, :eex] do
+        src = Path.join(elixir_lib, "#{app}/ebin")
+
+        if File.dir?(src) do
+          dst = Path.join(tmp, "#{app}/ebin")
+          File.mkdir_p!(dst)
+          System.cmd("cp", ["-r", "#{src}/.", dst], stderr_to_stdout: true)
+        end
+      end
+
+      System.cmd("tar", ["cf", stage_local, "-C", tmp, "."],
+        env: [{"COPYFILE_DISABLE", "1"}],
+        stderr_to_stdout: true
+      )
+
+      run_adb(["-s", serial, "push", stage_local, stage_device])
+
+      # Extract relative to otp/lib/ so elixir/ebin, logger/ebin, eex/ebin land correctly.
+      cmd =
+        "run-as #{pkg} tar xf #{stage_device} -C #{app_data}/otp/lib 2>/dev/null; true"
+
+      run_adb(["-s", serial, "shell", cmd])
+      run_adb(["-s", serial, "shell", "rm -f #{stage_device}"])
+    after
+      File.rm(stage_local)
+      File.rm_rf(Path.join(System.tmp_dir!(), "mob_elixir_stage_#{serial}"))
     end
   end
 

@@ -450,9 +450,14 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
     ios_dir = Path.join(File.cwd!(), "ios")
     unless File.dir?(ios_dir), do: Mix.raise("ios/ directory not found in #{File.cwd!()}")
 
-    # Prefer .xcworkspace (CocoaPods/SPM), fall back to .xcodeproj
+    # Prefer .xcworkspace (CocoaPods/SPM), fall back to .xcodeproj.
+    # Exclude Provision.xcodeproj — that is a mob.provision stub with no BEAM.
     workspaces = Path.wildcard(Path.join(ios_dir, "*.xcworkspace"))
-    projects = Path.wildcard(Path.join(ios_dir, "*.xcodeproj"))
+    projects =
+      ios_dir
+      |> Path.join("*.xcodeproj")
+      |> Path.wildcard()
+      |> Enum.reject(&(Path.basename(&1) == "Provision.xcodeproj"))
 
     case {workspaces, projects} do
       {[ws | _], _} ->
