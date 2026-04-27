@@ -137,7 +137,7 @@ defmodule MobDev.Bench.Preflight do
         # Without a device id, we can't query devicectl. Treat as informational.
         {:ok, "skipped (no device_id provided to verify)"}
 
-      not System.find_executable("xcrun") ->
+      is_nil(System.find_executable("xcrun")) ->
         {:ok, "skipped (xcrun unavailable)"}
 
       true ->
