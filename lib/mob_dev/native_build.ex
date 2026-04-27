@@ -27,11 +27,20 @@ defmodule MobDev.NativeBuild do
     platforms = Keyword.get(opts, :platforms, [:android, :ios])
     device_id = Keyword.get(opts, :device, nil)
 
+    # When `--device <android-serial>` is given, the user wants that one phone
+    # only — skip the iOS build entirely so we don't install on the simulator
+    # too. iOS UDIDs and Android serials don't overlap in format, so we can
+    # detect this from the device_id alone.
+    platforms =
+      if is_binary(device_id) and not ios_physical_udid?(device_id),
+        do: platforms -- [:ios],
+        else: platforms
+
     results = []
 
     results =
       if :android in platforms and File.dir?("android"),
-        do: [build_android(cfg) | results],
+        do: [build_android(cfg, device_id) | results],
         else: results
 
     results =
@@ -79,7 +88,7 @@ defmodule MobDev.NativeBuild do
 
   # ── Android ──────────────────────────────────────────────────────────────────
 
-  defp build_android(cfg) do
+  defp build_android(cfg, device_id \\ nil) do
     IO.puts("  Building Android APK...")
     bundle_id = cfg[:bundle_id] || MobDev.Config.bundle_id()
     apk = "android/app/build/outputs/apk/debug/app-debug.apk"
@@ -89,8 +98,15 @@ defmodule MobDev.NativeBuild do
          :ok <- ensure_jni_libs(otp_arm64, "arm64-v8a"),
          :ok <- ensure_jni_libs(otp_arm32, "armeabi-v7a"),
          :ok <- gradle_assemble(),
-         :ok <- adb_install_all(apk, bundle_id),
-         :ok <- push_otp_release_android(bundle_id, cfg[:elixir_lib], otp_arm64, otp_arm32) do
+         :ok <- adb_install_all(apk, bundle_id, device_id),
+         :ok <-
+           push_otp_release_android(
+             bundle_id,
+             cfg[:elixir_lib],
+             otp_arm64,
+             otp_arm32,
+             device_id
+           ) do
       {:ok, "Android"}
     else
       {:error, reason} -> {:error, "Android", reason}
@@ -183,7 +199,7 @@ defmodule MobDev.NativeBuild do
     end)
   end
 
-  defp adb_install_all(apk, bundle_id) do
+  defp adb_install_all(apk, bundle_id, device_id \\ nil) do
     case System.cmd("adb", ["devices"], stderr_to_stdout: true) do
       {output, 0} ->
         serials =
@@ -192,6 +208,7 @@ defmodule MobDev.NativeBuild do
           |> Enum.drop(1)
           |> Enum.filter(&String.contains?(&1, "\tdevice"))
           |> Enum.map(&hd(String.split(&1, "\t")))
+          |> filter_serials(device_id)
 
         Enum.each(serials, fn serial ->
           IO.puts("  Installing APK on #{serial}...")
@@ -260,14 +277,14 @@ defmodule MobDev.NativeBuild do
     end
   end
 
-  defp push_otp_release_android(bundle_id, elixir_lib, otp_arm64, otp_arm32) do
+  defp push_otp_release_android(bundle_id, elixir_lib, otp_arm64, otp_arm32, device_id \\ nil) do
     app_data = "/data/data/#{bundle_id}/files"
 
     IO.puts("  Pushing OTP release to device(s)...")
 
     case System.cmd("adb", ["devices"], stderr_to_stdout: true) do
       {output, 0} ->
-        serials = parse_adb_serials(output)
+        serials = parse_adb_serials(output) |> filter_serials(device_id)
         if serials == [], do: IO.puts("  (no devices connected, skipping OTP push)")
 
         Enum.reduce_while(serials, :ok, fn serial, _ ->
@@ -454,6 +471,36 @@ defmodule MobDev.NativeBuild do
     |> Enum.drop(1)
     |> Enum.filter(&String.contains?(&1, "\tdevice"))
     |> Enum.map(&hd(String.split(&1, "\t")))
+  end
+
+  # Filters a list of adb serials by `--device <id>`. The id is matched against
+  # the serial directly, against an `IP:port` form (auto-strip `:5555`), and
+  # against a bare IP for WiFi-adb devices. Returns all serials when device_id
+  # is nil. Returns empty + warning if device_id matches no connected serial.
+  @doc false
+  @spec filter_serials([String.t()], String.t() | nil) :: [String.t()]
+  def filter_serials(serials, nil), do: serials
+
+  def filter_serials(serials, id) when is_binary(id) do
+    matches =
+      Enum.filter(serials, fn s ->
+        s == id or s == "#{id}:5555" or strip_port(s) == id
+      end)
+
+    if matches == [] do
+      IO.puts(
+        "  #{IO.ANSI.yellow()}⚠  --device #{id} matched no connected adb device — skipping#{IO.ANSI.reset()}"
+      )
+    end
+
+    matches
+  end
+
+  defp strip_port(s) do
+    case String.split(s, ":", parts: 2) do
+      [host, _port] -> host
+      _ -> s
+    end
   end
 
   # ── iOS ──────────────────────────────────────────────────────────────────────

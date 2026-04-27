@@ -23,4 +23,38 @@ defmodule MobDev.NativeBuildTest do
       assert NativeBuild.otp_dir_for_abi("", "/otp/arm64", "/otp/arm32") == "/otp/arm64"
     end
   end
+
+  describe "filter_serials/2" do
+    @serials [
+      "ZY22K6BSJM",
+      "10.0.0.17:5555",
+      "10.0.0.82:5555",
+      "emulator-5554",
+      "emulator-5556"
+    ]
+
+    test "nil returns all serials unchanged" do
+      assert NativeBuild.filter_serials(@serials, nil) == @serials
+    end
+
+    test "exact serial match" do
+      assert NativeBuild.filter_serials(@serials, "ZY22K6BSJM") == ["ZY22K6BSJM"]
+    end
+
+    test "matches wifi-adb serial when given bare IP" do
+      assert NativeBuild.filter_serials(@serials, "10.0.0.17") == ["10.0.0.17:5555"]
+    end
+
+    test "matches wifi-adb serial when given full IP:port" do
+      assert NativeBuild.filter_serials(@serials, "10.0.0.17:5555") == ["10.0.0.17:5555"]
+    end
+
+    test "matches emulator serial" do
+      assert NativeBuild.filter_serials(@serials, "emulator-5554") == ["emulator-5554"]
+    end
+
+    test "non-matching id returns empty list" do
+      assert NativeBuild.filter_serials(@serials, "NOPE") == []
+    end
+  end
 end
