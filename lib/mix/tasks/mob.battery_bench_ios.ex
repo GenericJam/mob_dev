@@ -256,7 +256,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
           bundle_id: pkg,
           device_id: device_id,
           hw_udid: hw_udid,
-          require_keep_alive: not opts[:no_keep_alive]
+          require_keep_alive: opts[:no_keep_alive] != true
         )
 
       IO.puts(Preflight.pretty(preflight_results))
