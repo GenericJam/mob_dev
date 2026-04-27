@@ -206,7 +206,12 @@ defmodule MobDev.Deployer do
   # Returns :ok if ERTS is present, {:error, message} with a helpful hint
   # if missing.
   defp ensure_erts_on_device(serial, pkg) do
-    cmd = "run-as #{pkg} ls /data/data/#{pkg}/files/otp/erts-*/bin/erl_child_setup 2>&1"
+    # The wildcard must be expanded *inside* the run-as sandbox — `run-as`
+    # itself does not invoke a shell, and the outer adb-shell shell can't
+    # see /data/data/<pkg>/, so a literal "erts-*" gets passed to ls if we
+    # don't wrap with `sh -c` here.
+    cmd =
+      "run-as #{pkg} sh -c 'ls /data/data/#{pkg}/files/otp/erts-*/bin/erl_child_setup' 2>&1"
 
     case run_adb(["-s", serial, "shell", cmd]) do
       {:ok, out} ->

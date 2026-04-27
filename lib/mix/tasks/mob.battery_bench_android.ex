@@ -773,15 +773,19 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
   end
 
   # Verify both that (a) the Android process is up and (b) the BEAM has
-  # finished booting and registered its node in EPMD. Catches three failure
-  # modes:
+  # finished booting and registered its node in EPMD with a *live* listener.
+  # Catches four failure modes:
   #   1. App crashes immediately       → pidof returns empty
   #   2. App shell up, BEAM crashed    → pidof returns pid, EPMD never has node
-  #   3. Healthy startup               → pidof + EPMD both succeed
+  #   3. Stale EPMD entry from prior   → EPMD has node but TCP-probe fails
+  #      run (different device, etc.)    (the listener at the registered
+  #                                       port isn't actually accepting)
+  #   4. Healthy startup               → pidof + live EPMD entry both succeed
   #
-  # Polls for up to ~10 seconds. The "process exists but BEAM dead" case is
-  # the worst — it can run for the whole bench duration before being noticed
-  # — so we explicitly wait for EPMD registration.
+  # The stale-entry case is especially nasty: another device/run can leave a
+  # name registered in Mac's EPMD that points to a port nothing is listening
+  # on. Without the TCP probe, the bench thinks the BEAM is up and lets a
+  # 30-minute run proceed where every RPC will fail.
   defp verify_app_running!(device, pkg) do
     app = app_name()
     expected_node_name = "#{app}_android"
@@ -791,19 +795,22 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
     result =
       verify_loop(device, pkg, expected_node_name, deadline_ms,
         last_pid: nil,
-        last_epmd_names: nil
+        last_epmd_entries: nil
       )
 
     case result do
-      {:ok, pid} ->
+      {:ok, pid, port} ->
         IO.puts("  ✓ App running on device (pid #{pid})")
-        IO.puts("  ✓ BEAM registered in EPMD as #{expected_node_name}")
+        IO.puts("  ✓ BEAM registered in EPMD as #{expected_node_name} (port #{port})")
 
       {:error, :no_process, _state} ->
         Mix.raise(crash_diagnosis_no_process(device, pkg))
 
       {:error, :process_no_beam, state} ->
         Mix.raise(crash_diagnosis_no_beam(device, pkg, state[:last_pid]))
+
+      {:error, :stale_epmd, state} ->
+        Mix.raise(crash_diagnosis_stale_epmd(device, pkg, state[:last_pid], state[:stale_port]))
     end
   end
 
@@ -811,26 +818,34 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
     :timer.sleep(500)
 
     pid = pid_of(device, pkg)
-    epmd_names = epmd_names_local()
+    epmd_entries = epmd_names_local()
+    registered_port = Map.get(epmd_entries, expected_node_name)
 
     cond do
-      pid && expected_node_name in epmd_names ->
-        {:ok, pid}
+      pid && registered_port && tcp_port_alive?(registered_port) ->
+        {:ok, pid, registered_port}
 
       System.monotonic_time(:millisecond) >= deadline_ms ->
         cond do
           is_nil(pid) ->
             {:error, :no_process,
-             [last_pid: state[:last_pid], last_epmd_names: epmd_names]}
+             [last_pid: state[:last_pid], last_epmd_entries: epmd_entries]}
+
+          # EPMD has a stale entry but its port isn't accepting connections.
+          # The BEAM didn't register itself for *this* run.
+          registered_port ->
+            {:error, :stale_epmd,
+             [last_pid: pid, last_epmd_entries: epmd_entries, stale_port: registered_port]}
 
           true ->
-            {:error, :process_no_beam, [last_pid: pid, last_epmd_names: epmd_names]}
+            {:error, :process_no_beam,
+             [last_pid: pid, last_epmd_entries: epmd_entries]}
         end
 
       true ->
         verify_loop(device, pkg, expected_node_name, deadline_ms,
           last_pid: pid || state[:last_pid],
-          last_epmd_names: epmd_names
+          last_epmd_entries: epmd_entries
         )
     end
   end
@@ -850,32 +865,49 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
     end
   end
 
+  # Returns a map of %{node_name => port} for everything Mac's EPMD knows.
   defp epmd_names_local do
     case :gen_tcp.connect(~c"127.0.0.1", 4369, [:binary, active: false], 500) do
       {:ok, sock} ->
         :gen_tcp.send(sock, <<0, 1, ?n>>)
 
-        names =
+        entries =
           case :gen_tcp.recv(sock, 0, 500) do
             {:ok, <<_::32, body::binary>>} ->
               body
               |> String.split("\n", trim: true)
               |> Enum.flat_map(fn line ->
-                case Regex.run(~r/^name (\S+) at port \d+$/, line) do
-                  [_, name] -> [name]
+                case Regex.run(~r/^name (\S+) at port (\d+)$/, line) do
+                  [_, name, port] -> [{name, String.to_integer(port)}]
                   _ -> []
                 end
               end)
+              |> Map.new()
 
             _ ->
-              []
+              %{}
           end
 
         :gen_tcp.close(sock)
-        names
+        entries
 
       _ ->
-        []
+        %{}
+    end
+  end
+
+  # TCP-probe a port via the adb forward to confirm someone is actually
+  # listening. EPMD entries can outlive the registering BEAM (e.g. the device
+  # was force-stopped while the reverse-tunnel kept the registering socket
+  # half-open), so name-presence alone isn't enough.
+  defp tcp_port_alive?(port) do
+    case :gen_tcp.connect(~c"127.0.0.1", port, [:binary, active: false], 500) do
+      {:ok, sock} ->
+        :gen_tcp.close(sock)
+        true
+
+      _ ->
+        false
     end
   end
 
@@ -933,6 +965,37 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
     process keeping the package alive even though the BEAM died. Don't
     take a green `pidof` as proof the BEAM is up — EPMD registration is
     the authoritative signal.
+    """
+  end
+
+  defp crash_diagnosis_stale_epmd(device, pkg, pid, port) do
+    """
+
+    ✗ App #{pkg} is running (pid #{pid}) but the BEAM didn't register
+      a live listener for this run.
+
+    Mac's EPMD has a name registered at port #{port}, but nothing is
+    actually listening there — it's a stale entry from a prior run on a
+    different device (a name like `smoke_test_android` collides whenever
+    multiple Android phones run the same app). The new BEAM didn't even
+    try to register because the name was already taken, or it tried and
+    silently failed.
+
+    To clear the stale entry and start fresh:
+
+      adb -s #{device} reverse --remove-all
+      epmd -kill            # restarts EPMD, dropping all registrations
+      epmd -daemon          # bring EPMD back
+
+    Then re-run the bench. If multiple Android devices are connected,
+    only one can hold the smoke_test_android name at a time — disconnect
+    the others or kill their adb-reverse first:
+
+      adb devices
+
+    Also check that the BEAM actually started distribution this run:
+
+      adb -s #{device} logcat -d | grep -iE "Mob.Dist|step [0-9]"
     """
   end
 

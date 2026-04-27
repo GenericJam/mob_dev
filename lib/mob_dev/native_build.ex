@@ -88,7 +88,7 @@ defmodule MobDev.NativeBuild do
 
   # ── Android ──────────────────────────────────────────────────────────────────
 
-  defp build_android(cfg, device_id \\ nil) do
+  defp build_android(cfg, device_id) do
     IO.puts("  Building Android APK...")
     bundle_id = cfg[:bundle_id] || MobDev.Config.bundle_id()
     apk = "android/app/build/outputs/apk/debug/app-debug.apk"
@@ -199,7 +199,7 @@ defmodule MobDev.NativeBuild do
     end)
   end
 
-  defp adb_install_all(apk, bundle_id, device_id \\ nil) do
+  defp adb_install_all(apk, bundle_id, device_id) do
     case System.cmd("adb", ["devices"], stderr_to_stdout: true) do
       {output, 0} ->
         serials =
@@ -277,7 +277,7 @@ defmodule MobDev.NativeBuild do
     end
   end
 
-  defp push_otp_release_android(bundle_id, elixir_lib, otp_arm64, otp_arm32, device_id \\ nil) do
+  defp push_otp_release_android(bundle_id, elixir_lib, otp_arm64, otp_arm32, device_id) do
     app_data = "/data/data/#{bundle_id}/files"
 
     IO.puts("  Pushing OTP release to device(s)...")
