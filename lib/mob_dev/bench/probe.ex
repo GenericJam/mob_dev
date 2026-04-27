@@ -99,15 +99,25 @@ defmodule MobDev.Bench.Probe do
     tcp_timeout = Keyword.get(opts, :tcp_timeout_ms, 1_000)
 
     reachability = probe_reachability(node, host, rpc_timeout, tcp_timeout)
-    {battery_pct, rpc_reason} = probe_rpc_battery(reachability, node, rpc_timeout)
+    {rpc_pct, rpc_reason} = probe_rpc_battery(reachability, node, rpc_timeout)
     {usb, usb_pct, usb_reason} = probe_usb(platform, opts)
     app_process = probe_app_process(platform, opts, reachability)
 
     screen = derive_screen(opts[:expected_screen], reachability, usb)
 
     # Battery: prefer USB (more reliable), fall back to RPC, else nil.
-    battery = usb_pct || battery_pct
-    reason = rpc_reason || usb_reason
+    # Only surface a reason when we couldn't get a battery reading at all —
+    # otherwise the CSV's reason column gets flooded with fallback noise
+    # (e.g. "ideviceinfo: device not found" when the user unplugged USB
+    # for the bench, even though RPC succeeded right after).
+    {battery, reason} =
+      cond do
+        is_integer(usb_pct) -> {usb_pct, nil}
+        is_integer(rpc_pct) -> {rpc_pct, nil}
+        rpc_reason -> {nil, rpc_reason}
+        usb_reason -> {nil, usb_reason}
+        true -> {nil, nil}
+      end
 
     %__MODULE__{
       ts_ms: ts,
