@@ -914,7 +914,14 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
 
           adb -s #{device} logcat -d | grep -iE "MobBeam|FATAL|SIGABRT|beam-main"
 
-      - BEAMs missing or stale on device. Push fresh ones:
+      - OTP runtime never deployed to this device. The app is installed
+        but /data/data/<pkg>/files/otp/erts-*/bin/ is missing. Common when
+        the device wasn't connected during a previous `mix mob.deploy
+        --native`. Provision it now:
+
+          mix mob.deploy --native --device #{device}
+
+      - BEAMs stale on device. If OTP is present, push fresh BEAMs:
 
           mix mob.deploy --android --device #{device}
 

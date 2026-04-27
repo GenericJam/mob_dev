@@ -177,19 +177,68 @@ defmodule MobDev.Deployer do
       {:error,
        "#{pkg} is not installed on #{device.name || serial} — skipping (ABI mismatch or missing install)"}
     else
-      case push_beams_android(serial, beam_dirs) do
+      case ensure_erts_on_device(serial, pkg) do
         :ok ->
-          sync_elixir_stdlib_android(serial)
-          write_beam_flags_android(serial, beam_flags)
-          setup_exqlite_android(serial)
-          setup_app_priv_android(serial)
-          if restart, do: restart_android(serial, dist_port: dist_port)
-          {:ok, device}
+          case push_beams_android(serial, beam_dirs) do
+            :ok ->
+              sync_elixir_stdlib_android(serial)
+              write_beam_flags_android(serial, beam_flags)
+              setup_exqlite_android(serial)
+              setup_app_priv_android(serial)
+              if restart, do: restart_android(serial, dist_port: dist_port)
+              {:ok, device}
+
+            {:error, reason} ->
+              {:error, reason}
+          end
 
         {:error, reason} ->
           {:error, reason}
       end
     end
+  end
+
+  # Verify the OTP runtime (erts-X.Y/bin/erl_child_setup) is present on
+  # the device. Without this, the BEAM can't start — symlinks fail with
+  # ENOENT, the app crashes immediately. This typically happens when the
+  # device wasn't connected during a previous `mix mob.deploy --native`.
+  #
+  # Returns :ok if ERTS is present, {:error, message} with a helpful hint
+  # if missing.
+  defp ensure_erts_on_device(serial, pkg) do
+    cmd = "run-as #{pkg} ls /data/data/#{pkg}/files/otp/erts-*/bin/erl_child_setup 2>&1"
+
+    case run_adb(["-s", serial, "shell", cmd]) do
+      {:ok, out} ->
+        if String.contains?(out, "No such file") or String.contains?(out, "not found") do
+          {:error, erts_missing_message(serial, pkg)}
+        else
+          :ok
+        end
+
+      _ ->
+        # adb shell failed entirely — let the deploy proceed and fail later
+        # if needed; this check is best-effort.
+        :ok
+    end
+  end
+
+  defp erts_missing_message(serial, pkg) do
+    """
+    OTP runtime missing on device #{serial}.
+
+    The app is installed, but /data/data/#{pkg}/files/otp/erts-*/bin/ is
+    empty. Without ERTS the BEAM can't start (you'll see "symlink
+    erl_child_setup failed: No such file or directory" in logcat).
+
+    This usually means the device wasn't connected during a previous
+    `mix mob.deploy --native`. Provision it now:
+
+      mix mob.deploy --native --device #{serial}
+
+    That rebuilds the APK and pushes the right OTP for this device's ABI.
+    Subsequent `mix mob.deploy` runs (without --native) will work normally.
+    """
   end
 
   # If the Elixir stdlib on the device was installed by a different Elixir version
