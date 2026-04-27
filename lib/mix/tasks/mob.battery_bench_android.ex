@@ -229,6 +229,12 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
     adb!(device, ~w[shell am start -n #{pkg}/#{@android_activity}])
     :timer.sleep(3000)
 
+    # ── Verify the app actually started ─────────────────────────────────
+    # If the BEAM crashes on launch (missing native libs, bad flags, etc.)
+    # the app process disappears within seconds. Catching it here saves a
+    # 30-minute meaningless run.
+    verify_app_running!(device, pkg)
+
     # ── Connect to BEAM (best-effort — failures degrade to USB-only mode) ──
     # First set up adb tunnels so Mac's EPMD sees the Android BEAM.
     ensure_tunnels(device)
@@ -743,6 +749,60 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
 
       _ ->
         :ok
+    end
+  end
+
+  # Verify the app is still running ~3s after launch. If the BEAM crashes
+  # on start (e.g. missing ERTS helper libs in the APK, bad flags, etc.)
+  # the process disappears almost immediately and `pidof` returns empty.
+  # We check at +1s, +3s, and +5s — if the pid is missing by then, the
+  # app crashed; raise with a helpful message and a hint to check logcat.
+  defp verify_app_running!(device, pkg) do
+    pid_at = fn ->
+      case System.cmd("adb", ["-s", device, "shell", "pidof", pkg],
+             stderr_to_stdout: true
+           ) do
+        {out, 0} ->
+          case String.trim(out) do
+            "" -> nil
+            s -> s
+          end
+
+        _ ->
+          nil
+      end
+    end
+
+    pid =
+      Enum.reduce_while([1_000, 2_000, 2_000], nil, fn delay, _ ->
+        :timer.sleep(delay)
+
+        case pid_at.() do
+          nil -> {:cont, nil}
+          p -> {:halt, p}
+        end
+      end)
+
+    if pid do
+      IO.puts("  App running on device (pid #{pid})")
+    else
+      Mix.raise("""
+
+      ✗ App #{pkg} is not running ~5 seconds after launch.
+
+      The BEAM likely crashed on startup. Common causes:
+
+        - Missing ERTS helper libs in the APK (check that
+          liberl_child_setup.so, libinet_gethost.so, libepmd.so are
+          present in /data/app/.../lib/<abi>/ — for 32-bit ARM devices,
+          they need to be in lib/arm, not just lib/arm64)
+        - Bad BEAM flags in mob.exs (try `mix mob.deploy --beam-flags ""`)
+        - App crashed for an unrelated reason — check logcat:
+
+            adb -s #{device} logcat -d | grep -iE "MobBeam|MobNIF|AndroidRuntime|FATAL"
+
+      Once the app launches successfully, re-run the bench.
+      """)
     end
   end
 
