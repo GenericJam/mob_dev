@@ -193,7 +193,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
       IO.puts("WARNING: Battery below 80%. Charge to >90% for comparable results.")
       IO.puts("Continue? (y/N)")
 
-      case IO.gets("") |> String.trim() do
+      case prompt_yn("") do
         "y" -> :ok
         _ -> Mix.raise("Aborted.")
       end
@@ -204,7 +204,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
     IO.puts("  Unplug the USB cable now if connected.")
     IO.puts("  Press Enter when ready to start the run.")
     IO.puts("==========================================")
-    IO.gets("")
+    wait_for_enter()
 
     unless adb_ok?(device) do
       Mix.raise("""
@@ -230,6 +230,9 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
     :timer.sleep(3000)
 
     # ── Connect to BEAM (best-effort — failures degrade to USB-only mode) ──
+    # First set up adb tunnels so Mac's EPMD sees the Android BEAM.
+    ensure_tunnels(device)
+
     node = :"#{app}_android@127.0.0.1"
 
     node_alive? =
@@ -717,6 +720,54 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
   # ── Misc ──────────────────────────────────────────────────────────────────────
 
   defp app_name, do: Mix.Project.config()[:app] |> to_string()
+
+  # IO.gets returns :eof in non-interactive contexts (piped stdin, certain
+  # CI runners). Treat EOF as "no answer" rather than crashing in
+  # String.trim/1.
+  defp prompt_yn(prompt) do
+    case IO.gets(prompt) do
+      :eof -> "n"
+      {:error, _} -> "n"
+      str when is_binary(str) -> str |> String.trim() |> String.downcase()
+    end
+  end
+
+  defp wait_for_enter do
+    case IO.gets("") do
+      :eof ->
+        IO.puts("  (stdin not interactive — proceeding without confirmation)")
+        :ok
+
+      {:error, _} ->
+        :ok
+
+      _ ->
+        :ok
+    end
+  end
+
+  # Set up the adb tunnels needed for Erlang dist:
+  #   adb reverse tcp:4369 tcp:4369   — Android BEAM registers in Mac's EPMD
+  #   adb forward tcp:9100 tcp:9100   — Mac reaches device's dist port
+  # No-op on failure — the bench will detect the missing connection during
+  # preflight and the user can investigate.
+  defp ensure_tunnels(serial) when is_binary(serial) do
+    System.cmd("adb", ["-s", serial, "reverse", "tcp:4369", "tcp:4369"],
+      stderr_to_stdout: true
+    )
+
+    System.cmd("adb", ["-s", serial, "forward", "tcp:9100", "tcp:9100"],
+      stderr_to_stdout: true
+    )
+
+    # Local Erlang dist must be alive for Node.connect/1 to work.
+    unless Node.alive?() do
+      Node.start(:"mob_bench_android@127.0.0.1", :longnames)
+      Node.set_cookie(:mob_secret)
+    end
+
+    :ok
+  end
 
   defp time_string do
     {{_y, _mo, _d}, {h, m, s}} = :calendar.local_time()
