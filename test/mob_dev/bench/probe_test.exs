@@ -172,12 +172,14 @@ defmodule MobDev.Bench.ProbeTest do
 
     test "platform: :android dispatches to android probes (no iOS device opts)" do
       # With platform: :android, hw_udid and device_id should be ignored.
-      p = Probe.snapshot(
-            platform: :android,
-            hw_udid: "00008110-IGNORED",
-            device_id: "should-be-ignored",
-            adb_serial: nil
-          )
+      p =
+        Probe.snapshot(
+          platform: :android,
+          hw_udid: "00008110-IGNORED",
+          device_id: "should-be-ignored",
+          adb_serial: nil
+        )
+
       assert p.usb == :no_usb
     end
 

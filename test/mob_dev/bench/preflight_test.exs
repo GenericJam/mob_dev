@@ -68,7 +68,7 @@ defmodule MobDev.Bench.PreflightTest do
     end
 
     test "bad host derivation → error" do
-      assert {:error, msg} = Preflight.check_beam_reachable(node: :"nodename_no_at")
+      assert {:error, msg} = Preflight.check_beam_reachable(node: :nodename_no_at)
       assert msg =~ "could not derive host"
     end
 

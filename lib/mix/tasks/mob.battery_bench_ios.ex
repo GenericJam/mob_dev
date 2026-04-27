@@ -361,7 +361,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
         Logger.open(log_path, start_ts_ms: System.monotonic_time(:millisecond))
       end
 
-    reconnector = Reconnector.new(node || :"unset@unset", :mob_secret)
+    reconnector = Reconnector.new(node || :unset@unset, :mob_secret)
 
     expected_screen = if screen_locked, do: :off, else: :on
 
@@ -378,7 +378,8 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
     end
 
     {final_log, final_reconnector, _final_observer} =
-      Enum.reduce(1..duration, {log, reconnector, observer}, fn i, {log_acc, recon_acc, obs_acc} ->
+      Enum.reduce(1..duration, {log, reconnector, observer}, fn i,
+                                                                {log_acc, recon_acc, obs_acc} ->
         :timer.sleep(1000)
 
         if rem(i, 10) == 0 do
@@ -556,9 +557,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
   defp precise_final_read(nil), do: :ok
 
   defp precise_final_read(hw_udid) when is_binary(hw_udid) do
-    IO.puts(
-      "iOS reports battery in 5% increments. For 1% precision: plug in USB now."
-    )
+    IO.puts("iOS reports battery in 5% increments. For 1% precision: plug in USB now.")
 
     IO.puts("Press Enter to read precise battery, or Ctrl-C to skip...")
 
@@ -726,6 +725,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
     # Prefer .xcworkspace (CocoaPods/SPM), fall back to .xcodeproj.
     # Exclude Provision.xcodeproj — that is a mob.provision stub with no BEAM.
     workspaces = Path.wildcard(Path.join(ios_dir, "*.xcworkspace"))
+
     projects =
       ios_dir
       |> Path.join("*.xcodeproj")
@@ -953,8 +953,8 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
       #    over USB-only entries whose node name defaults to @127.0.0.1.
       device =
         device ||
-          (MobDev.Discovery.IOS.list_physical()
-           |> Enum.find(& &1.host_ip))
+          MobDev.Discovery.IOS.list_physical()
+          |> Enum.find(& &1.host_ip)
 
       case device do
         nil ->

@@ -261,22 +261,13 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
 
     node = :"#{app}_android@127.0.0.1"
 
-    node_alive? =
-      try do
-        Node.set_cookie(node, :mob_secret)
-
-        if Node.connect(node) do
-          IO.puts("  BEAM connected: #{node}")
-          true
-        else
-          IO.puts("  (BEAM not reachable — USB-only readings)")
-          false
-        end
-      rescue
-        _ ->
-          IO.puts("  (BEAM connect raised — USB-only readings)")
-          false
-      end
+    # Poll Node.connect for up to 10 s. The BEAM's `Mob.Dist` waits ~3 s
+    # after app launch and only then registers — and the EPMD-name->port
+    # path can be briefly stale if a previous run held the slot. A single-
+    # shot connect here would race with all of that and `active_node = nil`
+    # for the rest of the run, leaving every probe stuck on `:unreachable`
+    # even when the BEAM is healthy and Erlang dist works fine seconds later.
+    node_alive? = try_connect_with_retry(node, 10_000)
 
     active_node = if node_alive?, do: node, else: nil
 
@@ -341,7 +332,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
         Logger.open(log_path, start_ts_ms: System.monotonic_time(:millisecond))
       end
 
-    reconnector = Reconnector.new(active_node || :"unset@unset", :mob_secret)
+    reconnector = Reconnector.new(active_node || :unset@unset, :mob_secret)
 
     observer =
       DeviceObserver.subscribe(active_node, categories: [:app, :display, :memory])
@@ -838,8 +829,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
       System.monotonic_time(:millisecond) >= deadline_ms ->
         cond do
           is_nil(pid) ->
-            {:error, :no_process,
-             [last_pid: state[:last_pid], last_epmd_entries: epmd_entries]}
+            {:error, :no_process, [last_pid: state[:last_pid], last_epmd_entries: epmd_entries]}
 
           # EPMD has an entry but Node.connect can't actually reach the BEAM
           # — almost always a stale entry from a prior run.
@@ -848,8 +838,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
              [last_pid: pid, last_epmd_entries: epmd_entries, stale_port: registered_port]}
 
           true ->
-            {:error, :process_no_beam,
-             [last_pid: pid, last_epmd_entries: epmd_entries]}
+            {:error, :process_no_beam, [last_pid: pid, last_epmd_entries: epmd_entries]}
         end
 
       true ->
@@ -861,9 +850,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
   end
 
   defp pid_of(device, pkg) do
-    case System.cmd("adb", ["-s", device, "shell", "pidof", pkg],
-           stderr_to_stdout: true
-         ) do
+    case System.cmd("adb", ["-s", device, "shell", "pidof", pkg], stderr_to_stdout: true) do
       {out, 0} ->
         case String.trim(out) do
           "" -> nil
@@ -918,6 +905,34 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
     Node.connect(node) == true
   rescue
     _ -> false
+  end
+
+  # Repeatedly try Node.connect until success or timeout. Used right after
+  # `verify_app_running!` to handle the timing window where the device-side
+  # `Mob.Dist` is still bringing up its listener — a single Node.connect
+  # would fail and leave `active_node = nil` for the entire run, sending
+  # every probe to `:unreachable` even when the BEAM is healthy.
+  defp try_connect_with_retry(node, timeout_ms) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_try_connect(node, deadline, _attempts = 0)
+  end
+
+  defp do_try_connect(node, deadline, attempts) do
+    if beam_reachable?(node) do
+      IO.puts("  BEAM connected: #{node}")
+      true
+    else
+      if System.monotonic_time(:millisecond) < deadline do
+        :timer.sleep(500)
+        do_try_connect(node, deadline, attempts + 1)
+      else
+        IO.puts(
+          "  (BEAM not reachable after #{attempts + 1} attempts — USB-only readings)"
+        )
+
+        false
+      end
+    end
   end
 
   defp crash_diagnosis_no_process(device, pkg) do
@@ -1116,13 +1131,9 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
   # No-op on failure — the bench will detect the missing connection during
   # preflight and the user can investigate.
   defp ensure_tunnels(serial) when is_binary(serial) do
-    System.cmd("adb", ["-s", serial, "reverse", "tcp:4369", "tcp:4369"],
-      stderr_to_stdout: true
-    )
+    System.cmd("adb", ["-s", serial, "reverse", "tcp:4369", "tcp:4369"], stderr_to_stdout: true)
 
-    System.cmd("adb", ["-s", serial, "forward", "tcp:9100", "tcp:9100"],
-      stderr_to_stdout: true
-    )
+    System.cmd("adb", ["-s", serial, "forward", "tcp:9100", "tcp:9100"], stderr_to_stdout: true)
 
     # Local Erlang dist must be alive for Node.connect/1 to work.
     unless Node.alive?() do

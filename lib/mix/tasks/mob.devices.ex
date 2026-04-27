@@ -68,18 +68,14 @@ defmodule Mix.Tasks.Mob.Devices do
       IO.puts("")
       IO.puts("For an iOS battery bench, use --wifi-ip with the device IP:")
 
-      IO.puts(
-        "  mix mob.battery_bench_ios --no-build --wifi-ip #{physical_ios_with_ip.host_ip}"
-      )
+      IO.puts("  mix mob.battery_bench_ios --no-build --wifi-ip #{physical_ios_with_ip.host_ip}")
     end
 
     if physical_android do
       IO.puts("")
       IO.puts("For an Android battery bench, target the device by serial:")
 
-      IO.puts(
-        "  mix mob.battery_bench_android --no-build --device #{physical_android.serial}"
-      )
+      IO.puts("  mix mob.battery_bench_android --no-build --device #{physical_android.serial}")
     end
   end
 

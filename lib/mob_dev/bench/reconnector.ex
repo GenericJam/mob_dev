@@ -84,7 +84,7 @@ defmodule MobDev.Bench.Reconnector do
         {:no_action, %{r | attempts: 0}}
 
       # Not enough time has passed since the last attempt.
-      r.last_attempt_ms != nil and (now_ms - r.last_attempt_ms) < current_backoff_ms(r) ->
+      r.last_attempt_ms != nil and now_ms - r.last_attempt_ms < current_backoff_ms(r) ->
         {:no_action, r}
 
       # Time to try.

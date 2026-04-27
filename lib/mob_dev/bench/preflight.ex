@@ -183,7 +183,9 @@ defmodule MobDev.Bench.Preflight do
         case System.cmd("adb", ["-s", serial, "get-state"], stderr_to_stdout: true) do
           {out, 0} ->
             state = String.trim(out)
-            if state == "device", do: {:ok, "adb device #{serial} (#{state})"},
+
+            if state == "device",
+              do: {:ok, "adb device #{serial} (#{state})"},
               else: {:error, "adb device #{serial} state: #{state}"}
 
           {out, _} ->
@@ -229,8 +231,16 @@ defmodule MobDev.Bench.Preflight do
         {out, _exit} =
           System.cmd(
             "xcrun",
-            ["devicectl", "device", "info", "apps", "--device", device,
-             "--bundle-identifier", bundle],
+            [
+              "devicectl",
+              "device",
+              "info",
+              "apps",
+              "--device",
+              device,
+              "--bundle-identifier",
+              bundle
+            ],
             stderr_to_stdout: true
           )
 

@@ -166,8 +166,7 @@ defmodule MobDev.Bench.SummaryTest do
           row(elapsed_sec: i * 1.0, reachability: state)
         end
 
-      assert "many reconnects (>=10) — flapping connection" in
-               Summary.from_rows(rows).taint_warnings
+      assert "many reconnects (>=10) — flapping connection" in Summary.from_rows(rows).taint_warnings
     end
 
     test "no warnings on a clean run" do
@@ -182,7 +181,9 @@ defmodule MobDev.Bench.SummaryTest do
 
   describe "from_csv/1 — round-trip with Logger" do
     setup do
-      path = Path.join(System.tmp_dir!(), "summary_test_#{System.unique_integer([:positive])}.csv")
+      path =
+        Path.join(System.tmp_dir!(), "summary_test_#{System.unique_integer([:positive])}.csv")
+
       on_exit(fn -> File.rm(path) end)
       {:ok, path: path}
     end

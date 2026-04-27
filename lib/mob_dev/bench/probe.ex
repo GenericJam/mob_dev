@@ -155,9 +155,7 @@ defmodule MobDev.Bench.Probe do
 
   @doc false
   def tcp_open?(host, port, timeout_ms) when is_binary(host) do
-    case :gen_tcp.connect(String.to_charlist(host), port, [:binary, active: false],
-           timeout_ms
-         ) do
+    case :gen_tcp.connect(String.to_charlist(host), port, [:binary, active: false], timeout_ms) do
       {:ok, sock} ->
         :gen_tcp.close(sock)
         true
@@ -258,9 +256,7 @@ defmodule MobDev.Bench.Probe do
   end
 
   defp run_adb_battery(serial) do
-    case System.cmd("adb", ["-s", serial, "shell", "dumpsys", "battery"],
-           stderr_to_stdout: true
-         ) do
+    case System.cmd("adb", ["-s", serial, "shell", "dumpsys", "battery"], stderr_to_stdout: true) do
       {out, 0} ->
         case Regex.run(~r/^\s*level:\s*(\d+)/m, out) do
           [_, n_str] ->
@@ -344,12 +340,12 @@ defmodule MobDev.Bench.Probe do
         :app_unknown
 
       _ ->
-        case System.cmd("adb", ["-s", serial, "shell", "pidof", bundle],
-               stderr_to_stdout: true
-             ) do
+        case System.cmd("adb", ["-s", serial, "shell", "pidof", bundle], stderr_to_stdout: true) do
           {out, 0} ->
             case String.trim(out) do
-              "" -> :app_dead
+              "" ->
+                :app_dead
+
               pid_str ->
                 case Integer.parse(pid_str) do
                   {n, _} when n > 0 -> :app_running

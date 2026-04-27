@@ -145,12 +145,19 @@ defmodule MobDev.Bench.LoggerTest do
       events = [
         probe(ts_ms: 0, reachability: :alive_rpc, battery_pct: 100),
         probe(ts_ms: 10_000, reachability: :alive_rpc, battery_pct: 100),
-        probe(ts_ms: 20_000, reachability: :alive_dist_only, battery_pct: nil,
-              reason: "rpc battery: badrpc :timeout"),
-        probe(ts_ms: 30_000, reachability: :alive_epmd_only, battery_pct: nil,
-              reason: "dist disconnected"),
-        probe(ts_ms: 40_000, reachability: :alive_rpc, battery_pct: 100,
-              reason: "reconnected")
+        probe(
+          ts_ms: 20_000,
+          reachability: :alive_dist_only,
+          battery_pct: nil,
+          reason: "rpc battery: badrpc :timeout"
+        ),
+        probe(
+          ts_ms: 30_000,
+          reachability: :alive_epmd_only,
+          battery_pct: nil,
+          reason: "dist disconnected"
+        ),
+        probe(ts_ms: 40_000, reachability: :alive_rpc, battery_pct: 100, reason: "reconnected")
       ]
 
       log = Enum.reduce(events, log, &Logger.append(&2, &1))
@@ -158,9 +165,15 @@ defmodule MobDev.Bench.LoggerTest do
 
       rows = Logger.read(path)
       assert length(rows) == 5
+
       assert Enum.map(rows, & &1.reachability) == [
-               :alive_rpc, :alive_rpc, :alive_dist_only, :alive_epmd_only, :alive_rpc
+               :alive_rpc,
+               :alive_rpc,
+               :alive_dist_only,
+               :alive_epmd_only,
+               :alive_rpc
              ]
+
       assert Enum.at(rows, 2).reason == "rpc battery: badrpc :timeout"
     end
   end
