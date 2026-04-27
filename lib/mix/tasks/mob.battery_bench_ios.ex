@@ -37,7 +37,26 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
   skewed because the cable can trickle-charge. To minimise this, use a USB-only
   data cable (no charging), or note the baseline with and without cable.
 
-  ## Usage
+  ## Recommended workflow (Mob projects)
+
+  Mob projects use `ios/build_device.sh` rather than a full Xcode project,
+  which means the bench task's `xcodebuild` path doesn't apply. Use this
+  two-step pattern instead:
+
+      # 1. Push BEAM flags via mob.deploy (no native rebuild — ~5 sec).
+      mix mob.deploy --beam-flags "" --ios               # tuned (Nerves)
+      mix mob.deploy --beam-flags "-S 6:6 -A 8" --ios    # untuned variant
+
+      # 2. Run the bench with --no-build, specifying the phone's WiFi IP.
+      mix mob.battery_bench_ios --no-build --wifi-ip 10.0.0.120
+
+  Find the phone's WiFi IP in Settings → Wi-Fi → (i) → IP Address.
+
+  See `README.md` for the full rationale and recovery procedure if a flag
+  combination crashes the BEAM (which can happen if you request more
+  threads than iOS allows per process).
+
+  ## Usage (with built-in Xcode build path)
 
       mix mob.battery_bench_ios
       mix mob.battery_bench_ios --no-beam
@@ -50,11 +69,16 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
 
     * `--duration N`      — benchmark duration in seconds (default: 1800)
     * `--device UDID`     — device UDID (auto-detected if one device connected)
+    * `--wifi-ip IP`      — phone's WiFi IPv4 (recommended; bypasses auto-discovery)
     * `--no-beam`         — baseline: build without starting the BEAM at all
-    * `--preset NAME`     — named BEAM flag preset: `untuned`, `sbwt`, or `nerves`
-    * `--flags "..."`     — arbitrary BEAM VM flags (space-separated)
+    * `--no-keep-alive`   — skip the silent-audio background keep-alive call
+    * `--preset NAME`     — named BEAM flag preset (Xcode-build path only)
+    * `--flags "..."`     — arbitrary BEAM VM flags (Xcode-build path only)
     * `--no-build`        — skip Xcode build and install; benchmark current install
     * `--scheme NAME`     — Xcode scheme name (default: camelized app name)
+    * `--log-path PATH`   — override CSV log location (default: `_build/bench/run_<ts>.csv`)
+    * `--no-csv`          — skip CSV logging
+    * `--skip-preflight`  — bypass the preflight checks (USB/app/BEAM/RPC/NIF/keep-alive)
 
   ## What the presets do
 

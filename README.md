@@ -129,28 +129,125 @@ mix mob.battery_bench_android --no-build                   # re-run without rebu
 
 ### iOS (`mix mob.battery_bench_ios`)
 
-Deploys to a physical iPhone/iPad and reads battery via `ideviceinfo`. Reports mAh (if `BatteryMaxCapacity` is available) or percentage points.
+Deploys to a physical iPhone/iPad and reads battery via `ideviceinfo` (USB)
+or via Erlang RPC over WiFi. Reports mAh (if `BatteryMaxCapacity` is
+available) or percentage points.
 
-**Prerequisites:** `brew install libimobiledevice`, Xcode 15+, device trusted on this Mac.
+**Prerequisites:** `brew install libimobiledevice`, Xcode 15+, device
+trusted on this Mac, phone on the same WiFi as the Mac.
+
+#### Two-step workflow (recommended)
+
+For Mob projects (which use `ios/build_device.sh` rather than a full Xcode
+project), you can't rebuild + bench in one command — the bench task's
+built-in `xcodebuild` path doesn't support the Mob build system. Instead,
+do the two steps separately:
 
 ```bash
-mix mob.battery_bench_ios                                  # default: Nerves-tuned BEAM, 30 min
-mix mob.battery_bench_ios --no-beam                        # baseline: no BEAM at all
-mix mob.battery_bench_ios --preset untuned                 # raw BEAM, no tuning
-mix mob.battery_bench_ios --flags "-sbwt none -S 1:1"
-mix mob.battery_bench_ios --duration 3600 --device UDID
-mix mob.battery_bench_ios --no-build                       # re-run without rebuilding
+# Step 1 — deploy with whatever BEAM flags you want.
+# This pushes the .beam files PLUS a runtime mob_beam_flags file that
+# the launcher reads at startup. No native rebuild required (~5 seconds).
+mix mob.deploy --beam-flags "" --ios                       # tuned (Nerves defaults)
+mix mob.deploy --beam-flags "-S 6:6 -A 16" --ios           # untuned variant
+mix mob.deploy --ios                                       # uses flags saved in mob.exs
+
+# Step 2 — run the bench with --no-build, since we already deployed.
+mix mob.battery_bench_ios --no-build --wifi-ip 10.0.0.120
+mix mob.battery_bench_ios --no-build --wifi-ip 10.0.0.120 --duration 600
+mix mob.battery_bench_ios --no-build --wifi-ip 10.0.0.120 --skip-preflight
+```
+
+Find your phone's WiFi IP in **Settings → Wi-Fi → (i) → IP Address**.
+
+`--wifi-ip` is strongly recommended — without it the bench tries to
+auto-discover the device, which is flaky for WiFi-only setups (we've seen
+it pick up the Mac's own EPMD or simulator nodes).
+
+#### What the bench shows you
+
+A live trace per 10-second poll, with state per tick:
+
+```
+[02:33:00] 0.5/30 min — screen:off app:running rpc:ok battery:100% (−0.0 %)
+```
+
+A CSV log in `_build/bench/run_<ts>.csv` (every sample, every state).
+
+A probe-based summary at the end with success rate, reconnect count,
+longest gap, time-by-state, screen-on/off durations, and **taint warnings**
+that catch invalid runs (screen turned on, app died, majority unreachable,
+flapping connection).
+
+#### Recovering from bad flags
+
+`mix mob.deploy --beam-flags "..."` saves the flags to `mob.exs` so they
+persist across runs. If a flag combination crashes the BEAM (e.g.
+requesting more threads than iOS allows per process), every subsequent
+`mix mob.deploy` re-applies the same bad flags and the app keeps crashing.
+
+To recover, push an empty flags string — clears `mob.exs` *and* the
+runtime override file on every device:
+
+```bash
+mix mob.deploy --beam-flags "" --ios
+```
+
+#### Flag prefix convention (iOS)
+
+The Mob iOS BEAM build is conservative about flag syntax. Match the
+compile-time defaults' format — `-` prefix, space-separated values:
+
+```
+-S 1:1 -SDcpu 1:1 -SDio 1 -A 1 -sbwt none      ← compile-time defaults (Nerves)
+```
+
+When in doubt, copy that pattern. We've observed `+S 6:6 +A 64 +SDio 8`
+crashing the BEAM at startup with no useful log line — likely because the
+combined thread count exceeds iOS's per-process limit. Build untuned
+configs incrementally:
+
+```bash
+# Smallest delta from defaults — multi-scheduler but everything else minimal:
+mix mob.deploy --beam-flags "-S 2:2 -SDcpu 2:2 -SDio 2 -A 2" --ios
+# Bench. If the app launches and runs, ramp up:
+mix mob.deploy --beam-flags "-S 6:6 -SDcpu 6:6 -SDio 6 -A 8" --ios
+```
+
+#### Other options
+
+```bash
+mix mob.battery_bench_ios --no-build --wifi-ip 10.0.0.120 --no-keep-alive
+# Skips the silent-audio keep-alive call. Use when the keep-alive NIF is
+# misbehaving or you want to verify how much drain comes from background
+# audio session vs the BEAM itself.
+
+mix mob.battery_bench_ios --no-build --wifi-ip 10.0.0.120 --skip-preflight
+# Bypass the pre-flight checks (useful when the checks are spuriously
+# failing on devicectl noise or similar).
+
+mix mob.battery_bench_ios --no-build --wifi-ip 10.0.0.120 --no-csv
+# Don't write the CSV log (run is purely live-trace + final summary).
+
+mix mob.battery_bench_ios --no-build --wifi-ip 10.0.0.120 --log-path /tmp/run.csv
+# Override CSV location.
 ```
 
 ### Presets and results
 
-| Preset | Flags | mAh/hr (Moto G) |
+| Preset | Flags | mAh/hr (Moto G, screen on, low brightness) |
 |--------|-------|----------------|
 | No BEAM | — | ~200 |
 | Nerves (default) | `-S 1:1 -SDcpu 1:1 -SDio 1 -A 1 -sbwt none` | ~202 |
 | Untuned | *(none)* | ~250 |
 
 The Nerves-tuned BEAM is essentially indistinguishable from a stock Android app at idle. The untuned BEAM costs ~25% more because schedulers spin-wait instead of sleeping.
+
+**iOS results** are tracked separately in `mob/guides/why_beam.md` (different
+device, different methodology — physical iPhone with screen on/off
+distinction). The `--preset` shortcuts (`untuned`/`sbwt`/`nerves`) aren't
+useful on iOS because they require a full Xcode rebuild (which Mob projects
+don't have), so on iOS you set flags via `mix mob.deploy --beam-flags ...`
+and bench with `--no-build`.
 
 ## Working with an agent (Claude Code / LLM)
 

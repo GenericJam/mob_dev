@@ -257,8 +257,4 @@ defmodule MobDev.Bench.Preflight do
       _ -> nil
     end
   end
-
-  defp truncate(str) when is_binary(str) do
-    if String.length(str) > 200, do: String.slice(str, 0, 200) <> "...", else: str
-  end
 end
