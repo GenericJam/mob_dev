@@ -141,20 +141,31 @@ defmodule MobDev.Bench.Preflight do
         {:ok, "skipped (xcrun unavailable)"}
 
       true ->
-        case System.cmd(
-               "xcrun",
-               ["devicectl", "device", "info", "apps", "--device", device, "--bundle-identifier", bundle],
-               stderr_to_stdout: true
-             ) do
-          {out, 0} ->
-            if String.contains?(out, bundle) do
-              {:ok, "#{bundle} found on device"}
-            else
-              {:error, "#{bundle} not installed on device — run `mix mob.deploy --native`"}
-            end
+        # devicectl prints a noisy "No provider was found" provisioning
+        # warning to stderr and exits non-zero even when the query
+        # succeeded. Don't trust the exit code — search the combined
+        # output for the bundle id and treat that as authoritative.
+        {out, _exit} =
+          System.cmd(
+            "xcrun",
+            ["devicectl", "device", "info", "apps", "--device", device,
+             "--bundle-identifier", bundle],
+            stderr_to_stdout: true
+          )
 
-          {out, _} ->
-            {:error, "devicectl failed: #{String.trim(out) |> truncate()}"}
+        cond do
+          String.contains?(out, bundle) ->
+            {:ok, "#{bundle} found on device"}
+
+          String.contains?(out, "ContainerLookupError") or
+              String.contains?(out, "not installed") ->
+            {:error, "#{bundle} not installed — run `mix mob.deploy --native`"}
+
+          true ->
+            # Couldn't verify via devicectl — but the other checks (BEAM
+            # reachability, NIF exports) will catch real "app not installed"
+            # cases anyway. Don't fail the run on devicectl noise.
+            {:ok, "couldn't verify via devicectl (BEAM reachability is authoritative)"}
         end
     end
   end
