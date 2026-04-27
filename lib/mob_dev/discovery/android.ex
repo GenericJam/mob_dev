@@ -78,13 +78,52 @@ defmodule MobDev.Discovery.Android do
     name = getprop(serial, "ro.product.model")
     version = getprop(serial, "ro.build.version.release")
     node = Device.node_name(d)
-    %{d | name: name, version: "Android #{version}", node: node}
+
+    # Skip IP discovery for emulators — `ip route get` returns the
+    # emulator's internal NAT subnet (10.0.2.x) which isn't reachable
+    # from the host and just creates confusion in the devices listing.
+    host_ip = if d.type == :emulator, do: nil, else: device_ip(serial)
+    %{d | name: name, version: "Android #{version}", node: node, host_ip: host_ip}
   end
 
   defp getprop(serial, prop) do
     case run_adb(["-s", serial, "shell", "getprop", prop]) do
       {:ok, val} -> String.trim(val)
       _ -> nil
+    end
+  end
+
+  # Returns the device's WiFi IPv4 address, or nil if unavailable.
+  # WiFi-adb-connected devices have IP:port as their serial — extract from there.
+  # USB-connected devices need a shell call: `ip route get 1` returns a line
+  # whose 7th token is the device's WiFi IP for outbound traffic.
+  defp device_ip(serial) do
+    case extract_ip_from_serial(serial) do
+      nil -> shell_ip(serial)
+      ip -> ip
+    end
+  end
+
+  defp extract_ip_from_serial(serial) do
+    case Regex.run(~r/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):\d+$/, serial) do
+      [_, ip] -> ip
+      _ -> nil
+    end
+  end
+
+  # Try `ip route get 1.1.1.1` — returns the source IP used for outbound
+  # traffic. More portable than parsing `ip addr show wlan0` since the
+  # interface name varies (wlan0, rmnet_data*, etc.).
+  defp shell_ip(serial) do
+    case run_adb(["-s", serial, "shell", "ip", "route", "get", "1.1.1.1"]) do
+      {:ok, out} ->
+        case Regex.run(~r/\bsrc\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})/, out) do
+          [_, ip] -> ip
+          _ -> nil
+        end
+
+      _ ->
+        nil
     end
   end
 

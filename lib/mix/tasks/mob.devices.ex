@@ -48,9 +48,39 @@ defmodule Mix.Tasks.Mob.Devices do
       IO.puts("")
       IO.puts("Pass the ID to --device to target a specific device:")
       IO.puts("  mix mob.deploy --device #{Device.display_id(hd(all))}")
+
+      print_bench_hints(all)
     end
 
     IO.puts("")
+  end
+
+  defp print_bench_hints(all) do
+    physical_ios_with_ip =
+      Enum.find(all, fn d ->
+        d.platform == :ios and d.type == :physical and d.host_ip
+      end)
+
+    physical_android =
+      Enum.find(all, fn d -> d.platform == :android and d.type == :physical end)
+
+    if physical_ios_with_ip do
+      IO.puts("")
+      IO.puts("For an iOS battery bench, use --wifi-ip with the device IP:")
+
+      IO.puts(
+        "  mix mob.battery_bench_ios --no-build --wifi-ip #{physical_ios_with_ip.host_ip}"
+      )
+    end
+
+    if physical_android do
+      IO.puts("")
+      IO.puts("For an Android battery bench, target the device by serial:")
+
+      IO.puts(
+        "  mix mob.battery_bench_android --no-build --device #{physical_android.serial}"
+      )
+    end
   end
 
   # ── Device discovery (returns tagged list or a reason atom) ──────────────────
@@ -97,20 +127,34 @@ defmodule Mix.Tasks.Mob.Devices do
     max_name = devices |> Enum.map(&name_len/1) |> Enum.max()
     max_ver = devices |> Enum.map(&ver_len/1) |> Enum.max()
     max_type = devices |> Enum.map(&type_len/1) |> Enum.max()
+    max_id = devices |> Enum.map(&id_len/1) |> Enum.max()
+    any_ip = Enum.any?(devices, & &1.host_ip)
 
     Enum.each(devices, fn d ->
       icon = status_icon(d)
       name = pad(d.name || d.serial, max_name)
       ver = pad(d.version || "", max_ver)
       type = pad(type_label(d), max_type)
-      id = IO.ANSI.bright() <> Device.display_id(d) <> IO.ANSI.reset()
-      IO.puts("  #{icon}  #{name}  #{ver}  #{type}  #{id}")
+
+      id_str = Device.display_id(d)
+      id_padded = pad(id_str, max_id)
+      id = IO.ANSI.bright() <> id_padded <> IO.ANSI.reset()
+
+      ip_part =
+        cond do
+          d.host_ip -> "  " <> IO.ANSI.faint() <> d.host_ip <> IO.ANSI.reset()
+          any_ip -> "  " <> IO.ANSI.faint() <> "(no IP)" <> IO.ANSI.reset()
+          true -> ""
+        end
+
+      IO.puts("  #{icon}  #{name}  #{ver}  #{type}  #{id}#{ip_part}")
     end)
   end
 
   defp name_len(d), do: String.length(d.name || d.serial)
   defp ver_len(d), do: String.length(d.version || "")
   defp type_len(d), do: String.length(type_label(d))
+  defp id_len(d), do: String.length(Device.display_id(d))
 
   defp type_label(%{type: :emulator}), do: "emulator"
   defp type_label(%{type: :simulator}), do: "simulator"
