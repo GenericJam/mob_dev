@@ -1,6 +1,8 @@
 defmodule Mix.Tasks.Mob.BatteryBenchIos do
   use Mix.Task
 
+  alias MobDev.Bench.{DeviceObserver, Logger, Preflight, Probe, Reconnector, Summary}
+
   @shortdoc "Run a battery benchmark on a physical iOS device"
 
   @moduledoc """
@@ -100,12 +102,17 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
   @switches [
     duration: :integer,
     device: :string,
+    wifi_ip: :string,
     no_beam: :boolean,
+    no_keep_alive: :boolean,
     preset: :string,
     flags: :string,
     no_build: :boolean,
     scheme: :string,
-    dry_run: :boolean
+    dry_run: :boolean,
+    log_path: :string,
+    no_csv: :boolean,
+    skip_preflight: :boolean
   ]
 
   @battery_domain "com.apple.mobile.battery"
@@ -170,9 +177,14 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
     pkg = MobDev.Config.bundle_id()
     cfg = MobDev.Config.load_mob_config()
 
-    # Hoist workspace discovery so scheme auto-detection can query xcodebuild -list.
-    {workspace_kind, workspace_path} = find_workspace!()
-    scheme = opts[:scheme] || cfg[:ios_scheme] || detect_scheme!(workspace_kind, workspace_path)
+    # Workspace discovery is only needed when building. Skip it with --no-build.
+    {workspace_kind, workspace_path, scheme} =
+      if no_build do
+        {:none, nil, opts[:scheme] || cfg[:ios_scheme] || Macro.camelize(app_name())}
+      else
+        {wk, wp} = find_workspace!()
+        {wk, wp, opts[:scheme] || cfg[:ios_scheme] || detect_scheme!(wk, wp)}
+      end
 
     IO.puts("")
     IO.puts("=== Mob Battery Benchmark (iOS) ===")
@@ -216,14 +228,48 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
     # unavailable (WiFi-only mode) and for battery reads when screen is locked.
     # Best-effort: nil means RPC won't be available.
     IO.puts("  Connecting to device BEAM...")
-    node = connect_beam_node(device_id)
+    node = connect_beam_node(device_id, opts[:wifi_ip])
 
     if node do
       IO.puts("  BEAM connected: #{node}")
-      IO.puts("  Starting background keep-alive (silent audio session)...")
-      :rpc.call(node, :mob_nif, :background_keep_alive, [], 5000)
+
+      if opts[:no_keep_alive] do
+        IO.puts("  (skipping background keep-alive — iOS will suspend the app when locked)")
+      else
+        IO.puts("  Starting background keep-alive (silent audio session)...")
+        :rpc.call(node, :mob_nif, :background_keep_alive, [], 5000)
+      end
     else
       IO.puts("  (BEAM not reachable — will use ideviceinfo only, screen must stay on)")
+    end
+
+    # ── Preflight ─────────────────────────────────────────────────────────────
+
+    unless opts[:skip_preflight] do
+      IO.puts("")
+      IO.puts("=== Preflight checks ===")
+
+      preflight_results =
+        Preflight.run(
+          node: node,
+          cookie: :mob_secret,
+          bundle_id: pkg,
+          device_id: device_id,
+          hw_udid: hw_udid,
+          require_keep_alive: not opts[:no_keep_alive]
+        )
+
+      IO.puts(Preflight.pretty(preflight_results))
+
+      unless Preflight.all_ok?(preflight_results) do
+        IO.puts("")
+        IO.puts(">>> Preflight checks reported issues. Continue anyway? (y/N)")
+
+        case IO.gets("") |> String.trim() do
+          "y" -> :ok
+          _ -> Mix.raise("Aborted at preflight.")
+        end
+      end
     end
 
     max_mah = read_max_capacity_mah(hw_udid)
@@ -252,58 +298,90 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
 
     IO.puts("Start:  #{format_battery(start_b, max_mah)}")
     IO.puts("")
-    IO.puts(">>> Unplug the USB cable now (if connected) — then press Enter to start.")
 
-    if node do
-      IO.puts("    You can lock the screen — the BEAM will keep running.")
-    else
-      IO.puts("    Keep the screen on (BEAM not connected, no background keep-alive).")
-    end
-
-    IO.gets("")
-
-    if node do
-      IO.puts("=== Locking screen ===")
-      lock_screen(hw_udid)
-    end
+    screen_locked =
+      if node do
+        IO.puts(">>> Step 1 of 2 — Unplug the USB cable (if connected), then press Enter.")
+        IO.gets("")
+        IO.puts("")
+        IO.puts(">>> Step 2 of 2 — Locking the screen now...")
+        result = lock_screen_auto(hw_udid)
+        IO.puts("")
+        result
+      else
+        IO.puts(">>> Unplug the USB cable (if connected), keep the screen ON, then press Enter.")
+        IO.puts("    (BEAM not connected — battery reads require USB or an active screen.)")
+        IO.gets("")
+        false
+      end
 
     IO.puts("Running for #{div(duration, 60)} min...")
     IO.puts("")
     IO.puts("")
 
-    Enum.each(1..duration, fn i ->
-      :timer.sleep(1000)
+    # ── Open CSV log unless --no-csv ───────────────────────────────────────
+    log =
+      if opts[:no_csv] do
+        nil
+      else
+        log_path =
+          opts[:log_path] ||
+            Path.join([
+              File.cwd!(),
+              "_build",
+              "bench",
+              "run_#{System.os_time(:second)}.csv"
+            ])
 
-      if rem(i, 10) == 0 do
-        elapsed_sec = System.monotonic_time(:second) - start_time
-        elapsed_min = Float.round(elapsed_sec / 60, 1)
-        ts = time_string()
-
-        case read_battery(hw_udid, max_mah, node) do
-          nil ->
-            IO.puts(
-              "  [#{ts}] #{elapsed_min}/#{total_min} min — (screen locked — unlock to resume readings)"
-            )
-
-          current_b ->
-            current_val = battery_value(current_b, max_mah)
-            drain = start_val - current_val
-
-            rate_str =
-              if elapsed_sec > 30 do
-                rate = Float.round(drain * 3600 / elapsed_sec, 1)
-                " @ #{rate} #{unit}/hr"
-              else
-                ""
-              end
-
-            IO.puts(
-              "  [#{ts}] #{elapsed_min}/#{total_min} min — #{format_battery(current_b, max_mah)}  " <>
-                "(−#{Float.round(drain * 1.0, 1)} #{unit}#{rate_str})"
-            )
-        end
+        IO.puts("  Logging samples to #{log_path}")
+        Logger.open(log_path, start_ts_ms: System.monotonic_time(:millisecond))
       end
-    end)
+
+    reconnector = Reconnector.new(node || :"unset@unset", :mob_secret)
+
+    expected_screen = if screen_locked, do: :off, else: :on
+
+    # Subscribe to Mob.Device events on the device. If the app supports it,
+    # we'll get ground-truth screen + app-state events as they happen (via
+    # `:rpc.call(node, Mob.Device, :subscribe, ...)`). If not, the observer
+    # falls back to passing through `expected_screen`.
+    observer = DeviceObserver.subscribe(node, categories: [:app, :display, :memory])
+
+    if observer.subscribed? do
+      IO.puts("  Subscribed to Mob.Device events on #{inspect(node)}")
+    else
+      IO.puts("  (Mob.Device events not available — using expected screen state)")
+    end
+
+    {final_log, final_reconnector, _final_observer} =
+      Enum.reduce(1..duration, {log, reconnector, observer}, fn i, {log_acc, recon_acc, obs_acc} ->
+        :timer.sleep(1000)
+
+        if rem(i, 10) == 0 do
+          poll_tick(
+            i,
+            log_acc,
+            recon_acc,
+            obs_acc,
+            node: node,
+            wifi_ip: opts[:wifi_ip],
+            hw_udid: hw_udid,
+            device_id: device_id,
+            app_pid: pid,
+            expected_screen: expected_screen,
+            start_time: start_time,
+            start_val: start_val,
+            unit: unit,
+            total_min: total_min
+          )
+        else
+          # Even on non-poll iterations, drain device events into the observer.
+          {log_acc, recon_acc, DeviceObserver.consume_messages(obs_acc)}
+        end
+      end)
+
+    log = final_log
+    _ = final_reconnector
 
     # ── Results ────────────────────────────────────────────────────────────────
 
@@ -340,7 +418,113 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
 
     IO.puts("")
 
+    # ── CSV-based summary (probes, reconnects, gap analysis) ─────────────
+    if log do
+      log_path = log.path
+      Logger.close(log)
+
+      IO.puts("=== Probe-based summary ===")
+      IO.puts("")
+
+      try do
+        metrics = Summary.from_csv(log_path)
+        IO.puts(Summary.pretty(metrics))
+        IO.puts("")
+        IO.puts("Full log: #{log_path}")
+      rescue
+        e ->
+          IO.puts("  (could not parse #{log_path}: #{Exception.message(e)})")
+      end
+
+      IO.puts("")
+    end
+
     File.rm_rf!(derived_data)
+  end
+
+  # ── Probe-driven poll tick ────────────────────────────────────────────────
+
+  # One iteration of the polling loop (called every 10s). Takes a probe
+  # snapshot, prints a one-line trace, logs it, and runs the reconnector.
+  # Returns updated {log, reconnector, observer} for the next tick.
+  defp poll_tick(_iter, log, reconnector, observer, opts) do
+    elapsed_sec = System.monotonic_time(:second) - opts[:start_time]
+    elapsed_min = Float.round(elapsed_sec / 60, 1)
+    ts = time_string()
+
+    # Drain any buffered Mob.Device events first so the probe reflects
+    # ground-truth screen/app state.
+    observer = DeviceObserver.consume_messages(observer)
+
+    probe =
+      Probe.snapshot(
+        node: opts[:node],
+        host: opts[:wifi_ip] || derive_host_from_node(opts[:node]),
+        hw_udid: opts[:hw_udid],
+        device_id: opts[:device_id],
+        app_pid: opts[:app_pid],
+        expected_screen: opts[:expected_screen]
+      )
+
+    # Apply observer's authoritative screen/app state on top of the probe.
+    probe = DeviceObserver.apply_to_probe(observer, probe)
+
+    log = if log, do: Logger.append(log, probe), else: log
+
+    # Render the live line.
+    fragment = Probe.format(probe)
+
+    line =
+      case probe.battery_pct do
+        nil ->
+          "  [#{ts}] #{elapsed_min}/#{opts[:total_min]} min — #{fragment}"
+
+        pct ->
+          drain = opts[:start_val] - pct
+
+          rate_str =
+            if elapsed_sec > 30 do
+              rate = Float.round(drain * 3600 / elapsed_sec, 1)
+              " @ #{rate} #{opts[:unit]}/hr"
+            else
+              ""
+            end
+
+          "  [#{ts}] #{elapsed_min}/#{opts[:total_min]} min — #{fragment} (−#{Float.round(drain * 1.0, 1)} #{opts[:unit]}#{rate_str})"
+      end
+
+    IO.puts(line)
+
+    # Reconnect logic — attempt Node.connect when in a recoverable state.
+    now_ms = System.monotonic_time(:millisecond)
+
+    reconnector =
+      case Reconnector.tick(reconnector, probe, now_ms) do
+        {:no_action, r} ->
+          r
+
+        {:attempt, r} ->
+          if opts[:node] && Node.connect(opts[:node]) do
+            IO.puts(
+              "    ↻ reconnected to #{opts[:node]} (attempt #{r.attempts}, total #{r.total_reconnects + 1})"
+            )
+
+            Reconnector.record_success(r)
+          else
+            r
+          end
+      end
+
+    {log, reconnector, observer}
+  end
+
+  defp derive_host_from_node(nil), do: nil
+
+  defp derive_host_from_node(node) when is_atom(node) do
+    case Atom.to_string(node) |> String.split("@", parts: 2) do
+      [_, host] -> host
+      _ -> nil
+    end
   end
 
   # ── Prerequisites ─────────────────────────────────────────────────────────────
@@ -613,23 +797,26 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
 
   # ── Screen lock ──────────────────────────────────────────────────────────────
 
-  defp lock_screen(nil) do
-    IO.puts("  No hardware UDID — please lock the phone manually, then press Enter.")
+  # Returns true when the screen is locked (either automatically or by user).
+  defp lock_screen_auto(nil) do
+    IO.puts("  No hardware UDID — please lock the phone now.")
+    IO.puts("  Press Enter once the screen is locked.")
     IO.gets("")
+    true
   end
 
-  defp lock_screen(udid) do
+  defp lock_screen_auto(udid) do
     case System.cmd("idevicediagnostics", ["-u", udid, "sleep"], stderr_to_stdout: true) do
       {_, 0} ->
         IO.puts("  Screen locked.")
         :timer.sleep(1000)
+        true
 
       _ ->
-        IO.puts(
-          "  Could not lock screen automatically — please lock it manually, then press Enter."
-        )
-
+        IO.puts("  Auto-lock failed — please lock the phone manually.")
+        IO.puts("  Press Enter once the screen is locked.")
         IO.gets("")
+        true
     end
   end
 
@@ -642,10 +829,16 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
   # device_id: CoreDevice UUID — used to resolve the phone's IP via xcrun devicectl
   # so we can query EPMD directly without relying on the ARP cache (which may not
   # have the WiFi IP when all prior communication was over USB).
-  defp connect_beam_node(device_id) do
+  defp connect_beam_node(device_id, explicit_wifi_ip) do
     unless Node.alive?() do
       Node.start(:"mob_bench@127.0.0.1", :longnames)
       Node.set_cookie(:mob_secret)
+    end
+
+    # If the user passed --wifi-ip, warm the ARP cache with a quick ping so the
+    # subsequent EPMD probe doesn't fail on a cold ARP lookup.
+    if is_binary(explicit_wifi_ip) do
+      System.cmd("ping", ["-c", "1", "-W", "1000", explicit_wifi_ip], stderr_to_stdout: true)
     end
 
     Enum.find_value(0..4, fn attempt ->
@@ -654,14 +847,25 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
         :timer.sleep(2000)
       end
 
-      # Prefer direct IP from devicectl — bypasses ARP cache miss that happens
-      # when all prior communication was over USB rather than WiFi.
+      # 1. Explicit --wifi-ip wins.
       device =
-        with ip when is_binary(ip) <- device_ip_from_devicectl(device_id) do
-          MobDev.Discovery.IOS.find_physical_at(ip)
+        if is_binary(explicit_wifi_ip) do
+          MobDev.Discovery.IOS.find_physical_at(explicit_wifi_ip)
         end
 
-      device = device || List.first(MobDev.Discovery.IOS.list_physical())
+      # 2. IPv4 from devicectl (skips IPv6 tunnel addresses).
+      device =
+        device ||
+          with ip when is_binary(ip) <- device_ip_from_devicectl(device_id) do
+            MobDev.Discovery.IOS.find_physical_at(ip)
+          end
+
+      # 3. ARP/EPMD LAN scan. Prefer devices with a known WiFi IP (host_ip set)
+      #    over USB-only entries whose node name defaults to @127.0.0.1.
+      device =
+        device ||
+          (MobDev.Discovery.IOS.list_physical()
+           |> Enum.find(& &1.host_ip))
 
       case device do
         nil ->
@@ -697,12 +901,21 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
               if dev["identifier"] == device_id, do: dev["connectionProperties"]
             end)
 
+          tunnel_ip = conn && conn["tunnelIPAddress"]
+          # CoreDevice sometimes reports an IPv6 tunnel address (fd7f::/16 range).
+          # Erlang EPMD doesn't listen on IPv6, so skip those and fall through to
+          # hostname resolution which gives us the IPv4 WiFi address.
+          ipv4_tunnel =
+            if is_binary(tunnel_ip) && not String.contains?(tunnel_ip, ":"),
+              do: tunnel_ip,
+              else: nil
+
           cond do
             is_nil(conn) ->
               nil
 
-            is_binary(conn["tunnelIPAddress"]) ->
-              conn["tunnelIPAddress"]
+            is_binary(ipv4_tunnel) ->
+              ipv4_tunnel
 
             true ->
               hostname =
@@ -744,18 +957,6 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
     end
   end
 
-  # Returns %{pct: integer, mah: integer | nil} or nil if device unreachable.
-  defp read_battery(udid, max_mah, node) do
-    case read_battery_pct(udid, node) do
-      nil ->
-        nil
-
-      pct ->
-        mah = if max_mah, do: round(max_mah * pct / 100), else: nil
-        %{pct: pct, mah: mah}
-    end
-  end
-
   # Returns integer % or nil.
   # Tries USB (ideviceinfo) first; falls back to Erlang RPC (mob_nif:battery_level/0)
   # when USB is unavailable — e.g. screen locked with iOS USB restriction, or
@@ -781,6 +982,9 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
   defp rpc_battery_level(nil), do: nil
 
   defp rpc_battery_level(node) do
+    # Reconnect if the dist connection dropped (WiFi flap while screen locked).
+    unless node in Node.list(), do: Node.connect(node)
+
     case :rpc.call(node, :mob_nif, :battery_level, [], 5000) do
       n when is_integer(n) and n >= 0 -> n
       _ -> nil

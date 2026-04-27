@@ -785,6 +785,13 @@ defmodule MobDev.Deployer do
     # UDID before proceeding.
     udid = resolve_ios_udid_if_ip(udid)
 
+    if Regex.match?(~r/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/, udid) do
+      throw(
+        {:error,
+         "device only reachable via WiFi (#{udid}) — use `mix mob.push` for BEAM-only updates, or connect via USB for a native deploy"}
+      )
+    end
+
     # Stage all BEAMs (and priv/) into a temp dir named <app>.
     staging_parent =
       Path.join(System.tmp_dir!(), "mob_ios_deploy_#{:erlang.unique_integer([:positive])}")
@@ -902,13 +909,31 @@ defmodule MobDev.Deployer do
       from_devicectl_list(ip)
   end
 
-  defp from_idevice_id_network(_ip) do
+  defp from_idevice_id_network(ip) do
     with true <- not is_nil(System.find_executable("idevice_id")),
          {out, 0} <- System.cmd("idevice_id", ["-n"], stderr_to_stdout: true),
          udids <-
            out |> String.split("\n") |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == "")),
-         [single] <- udids do
-      single
+         true <- udids != [] do
+      # With a single network device, return it immediately without querying its IP.
+      # With multiple, use ideviceinfo to find which UDID has the target IP.
+      case udids do
+        [single] ->
+          single
+
+        many ->
+          Enum.find_value(many, fn udid ->
+            case System.cmd("ideviceinfo", ["--network", "-u", udid, "-k", "IPAddress"],
+                   stderr_to_stdout: true
+                 ) do
+              {ip_out, 0} ->
+                if String.trim(ip_out) == ip, do: udid, else: nil
+
+              _ ->
+                nil
+            end
+          end)
+      end
     else
       _ -> nil
     end

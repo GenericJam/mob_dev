@@ -35,12 +35,21 @@ defmodule MobDev.Discovery.IOS do
     usb = if System.find_executable("ideviceinfo"), do: do_list_physical(), else: []
 
     case {lan, usb} do
-      # Both found a single device — merge WiFi IP with USB name/serial.
+      # Both found exactly one device — merge: keep WiFi IP for dist, use USB serial for devicectl.
       {[lan_dev], [usb_dev]} ->
         [%{lan_dev | serial: usb_dev.serial, name: usb_dev.name, version: usb_dev.version}]
 
-      # LAN found devices, USB didn't (or multiple — can't safely correlate).
-      {[_ | _], _} ->
+      # Multiple LAN devices + USB devices — can't auto-correlate IPs to UDIDs.
+      # Return USB devices (have proper UDIDs for devicectl) plus any LAN devices
+      # whose IP doesn't match a USB device. LAN-only devices will fall back to
+      # dist-only in the deployer.
+      {[_ | _], [_ | _]} ->
+        usb_serials = MapSet.new(usb, & &1.serial)
+        lan_only = Enum.reject(lan, fn d -> MapSet.member?(usb_serials, d.serial) end)
+        usb ++ lan_only
+
+      # LAN found devices, USB didn't (WiFi-only environment).
+      {[_ | _], []} ->
         lan
 
       # USB found devices, LAN didn't (USB-only, no WiFi).
@@ -211,6 +220,8 @@ defmodule MobDev.Discovery.IOS do
   # Builds a Device using the node name and IP directly from the EPMD response,
   # so the app name in the Mix project running mob_dev is irrelevant.
   defp scan_lan_for_physical do
+    own_ips = local_ipv4_addresses()
+
     lan_ips =
       case System.cmd("arp", ["-a"], stderr_to_stdout: true) do
         {out, 0} ->
@@ -218,8 +229,15 @@ defmodule MobDev.Discovery.IOS do
           |> String.split("\n")
           |> Enum.flat_map(fn line ->
             case Regex.run(~r/\((\d+\.\d+\.\d+\.\d+)\) at [0-9a-f]{2}:[0-9a-f]{2}/, line) do
-              [_, ip] -> if String.starts_with?(ip, "169.254."), do: [], else: [ip]
-              _ -> []
+              [_, ip] ->
+                cond do
+                  String.starts_with?(ip, "169.254.") -> []
+                  ip in own_ips -> []
+                  true -> [ip]
+                end
+
+              _ ->
+                []
             end
           end)
 
@@ -286,6 +304,24 @@ defmodule MobDev.Discovery.IOS do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  # Returns the Mac's own IPv4 addresses, used to filter the LAN scan so we
+  # don't mistake the Mac's local EPMD (which may have a simulator registered)
+  # for a physical iPhone.
+  defp local_ipv4_addresses do
+    case :inet.getifaddrs() do
+      {:ok, ifs} ->
+        for {_name, props} <- ifs,
+            {:addr, {a, b, c, d}} <- props,
+            a in 0..255,
+            "#{a}.#{b}.#{c}.#{d}" != "127.0.0.1" do
+          "#{a}.#{b}.#{c}.#{d}"
+        end
+
+      _ ->
+        []
     end
   end
 
