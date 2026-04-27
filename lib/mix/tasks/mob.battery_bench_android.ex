@@ -260,7 +260,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
 
     active_node = if node_alive?, do: node, else: nil
 
-    if node_alive? and not opts[:no_keep_alive] do
+    if node_alive? and opts[:no_keep_alive] != true do
       IO.puts("  Starting background keep-alive...")
       :rpc.call(node, :mob_nif, :background_keep_alive, [], 5000)
     end
@@ -752,58 +752,161 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
     end
   end
 
-  # Verify the app is still running ~3s after launch. If the BEAM crashes
-  # on start (e.g. missing ERTS helper libs in the APK, bad flags, etc.)
-  # the process disappears almost immediately and `pidof` returns empty.
-  # We check at +1s, +3s, and +5s — if the pid is missing by then, the
-  # app crashed; raise with a helpful message and a hint to check logcat.
+  # Verify both that (a) the Android process is up and (b) the BEAM has
+  # finished booting and registered its node in EPMD. Catches three failure
+  # modes:
+  #   1. App crashes immediately       → pidof returns empty
+  #   2. App shell up, BEAM crashed    → pidof returns pid, EPMD never has node
+  #   3. Healthy startup               → pidof + EPMD both succeed
+  #
+  # Polls for up to ~10 seconds. The "process exists but BEAM dead" case is
+  # the worst — it can run for the whole bench duration before being noticed
+  # — so we explicitly wait for EPMD registration.
   defp verify_app_running!(device, pkg) do
-    pid_at = fn ->
-      case System.cmd("adb", ["-s", device, "shell", "pidof", pkg],
-             stderr_to_stdout: true
-           ) do
-        {out, 0} ->
-          case String.trim(out) do
-            "" -> nil
-            s -> s
+    app = app_name()
+    expected_node_name = "#{app}_android"
+
+    deadline_ms = System.monotonic_time(:millisecond) + 10_000
+
+    result =
+      verify_loop(device, pkg, expected_node_name, deadline_ms,
+        last_pid: nil,
+        last_epmd_names: nil
+      )
+
+    case result do
+      {:ok, pid} ->
+        IO.puts("  ✓ App running on device (pid #{pid})")
+        IO.puts("  ✓ BEAM registered in EPMD as #{expected_node_name}")
+
+      {:error, :no_process, _state} ->
+        Mix.raise(crash_diagnosis_no_process(device, pkg))
+
+      {:error, :process_no_beam, state} ->
+        Mix.raise(crash_diagnosis_no_beam(device, pkg, state[:last_pid]))
+    end
+  end
+
+  defp verify_loop(device, pkg, expected_node_name, deadline_ms, state) do
+    :timer.sleep(500)
+
+    pid = pid_of(device, pkg)
+    epmd_names = epmd_names_local()
+
+    cond do
+      pid && expected_node_name in epmd_names ->
+        {:ok, pid}
+
+      System.monotonic_time(:millisecond) >= deadline_ms ->
+        cond do
+          is_nil(pid) ->
+            {:error, :no_process,
+             [last_pid: state[:last_pid], last_epmd_names: epmd_names]}
+
+          true ->
+            {:error, :process_no_beam, [last_pid: pid, last_epmd_names: epmd_names]}
+        end
+
+      true ->
+        verify_loop(device, pkg, expected_node_name, deadline_ms,
+          last_pid: pid || state[:last_pid],
+          last_epmd_names: epmd_names
+        )
+    end
+  end
+
+  defp pid_of(device, pkg) do
+    case System.cmd("adb", ["-s", device, "shell", "pidof", pkg],
+           stderr_to_stdout: true
+         ) do
+      {out, 0} ->
+        case String.trim(out) do
+          "" -> nil
+          s -> s
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp epmd_names_local do
+    case :gen_tcp.connect(~c"127.0.0.1", 4369, [:binary, active: false], 500) do
+      {:ok, sock} ->
+        :gen_tcp.send(sock, <<0, 1, ?n>>)
+
+        names =
+          case :gen_tcp.recv(sock, 0, 500) do
+            {:ok, <<_::32, body::binary>>} ->
+              body
+              |> String.split("\n", trim: true)
+              |> Enum.flat_map(fn line ->
+                case Regex.run(~r/^name (\S+) at port \d+$/, line) do
+                  [_, name] -> [name]
+                  _ -> []
+                end
+              end)
+
+            _ ->
+              []
           end
 
-        _ ->
-          nil
-      end
+        :gen_tcp.close(sock)
+        names
+
+      _ ->
+        []
     end
+  end
 
-    pid =
-      Enum.reduce_while([1_000, 2_000, 2_000], nil, fn delay, _ ->
-        :timer.sleep(delay)
+  defp crash_diagnosis_no_process(device, pkg) do
+    """
 
-        case pid_at.() do
-          nil -> {:cont, nil}
-          p -> {:halt, p}
-        end
-      end)
+    ✗ App #{pkg} is not running ~10 seconds after launch.
 
-    if pid do
-      IO.puts("  App running on device (pid #{pid})")
-    else
-      Mix.raise("""
+    The Android process is gone — BEAM crashed before the iOS shell could
+    keep it alive. Common causes:
 
-      ✗ App #{pkg} is not running ~5 seconds after launch.
+      - Missing ERTS helper libs in the APK (check lib/<abi>/ contains
+        liberl_child_setup.so, libinet_gethost.so, libepmd.so — for
+        32-bit ARM devices they need to be in lib/arm, not just
+        lib/arm64).
+      - Bad BEAM flags in mob.exs (try `mix mob.deploy --beam-flags ""`)
+      - App crashed for an unrelated reason — check logcat:
 
-      The BEAM likely crashed on startup. Common causes:
+          adb -s #{device} logcat -d | grep -iE "MobBeam|MobNIF|FATAL|tombstone"
 
-        - Missing ERTS helper libs in the APK (check that
-          liberl_child_setup.so, libinet_gethost.so, libepmd.so are
-          present in /data/app/.../lib/<abi>/ — for 32-bit ARM devices,
-          they need to be in lib/arm, not just lib/arm64)
-        - Bad BEAM flags in mob.exs (try `mix mob.deploy --beam-flags ""`)
-        - App crashed for an unrelated reason — check logcat:
+    Re-run the bench after the app launches cleanly.
+    """
+  end
 
-            adb -s #{device} logcat -d | grep -iE "MobBeam|MobNIF|AndroidRuntime|FATAL"
+  defp crash_diagnosis_no_beam(device, pkg, pid) do
+    """
 
-      Once the app launches successfully, re-run the bench.
-      """)
-    end
+    ✗ App #{pkg} is running (pid #{pid}) but the BEAM never registered.
+
+    The Android process is alive but the embedded BEAM either crashed
+    during startup or isn't reachable via Erlang distribution. Common
+    causes:
+
+      - BEAM crashed in mob_start_beam — check logcat for SIGABRT in
+        beam-main:
+
+          adb -s #{device} logcat -d | grep -iE "MobBeam|FATAL|SIGABRT|beam-main"
+
+      - BEAMs missing or stale on device. Push fresh ones:
+
+          mix mob.deploy --android --device #{device}
+
+      - Bad BEAM flags in mob.exs (try `mix mob.deploy --beam-flags ""`)
+      - adb tunnels not set up (the bench tries automatically; if your
+        Mac's EPMD is occupied by another node, things may collide)
+
+    The Android process may be the foreground service / notification
+    process keeping the package alive even though the BEAM died. Don't
+    take a green `pidof` as proof the BEAM is up — EPMD registration is
+    the authoritative signal.
+    """
   end
 
   # Set up the adb tunnels needed for Erlang dist:
