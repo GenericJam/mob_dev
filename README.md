@@ -290,6 +290,42 @@ useful on iOS because they require a full Xcode rebuild (which Mob projects
 don't have), so on iOS you set flags via `mix mob.deploy --beam-flags ...`
 and bench with `--no-build`.
 
+### Battery-read precision (iOS)
+
+iOS clamps `UIDevice.batteryLevel` to **5% increments** as a privacy
+measure. So a 1% drain over 30 minutes shows as `100% → 100%` in the
+bench's RPC reads. To get a precise final number:
+
+1. After the bench finishes (and prints both summaries), the iOS bench now
+   prompts you to plug in USB and press Enter. This calls `ideviceinfo`'s
+   battery domain which returns 1% precision over USB.
+2. You'll see fields like:
+
+   ```
+   === Precise battery (via ideviceinfo) ===
+     BatteryCurrentCapacity: 99
+     BatteryIsCharging: true
+     ExternalConnected: true
+     FullyCharged: false
+   ```
+
+3. Compare to the start-of-run reading the bench printed at the top.
+
+You can also read precise battery any time by hand:
+
+```bash
+ideviceinfo -u <UDID> -q com.apple.mobile.battery
+```
+
+This caveat doesn't apply to Android — `dumpsys battery` returns 1%
+precision natively.
+
+### Duration unit
+
+`--duration N` is in **seconds** on both bench tasks. Default 1800 = 30
+minutes. The bench's live trace and summaries always show
+`elapsed_min / total_min` for readability, but the CLI flag is seconds.
+
 ## Working with an agent (Claude Code / LLM)
 
 Because OTP runs on the device, an agent can connect directly to the running app via Erlang distribution and inspect or drive it programmatically — no screenshots required.

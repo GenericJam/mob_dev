@@ -67,7 +67,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
 
   ## Options
 
-    * `--duration N`      — benchmark duration in seconds (default: 1800)
+    * `--duration N`      — benchmark duration in **seconds** (default: 1800 = 30 min)
     * `--device UDID`     — device UDID (auto-detected if one device connected)
     * `--wifi-ip IP`      — phone's WiFi IPv4 (recommended; bypasses auto-discovery)
     * `--no-beam`         — baseline: build without starting the BEAM at all
@@ -442,6 +442,13 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
 
     IO.puts("")
 
+    # ── Optional: precise USB read for 1% resolution ─────────────────────
+    # iOS UIDevice.batteryLevel is clamped to 5% increments at the OS level
+    # (privacy measure). ideviceinfo over USB exposes the raw 1% reading
+    # via the battery domain. After a screen-off bench where the phone was
+    # unplugged, plug it back in here for a more precise final number.
+    precise_final_read(hw_udid)
+
     # ── CSV-based summary (probes, reconnects, gap analysis) ─────────────
     if log do
       log_path = log.path
@@ -540,6 +547,64 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
       end
 
     {log, reconnector, observer}
+  end
+
+  # Optional precise final-battery read via ideviceinfo over USB. iOS clamps
+  # UIDevice.batteryLevel to 5% increments — `99` rounds to `100`, hiding
+  # small drains that matter for benchmarking. ideviceinfo's battery domain
+  # exposes 1% precision when the device is connected via USB.
+  defp precise_final_read(nil), do: :ok
+
+  defp precise_final_read(hw_udid) when is_binary(hw_udid) do
+    IO.puts(
+      "iOS reports battery in 5% increments. For 1% precision: plug in USB now."
+    )
+
+    IO.puts("Press Enter to read precise battery, or Ctrl-C to skip...")
+
+    case IO.gets("") do
+      :eof ->
+        :ok
+
+      {:error, _} ->
+        :ok
+
+      _ ->
+        if System.find_executable("ideviceinfo") do
+          case System.cmd(
+                 "ideviceinfo",
+                 ["-u", hw_udid, "-q", "com.apple.mobile.battery"],
+                 stderr_to_stdout: true
+               ) do
+            {out, 0} ->
+              IO.puts("")
+              IO.puts("=== Precise battery (via ideviceinfo) ===")
+
+              fields =
+                out
+                |> String.split("\n", trim: true)
+                |> Enum.filter(fn line ->
+                  String.starts_with?(line, [
+                    "BatteryCurrentCapacity:",
+                    "BatteryMaxCapacity:",
+                    "BatteryIsCharging:",
+                    "ExternalConnected:",
+                    "FullyCharged:"
+                  ])
+                end)
+
+              Enum.each(fields, &IO.puts("  " <> &1))
+
+            {out, _} ->
+              IO.puts("  (ideviceinfo failed — is USB connected? trust this Mac?)")
+              IO.puts("  " <> String.trim(out))
+          end
+        else
+          IO.puts("  (ideviceinfo not installed — `brew install libimobiledevice`)")
+        end
+
+        IO.puts("")
+    end
   end
 
   defp derive_host_from_node(nil), do: nil

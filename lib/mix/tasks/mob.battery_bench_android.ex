@@ -50,7 +50,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
 
   ## Options
 
-    * `--duration N`      — benchmark duration in seconds (default: 1800)
+    * `--duration N`      — benchmark duration in **seconds** (default: 1800 = 30 min)
     * `--device SERIAL`   — adb device serial or IP:port (auto-detected if omitted)
     * `--no-beam`         — baseline: build without starting the BEAM at all
     * `--no-keep-alive`   — skip the foreground-service background keep-alive call
