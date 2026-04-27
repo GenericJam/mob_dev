@@ -240,6 +240,14 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
     start_mah = read_charge_counter_mah(device)
     IO.puts("Start charge: #{start_mah} mAh")
 
+    # ── Set up adb tunnels BEFORE launching the app ─────────────────────
+    # The BEAM tries to register with Mac's EPMD via 127.0.0.1:4369 during
+    # startup. That works only if the adb reverse tunnel is already up
+    # before mob_start_beam runs. If we set up tunnels after launch, the
+    # BEAM has already tried and failed to register, and verify_app_running!
+    # will (correctly) report "BEAM never registered".
+    ensure_tunnels(device)
+
     IO.puts("")
     IO.puts("=== Launching app ===")
     adb!(device, ~w[shell am start -n #{pkg}/#{@android_activity}])
@@ -250,10 +258,6 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
     # the app process disappears within seconds. Catching it here saves a
     # 30-minute meaningless run.
     verify_app_running!(device, pkg)
-
-    # ── Connect to BEAM (best-effort — failures degrade to USB-only mode) ──
-    # First set up adb tunnels so Mac's EPMD sees the Android BEAM.
-    ensure_tunnels(device)
 
     node = :"#{app}_android@127.0.0.1"
 
