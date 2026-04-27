@@ -199,6 +199,13 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
       end
     end
 
+    # ── Promote USB → WiFi ADB so the connection survives unplug ──
+    # If the user passed a USB serial, auto-enable WiFi adb and switch the
+    # bench's `device` to <ip>:5555. If it's already an IP:port (WiFi adb
+    # already active), pass through unchanged. Saves the user from the
+    # tcpip/connect dance manually.
+    device = ensure_wifi_adb!(device)
+
     IO.puts("")
     IO.puts("==========================================")
     IO.puts("  Unplug the USB cable now if connected.")
@@ -208,9 +215,18 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
 
     unless adb_ok?(device) do
       Mix.raise("""
-      Lost connection after unplug. Is WiFi ADB active?
-        adb -s SERIAL tcpip 5555
-        adb connect PHONE_IP:5555
+      Lost connection after unplug.
+
+      The bench tried to switch to WiFi ADB automatically; that's failing
+      now. Common causes:
+        - Device not on WiFi
+        - WiFi network blocking ADB port (5555)
+        - Device's WiFi went to sleep when screen locked
+
+      You can do it manually before re-running:
+        adb -s <USB-SERIAL> tcpip 5555
+        adb connect <PHONE-WIFI-IP>:5555
+        mix mob.battery_bench_android --no-build --device <PHONE-WIFI-IP>:5555
       """)
     end
 
@@ -907,6 +923,121 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
     take a green `pidof` as proof the BEAM is up — EPMD registration is
     the authoritative signal.
     """
+  end
+
+  # If the user passed a USB serial (no IP:port), auto-enable WiFi ADB so
+  # the bench's `device` argument keeps working after the user unplugs the
+  # USB cable. Returns the (possibly-promoted) device identifier.
+  #
+  # Steps:
+  #   1. Detect device is USB-connected (serial doesn't match IP:port format)
+  #   2. Find its WiFi IP via `adb shell ip route get 1.1.1.1`
+  #   3. `adb -s SERIAL tcpip 5555` to enable WiFi adb
+  #   4. Sleep briefly for the device to switch
+  #   5. `adb connect IP:5555`
+  #   6. Verify the IP:5555 connection works
+  #   7. Return "IP:5555" — caller uses this for all subsequent adb commands
+  #
+  # If anything fails along the way, raise with a clear hint to do it
+  # manually rather than surprising the user later when unplug fails.
+  defp ensure_wifi_adb!(device) do
+    if String.contains?(device, ":") do
+      # Already IP:port — assume user has WiFi adb working.
+      device
+    else
+      promote_usb_to_wifi!(device)
+    end
+  end
+
+  defp promote_usb_to_wifi!(serial) do
+    IO.puts("")
+    IO.puts("=== Switching to WiFi ADB ===")
+    IO.puts("  Finding device WiFi IP...")
+    ip = wifi_ip_for_serial!(serial)
+    IO.puts("  Device IP: #{ip}")
+
+    IO.puts("  Enabling WiFi ADB on port 5555...")
+
+    case System.cmd("adb", ["-s", serial, "tcpip", "5555"], stderr_to_stdout: true) do
+      {_, 0} ->
+        :ok
+
+      {out, _} ->
+        Mix.raise("""
+        Failed to enable WiFi ADB:
+          #{String.trim(out)}
+
+        Try manually:
+          adb -s #{serial} tcpip 5555
+          adb connect <PHONE-IP>:5555
+        """)
+    end
+
+    # Device needs a moment to restart adbd in TCP mode.
+    :timer.sleep(2_000)
+
+    new_device = "#{ip}:5555"
+    IO.puts("  Connecting to #{new_device}...")
+
+    case System.cmd("adb", ["connect", new_device], stderr_to_stdout: true) do
+      {out, 0} ->
+        if String.contains?(out, "connected") or String.contains?(out, "already connected") do
+          # Verify it actually works.
+          if adb_ok?(new_device) do
+            IO.puts("  ✓ WiFi ADB connected as #{new_device}")
+            new_device
+          else
+            Mix.raise("""
+            adb connect reported success but the device isn't responding.
+            Check WiFi network and re-run with the WiFi-ADB serial:
+              mix mob.battery_bench_android --no-build --device #{new_device}
+            """)
+          end
+        else
+          Mix.raise("""
+          adb connect failed:
+            #{String.trim(out)}
+          """)
+        end
+
+      {out, _} ->
+        Mix.raise("""
+        adb connect failed:
+          #{String.trim(out)}
+
+        Try manually:
+          adb -s #{serial} tcpip 5555
+          adb connect #{new_device}
+        """)
+    end
+  end
+
+  # Find the device's WiFi IPv4 by running `ip route get 1.1.1.1` on it
+  # and parsing the `src` field from the output.
+  defp wifi_ip_for_serial!(serial) do
+    case System.cmd("adb", ["-s", serial, "shell", "ip", "route", "get", "1.1.1.1"],
+           stderr_to_stdout: true
+         ) do
+      {out, 0} ->
+        case Regex.run(~r/\bsrc\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})/, out) do
+          [_, ip] ->
+            ip
+
+          nil ->
+            Mix.raise("""
+            Couldn't determine the device's WiFi IP from:
+              #{String.trim(out)}
+
+            Is the device connected to WiFi? Settings → Network & internet → Internet.
+            """)
+        end
+
+      {out, _} ->
+        Mix.raise("""
+        adb shell ip route failed:
+          #{String.trim(out)}
+        """)
+    end
   end
 
   # Set up the adb tunnels needed for Erlang dist:
