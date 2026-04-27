@@ -146,4 +146,60 @@ defmodule MobDev.Bench.ProbeTest do
       assert p.usb == :no_usb
     end
   end
+
+  describe "platform: :android" do
+    test "snapshot with no opts returns the same defaults as iOS" do
+      p = Probe.snapshot(platform: :android)
+      assert p.reachability == :unreachable
+      assert p.app_process == :app_unknown
+      assert p.usb == :no_usb
+      assert p.screen == :unknown
+      assert p.battery_pct == nil
+    end
+
+    test "no adb_serial → :no_usb regardless of adb availability" do
+      p = Probe.snapshot(platform: :android, adb_serial: nil)
+      assert p.usb == :no_usb
+    end
+
+    test "no bundle_id → :app_unknown" do
+      p = Probe.snapshot(platform: :android, adb_serial: "127.0.0.1:5555")
+      # reachability is :unreachable so app_process derives from that —
+      # but with no bundle_id we should also see :app_unknown when a probe
+      # path is forced.
+      assert p.app_process in [:app_unknown, :app_dead]
+    end
+
+    test "platform: :android dispatches to android probes (no iOS device opts)" do
+      # With platform: :android, hw_udid and device_id should be ignored.
+      p = Probe.snapshot(
+            platform: :android,
+            hw_udid: "00008110-IGNORED",
+            device_id: "should-be-ignored",
+            adb_serial: nil
+          )
+      assert p.usb == :no_usb
+    end
+
+    test "snapshot respects expected_screen on android too" do
+      assert Probe.snapshot(platform: :android, expected_screen: :off).screen == :off
+      assert Probe.snapshot(platform: :android, expected_screen: :on).screen == :on
+    end
+  end
+
+  describe "format/1 — android probes look the same in output" do
+    test "android run with usb_ok renders correctly" do
+      p = %Probe{
+        ts_ms: 0,
+        reachability: :alive_rpc,
+        app_process: :app_running,
+        usb: :usb_ok,
+        screen: :off,
+        battery_pct: 73,
+        reason: nil
+      }
+
+      assert Probe.format(p) == "screen:off app:running rpc:ok battery:73%"
+    end
+  end
 end

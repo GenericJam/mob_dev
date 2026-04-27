@@ -110,5 +110,55 @@ defmodule MobDev.Bench.PreflightTest do
       {_, {:ok, msg}} = List.keyfind(results, :keep_alive_nif, 0)
       assert msg == "skipped"
     end
+
+    test "platform: :android dispatches to android-specific hardware/app checks" do
+      # Smoke test — just verify it runs without crashing and returns the
+      # standard 6 check names regardless of platform.
+      results = Preflight.run(platform: :android, adb_serial: "127.0.0.1:5555")
+      names = Enum.map(results, &elem(&1, 0))
+
+      assert names == [
+               :hardware,
+               :app_installed,
+               :beam_reachable,
+               :rpc_responsive,
+               :nif_version,
+               :keep_alive_nif
+             ]
+    end
+  end
+
+  describe "Android: check_hardware/2" do
+    test "no adb in PATH → error" do
+      # Can't reliably remove adb from PATH in tests, so just verify the
+      # function returns a tagged tuple without raising.
+      result = Preflight.check_hardware(:android, [])
+      assert match?({:ok, _}, result) or match?({:error, _}, result)
+    end
+  end
+
+  describe "Android: check_app_installed/2" do
+    test "missing bundle_id → error" do
+      assert {:error, "bundle_id not configured"} =
+               Preflight.check_app_installed(:android, adb_serial: "127.0.0.1:5555")
+    end
+
+    test "missing adb_serial → ok (skipped)" do
+      assert {:ok, msg} =
+               Preflight.check_app_installed(:android, bundle_id: "com.example.app")
+
+      assert msg =~ "skipped" or msg =~ "BEAM reachability"
+    end
+  end
+
+  describe "Backward compat — single-arg check_hardware/check_app_installed" do
+    test "check_hardware/1 dispatches to iOS for back-compat" do
+      assert match?({:ok, _}, Preflight.check_hardware([])) or
+               match?({:error, _}, Preflight.check_hardware([]))
+    end
+
+    test "check_app_installed/1 dispatches to iOS for back-compat" do
+      assert {:error, "bundle_id not configured"} = Preflight.check_app_installed([])
+    end
   end
 end

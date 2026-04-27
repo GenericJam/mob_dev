@@ -109,7 +109,9 @@ Measure BEAM idle power draw with specific tuning flags. Both tasks share the sa
 
 ### Android (`mix mob.battery_bench_android`)
 
-Deploys an APK and measures drain via the hardware charge counter (`dumpsys battery`). Reports mAh every 10 seconds.
+Deploys an APK and measures drain via the hardware charge counter (`dumpsys
+battery`). Reports mAh every 10 seconds. Uses the same probe / observer /
+CSV-log / preflight infrastructure as the iOS bench.
 
 **WiFi ADB required** — a USB cable charges the device and skews measurements.
 
@@ -118,13 +120,52 @@ Deploys an APK and measures drain via the hardware charge counter (`dumpsys batt
 adb -s SERIAL tcpip 5555
 adb connect PHONE_IP:5555
 # then unplug
+```
 
+#### Two-step workflow (recommended)
+
+Same pattern as iOS — push BEAM flags via `mix mob.deploy`, then bench
+with `--no-build`. Saves the Gradle rebuild (~30+ seconds) when only
+changing flags.
+
+```bash
+mix mob.deploy --beam-flags "" --android                # tuned (Nerves)
+mix mob.deploy --beam-flags "-S 4:4 -A 8" --android     # untuned variant
+
+mix mob.battery_bench_android --no-build --device 192.168.1.42:5555
+```
+
+The bench will:
+- Run preflight checks (adb device, app installed, BEAM reachable, RPC
+  responsive, NIF version, keep-alive NIF)
+- Subscribe to `Mob.Device` events on the running app for ground-truth
+  screen/app-state tracking
+- Write a per-tick CSV log to `_build/bench/run_android_<ts>.csv`
+- Auto-reconnect with backoff if the dist connection flaps
+- Print a probe-based summary at the end with success rate, reconnect
+  count, time-by-state, screen-on/off durations, and **taint warnings**
+
+#### Single-step Gradle path
+
+Still supported when you want a clean rebuild:
+
+```bash
 mix mob.battery_bench_android                              # default: Nerves-tuned BEAM, 30 min
 mix mob.battery_bench_android --no-beam                    # baseline: no BEAM at all
 mix mob.battery_bench_android --preset untuned             # raw BEAM, no tuning
 mix mob.battery_bench_android --flags "-sbwt none -S 1:1"
 mix mob.battery_bench_android --duration 3600 --device 192.168.1.42:5555
 mix mob.battery_bench_android --no-build                   # re-run without rebuilding
+```
+
+#### Recovering from bad flags
+
+`mix mob.deploy --beam-flags "..."` saves to `mob.exs` so the flags persist
+across runs. If a flag combination crashes the BEAM, every subsequent
+deploy re-applies them. Push an empty string to clear:
+
+```bash
+mix mob.deploy --beam-flags "" --android
 ```
 
 ### iOS (`mix mob.battery_bench_ios`)

@@ -1,6 +1,8 @@
 defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
   use Mix.Task
 
+  alias MobDev.Bench.{DeviceObserver, Logger, Preflight, Probe, Reconnector, Summary}
+
   @shortdoc "Run a battery benchmark on an Android device"
 
   @moduledoc """
@@ -23,7 +25,21 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
       adb connect PHONE_IP:5555
       # then unplug and pass PHONE_IP:5555 as --device
 
-  ## Usage
+  ## Recommended workflow
+
+  Same two-step pattern as iOS — push BEAM flags via `mix mob.deploy`, then
+  bench with `--no-build`. Lets you change tuning without a Gradle rebuild.
+
+      # 1. Push BEAM flags via mob.deploy (no APK rebuild — ~10 sec).
+      mix mob.deploy --beam-flags "" --android              # tuned (Nerves)
+      mix mob.deploy --beam-flags "-S 4:4 -A 8" --android   # untuned variant
+
+      # 2. Run the bench with --no-build.
+      mix mob.battery_bench_android --no-build --device 192.168.1.42:5555
+
+  See `README.md` for the full rationale and recovery procedure.
+
+  ## Usage (with built-in Gradle build path)
 
       mix mob.battery_bench_android
       mix mob.battery_bench_android --no-beam
@@ -37,9 +53,13 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
     * `--duration N`      — benchmark duration in seconds (default: 1800)
     * `--device SERIAL`   — adb device serial or IP:port (auto-detected if omitted)
     * `--no-beam`         — baseline: build without starting the BEAM at all
-    * `--preset NAME`     — named BEAM flag preset: `untuned`, `sbwt`, or `nerves`
-    * `--flags "..."`     — arbitrary BEAM VM flags (space-separated, e.g. "-sbwt none")
+    * `--no-keep-alive`   — skip the foreground-service background keep-alive call
+    * `--preset NAME`     — named BEAM flag preset (Gradle-build path only)
+    * `--flags "..."`     — arbitrary BEAM VM flags (Gradle-build path only)
     * `--no-build`        — skip APK build and install; run benchmark on current install
+    * `--log-path PATH`   — override CSV log location (default: `_build/bench/run_android_<ts>.csv`)
+    * `--no-csv`          — skip CSV logging
+    * `--skip-preflight`  — bypass the preflight checks (adb/app/BEAM/RPC/NIF/keep-alive)
 
   ## What the presets do
 
@@ -89,10 +109,14 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
     duration: :integer,
     device: :string,
     no_beam: :boolean,
+    no_keep_alive: :boolean,
     preset: :string,
     flags: :string,
     no_build: :boolean,
-    dry_run: :boolean
+    dry_run: :boolean,
+    log_path: :string,
+    no_csv: :boolean,
+    skip_preflight: :boolean
   ]
 
   @android_activity ".MainActivity"
@@ -205,6 +229,62 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
     adb!(device, ~w[shell am start -n #{pkg}/#{@android_activity}])
     :timer.sleep(3000)
 
+    # ── Connect to BEAM (best-effort — failures degrade to USB-only mode) ──
+    node = :"#{app}_android@127.0.0.1"
+
+    node_alive? =
+      try do
+        Node.set_cookie(node, :mob_secret)
+
+        if Node.connect(node) do
+          IO.puts("  BEAM connected: #{node}")
+          true
+        else
+          IO.puts("  (BEAM not reachable — USB-only readings)")
+          false
+        end
+      rescue
+        _ ->
+          IO.puts("  (BEAM connect raised — USB-only readings)")
+          false
+      end
+
+    active_node = if node_alive?, do: node, else: nil
+
+    if node_alive? and not opts[:no_keep_alive] do
+      IO.puts("  Starting background keep-alive...")
+      :rpc.call(node, :mob_nif, :background_keep_alive, [], 5000)
+    end
+
+    # ── Preflight ──────────────────────────────────────────────────────────
+    unless opts[:skip_preflight] do
+      IO.puts("")
+      IO.puts("=== Preflight checks ===")
+
+      preflight_results =
+        Preflight.run(
+          platform: :android,
+          node: active_node,
+          host: "127.0.0.1",
+          cookie: :mob_secret,
+          bundle_id: pkg,
+          adb_serial: device,
+          require_keep_alive: opts[:no_keep_alive] != true
+        )
+
+      IO.puts(Preflight.pretty(preflight_results))
+
+      unless Preflight.all_ok?(preflight_results) do
+        IO.puts("")
+        IO.puts(">>> Preflight reported issues. Continue anyway? (y/N)")
+
+        case IO.gets("") |> String.trim() do
+          "y" -> :ok
+          _ -> Mix.raise("Aborted at preflight.")
+        end
+      end
+    end
+
     screen_off(device)
 
     IO.puts("")
@@ -214,29 +294,58 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
     total_min = div(duration, 60)
     start_time = System.monotonic_time(:second)
 
-    Enum.each(1..duration, fn i ->
-      :timer.sleep(1000)
+    # ── Open CSV log unless --no-csv ───────────────────────────────────────
+    log =
+      if opts[:no_csv] do
+        nil
+      else
+        log_path =
+          opts[:log_path] ||
+            Path.join([
+              File.cwd!(),
+              "_build",
+              "bench",
+              "run_android_#{System.os_time(:second)}.csv"
+            ])
 
-      if rem(i, 10) == 0 do
-        elapsed_sec = System.monotonic_time(:second) - start_time
-        current_mah = read_charge_counter_mah(device)
-        drain_so_far = start_mah - current_mah
-        elapsed_min = Float.round(elapsed_sec / 60, 1)
-        ts = time_string()
-
-        rate_str =
-          if elapsed_sec > 30 do
-            rate = Float.round(drain_so_far * 3600 / elapsed_sec, 1)
-            " @ #{rate} mAh/hr"
-          else
-            ""
-          end
-
-        IO.puts(
-          "  [#{ts}] #{elapsed_min}/#{total_min} min — #{current_mah} mAh  (−#{drain_so_far} mAh#{rate_str})"
-        )
+        IO.puts("  Logging samples to #{log_path}")
+        Logger.open(log_path, start_ts_ms: System.monotonic_time(:millisecond))
       end
-    end)
+
+    reconnector = Reconnector.new(active_node || :"unset@unset", :mob_secret)
+
+    observer =
+      DeviceObserver.subscribe(active_node, categories: [:app, :display, :memory])
+
+    if observer.subscribed? do
+      IO.puts("  Subscribed to Mob.Device events on #{inspect(active_node)}")
+    end
+
+    {final_log, _final_reconnector, _final_observer} =
+      Enum.reduce(1..duration, {log, reconnector, observer}, fn i,
+                                                                {log_acc, recon_acc, obs_acc} ->
+        :timer.sleep(1000)
+
+        if rem(i, 10) == 0 do
+          poll_tick(
+            log_acc,
+            recon_acc,
+            obs_acc,
+            node: active_node,
+            host: "127.0.0.1",
+            adb_serial: device,
+            bundle_id: pkg,
+            expected_screen: :off,
+            start_time: start_time,
+            start_mah: start_mah,
+            total_min: total_min
+          )
+        else
+          {log_acc, recon_acc, DeviceObserver.consume_messages(obs_acc)}
+        end
+      end)
+
+    log = final_log
 
     # ── Results ────────────────────────────────────────────────────────────────
 
@@ -266,6 +375,86 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
     IO.puts("")
     IO.puts("Lower mAh/hr = better. No-BEAM baseline is ~200 mAh/hr on Moto G.")
     IO.puts("")
+
+    # ── CSV-based summary ───────────────────────────────────────────────
+    if log do
+      log_path = log.path
+      Logger.close(log)
+
+      IO.puts("=== Probe-based summary ===")
+      IO.puts("")
+
+      try do
+        metrics = Summary.from_csv(log_path)
+        IO.puts(Summary.pretty(metrics))
+        IO.puts("")
+        IO.puts("Full log: #{log_path}")
+      rescue
+        e -> IO.puts("  (could not parse #{log_path}: #{Exception.message(e)})")
+      end
+
+      IO.puts("")
+    end
+  end
+
+  # ── Probe-driven poll tick ────────────────────────────────────────────────
+
+  defp poll_tick(log, reconnector, observer, opts) do
+    elapsed_sec = System.monotonic_time(:second) - opts[:start_time]
+    elapsed_min = Float.round(elapsed_sec / 60, 1)
+    ts = time_string()
+
+    observer = DeviceObserver.consume_messages(observer)
+
+    probe =
+      Probe.snapshot(
+        platform: :android,
+        node: opts[:node],
+        host: opts[:host],
+        adb_serial: opts[:adb_serial],
+        bundle_id: opts[:bundle_id],
+        expected_screen: opts[:expected_screen]
+      )
+
+    probe = DeviceObserver.apply_to_probe(observer, probe)
+    log = if log, do: Logger.append(log, probe), else: log
+
+    fragment = Probe.format(probe)
+
+    line =
+      case probe.battery_pct do
+        nil ->
+          "  [#{ts}] #{elapsed_min}/#{opts[:total_min]} min — #{fragment}"
+
+        pct ->
+          # Note: Android USB probe returns battery percentage. We separately
+          # track mAh via dumpsys for the Android-specific drain calculation
+          # below, but the live trace uses % to align with iOS bench output.
+          "  [#{ts}] #{elapsed_min}/#{opts[:total_min]} min — #{fragment} (#{pct}%)"
+      end
+
+    IO.puts(line)
+
+    now_ms = System.monotonic_time(:millisecond)
+
+    reconnector =
+      case Reconnector.tick(reconnector, probe, now_ms) do
+        {:no_action, r} ->
+          r
+
+        {:attempt, r} ->
+          if opts[:node] && Node.connect(opts[:node]) do
+            IO.puts(
+              "    ↻ reconnected to #{opts[:node]} (attempt #{r.attempts}, total #{r.total_reconnects + 1})"
+            )
+
+            Reconnector.record_success(r)
+          else
+            r
+          end
+      end
+
+    {log, reconnector, observer}
   end
 
   # ── Dry run ───────────────────────────────────────────────────────────────────

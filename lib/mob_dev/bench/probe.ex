@@ -69,20 +69,29 @@ defmodule MobDev.Bench.Probe do
   @doc """
   Run the full probe and return a populated state struct.
 
-  Options:
+  Common options:
+  - `:platform` — `:ios` (default) or `:android` — selects which USB / app-
+    process probes to run
   - `:node` — node atom to probe (required for dist/RPC checks)
   - `:host` — IP/host for EPMD probe (defaults to host portion of `:node`)
-  - `:hw_udid` — hardware UDID for USB probe (optional)
-  - `:device_id` — CoreDevice UUID for `devicectl` process check (optional)
-  - `:app_pid` — process ID launched at bench start; checked against `device_id`
   - `:rpc_timeout_ms` — defaults to 2000
   - `:tcp_timeout_ms` — defaults to 1000
   - `:expected_screen` — `:on | :off | :unknown` — what we *believe* the
     screen state to be (e.g. after `lock_screen`). Recorded with the snapshot.
+
+  iOS-specific:
+  - `:hw_udid` — hardware UDID for `ideviceinfo` USB probe
+  - `:device_id` — CoreDevice UUID for `devicectl` process check
+  - `:app_pid` — pid launched at bench start; checked against `device_id`
+
+  Android-specific:
+  - `:adb_serial` — ADB serial / IP:port for `adb shell` battery + process probes
+  - `:bundle_id` — app bundle identifier for the process-running check
   """
   @spec snapshot(keyword()) :: t()
   def snapshot(opts \\ []) do
     ts = System.monotonic_time(:millisecond)
+    platform = Keyword.get(opts, :platform, :ios)
     node = Keyword.get(opts, :node)
     host = Keyword.get(opts, :host) || derive_host(node)
 
@@ -91,10 +100,8 @@ defmodule MobDev.Bench.Probe do
 
     reachability = probe_reachability(node, host, rpc_timeout, tcp_timeout)
     {battery_pct, rpc_reason} = probe_rpc_battery(reachability, node, rpc_timeout)
-    {usb, usb_pct, usb_reason} = probe_usb(opts[:hw_udid])
-
-    app_process =
-      probe_app_process(opts[:device_id], opts[:app_pid], reachability)
+    {usb, usb_pct, usb_reason} = probe_usb(platform, opts)
+    app_process = probe_app_process(platform, opts, reachability)
 
     screen = derive_screen(opts[:expected_screen], reachability, usb)
 
@@ -190,9 +197,13 @@ defmodule MobDev.Bench.Probe do
 
   # ── USB probe ────────────────────────────────────────────────────────────
 
-  defp probe_usb(nil), do: {:no_usb, nil, nil}
+  defp probe_usb(:ios, opts), do: probe_usb_ios(opts[:hw_udid])
+  defp probe_usb(:android, opts), do: probe_usb_android(opts[:adb_serial])
+  defp probe_usb(_, _), do: {:no_usb, nil, nil}
 
-  defp probe_usb(hw_udid) when is_binary(hw_udid) do
+  defp probe_usb_ios(nil), do: {:no_usb, nil, nil}
+
+  defp probe_usb_ios(hw_udid) when is_binary(hw_udid) do
     case System.find_executable("ideviceinfo") do
       nil ->
         {:no_usb, nil, nil}
@@ -221,21 +232,66 @@ defmodule MobDev.Bench.Probe do
     e -> {:usb_failed, nil, "ideviceinfo raised: #{Exception.message(e)}"}
   end
 
+  # Android: parse `adb shell dumpsys battery` for the level field. We use
+  # battery percentage (not the µAh charge counter) so the snapshot field
+  # is consistent across platforms.
+  defp probe_usb_android(nil), do: {:no_usb, nil, nil}
+
+  defp probe_usb_android(serial) when is_binary(serial) do
+    case System.find_executable("adb") do
+      nil ->
+        {:no_usb, nil, nil}
+
+      _ ->
+        run_adb_battery(serial)
+    end
+  end
+
+  defp run_adb_battery(serial) do
+    case System.cmd("adb", ["-s", serial, "shell", "dumpsys", "battery"],
+           stderr_to_stdout: true
+         ) do
+      {out, 0} ->
+        case Regex.run(~r/^\s*level:\s*(\d+)/m, out) do
+          [_, n_str] ->
+            case Integer.parse(n_str) do
+              {n, _} when n in 0..100 -> {:usb_ok, n, nil}
+              _ -> {:usb_failed, nil, "adb battery: bad level value #{n_str}"}
+            end
+
+          nil ->
+            {:usb_failed, nil, "adb battery: no level field in dumpsys output"}
+        end
+
+      {out, _} ->
+        {:usb_failed, nil, "adb battery: " <> String.trim(out)}
+    end
+  rescue
+    e -> {:usb_failed, nil, "adb raised: #{Exception.message(e)}"}
+  end
+
   # ── App process probe ────────────────────────────────────────────────────
 
   # If RPC just succeeded, the app is definitely running (foreground or
   # background — RPC works in both). If RPC failed but EPMD is open, the
   # BEAM is alive but might be suspended. If both fail, the app might be
-  # dead OR the phone is offline; need devicectl to disambiguate.
+  # dead OR the phone is offline; the platform-specific probe disambiguates.
 
-  defp probe_app_process(_device_id, _pid, :alive_rpc), do: :app_running
+  defp probe_app_process(_platform, _opts, :alive_rpc), do: :app_running
+  defp probe_app_process(_platform, _opts, :alive_dist_only), do: :app_suspended
 
-  defp probe_app_process(_device_id, _pid, :alive_dist_only), do: :app_suspended
+  defp probe_app_process(:ios, opts, _reachability),
+    do: probe_app_process_ios(opts[:device_id], opts[:app_pid])
 
-  defp probe_app_process(nil, _pid, _), do: :app_unknown
-  defp probe_app_process(_device_id, nil, _), do: :app_unknown
+  defp probe_app_process(:android, opts, _reachability),
+    do: probe_app_process_android(opts[:adb_serial], opts[:bundle_id])
 
-  defp probe_app_process(device_id, pid, _reachability) when is_integer(pid) do
+  defp probe_app_process(_, _, _), do: :app_unknown
+
+  defp probe_app_process_ios(nil, _pid), do: :app_unknown
+  defp probe_app_process_ios(_device_id, nil), do: :app_unknown
+
+  defp probe_app_process_ios(device_id, pid) when is_integer(pid) do
     case System.find_executable("xcrun") do
       nil ->
         :app_unknown
@@ -257,6 +313,39 @@ defmodule MobDev.Bench.Probe do
              ) do
           {out, 0} ->
             if String.contains?(out, to_string(pid)), do: :app_running, else: :app_dead
+
+          _ ->
+            :app_dead
+        end
+    end
+  rescue
+    _ -> :app_unknown
+  end
+
+  # Android: `adb shell pidof <pkg>` returns the pid (or empty if not running).
+  # `pidof` is available on Android 6+ which is well below any device Mob
+  # currently targets.
+  defp probe_app_process_android(nil, _bundle), do: :app_unknown
+  defp probe_app_process_android(_serial, nil), do: :app_unknown
+
+  defp probe_app_process_android(serial, bundle) when is_binary(serial) and is_binary(bundle) do
+    case System.find_executable("adb") do
+      nil ->
+        :app_unknown
+
+      _ ->
+        case System.cmd("adb", ["-s", serial, "shell", "pidof", bundle],
+               stderr_to_stdout: true
+             ) do
+          {out, 0} ->
+            case String.trim(out) do
+              "" -> :app_dead
+              pid_str ->
+                case Integer.parse(pid_str) do
+                  {n, _} when n > 0 -> :app_running
+                  _ -> :app_dead
+                end
+            end
 
           _ ->
             :app_dead

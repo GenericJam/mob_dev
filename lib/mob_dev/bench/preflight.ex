@@ -38,20 +38,29 @@ defmodule MobDev.Bench.Preflight do
   Run all preflight checks and return a list of `{name, result}` tuples in
   the order they were run.
 
-  Options:
+  Common options:
+  - `:platform` — `:ios` (default) or `:android` — selects platform-specific
+    `hardware` and `app_installed` checks
   - `:node` — node atom (required for BEAM checks)
   - `:cookie` — cookie atom
   - `:bundle_id` — app bundle id
-  - `:device_id` — devicectl identifier (CoreDevice UUID)
-  - `:hw_udid` — hardware UDID for USB checks
   - `:host` — IP/host for EPMD (default: derive from node)
   - `:require_keep_alive` — boolean, default true (set false for screen-on bench)
+
+  iOS-specific:
+  - `:device_id` — devicectl identifier (CoreDevice UUID)
+  - `:hw_udid` — hardware UDID for USB checks
+
+  Android-specific:
+  - `:adb_serial` — ADB serial / IP:port for `adb` checks
   """
   @spec run(keyword()) :: [{atom(), check_result()}]
   def run(opts) do
+    platform = Keyword.get(opts, :platform, :ios)
+
     [
-      {:hardware, check_hardware(opts)},
-      {:app_installed, check_app_installed(opts)},
+      {:hardware, check_hardware(platform, opts)},
+      {:app_installed, check_app_installed(platform, opts)},
       {:beam_reachable, check_beam_reachable(opts)},
       {:rpc_responsive, check_rpc_responsive(opts)},
       {:nif_version, check_nif_version(opts)},
@@ -92,8 +101,22 @@ defmodule MobDev.Bench.Preflight do
 
   # ── Individual checks ────────────────────────────────────────────────────
 
+  # ── Hardware check (platform-dispatched) ──────────────────────────────
+
   @doc false
-  def check_hardware(opts) do
+  def check_hardware(platform, opts) do
+    case platform do
+      :ios -> check_hardware_ios(opts)
+      :android -> check_hardware_android(opts)
+      _ -> {:error, "unknown platform: #{inspect(platform)}"}
+    end
+  end
+
+  # Backward-compat — old single-arg version defaults to iOS.
+  @doc false
+  def check_hardware(opts), do: check_hardware(:ios, opts)
+
+  defp check_hardware_ios(opts) do
     cond do
       is_binary(opts[:hw_udid]) ->
         {:ok, "hardware UDID provided: #{opts[:hw_udid]}"}
@@ -124,8 +147,66 @@ defmodule MobDev.Bench.Preflight do
     end
   end
 
+  defp check_hardware_android(opts) do
+    serial = opts[:adb_serial]
+
+    cond do
+      is_nil(System.find_executable("adb")) ->
+        {:error, "adb not found (install Android platform-tools)"}
+
+      not is_binary(serial) ->
+        # Try `adb devices` to see if any device is reachable.
+        case System.cmd("adb", ["devices"], stderr_to_stdout: true) do
+          {out, 0} ->
+            devices =
+              out
+              |> String.split("\n")
+              |> Enum.drop(1)
+              |> Enum.flat_map(fn line ->
+                case String.split(line) do
+                  [s, "device" | _] -> [s]
+                  _ -> []
+                end
+              end)
+
+            case devices do
+              [] -> {:error, "no Android device detected (adb devices returned empty)"}
+              [single] -> {:ok, "device connected: #{single}"}
+              many -> {:ok, "#{length(many)} devices connected"}
+            end
+
+          _ ->
+            {:error, "adb devices failed"}
+        end
+
+      true ->
+        case System.cmd("adb", ["-s", serial, "get-state"], stderr_to_stdout: true) do
+          {out, 0} ->
+            state = String.trim(out)
+            if state == "device", do: {:ok, "adb device #{serial} (#{state})"},
+              else: {:error, "adb device #{serial} state: #{state}"}
+
+          {out, _} ->
+            {:error, "adb get-state failed: #{String.trim(out)}"}
+        end
+    end
+  end
+
+  # ── App-installed check (platform-dispatched) ─────────────────────────
+
   @doc false
-  def check_app_installed(opts) do
+  def check_app_installed(platform, opts) do
+    case platform do
+      :ios -> check_app_installed_ios(opts)
+      :android -> check_app_installed_android(opts)
+      _ -> {:error, "unknown platform: #{inspect(platform)}"}
+    end
+  end
+
+  @doc false
+  def check_app_installed(opts), do: check_app_installed(:ios, opts)
+
+  defp check_app_installed_ios(opts) do
     bundle = opts[:bundle_id]
     device = opts[:device_id]
 
@@ -166,6 +247,39 @@ defmodule MobDev.Bench.Preflight do
             # reachability, NIF exports) will catch real "app not installed"
             # cases anyway. Don't fail the run on devicectl noise.
             {:ok, "couldn't verify via devicectl (BEAM reachability is authoritative)"}
+        end
+    end
+  end
+
+  defp check_app_installed_android(opts) do
+    bundle = opts[:bundle_id]
+    serial = opts[:adb_serial]
+
+    cond do
+      not is_binary(bundle) ->
+        {:error, "bundle_id not configured"}
+
+      is_nil(System.find_executable("adb")) ->
+        {:ok, "skipped (adb unavailable)"}
+
+      not is_binary(serial) ->
+        {:ok, "skipped (no adb_serial provided to verify)"}
+
+      true ->
+        case System.cmd("adb", ["-s", serial, "shell", "pm", "list", "packages", bundle],
+               stderr_to_stdout: true
+             ) do
+          {out, 0} ->
+            # `pm list packages com.example.foo` prints "package:com.example.foo"
+            # if installed; empty if not.
+            if String.contains?(out, "package:#{bundle}") do
+              {:ok, "#{bundle} installed on device"}
+            else
+              {:error, "#{bundle} not installed — run `mix mob.deploy --native`"}
+            end
+
+          {out, _} ->
+            {:error, "adb pm list failed: #{String.trim(out)}"}
         end
     end
   end
