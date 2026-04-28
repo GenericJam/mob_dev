@@ -86,29 +86,48 @@ defmodule Mix.Tasks.Mob.Install do
   defp download_otp do
     Mix.shell().info("Ensuring OTP releases are cached...")
 
-    case MobDev.OtpDownloader.ensure_android("arm64-v8a") do
-      {:ok, path} ->
-        Mix.shell().info([:green, "* Android arm64 OTP: #{path}", :reset])
+    if has_android_project?() do
+      case MobDev.OtpDownloader.ensure_android("arm64-v8a") do
+        {:ok, path} ->
+          Mix.shell().info([:green, "* Android arm64 OTP: #{path}", :reset])
 
-      {:error, reason} ->
-        Mix.shell().error("Warning: Android arm64 OTP download failed: #{reason}")
+        {:error, reason} ->
+          Mix.shell().error("Warning: Android arm64 OTP download failed: #{reason}")
+      end
+
+      case MobDev.OtpDownloader.ensure_android("armeabi-v7a") do
+        {:ok, path} ->
+          Mix.shell().info([:green, "* Android arm32 OTP: #{path}", :reset])
+
+        {:error, reason} ->
+          Mix.shell().error("Warning: Android arm32 OTP download failed: #{reason}")
+      end
+    else
+      Mix.shell().info([:yellow, "* Android OTP skipped — no android/ in project", :reset])
     end
 
-    case MobDev.OtpDownloader.ensure_android("armeabi-v7a") do
-      {:ok, path} ->
-        Mix.shell().info([:green, "* Android arm32 OTP: #{path}", :reset])
-
-      {:error, reason} ->
-        Mix.shell().error("Warning: Android arm32 OTP download failed: #{reason}")
-    end
-
-    if match?({:unix, :darwin}, :os.type()) do
+    if has_ios_project?() and match?({:unix, :darwin}, :os.type()) do
       case MobDev.OtpDownloader.ensure_ios_sim() do
         {:ok, path} -> Mix.shell().info([:green, "* iOS OTP: #{path}", :reset])
         {:error, reason} -> Mix.shell().error("Warning: iOS OTP download failed: #{reason}")
       end
+    else
+      cond do
+        not has_ios_project?() ->
+          Mix.shell().info([:yellow, "* iOS OTP skipped — no ios/ in project", :reset])
+
+        not match?({:unix, :darwin}, :os.type()) ->
+          Mix.shell().info([:yellow, "* iOS OTP skipped — non-macOS host", :reset])
+
+        true ->
+          :ok
+      end
     end
   end
+
+  # Project layout detection — same predicates the doctor uses.
+  defp has_android_project?, do: File.dir?(Path.join(File.cwd!(), "android"))
+  defp has_ios_project?, do: File.exists?(Path.join(File.cwd!(), "ios/build.sh"))
 
   # ── Path configuration ───────────────────────────────────────────────────────
 
