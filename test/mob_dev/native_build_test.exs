@@ -57,4 +57,88 @@ defmodule MobDev.NativeBuildTest do
       assert NativeBuild.filter_serials(@serials, "NOPE") == []
     end
   end
+
+  describe "read_sdk_dir/1" do
+    setup do
+      tmp = Path.join(System.tmp_dir!(), "mob_native_build_test_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(Path.join(tmp, "android"))
+      on_exit(fn -> File.rm_rf!(tmp) end)
+      {:ok, project: tmp}
+    end
+
+    test "returns {:ok, dir} when sdk.dir is set", %{project: project} do
+      File.write!(Path.join([project, "android", "local.properties"]), "sdk.dir=/opt/Android/sdk\n")
+      assert {:ok, "/opt/Android/sdk"} = NativeBuild.read_sdk_dir(project)
+    end
+
+    test "trims trailing whitespace and resolves ~", %{project: project} do
+      home = System.user_home!()
+
+      File.write!(
+        Path.join([project, "android", "local.properties"]),
+        "sdk.dir=~/Library/Android/sdk   \n"
+      )
+
+      assert {:ok, dir} = NativeBuild.read_sdk_dir(project)
+      assert dir == Path.expand("~/Library/Android/sdk")
+      assert String.starts_with?(dir, home)
+    end
+
+    test "returns :error when local.properties is missing", %{project: project} do
+      assert :error = NativeBuild.read_sdk_dir(project)
+    end
+
+    test "returns :error when local.properties has no sdk.dir line", %{project: project} do
+      File.write!(
+        Path.join([project, "android", "local.properties"]),
+        "# placeholder\nsome.other=value\n"
+      )
+
+      assert :error = NativeBuild.read_sdk_dir(project)
+    end
+  end
+
+  describe "android_toolchain_available?/1" do
+    setup do
+      tmp = Path.join(System.tmp_dir!(), "mob_native_build_test_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(Path.join(tmp, "android"))
+
+      sdk_dir = Path.join(tmp, "fake_sdk")
+      File.mkdir_p!(sdk_dir)
+
+      on_exit(fn -> File.rm_rf!(tmp) end)
+      {:ok, project: tmp, sdk_dir: sdk_dir}
+    end
+
+    test "false when local.properties is missing", %{project: project} do
+      refute NativeBuild.android_toolchain_available?(project)
+    end
+
+    test "false when sdk.dir points at a missing directory", %{project: project} do
+      File.write!(
+        Path.join([project, "android", "local.properties"]),
+        "sdk.dir=/nonexistent/path/to/sdk\n"
+      )
+
+      refute NativeBuild.android_toolchain_available?(project)
+    end
+
+    test "true requires adb on PATH plus an existing sdk.dir", %{project: project, sdk_dir: sdk_dir} do
+      File.write!(
+        Path.join([project, "android", "local.properties"]),
+        "sdk.dir=#{sdk_dir}\n"
+      )
+
+      expected = System.find_executable("adb") != nil
+      assert NativeBuild.android_toolchain_available?(project) == expected
+    end
+  end
+
+  describe "ios_toolchain_available?/0" do
+    test "matches the actual macOS + xcrun status of the host" do
+      macos? = match?({:unix, :darwin}, :os.type())
+      xcrun? = System.find_executable("xcrun") != nil
+      assert NativeBuild.ios_toolchain_available?() == (macos? and xcrun?)
+    end
+  end
 end

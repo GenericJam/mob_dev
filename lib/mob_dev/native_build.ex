@@ -38,10 +38,26 @@ defmodule MobDev.NativeBuild do
 
     results = []
 
+    # Skip Android when its toolchain isn't installed instead of failing the
+    # build half an hour into a partial-setup user's first deploy. Default
+    # `mix mob.deploy` (no platform flag) targets every platform with a
+    # `<dir>/` scaffold, but users who only set up iOS hit a Gradle error
+    # half a build later — annoying, and fixable by checking up front.
     results =
-      if :android in platforms and File.dir?("android"),
-        do: [build_android(cfg, device_id) | results],
-        else: results
+      cond do
+        :android not in platforms ->
+          results
+
+        not File.dir?("android") ->
+          results
+
+        not android_toolchain_available?() ->
+          warn_skipped_android()
+          results
+
+        true ->
+          [build_android(cfg, device_id) | results]
+      end
 
     results =
       if :ios in platforms do
@@ -57,10 +73,19 @@ defmodule MobDev.NativeBuild do
               nil
           end
 
-        if physical_udid do
-          [build_ios_physical(cfg, physical_udid) | results]
-        else
-          if File.exists?("ios/build.sh"), do: [build_ios(cfg) | results], else: results
+        cond do
+          not ios_toolchain_available?() ->
+            warn_skipped_ios()
+            results
+
+          physical_udid ->
+            [build_ios_physical(cfg, physical_udid) | results]
+
+          File.exists?("ios/build.sh") ->
+            [build_ios(cfg) | results]
+
+          true ->
+            results
         end
       else
         results
@@ -68,7 +93,7 @@ defmodule MobDev.NativeBuild do
 
     if results == [] do
       IO.puts(
-        "  #{IO.ANSI.yellow()}No native build targets found (missing android/ or ios/build.sh)#{IO.ANSI.reset()}"
+        "  #{IO.ANSI.yellow()}No native build targets found (missing android/ or ios/build.sh, or toolchains)#{IO.ANSI.reset()}"
       )
     end
 
@@ -1269,6 +1294,83 @@ defmodule MobDev.NativeBuild do
         id
       ) or
       Regex.match?(~r/^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{16}$/, id)
+  end
+
+  # ── Toolchain availability ──────────────────────────────────────────────────
+
+  @doc """
+  Returns true when the Android build toolchain looks usable from the given
+  project directory. Three signals must all be present:
+
+    1. `adb` is on PATH (build needs it to install the APK after Gradle)
+    2. `<project_dir>/android/local.properties` exists and sets `sdk.dir`
+    3. The directory `sdk.dir` points at exists on disk
+
+  Returns false otherwise so the deploy can skip Android cleanly instead of
+  failing late inside Gradle. Pure of side effects.
+  """
+  @spec android_toolchain_available?(String.t()) :: boolean()
+  def android_toolchain_available?(project_dir \\ File.cwd!()) do
+    with true <- adb_available?(),
+         {:ok, sdk_dir} <- read_sdk_dir(project_dir) do
+      File.dir?(sdk_dir)
+    else
+      _ -> false
+    end
+  end
+
+  @doc """
+  Returns true when an iOS build is feasible: macOS host with `xcrun`
+  installed. Linux/Windows always returns false. Pure of side effects.
+  """
+  @spec ios_toolchain_available?() :: boolean()
+  def ios_toolchain_available? do
+    macos?() and System.find_executable("xcrun") != nil
+  end
+
+  @doc false
+  @spec read_sdk_dir(String.t()) :: {:ok, String.t()} | :error
+  def read_sdk_dir(project_dir) do
+    path = Path.join([project_dir, "android", "local.properties"])
+
+    with {:ok, content} <- File.read(path),
+         [_, raw] <- Regex.run(~r/^\s*sdk\.dir\s*=\s*(.+?)\s*$/m, content) do
+      {:ok, expand_sdk_dir(raw)}
+    else
+      _ -> :error
+    end
+  end
+
+  # Java's `Properties.store()` writes "/Users/me/Android/sdk" but with
+  # backslash-colons on Windows; on Unix it round-trips fine. Just trim.
+  defp expand_sdk_dir(raw), do: String.trim(raw) |> Path.expand()
+
+  defp adb_available?, do: System.find_executable("adb") != nil
+
+  defp macos?, do: match?({:unix, :darwin}, :os.type())
+
+  defp warn_skipped_android do
+    IO.puts(
+      "  #{IO.ANSI.yellow()}⚠  Skipping Android build — toolchain not detected#{IO.ANSI.reset()}"
+    )
+
+    IO.puts(
+      "     Install Android Studio (or set sdk.dir in android/local.properties)"
+    )
+
+    IO.puts("     and ensure `adb` is on PATH, then re-run.")
+  end
+
+  defp warn_skipped_ios do
+    IO.puts(
+      "  #{IO.ANSI.yellow()}⚠  Skipping iOS build — Xcode command-line tools not detected#{IO.ANSI.reset()}"
+    )
+
+    if macos?() do
+      IO.puts("     Install Xcode and run `xcode-select --install`, then re-run.")
+    else
+      IO.puts("     iOS builds require macOS.")
+    end
   end
 
   # ── Config ───────────────────────────────────────────────────────────────────
