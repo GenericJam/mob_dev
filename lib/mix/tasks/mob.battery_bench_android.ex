@@ -926,9 +926,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
         :timer.sleep(500)
         do_try_connect(node, deadline, attempts + 1)
       else
-        IO.puts(
-          "  (BEAM not reachable after #{attempts + 1} attempts — USB-only readings)"
-        )
+        IO.puts("  (BEAM not reachable after #{attempts + 1} attempts — USB-only readings)")
 
         false
       end

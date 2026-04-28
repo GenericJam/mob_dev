@@ -31,6 +31,7 @@ defmodule Mix.Tasks.Mob.CacheTest do
   describe "our_cache/0" do
     test "honors MOB_CACHE_DIR" do
       System.put_env("MOB_CACHE_DIR", "/tmp/explicitly_set_cache")
+
       try do
         assert %{path: "/tmp/explicitly_set_cache", kind: :ours} = Cache.our_cache()
       after
@@ -105,10 +106,10 @@ defmodule Mix.Tasks.Mob.CacheTest do
       System.delete_env("MOB_SIM_RUNTIME_DIR")
 
       Enum.each(Cache.sim_runtime_targets(), fn t ->
-        assert is_binary(t.name)
-        assert is_binary(t.path)
+        assert is_binary(t.name) and t.name =~ "iOS simulator runtime"
+        assert is_binary(t.path) and String.starts_with?(t.path, "/")
         assert t.kind == :ours
-        assert is_binary(t.hint)
+        assert is_binary(t.hint) and byte_size(t.hint) > 0
       end)
     end
   end

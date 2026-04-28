@@ -1354,9 +1354,7 @@ defmodule MobDev.NativeBuild do
       "  #{IO.ANSI.yellow()}⚠  Skipping Android build — toolchain not detected#{IO.ANSI.reset()}"
     )
 
-    IO.puts(
-      "     Install Android Studio (or set sdk.dir in android/local.properties)"
-    )
+    IO.puts("     Install Android Studio (or set sdk.dir in android/local.properties)")
 
     IO.puts("     and ensure `adb` is on PATH, then re-run.")
   end

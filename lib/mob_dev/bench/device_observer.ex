@@ -127,6 +127,7 @@ defmodule MobDev.Bench.DeviceObserver do
   end
 
   @doc false
+  @spec apply_event(t(), atom(), term()) :: t()
   def apply_event(obs, event, payload) do
     now = System.monotonic_time(:millisecond)
 

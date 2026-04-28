@@ -60,14 +60,23 @@ defmodule MobDev.NativeBuildTest do
 
   describe "read_sdk_dir/1" do
     setup do
-      tmp = Path.join(System.tmp_dir!(), "mob_native_build_test_#{System.unique_integer([:positive])}")
+      tmp =
+        Path.join(
+          System.tmp_dir!(),
+          "mob_native_build_test_#{System.unique_integer([:positive])}"
+        )
+
       File.mkdir_p!(Path.join(tmp, "android"))
       on_exit(fn -> File.rm_rf!(tmp) end)
       {:ok, project: tmp}
     end
 
     test "returns {:ok, dir} when sdk.dir is set", %{project: project} do
-      File.write!(Path.join([project, "android", "local.properties"]), "sdk.dir=/opt/Android/sdk\n")
+      File.write!(
+        Path.join([project, "android", "local.properties"]),
+        "sdk.dir=/opt/Android/sdk\n"
+      )
+
       assert {:ok, "/opt/Android/sdk"} = NativeBuild.read_sdk_dir(project)
     end
 
@@ -100,7 +109,12 @@ defmodule MobDev.NativeBuildTest do
 
   describe "android_toolchain_available?/1" do
     setup do
-      tmp = Path.join(System.tmp_dir!(), "mob_native_build_test_#{System.unique_integer([:positive])}")
+      tmp =
+        Path.join(
+          System.tmp_dir!(),
+          "mob_native_build_test_#{System.unique_integer([:positive])}"
+        )
+
       File.mkdir_p!(Path.join(tmp, "android"))
 
       sdk_dir = Path.join(tmp, "fake_sdk")
@@ -123,7 +137,10 @@ defmodule MobDev.NativeBuildTest do
       refute NativeBuild.android_toolchain_available?(project)
     end
 
-    test "true requires adb on PATH plus an existing sdk.dir", %{project: project, sdk_dir: sdk_dir} do
+    test "true requires adb on PATH plus an existing sdk.dir", %{
+      project: project,
+      sdk_dir: sdk_dir
+    } do
       File.write!(
         Path.join([project, "android", "local.properties"]),
         "sdk.dir=#{sdk_dir}\n"

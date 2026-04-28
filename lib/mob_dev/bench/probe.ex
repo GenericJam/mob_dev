@@ -133,6 +133,8 @@ defmodule MobDev.Bench.Probe do
   # ── Reachability pipeline ────────────────────────────────────────────────
 
   @doc false
+  @spec probe_reachability(node() | nil, String.t() | nil, timeout(), timeout()) ::
+          reachability()
   def probe_reachability(nil, _host, _rpc_timeout, _tcp_timeout), do: :unreachable
 
   def probe_reachability(_node, nil, _rpc_timeout, _tcp_timeout), do: :unreachable
@@ -154,6 +156,7 @@ defmodule MobDev.Bench.Probe do
   end
 
   @doc false
+  @spec tcp_open?(String.t() | term(), :inet.port_number(), timeout()) :: boolean()
   def tcp_open?(host, port, timeout_ms) when is_binary(host) do
     case :gen_tcp.connect(String.to_charlist(host), port, [:binary, active: false], timeout_ms) do
       {:ok, sock} ->
@@ -168,6 +171,7 @@ defmodule MobDev.Bench.Probe do
   def tcp_open?(_, _, _), do: false
 
   @doc false
+  @spec dist_connected?(node()) :: boolean()
   def dist_connected?(node) when is_atom(node) do
     case Node.list() do
       list when is_list(list) -> node in list or node == Node.self()
@@ -176,6 +180,7 @@ defmodule MobDev.Bench.Probe do
   end
 
   @doc false
+  @spec rpc_responsive?(node(), timeout()) :: boolean()
   def rpc_responsive?(node, timeout_ms) when is_atom(node) do
     case :rpc.call(node, :erlang, :node, [], timeout_ms) do
       n when is_atom(n) and n != :nonode@nohost -> true

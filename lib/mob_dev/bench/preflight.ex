@@ -104,6 +104,7 @@ defmodule MobDev.Bench.Preflight do
   # ── Hardware check (platform-dispatched) ──────────────────────────────
 
   @doc false
+  @spec check_hardware(:ios | :android, keyword()) :: {:ok, String.t()} | {:error, String.t()}
   def check_hardware(platform, opts) do
     case platform do
       :ios -> check_hardware_ios(opts)
@@ -114,6 +115,7 @@ defmodule MobDev.Bench.Preflight do
 
   # Backward-compat — old single-arg version defaults to iOS.
   @doc false
+  @spec check_hardware(keyword()) :: {:ok, String.t()} | {:error, String.t()}
   def check_hardware(opts), do: check_hardware(:ios, opts)
 
   defp check_hardware_ios(opts) do
@@ -197,6 +199,8 @@ defmodule MobDev.Bench.Preflight do
   # ── App-installed check (platform-dispatched) ─────────────────────────
 
   @doc false
+  @spec check_app_installed(:ios | :android, keyword()) ::
+          {:ok, String.t()} | {:error, String.t()}
   def check_app_installed(platform, opts) do
     case platform do
       :ios -> check_app_installed_ios(opts)
@@ -206,6 +210,7 @@ defmodule MobDev.Bench.Preflight do
   end
 
   @doc false
+  @spec check_app_installed(keyword()) :: {:ok, String.t()} | {:error, String.t()}
   def check_app_installed(opts), do: check_app_installed(:ios, opts)
 
   defp check_app_installed_ios(opts) do
@@ -295,6 +300,7 @@ defmodule MobDev.Bench.Preflight do
   end
 
   @doc false
+  @spec check_beam_reachable(keyword()) :: {:ok, String.t()} | {:error, String.t()}
   def check_beam_reachable(opts) do
     node = opts[:node]
     host = opts[:host] || derive_host(node)
@@ -315,6 +321,7 @@ defmodule MobDev.Bench.Preflight do
   end
 
   @doc false
+  @spec check_rpc_responsive(keyword()) :: {:ok, String.t()} | {:error, String.t()}
   def check_rpc_responsive(opts) do
     node = opts[:node]
     cookie = opts[:cookie]
@@ -344,11 +351,13 @@ defmodule MobDev.Bench.Preflight do
   end
 
   @doc false
+  @spec check_nif_version(keyword()) :: {:ok, String.t()} | {:error, String.t()}
   def check_nif_version(opts) do
     check_nif_export(opts, :battery_level, "battery_level/0")
   end
 
   @doc false
+  @spec check_keep_alive_nif(keyword()) :: {:ok, String.t()} | {:error, String.t()}
   def check_keep_alive_nif(opts) do
     check_nif_export(opts, :background_keep_alive, "background_keep_alive/0")
   end
