@@ -1,5 +1,8 @@
 defmodule Mix.Tasks.Mob.CacheTest do
-  use ExUnit.Case, async: true
+  # async: false because tests mutate process-global env vars (MOB_CACHE_DIR
+  # and MOB_SIM_RUNTIME_DIR) — running them in parallel with PathsTest would
+  # race.
+  use ExUnit.Case, async: false
 
   alias Mix.Tasks.Mob.Cache
 
@@ -55,6 +58,58 @@ defmodule Mix.Tasks.Mob.CacheTest do
         _ ->
           assert path == Path.join([home, ".cache", "elixir_make"])
       end
+    end
+  end
+
+  describe "sim_runtime_targets/0" do
+    test "always lists the new default and the legacy /tmp path" do
+      System.delete_env("MOB_SIM_RUNTIME_DIR")
+      targets = Cache.sim_runtime_targets()
+      paths = Enum.map(targets, & &1.path)
+
+      assert MobDev.Paths.default_runtime_dir() in paths
+      assert MobDev.Paths.legacy_tmp_path() in paths
+    end
+
+    test "adds MOB_SIM_RUNTIME_DIR override when it differs from defaults" do
+      System.put_env("MOB_SIM_RUNTIME_DIR", "/somewhere/exotic")
+
+      try do
+        targets = Cache.sim_runtime_targets()
+        paths = Enum.map(targets, & &1.path)
+        assert "/somewhere/exotic" in paths
+        # All three present, deduplicated, no duplicates.
+        assert length(paths) == length(Enum.uniq(paths))
+      after
+        System.delete_env("MOB_SIM_RUNTIME_DIR")
+      end
+    end
+
+    test "deduplicates when override matches the default" do
+      default = MobDev.Paths.default_runtime_dir()
+      System.put_env("MOB_SIM_RUNTIME_DIR", default)
+
+      try do
+        targets = Cache.sim_runtime_targets()
+        paths = Enum.map(targets, & &1.path)
+        # Default + legacy, no duplicate of default.
+        assert length(paths) == 2
+        assert default in paths
+        assert MobDev.Paths.legacy_tmp_path() in paths
+      after
+        System.delete_env("MOB_SIM_RUNTIME_DIR")
+      end
+    end
+
+    test "every target has a name, path, kind, and hint" do
+      System.delete_env("MOB_SIM_RUNTIME_DIR")
+
+      Enum.each(Cache.sim_runtime_targets(), fn t ->
+        assert is_binary(t.name)
+        assert is_binary(t.path)
+        assert t.kind == :ours
+        assert is_binary(t.hint)
+      end)
     end
   end
 

@@ -357,7 +357,7 @@ defmodule Mix.Tasks.Mob.Doctor do
       check_required(
         "rsync",
         :fail,
-        "required by ios/build.sh to sync the OTP runtime to /tmp/otp-ios-sim",
+        "required by ios/build.sh to sync the OTP runtime to ~/.mob/runtime/ios-sim",
         "rsync is included with macOS — if missing:\n      brew install rsync"
       )
     ]

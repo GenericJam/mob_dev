@@ -38,13 +38,16 @@ defmodule MobDev.Deployer do
   defp ios_bundle_id, do: bundle_id()
 
   defp ios_beams_dir do
-    # mob_beam.m hardcodes /tmp/otp-ios-sim as OTP_ROOT.
-    # If that directory exists (manually set up or from a prior native deploy),
-    # deploy beams there so the running BEAM picks them up immediately.
-    # Fall back to the cache dir otherwise (e.g. fresh machine before first --native).
-    tmp_path = Path.join("/tmp/otp-ios-sim", app_name())
+    # The simulator's OTP_ROOT is resolved by `MobDev.Paths.sim_runtime_dir/1`.
+    # New projects: ~/.mob/runtime/ios-sim. Legacy projects (build.sh predates
+    # MOB_SIM_RUNTIME_DIR support): /tmp/otp-ios-sim. Either way, if that
+    # directory exists deploy beams there so the running BEAM picks them up
+    # immediately. Fall back to the cache dir on a fresh machine that hasn't
+    # done its first --native build yet.
+    runtime_dir = MobDev.Paths.sim_runtime_dir()
+    runtime_path = Path.join(runtime_dir, app_name())
     cache_path = Path.join(MobDev.OtpDownloader.ios_sim_otp_dir(), app_name())
-    if File.dir?("/tmp/otp-ios-sim"), do: tmp_path, else: cache_path
+    if File.dir?(runtime_dir), do: runtime_path, else: cache_path
   end
 
   @doc """

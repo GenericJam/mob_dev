@@ -94,7 +94,7 @@ defmodule Mix.Tasks.Mob.Cache do
   # ── Target resolution ──────────────────────────────────────────────────────
 
   defp resolve_targets(opts) do
-    list = [our_cache()]
+    list = [our_cache()] ++ sim_runtime_targets()
     list = if opts[:include_transitive], do: list ++ [elixir_make_cache()], else: list
     list
   end
@@ -112,6 +112,54 @@ defmodule Mix.Tasks.Mob.Cache do
       kind: :ours,
       hint: "set MOB_CACHE_DIR to relocate; otherwise lives at ~/.mob/cache"
     }
+  end
+
+  # Return both the new (~/.mob/runtime/ios-sim) and legacy (/tmp/otp-ios-sim)
+  # iOS simulator runtime locations, plus any MOB_SIM_RUNTIME_DIR override —
+  # deduplicated. Users can have stale data in either place if they've used
+  # multiple projects, so list both unconditionally regardless of which one
+  # the current project would resolve to.
+  @doc false
+  @spec sim_runtime_targets() :: [map()]
+  def sim_runtime_targets do
+    new_default = MobDev.Paths.default_runtime_dir()
+    legacy = MobDev.Paths.legacy_tmp_path()
+    override = System.get_env("MOB_SIM_RUNTIME_DIR")
+
+    [new_default, legacy, override]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+    |> Enum.map(&sim_runtime_entry/1)
+  end
+
+  defp sim_runtime_entry(path) do
+    %{
+      name: "iOS simulator runtime (#{label_for_runtime(path)})",
+      path: path,
+      kind: :ours,
+      hint: hint_for_runtime(path)
+    }
+  end
+
+  defp label_for_runtime(path) do
+    cond do
+      path == MobDev.Paths.default_runtime_dir() -> "current default"
+      path == MobDev.Paths.legacy_tmp_path() -> "legacy /tmp location"
+      true -> "MOB_SIM_RUNTIME_DIR override"
+    end
+  end
+
+  defp hint_for_runtime(path) do
+    cond do
+      path == MobDev.Paths.default_runtime_dir() ->
+        "writable OTP root for new projects; mob_new ≥ 0.1.20"
+
+      path == MobDev.Paths.legacy_tmp_path() ->
+        "used by projects whose ios/build.sh predates MOB_SIM_RUNTIME_DIR"
+
+      true ->
+        "set MOB_SIM_RUNTIME_DIR to override the default"
+    end
   end
 
   @doc false

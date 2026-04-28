@@ -327,15 +327,26 @@ defmodule MobDev.Discovery.IOS do
 
   @doc """
   Launches the app on a booted simulator.
-  Passes MOB_DIST_PORT as an environment variable (xcrun simctl launch supports this).
+
+  Passes two env vars through to the simulator app via `simctl`'s
+  `SIMCTL_CHILD_*` mechanism (the prefix is stripped before delivery):
+
+    * `MOB_DIST_PORT`        — Erlang dist listen port
+    * `MOB_SIM_RUNTIME_DIR`  — directory the OTP runtime was written to,
+      so `mob_beam.m` reads from the same place `ios/build.sh` wrote.
+      Resolved by `MobDev.Paths.sim_runtime_dir/1`.
   """
   @spec launch_app(String.t(), String.t(), keyword()) :: {String.t(), non_neg_integer()}
   def launch_app(udid, bundle_id, opts \\ []) do
     dist_port = Keyword.get(opts, :dist_port, 9100)
-    # xcrun simctl passes SIMCTL_CHILD_* env vars to the launched app (prefix stripped).
+    runtime_dir = MobDev.Paths.sim_runtime_dir()
+
     System.cmd("xcrun", ["simctl", "launch", udid, bundle_id],
       stderr_to_stdout: true,
-      env: [{"SIMCTL_CHILD_MOB_DIST_PORT", to_string(dist_port)}]
+      env: [
+        {"SIMCTL_CHILD_MOB_DIST_PORT", to_string(dist_port)},
+        {"SIMCTL_CHILD_MOB_SIM_RUNTIME_DIR", runtime_dir}
+      ]
     )
   end
 
