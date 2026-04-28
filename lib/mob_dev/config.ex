@@ -8,17 +8,36 @@ defmodule MobDev.Config do
   Returns the app's bundle ID / Android package name.
 
   Resolution order:
-    1. `mob.exs` — `config :mob_dev, bundle_id: "..."`
+    1. `mob.exs` — `config :mob_dev, bundle_id: "..."` (opt-in override;
+       not required — projects work fine without it)
     2. `ios/Info.plist` — `CFBundleIdentifier`
     3. `android/app/build.gradle` — `applicationId`
-    4. Generated default: `"com.mob.<app_name>"`
+    4. Generated default: `"<MOB_BUNDLE_PREFIX or com.example>.<app_name>"`
+
+  The four-level fallback exists so cross-platform tasks (e.g. `mix mob.deploy`)
+  always have a value to work with, regardless of which platform's manifest is
+  authoritative for the project. For most users, the value resolved at step 2
+  or 3 is what `mix mob.new` wrote there at generation time; mob.exs is
+  reserved for explicit overrides.
   """
   @spec bundle_id() :: String.t()
   def bundle_id do
     load_mob_config()[:bundle_id] ||
       detect_from_ios_plist() ||
       detect_from_android_gradle() ||
-      "com.mob.#{app_name()}"
+      "#{bundle_prefix()}.#{app_name()}"
+  end
+
+  # Default reverse-DNS prefix when no platform manifest is available. Honors
+  # MOB_BUNDLE_PREFIX so users with a corporate prefix can set it once.
+  # Mirrors MobNew.ProjectGenerator.bundle_prefix/0 so the generator's default
+  # and the runtime fallback agree.
+  defp bundle_prefix do
+    case System.get_env("MOB_BUNDLE_PREFIX") do
+      nil -> "com.example"
+      "" -> "com.example"
+      raw -> String.trim(raw)
+    end
   end
 
   @doc """
