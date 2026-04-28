@@ -778,29 +778,49 @@ defmodule MobDev.Deployer do
     try do
       File.mkdir_p!(ios_beams_dir())
 
+      # Use rsync rather than cp -r for two reasons that hit Nix users hard:
+      #
+      # 1. macOS BSD `cp` preserves source mode in practice (despite what the
+      #    man page implies). Sources in /nix/store are mode 444, so cp leaves
+      #    444 files in our managed runtime dir; the next deploy then trips on
+      #    `cp: cannot create regular file ... Permission denied` when trying
+      #    to overwrite them.
+      #
+      # 2. cp -r unconditionally overwrites every file, even when nothing has
+      #    changed. rsync's mtime+size check skips identical files, so a
+      #    no-op deploy after a previous successful one is genuinely a no-op.
+      #
+      # `--no-perms` keeps existing destination permissions untouched and uses
+      # the user's umask for newly-created files (so we don't propagate Nix's
+      # 444 mode). rsync's atomic-rename writer can also overwrite a 444
+      # destination cleanly without needing a chmod first.
       Enum.each(beam_dirs, fn dir ->
         abs_dir = Path.expand(dir)
 
-        case System.cmd("cp", ["-r", "#{abs_dir}/.", ios_beams_dir()], stderr_to_stdout: true) do
+        case System.cmd(
+               "rsync",
+               ["-a", "--no-perms", "#{abs_dir}/", "#{ios_beams_dir()}/"],
+               stderr_to_stdout: true
+             ) do
           {_, 0} -> :ok
-          {out, _} -> throw({:error, "cp failed: #{out}"})
+          {out, _} -> throw({:error, "rsync failed: #{out}"})
         end
       end)
 
       # Push priv/ alongside the BEAMs so migrations and other priv assets are
-      # available at runtime. On iOS, beams_dir = /tmp/otp-ios-sim/APP_NAME and
+      # available at runtime. On iOS, beams_dir = $RUNTIME_DIR/APP_NAME and
       # MOB_DATA_DIR = the app's Documents directory — these are two different
       # paths, so we can't derive beams_dir from MOB_DATA_DIR. mob_beam.m sets
       # MOB_BEAMS_DIR=beams_dir explicitly so app code always knows where to look.
-      # No chmod is needed: cp on macOS preserves source permissions and the
-      # simulator shares the Mac filesystem (no SELinux, no ownership mismatch).
       local_priv = Path.join(File.cwd!(), "priv")
 
       if File.dir?(local_priv) do
         priv_dest = Path.join(ios_beams_dir(), "priv")
         File.mkdir_p!(priv_dest)
 
-        case System.cmd("cp", ["-r", "#{Path.expand(local_priv)}/.", priv_dest],
+        case System.cmd(
+               "rsync",
+               ["-a", "--no-perms", "#{Path.expand(local_priv)}/", "#{priv_dest}/"],
                stderr_to_stdout: true
              ) do
           {_, 0} -> :ok
