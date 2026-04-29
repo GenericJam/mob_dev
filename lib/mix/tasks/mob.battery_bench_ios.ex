@@ -913,58 +913,107 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
 
   # Establish Erlang distribution to the running app on the device.
   # Returns the node atom if connected, nil otherwise.
-  # Retries up to 5 times (2s apart) to allow the BEAM to start after app launch.
   #
-  # device_id: CoreDevice UUID — used to resolve the phone's IP via xcrun devicectl
-  # so we can query EPMD directly without relying on the ARP cache (which may not
-  # have the WiFi IP when all prior communication was over USB).
+  # Retries up to 5 times, sleeping ~2 s between attempts so the device-side
+  # BEAM has time to start, register in EPMD, and accept connections after
+  # the app launch. Each attempt logs its outcome (no device / connect false /
+  # connect ignored) so failures are diagnosable without re-running the bench.
+  #
+  # Once a device is discovered, subsequent attempts skip the discovery
+  # cascade and just retry `Node.connect` against the same node — the
+  # discovery itself can take 3–5 s on iOS (devicectl + ARP + EPMD scan)
+  # which would chew through the retry budget if repeated each iteration.
+  #
+  # device_id: CoreDevice UUID — used to resolve the phone's IP via
+  # `xcrun devicectl` so we can query EPMD directly without relying on
+  # the ARP cache (which may not have the WiFi IP when all prior
+  # communication was over USB).
+  @max_connect_attempts 5
+  @connect_retry_sleep_ms 2_000
+
   defp connect_beam_node(device_id, explicit_wifi_ip) do
-    unless Node.alive?() do
-      Node.start(:"mob_bench@127.0.0.1", :longnames)
-      Node.set_cookie(:mob_secret)
+    case Node.start(:"mob_bench@127.0.0.1", :longnames) do
+      {:ok, _} -> Node.set_cookie(:mob_secret)
+      {:error, {:already_started, _}} -> :ok
+      _ -> :ok
     end
 
-    # If the user passed --wifi-ip, warm the ARP cache with a quick ping so the
-    # subsequent EPMD probe doesn't fail on a cold ARP lookup.
+    # If the user passed --wifi-ip, warm the ARP cache with a quick ping so
+    # the subsequent EPMD probe doesn't fail on a cold ARP lookup.
     if is_binary(explicit_wifi_ip) do
       System.cmd("ping", ["-c", "1", "-W", "1000", explicit_wifi_ip], stderr_to_stdout: true)
     end
 
-    Enum.find_value(0..4, fn attempt ->
-      if attempt > 0 do
-        IO.puts("  (waiting for BEAM... attempt #{attempt + 1}/5)")
-        :timer.sleep(2000)
-      end
+    do_connect_attempts(device_id, explicit_wifi_ip, _device_cache = nil, 1)
+  end
 
-      # 1. Explicit --wifi-ip wins.
-      device =
-        if is_binary(explicit_wifi_ip) do
-          MobDev.Discovery.IOS.find_physical_at(explicit_wifi_ip)
+  defp do_connect_attempts(_device_id, _wifi_ip, _cache, attempt)
+       when attempt > @max_connect_attempts,
+       do: nil
+
+  defp do_connect_attempts(device_id, wifi_ip, cache, attempt) do
+    device = cache || discover_ios_device(device_id, wifi_ip)
+
+    cond do
+      is_nil(device) ->
+        IO.puts(
+          "  attempt #{attempt}/#{@max_connect_attempts}: no device discovered " <>
+            "(devicectl + ARP + EPMD scan all empty)"
+        )
+
+        sleep_unless_last(attempt)
+        do_connect_attempts(device_id, wifi_ip, nil, attempt + 1)
+
+      true ->
+        Node.set_cookie(device.node, :mob_secret)
+
+        case Node.connect(device.node) do
+          true ->
+            device.node
+
+          false ->
+            IO.puts(
+              "  attempt #{attempt}/#{@max_connect_attempts}: found #{device.serial} at " <>
+                "#{device.host_ip || "?"} (#{device.node}) but Node.connect returned false " <>
+                "(BEAM not yet ready or cookie mismatch)"
+            )
+
+            sleep_unless_last(attempt)
+            # Keep the device cached — likely the BEAM just isn't up yet.
+            do_connect_attempts(device_id, wifi_ip, device, attempt + 1)
+
+          :ignored ->
+            # Local node isn't alive (couldn't start it) — retrying won't help.
+            IO.puts(
+              "  attempt #{attempt}/#{@max_connect_attempts}: Node.connect returned :ignored — " <>
+                "local node never started, aborting retries"
+            )
+
+            nil
+        end
+    end
+  end
+
+  defp sleep_unless_last(attempt) do
+    if attempt < @max_connect_attempts, do: :timer.sleep(@connect_retry_sleep_ms)
+  end
+
+  # Three-stage discovery cascade. Returns the first %Device{} found or nil.
+  # Stages run only as far as needed; ARP/EPMD scan is the slowest so it's last.
+  defp discover_ios_device(device_id, explicit_wifi_ip) do
+    explicit_match =
+      if is_binary(explicit_wifi_ip),
+        do: MobDev.Discovery.IOS.find_physical_at(explicit_wifi_ip)
+
+    devicectl_match =
+      explicit_match ||
+        with ip when is_binary(ip) <- device_ip_from_devicectl(device_id) do
+          MobDev.Discovery.IOS.find_physical_at(ip)
         end
 
-      # 2. IPv4 from devicectl (skips IPv6 tunnel addresses).
-      device =
-        device ||
-          with ip when is_binary(ip) <- device_ip_from_devicectl(device_id) do
-            MobDev.Discovery.IOS.find_physical_at(ip)
-          end
-
-      # 3. ARP/EPMD LAN scan. Prefer devices with a known WiFi IP (host_ip set)
-      #    over USB-only entries whose node name defaults to @127.0.0.1.
-      device =
-        device ||
-          MobDev.Discovery.IOS.list_physical()
-          |> Enum.find(& &1.host_ip)
-
-      case device do
-        nil ->
-          nil
-
-        d ->
-          Node.set_cookie(d.node, :mob_secret)
-          if Node.connect(d.node), do: d.node, else: nil
-      end
-    end)
+    devicectl_match ||
+      MobDev.Discovery.IOS.list_physical()
+      |> Enum.find(& &1.host_ip)
   end
 
   # Returns the device's IP by extracting its mDNS hostname from xcrun devicectl
