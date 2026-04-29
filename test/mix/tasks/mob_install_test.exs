@@ -1,5 +1,7 @@
 defmodule Mix.Tasks.Mob.InstallTest do
-  use ExUnit.Case, async: true
+  # async: false — detect_android_sdk/0 tests mutate ANDROID_HOME, which is
+  # process-global.
+  use ExUnit.Case, async: false
 
   alias Mix.Tasks.Mob.Install
   alias MobDev.OtpDownloader
@@ -78,8 +80,12 @@ defmodule Mix.Tasks.Mob.InstallTest do
       refute arm64 == arm32
     end
 
-    test "does nothing when local.properties has no placeholders", %{dir: dir} do
-      original = "mob.otp_release=/already/set\nmob.mob_dir=/already/set\n"
+    test "does nothing when local.properties is fully populated", %{dir: dir} do
+      # Both Mob paths and sdk.dir already set — write_local_properties should
+      # leave it byte-identical.
+      original =
+        "sdk.dir=/already/set/sdk\nmob.otp_release=/already/set\nmob.mob_dir=/already/set\n"
+
       File.write!(props_path(dir), original)
       Install.write_local_properties(dir, mob_dir: dir)
       assert File.read!(props_path(dir)) == original
@@ -88,6 +94,89 @@ defmodule Mix.Tasks.Mob.InstallTest do
     test "does nothing when local.properties does not exist", %{dir: dir} do
       Install.write_local_properties(dir, mob_dir: dir)
       refute File.exists?(props_path(dir))
+    end
+  end
+
+  # ── has_active_sdk_dir?/1 ────────────────────────────────────────────────────
+
+  describe "has_active_sdk_dir?/1" do
+    test "true for an uncommented sdk.dir= line" do
+      assert Install.has_active_sdk_dir?("sdk.dir=/Users/me/Android/sdk\n")
+    end
+
+    test "true with leading whitespace" do
+      assert Install.has_active_sdk_dir?("   sdk.dir=/path\n")
+    end
+
+    test "false for a commented placeholder" do
+      refute Install.has_active_sdk_dir?("# sdk.dir=/path/to/android/sdk\n")
+    end
+
+    test "false when the line is missing entirely" do
+      refute Install.has_active_sdk_dir?("mob.mob_dir=/foo\n")
+    end
+  end
+
+  # ── ensure_sdk_dir/2 ─────────────────────────────────────────────────────────
+
+  describe "ensure_sdk_dir/2" do
+    test "no-op when sdk_path is nil" do
+      assert Install.ensure_sdk_dir("mob.mob_dir=/foo\n", nil) == "mob.mob_dir=/foo\n"
+    end
+
+    test "replaces a commented placeholder with an active line" do
+      input = "# sdk.dir=/path/to/android/sdk\nmob.mob_dir=/foo\n"
+      result = Install.ensure_sdk_dir(input, "/Users/me/Android/sdk")
+      assert result =~ ~r/^sdk\.dir=\/Users\/me\/Android\/sdk$/m
+      refute result =~ "/path/to/android/sdk"
+    end
+
+    test "updates an existing active sdk.dir= line" do
+      input = "sdk.dir=/old/path\nmob.mob_dir=/foo\n"
+      result = Install.ensure_sdk_dir(input, "/new/path")
+      assert result =~ "sdk.dir=/new/path"
+      refute result =~ "/old/path"
+    end
+
+    test "prepends sdk.dir= when neither active nor commented line is present" do
+      input = "mob.mob_dir=/foo\n"
+      result = Install.ensure_sdk_dir(input, "/Users/me/Android/sdk")
+      assert String.starts_with?(result, "sdk.dir=/Users/me/Android/sdk\n")
+    end
+  end
+
+  # ── detect_android_sdk/0 ──────────────────────────────────────────────────────
+
+  describe "detect_android_sdk/0" do
+    test "returns ANDROID_HOME when set and the directory exists" do
+      tmp =
+        Path.join(System.tmp_dir!(), "mob_sdk_test_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(tmp)
+
+      original = System.get_env("ANDROID_HOME")
+      System.put_env("ANDROID_HOME", tmp)
+
+      try do
+        assert Install.detect_android_sdk() == tmp
+      after
+        if original, do: System.put_env("ANDROID_HOME", original), else: System.delete_env("ANDROID_HOME")
+        File.rm_rf!(tmp)
+      end
+    end
+
+    test "skips ANDROID_HOME when the directory doesn't exist" do
+      original = System.get_env("ANDROID_HOME")
+      System.put_env("ANDROID_HOME", "/nonexistent/path/asdfqwerty")
+
+      try do
+        # detect_android_sdk falls through to platform defaults; whether they
+        # exist on the test host is host-dependent, so just assert we did NOT
+        # return the bogus override.
+        refute Install.detect_android_sdk() == "/nonexistent/path/asdfqwerty"
+      after
+        if original, do: System.put_env("ANDROID_HOME", original), else: System.delete_env("ANDROID_HOME")
+      end
     end
   end
 end

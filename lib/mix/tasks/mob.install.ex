@@ -237,7 +237,10 @@ defmodule Mix.Tasks.Mob.Install do
     if File.exists?(props) do
       content = File.read!(props)
 
-      if String.contains?(content, "/path/to/") do
+      needs_mob_paths? = String.contains?(content, "/path/to/")
+      needs_sdk_dir? = not has_active_sdk_dir?(content)
+
+      if needs_mob_paths? or needs_sdk_dir? do
         otp_dir = MobDev.OtpDownloader.android_otp_dir("arm64-v8a")
         otp_dir_arm32 = MobDev.OtpDownloader.android_otp_dir("armeabi-v7a")
 
@@ -246,10 +249,88 @@ defmodule Mix.Tasks.Mob.Install do
           |> replace_prop("mob.otp_release", otp_dir)
           |> replace_prop("mob.otp_release_arm32", otp_dir_arm32)
           |> replace_prop("mob.mob_dir", cfg[:mob_dir])
+          |> ensure_sdk_dir(detect_android_sdk())
 
         File.write!(props, new_content)
         Mix.shell().info([:green, "* android/local.properties configured", :reset])
       end
+    end
+  end
+
+  # Returns true iff local.properties has an *uncommented* `sdk.dir=...` line.
+  # The mob_new template ships with a commented `# sdk.dir=...` placeholder; we
+  # treat that as "not set" so the auto-detection writes a real value over it.
+  @doc false
+  @spec has_active_sdk_dir?(String.t()) :: boolean()
+  def has_active_sdk_dir?(content) do
+    Regex.match?(~r/^\s*sdk\.dir\s*=/m, content)
+  end
+
+  # Inserts or updates `sdk.dir=...` in local.properties when a real SDK path
+  # is detected. No-op when nothing was found — better to leave the comment
+  # placeholder than write a bogus value.
+  @doc false
+  @spec ensure_sdk_dir(String.t(), String.t() | nil) :: String.t()
+  def ensure_sdk_dir(content, nil), do: content
+
+  def ensure_sdk_dir(content, sdk_path) when is_binary(sdk_path) do
+    cond do
+      Regex.match?(~r/^\s*sdk\.dir\s*=/m, content) ->
+        # Active line already present — replace its value
+        Regex.replace(~r/^\s*sdk\.dir\s*=.*$/m, content, "sdk.dir=#{sdk_path}")
+
+      Regex.match?(~r/^\s*#\s*sdk\.dir\s*=/m, content) ->
+        # Commented placeholder — replace it with the active line
+        Regex.replace(~r/^\s*#\s*sdk\.dir\s*=.*$/m, content, "sdk.dir=#{sdk_path}")
+
+      true ->
+        # Neither — prepend the line so Gradle finds it without scanning the
+        # comment block at the top of the file
+        "sdk.dir=#{sdk_path}\n" <> content
+    end
+  end
+
+  # Locate the Android SDK by checking the standard env vars first, then the
+  # platform-default install paths Android Studio uses. Returns `nil` if
+  # nothing was found — `mix mob.deploy --native` will fall back to its own
+  # toolchain warning so the user knows what to install.
+  @doc false
+  @spec detect_android_sdk() :: String.t() | nil
+  def detect_android_sdk do
+    candidates =
+      [
+        System.get_env("ANDROID_HOME"),
+        System.get_env("ANDROID_SDK_ROOT")
+      ] ++ default_sdk_locations()
+
+    Enum.find(candidates, fn
+      nil -> false
+      "" -> false
+      path -> File.dir?(path)
+    end)
+  end
+
+  defp default_sdk_locations do
+    home = System.user_home!()
+
+    case :os.type() do
+      {:unix, :darwin} ->
+        [Path.join([home, "Library", "Android", "sdk"])]
+
+      {:unix, _} ->
+        # Linux. Android Studio's default is ~/Android/Sdk; package managers
+        # often install to /opt/android-sdk or /opt/android-sdk-linux.
+        [
+          Path.join([home, "Android", "Sdk"]),
+          "/opt/android-sdk",
+          "/opt/android-sdk-linux"
+        ]
+
+      {:win32, _} ->
+        [Path.join([home, "AppData", "Local", "Android", "Sdk"])]
+
+      _ ->
+        []
     end
   end
 

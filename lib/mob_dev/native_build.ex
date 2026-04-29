@@ -1354,9 +1354,20 @@ defmodule MobDev.NativeBuild do
       "  #{IO.ANSI.yellow()}⚠  Skipping Android build — toolchain not detected#{IO.ANSI.reset()}"
     )
 
-    IO.puts("     Install Android Studio (or set sdk.dir in android/local.properties)")
+    cond do
+      not adb_available?() ->
+        IO.puts("     `adb` not found on PATH. Install Android Studio (it bundles")
+        IO.puts("     adb) or platform-tools, then re-run.")
 
-    IO.puts("     and ensure `adb` is on PATH, then re-run.")
+      not File.exists?(Path.join(["android", "local.properties"])) ->
+        IO.puts("     android/local.properties is missing. Run `mix mob.install`")
+        IO.puts("     to generate it (auto-detects ANDROID_HOME / Android Studio).")
+
+      true ->
+        IO.puts("     android/local.properties has no `sdk.dir` set. Either:")
+        IO.puts("       export ANDROID_HOME=/path/to/android/sdk && mix mob.install")
+        IO.puts("     or edit android/local.properties and add a sdk.dir= line.")
+    end
   end
 
   defp warn_skipped_ios do
