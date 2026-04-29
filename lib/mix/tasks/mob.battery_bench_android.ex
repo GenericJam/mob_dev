@@ -262,7 +262,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
     # Try the per-device suffixed name first (post-2026-04 deploys), then the
     # bare name (back-compat). try_connect_with_retry returns the first node
     # that succeeds, or nil if both fail.
-    suffix = MobDev.Discovery.Android.node_suffix_for(device)
+    suffix = MobDev.Discovery.Android.device_node_suffix(device)
     suffixed_node = :"#{app}_android_#{suffix}@127.0.0.1"
     bare_node = :"#{app}_android@127.0.0.1"
 
@@ -826,7 +826,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
   defp verify_app_running!(device, pkg) do
     app = app_name()
     base_name = "#{app}_android"
-    suffix = MobDev.Discovery.Android.node_suffix_for(device)
+    suffix = MobDev.Discovery.Android.device_node_suffix(device)
     suffixed_name = "#{base_name}_#{suffix}"
 
     # Try the suffixed name first (post-2026-04 deploys). Fall back to the

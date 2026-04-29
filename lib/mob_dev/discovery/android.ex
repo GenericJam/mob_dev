@@ -77,7 +77,21 @@ defmodule MobDev.Discovery.Android do
   defp enrich(%Device{serial: serial} = d) do
     name = getprop(serial, "ro.product.model")
     version = getprop(serial, "ro.build.version.release")
-    node = Device.node_name(d)
+
+    # Compute the node name from the device's stable hardware serial
+    # (`ro.serialno`) rather than the adb id we used to talk to it, so the
+    # node atom is the same whether we connected over USB or WiFi-adb.
+    # Falls back to Device.node_name/1 (pure, sanitizes Device.serial) if
+    # getprop fails — keeps a deterministic answer even on quirky devices.
+    node =
+      case getprop(serial, "ro.serialno") do
+        hw when is_binary(hw) and hw != "" ->
+          app = Mix.Project.config()[:app]
+          :"#{app}_android_#{node_suffix_for(hw)}@127.0.0.1"
+
+        _ ->
+          Device.node_name(d)
+      end
 
     # Skip IP discovery for emulators — `ip route get` returns the
     # emulator's internal NAT subnet (10.0.2.x) which isn't reachable
@@ -167,7 +181,7 @@ defmodule MobDev.Discovery.Android do
           {:ok, String.t()} | {:error, String.t()}
   def restart_app(serial, package, activity, opts \\ []) do
     dist_port = Keyword.get(opts, :dist_port, 9100)
-    node_suffix = Keyword.get(opts, :node_suffix) || node_suffix_for(serial)
+    node_suffix = Keyword.get(opts, :node_suffix) || device_node_suffix(serial)
 
     app_data = "/data/data/#{package}/files"
     app_cache = "/data/data/#{package}/cache"
@@ -196,15 +210,15 @@ defmodule MobDev.Discovery.Android do
   end
 
   @doc """
-  Returns the per-device suffix appended to the Android node name to keep
-  multiple phones running the same app distinguishable in Mac's shared
-  EPMD. The suffix is a lowercase alphanumeric stub derived from the adb
-  serial; collisions across simultaneously-connected devices are
-  vanishingly unlikely. Pure of side effects.
+  Sanitizes a string into a Mob node-name suffix. Pure — no adb calls.
 
       node_suffix_for("ZY22CRLMWK")        → "zy22crlmwk"
       node_suffix_for("10.0.0.82:5555")    → "10_0_0_82"
       node_suffix_for("emulator-5554")     → "emulator_5554"
+
+  Used as the final transformation step by `device_node_suffix/1` (which
+  asks the device for a stable hardware serial and runs it through here).
+  Tests use it directly to verify the sanitization rules.
   """
   @spec node_suffix_for(String.t()) :: String.t()
   def node_suffix_for(serial) when is_binary(serial) do
@@ -216,6 +230,39 @@ defmodule MobDev.Discovery.Android do
     |> String.downcase()
     |> String.replace(~r/[^a-z0-9]+/, "_")
     |> String.trim("_")
+  end
+
+  @doc """
+  Returns the Mob node-name suffix for the device reachable via the given
+  adb identifier. The suffix is derived from the device's hardware serial
+  (`ro.serialno`), which is stable across USB and WiFi-adb identifiers for
+  the same physical phone — so a deploy that targets `ZY22K6BSJM` (USB)
+  and a bench that targets `10.0.0.17:5555` (WiFi) both end up using the
+  same node name.
+
+  Falls back to sanitizing the adb identifier itself when `getprop` fails
+  (e.g. unrooted device, missing executable, dead transport). The
+  fallback is the legacy behaviour, kept so a bench against a
+  pre-suffix-aware deploy still converges on *some* deterministic name.
+
+  Single adb shell call (~100–300 ms). Suitable for once-per-launch use
+  by the deployer and bench.
+  """
+  @spec device_node_suffix(String.t()) :: String.t()
+  def device_node_suffix(adb_id) when is_binary(adb_id) do
+    case System.cmd("adb", ["-s", adb_id, "shell", "getprop", "ro.serialno"],
+           stderr_to_stdout: true
+         ) do
+      {output, 0} ->
+        hardware_serial = String.trim(output)
+
+        if hardware_serial == "",
+          do: node_suffix_for(adb_id),
+          else: node_suffix_for(hardware_serial)
+
+      _ ->
+        node_suffix_for(adb_id)
+    end
   end
 
   defp run_adb(args) do
