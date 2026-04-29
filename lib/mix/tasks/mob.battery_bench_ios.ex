@@ -944,15 +944,17 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
       System.cmd("ping", ["-c", "1", "-W", "1000", explicit_wifi_ip], stderr_to_stdout: true)
     end
 
-    do_connect_attempts(device_id, explicit_wifi_ip, _device_cache = nil, 1)
+    expected_node_prefix = "#{app_name()}_ios"
+
+    do_connect_attempts(device_id, explicit_wifi_ip, expected_node_prefix, _cache = nil, 1)
   end
 
-  defp do_connect_attempts(_device_id, _wifi_ip, _cache, attempt)
+  defp do_connect_attempts(_device_id, _wifi_ip, _expected_prefix, _cache, attempt)
        when attempt > @max_connect_attempts,
        do: nil
 
-  defp do_connect_attempts(device_id, wifi_ip, cache, attempt) do
-    device = cache || discover_ios_device(device_id, wifi_ip)
+  defp do_connect_attempts(device_id, wifi_ip, expected_prefix, cache, attempt) do
+    device = cache || discover_ios_device(device_id, wifi_ip, expected_prefix)
 
     cond do
       is_nil(device) ->
@@ -962,7 +964,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
         )
 
         sleep_unless_last(attempt)
-        do_connect_attempts(device_id, wifi_ip, nil, attempt + 1)
+        do_connect_attempts(device_id, wifi_ip, expected_prefix, nil, attempt + 1)
 
       true ->
         Node.set_cookie(device.node, :mob_secret)
@@ -980,7 +982,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
 
             sleep_unless_last(attempt)
             # Keep the device cached — likely the BEAM just isn't up yet.
-            do_connect_attempts(device_id, wifi_ip, device, attempt + 1)
+            do_connect_attempts(device_id, wifi_ip, expected_prefix, device, attempt + 1)
 
           :ignored ->
             # Local node isn't alive (couldn't start it) — retrying won't help.
@@ -998,9 +1000,18 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
     if attempt < @max_connect_attempts, do: :timer.sleep(@connect_retry_sleep_ms)
   end
 
-  # Three-stage discovery cascade. Returns the first %Device{} found or nil.
-  # Stages run only as far as needed; ARP/EPMD scan is the slowest so it's last.
-  defp discover_ios_device(device_id, explicit_wifi_ip) do
+  # Three-stage discovery cascade. Returns the first %Device{} matching the
+  # current project's expected node-name prefix (`<app>_ios`) or nil. Stages
+  # run only as far as needed; ARP/EPMD scan is the slowest so it's last.
+  #
+  # The prefix filter matters because `MobDev.Discovery.IOS.list_physical/0`
+  # scans EPMD and ARP and can return false positives — e.g. an Android phone
+  # at 10.0.0.17 happens to have a stale `mob_qa_ios_*` EPMD entry tunneled
+  # via adb-reverse, which the iOS-name regex matches. Without filtering, the
+  # bench would happily try to connect to that and fail every retry. With the
+  # filter, we'll only accept nodes whose name actually corresponds to the
+  # app being benched.
+  defp discover_ios_device(device_id, explicit_wifi_ip, expected_prefix) do
     explicit_match =
       if is_binary(explicit_wifi_ip),
         do: MobDev.Discovery.IOS.find_physical_at(explicit_wifi_ip)
@@ -1013,7 +1024,22 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
 
     devicectl_match ||
       MobDev.Discovery.IOS.list_physical()
-      |> Enum.find(& &1.host_ip)
+      |> Enum.find(fn d ->
+        d.host_ip && node_matches_prefix?(d.node, expected_prefix)
+      end)
+  end
+
+  # Match `<expected_prefix>@<host>` (with optional `_<udid>` segment for
+  # simulators that disambiguate by booted UDID, e.g. `mob_qa_ios_78354490`).
+  # Lets `test_nif_ios` accept `test_nif_ios@10.0.0.120` *and*
+  # `test_nif_ios_<udid>@127.0.0.1` (sim) but reject `mob_qa_ios_*@anything`.
+  @doc false
+  @spec node_matches_prefix?(node() | nil, String.t()) :: boolean()
+  def node_matches_prefix?(nil, _prefix), do: false
+
+  def node_matches_prefix?(node, prefix) when is_atom(node) and is_binary(prefix) do
+    name = Atom.to_string(node) |> String.split("@", parts: 2) |> hd()
+    name == prefix or String.starts_with?(name, prefix <> "_")
   end
 
   # Returns the device's IP by extracting its mDNS hostname from xcrun devicectl
