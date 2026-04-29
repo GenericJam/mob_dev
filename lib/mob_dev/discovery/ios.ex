@@ -254,7 +254,7 @@ defmodule MobDev.Discovery.IOS do
   # Parse lines like:
   #   iPhone 17 (78354490-EF38-44D7-A437-DD941C20524D) (Booted)
   defp parse_simctl_text_line(line) do
-    case Regex.run(~r/^\s+(.+?) \(([0-9A-F-]{36})\) \(Booted\)/i, line) do
+    case Regex.run(Regex.compile!("^\\s+(.+?) \\(([0-9A-F-]{36})\\) \\(Booted\\)", "i"), line) do
       [_, name, udid] ->
         d = %Device{
           platform: :ios,
@@ -289,7 +289,7 @@ defmodule MobDev.Discovery.IOS do
   @doc "Parses a CoreSimulator runtime key into a human-readable version string. Exposed for testing."
   @spec parse_runtime_version(String.t()) :: String.t()
   def parse_runtime_version(runtime) do
-    case Regex.run(~r/iOS-(\d+)-(\d+)/, runtime) do
+    case Regex.run(Regex.compile!("iOS-(\\d+)-(\\d+)"), runtime) do
       [_, major, minor] ->
         "iOS #{major}.#{minor}"
 
@@ -341,7 +341,10 @@ defmodule MobDev.Discovery.IOS do
           out
           |> String.split("\n")
           |> Enum.flat_map(fn line ->
-            case Regex.run(~r/\((\d+\.\d+\.\d+\.\d+)\) at [0-9a-f]{2}:[0-9a-f]{2}/, line) do
+            case Regex.run(
+                   Regex.compile!("\\((\\d+\\.\\d+\\.\\d+\\.\\d+)\\) at [0-9a-f]{2}:[0-9a-f]{2}"),
+                   line
+                 ) do
               [_, ip] ->
                 cond do
                   String.starts_with?(ip, "169.254.") -> []
@@ -404,7 +407,7 @@ defmodule MobDev.Discovery.IOS do
         names
         |> String.split("\n")
         |> Enum.find_value(fn line ->
-          case Regex.run(~r/name ([a-z0-9_]+_ios[^\s]*) at port (\d+)/i, line) do
+          case Regex.run(Regex.compile!("name ([a-z0-9_]+_ios[^\\s]*) at port (\\d+)", "i"), line) do
             [_, short_name, port] -> {short_name, String.to_integer(port)}
             _ -> nil
           end
@@ -530,7 +533,7 @@ defmodule MobDev.Discovery.IOS do
     out
     |> String.split("\n")
     |> Enum.flat_map(fn line ->
-      case Regex.run(~r/^\s*(\d+)\s+(.+Bundle\/Application\/.+\.app\/.+)$/, line) do
+      case Regex.run(Regex.compile!("^\\s*(\\d+)\\s+(.+Bundle/Application/.+\\.app/.+)$"), line) do
         [_, pid_str, _path] -> [String.to_integer(pid_str)]
         _ -> []
       end

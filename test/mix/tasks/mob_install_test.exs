@@ -160,7 +160,10 @@ defmodule Mix.Tasks.Mob.InstallTest do
       try do
         assert Install.detect_android_sdk() == tmp
       after
-        if original, do: System.put_env("ANDROID_HOME", original), else: System.delete_env("ANDROID_HOME")
+        if original,
+          do: System.put_env("ANDROID_HOME", original),
+          else: System.delete_env("ANDROID_HOME")
+
         File.rm_rf!(tmp)
       end
     end
@@ -175,7 +178,9 @@ defmodule Mix.Tasks.Mob.InstallTest do
         # return the bogus override.
         refute Install.detect_android_sdk() == "/nonexistent/path/asdfqwerty"
       after
-        if original, do: System.put_env("ANDROID_HOME", original), else: System.delete_env("ANDROID_HOME")
+        if original,
+          do: System.put_env("ANDROID_HOME", original),
+          else: System.delete_env("ANDROID_HOME")
       end
     end
   end

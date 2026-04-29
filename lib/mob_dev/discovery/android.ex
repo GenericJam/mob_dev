@@ -45,7 +45,11 @@ defmodule MobDev.Discovery.Android do
   #   R5CW3089HVB            unauthorized
   #   192.168.1.5:5555       device
   defp parse_device_line(line) do
-    case String.split(line, ~r/\s+/, parts: 2) do
+    # adb's output uses both spaces and tabs as field separators; split on
+    # the first whitespace run via a runtime-compiled regex. Compile-time
+    # `~r/\s+/` literals are unsafe on Elixir 1.19+ / OTP 28.0 because they
+    # rely on `:re.import/1`, which OTP 28.0 removed.
+    case String.split(line, Regex.compile!("\\s+"), parts: 2) do
       [serial, rest] ->
         cond do
           String.contains?(rest, "unauthorized") ->
@@ -119,7 +123,7 @@ defmodule MobDev.Discovery.Android do
   end
 
   defp extract_ip_from_serial(serial) do
-    case Regex.run(~r/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):\d+$/, serial) do
+    case Regex.run(Regex.compile!("^(\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}):\\d+$"), serial) do
       [_, ip] -> ip
       _ -> nil
     end
@@ -131,7 +135,10 @@ defmodule MobDev.Discovery.Android do
   defp shell_ip(serial) do
     case run_adb(["-s", serial, "shell", "ip", "route", "get", "1.1.1.1"]) do
       {:ok, out} ->
-        case Regex.run(~r/\bsrc\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})/, out) do
+        case Regex.run(
+               Regex.compile!("\\bsrc\\s+(\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3})"),
+               out
+             ) do
           [_, ip] -> ip
           _ -> nil
         end
@@ -190,23 +197,21 @@ defmodule MobDev.Discovery.Android do
     run_adb(["-s", serial, "shell", "chcon -hR $(stat -c %C #{app_cache}) #{app_data}/otp"])
     :timer.sleep(300)
 
-    run_adb(
-      [
-        "-s",
-        serial,
-        "shell",
-        "am",
-        "start",
-        "-n",
-        "#{package}/#{activity}",
-        "--ei",
-        "mob_dist_port",
-        to_string(dist_port),
-        "--es",
-        "mob_node_suffix",
-        node_suffix
-      ]
-    )
+    run_adb([
+      "-s",
+      serial,
+      "shell",
+      "am",
+      "start",
+      "-n",
+      "#{package}/#{activity}",
+      "--ei",
+      "mob_dist_port",
+      to_string(dist_port),
+      "--es",
+      "mob_node_suffix",
+      node_suffix
+    ])
   end
 
   @doc """
@@ -228,7 +233,7 @@ defmodule MobDev.Discovery.Android do
     |> String.split(":", parts: 2)
     |> hd()
     |> String.downcase()
-    |> String.replace(~r/[^a-z0-9]+/, "_")
+    |> String.replace(Regex.compile!("[^a-z0-9]+"), "_")
     |> String.trim("_")
   end
 

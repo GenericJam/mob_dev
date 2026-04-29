@@ -159,7 +159,7 @@ defmodule Mix.Tasks.Mob.Gen.LiveScreen do
   # ── Templates ─────────────────────────────────────────────────────────────
 
   defp live_view_template(live_module, web_module, name, snake_name) do
-    display = name |> String.replace(~r/([A-Z])/, " \\1") |> String.trim()
+    display = name |> String.replace(Regex.compile!("([A-Z])"), " \\1") |> String.trim()
 
     """
     defmodule #{live_module} do

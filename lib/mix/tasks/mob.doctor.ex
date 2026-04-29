@@ -236,7 +236,7 @@ defmodule Mix.Tasks.Mob.Doctor do
               version_line = out |> String.split("\n") |> List.first() |> String.trim()
 
               major =
-                Regex.run(~r/Xcode (\d+)/, version_line)
+                Regex.run(Regex.compile!("Xcode (\\d+)"), version_line)
                 |> case do
                   [_, v] -> String.to_integer(v)
                   nil -> 99
@@ -273,7 +273,9 @@ defmodule Mix.Tasks.Mob.Doctor do
               version_line = out |> String.split("\n") |> List.first() |> String.trim()
 
               major =
-                case Regex.run(~r/version "(\d+)/, version_line, capture: :all_but_first) do
+                case Regex.run(Regex.compile!("version \"(\\d+)"), version_line,
+                       capture: :all_but_first
+                     ) do
                   [v] -> String.to_integer(v)
                   _ -> 0
                 end
@@ -339,7 +341,7 @@ defmodule Mix.Tasks.Mob.Doctor do
     path = Path.join(File.cwd!(), "android/local.properties")
 
     with {:ok, content} <- File.read(path),
-         [_, sdk] <- Regex.run(~r/^sdk\.dir=(.+)$/m, content) do
+         [_, sdk] <- Regex.run(Regex.compile!("^sdk\\.dir=(.+)$", "m"), content) do
       String.trim(sdk)
     else
       _ -> nil
@@ -485,7 +487,9 @@ defmodule Mix.Tasks.Mob.Doctor do
     case File.read("mix.lock") do
       {:ok, content} ->
         # Each dep appears as a quoted key on its own line: "dep_name": {
-        content |> String.split("\n") |> Enum.count(&Regex.match?(~r/^\s+"[^"]+":/, &1))
+        content
+        |> String.split("\n")
+        |> Enum.count(&Regex.match?(Regex.compile!("^\\s+\"[^\"]+\":"), &1))
 
       _ ->
         0
@@ -588,7 +592,7 @@ defmodule Mix.Tasks.Mob.Doctor do
           {out, 0} ->
             lines = out |> String.split("\n") |> Enum.drop(1) |> Enum.reject(&(&1 == ""))
 
-            authorized = Enum.filter(lines, &(&1 =~ ~r/[\t,\s]device\s/))
+            authorized = Enum.filter(lines, &(&1 =~ Regex.compile!("[\\t,\\s]device\\s")))
             unauthorized = Enum.filter(lines, &(&1 =~ "\tunauthorized"))
             offline = Enum.filter(lines, &(&1 =~ "\toffline"))
 
@@ -608,7 +612,7 @@ defmodule Mix.Tasks.Mob.Doctor do
                       serial = line |> String.split() |> hd()
 
                       model =
-                        case Regex.run(~r/model:(\S+)/, line) do
+                        case Regex.run(Regex.compile!("model:(\\S+)"), line) do
                           [_, m] -> String.replace(m, "_", " ")
                           nil -> serial
                         end

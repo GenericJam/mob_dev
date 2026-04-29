@@ -564,8 +564,10 @@ defmodule MobDev.NativeBuild do
   #   ios_profile_uuid   — provisioning profile UUID (filename without .mobileprovision)
   #
   # Optional mob.exs key:
-  #   ios_epmd_build_src — path to OTP source tree used for EPMD compilation
-  #                        (default: /tmp/otp_ios_device_build/otp)
+  #   ios_epmd_build_src — path to an OTP tree that exposes EPMD source under
+  #                        erts/epmd/src/ and iOS headers under erts/include/.
+  #                        Defaults to the iOS-device OTP cache, which ships
+  #                        these files starting with the post-(c) tarball.
   defp build_ios_physical(cfg, udid) do
     IO.puts("  Building iOS app for physical device #{udid}...")
 
@@ -618,7 +620,7 @@ defmodule MobDev.NativeBuild do
          ) do
       {output, 0} ->
         identities =
-          Regex.scan(~r/\d+\) [0-9A-F]+ "([^"]+)"/, output)
+          Regex.scan(Regex.compile!("\\d+\\) [0-9A-F]+ \"([^\"]+)\""), output)
           |> Enum.map(fn [_, full] -> full end)
           |> Enum.filter(&String.contains?(&1, "Apple Development"))
           |> Enum.uniq()
@@ -759,13 +761,19 @@ defmodule MobDev.NativeBuild do
          {s, _} <- :binary.match(data, "<?xml"),
          {e, len} <- :binary.match(data, "</plist>") do
       xml = binary_part(data, s, e - s + len)
-      uuid_match = Regex.run(~r/<key>UUID<\/key>\s*<string>([^<]+)<\/string>/, xml)
+      uuid_match = Regex.run(Regex.compile!("<key>UUID</key>\\s*<string>([^<]+)</string>"), xml)
 
       bundle_match =
-        Regex.run(~r/<key>application-identifier<\/key>\s*<string>([^<]+)<\/string>/, xml)
+        Regex.run(
+          Regex.compile!("<key>application-identifier</key>\\s*<string>([^<]+)</string>"),
+          xml
+        )
 
       team_match =
-        Regex.run(~r/<key>TeamIdentifier<\/key>\s*<array>\s*<string>([^<]+)<\/string>/, xml)
+        Regex.run(
+          Regex.compile!("<key>TeamIdentifier</key>\\s*<array>\\s*<string>([^<]+)</string>"),
+          xml
+        )
 
       case {uuid_match, bundle_match, team_match} do
         {[_, u], [_, b], [_, t]} -> [{String.trim(u), String.trim(b), String.trim(t)}]
@@ -781,7 +789,11 @@ defmodule MobDev.NativeBuild do
     app_name = app_atom |> to_string() |> Macro.camelize()
     app_module = to_string(app_atom)
     elixir_lib = resolve_elixir_lib(cfg[:elixir_lib])
-    epmd_src = cfg[:ios_epmd_build_src] || "/tmp/otp_ios_device_build/otp"
+    # The iOS device OTP cache (under ~/.mob/cache/otp-ios-device-<hash>/) ships
+    # the EPMD source files needed for static EPMD compilation, so the cache dir
+    # itself is the EPMD build root. The `ios_epmd_build_src` config remains as
+    # an escape hatch for advanced users pointing at a custom OTP tree.
+    epmd_src = cfg[:ios_epmd_build_src] || otp_root
 
     [
       {"MOB_DIR", Path.expand(cfg[:mob_dir])},
@@ -814,7 +826,11 @@ defmodule MobDev.NativeBuild do
         ELIXIR_LIB="${MOB_ELIXIR_LIB:?MOB_ELIXIR_LIB not set}"
     fi
     OTP_ROOT="${MOB_IOS_DEVICE_OTP_ROOT:?MOB_IOS_DEVICE_OTP_ROOT not set}"
-    EPMD_BUILD_SRC="${MOB_IOS_EPMD_BUILD_SRC:-/tmp/otp_ios_device_build/otp}"
+    # MOB_IOS_EPMD_BUILD_SRC is exported by `mix mob.deploy --native` (defaults
+    # to the iOS-device OTP cache at ~/.mob/cache/otp-ios-device-<hash>/, which
+    # ships the EPMD source files). The fallback below covers the rare case of
+    # running this script directly without going through `mix mob.deploy`.
+    EPMD_BUILD_SRC="${MOB_IOS_EPMD_BUILD_SRC:-$OTP_ROOT}"
     BUNDLE_ID="${MOB_IOS_BUNDLE_ID:?bundle_id not set in mob.exs}"
     TEAM_ID="${MOB_IOS_TEAM_ID:?ios_team_id not set in mob.exs}"
     SIGN_IDENTITY="${MOB_IOS_SIGN_IDENTITY:?ios_sign_identity not set in mob.exs}"
@@ -825,7 +841,14 @@ defmodule MobDev.NativeBuild do
 
     ERTS_VSN=$(ls "$OTP_ROOT" | grep '^erts-' | sort -V | tail -1)
     [ -z "$ERTS_VSN" ] && echo "ERROR: No erts-* in $OTP_ROOT" && exit 1
-    echo "=== ERTS: $ERTS_VSN, App: $APP_NAME, Bundle: $BUNDLE_ID ==="
+
+    # Auto-detect OTP release number (e.g. "27", "28", "29") from the tarball
+    # so mob_beam.m's hard-coded `-boot $ROOTDIR/releases/<N>/start_clean`
+    # matches what was actually shipped. Crash mode if mismatched:
+    #   "Runtime terminating during boot ({'cannot get bootfile', ...})"
+    OTP_RELEASE=$(ls "$OTP_ROOT/releases" 2>/dev/null | grep -E '^[0-9]+$' | sort -V | tail -1)
+    [ -z "$OTP_RELEASE" ] && echo "ERROR: No releases/<N>/ in $OTP_ROOT" && exit 1
+    echo "=== ERTS: $ERTS_VSN, OTP: $OTP_RELEASE, App: $APP_NAME, Bundle: $BUNDLE_ID ==="
 
     BEAMS_DIR="$OTP_ROOT/$APP_MODULE"
     SDKROOT=$(xcrun -sdk iphoneos --show-sdk-path)
@@ -836,6 +859,10 @@ defmodule MobDev.NativeBuild do
             -I$OTP_ROOT/$ERTS_VSN/include/internal \
             -I$MOB_DIR/ios"
 
+    # Same lib set as the iOS sim build. `libmicro_openssl.a` was historically
+    # listed here to provide MD5Init/MD5Update/MD5Final, but `--without-ssl`
+    # OTP doesn't reference those symbols — libbeam.a's `erts_md5_*` covers
+    # everything that does get called. The link succeeds without it.
     LIBS="
       $OTP_ROOT/$ERTS_VSN/lib/libbeam.a
       $OTP_ROOT/$ERTS_VSN/lib/internal/liberts_internal_r.a
@@ -844,7 +871,6 @@ defmodule MobDev.NativeBuild do
       $OTP_ROOT/$ERTS_VSN/lib/libepcre.a
       $OTP_ROOT/$ERTS_VSN/lib/libryu.a
       $OTP_ROOT/$ERTS_VSN/lib/asn1rt_nif.a
-      $OTP_ROOT/$ERTS_VSN/lib/libmicro_openssl.a
     "
 
     # ── Compile Elixir/Erlang ─────────────────────────────────────────────────────
@@ -1110,12 +1136,47 @@ defmodule MobDev.NativeBuild do
     $CC -fobjc-arc -fmodules $IFLAGS \
         -DMOB_BUNDLE_OTP \
         -DERTS_VSN=\"$ERTS_VSN\" \
-        -DOTP_RELEASE=\"28\" \
+        -DOTP_RELEASE=\"$OTP_RELEASE\" \
         -c "$MOB_DIR/ios/mob_beam.m" -o "$BUILD_DIR/mob_beam.o"
 
     echo "=== Compiling in-process EPMD ==="
+    # `-DNO_DAEMON` strips EPMD's `run_daemon()` (which calls fork()) from the
+    # compiled object. We never run EPMD in daemon mode (epmd_thread starts it
+    # in-process), but the linker still sees fork() as referenced from the
+    # dead code, leaving an undefined `_fork` symbol that pulls in libSystem's
+    # fork stub at link time. iOS device sandbox then denies the syscall when
+    # something else (an Apple framework, debug infra) calls into the bound
+    # symbol path — and the BEAM dies during startup. NO_DAEMON elides the
+    # whole `#ifndef NO_DAEMON` block so fork is never linked in.
     EPMD_SRC="$EPMD_BUILD_SRC/erts/epmd/src"
-    EPMD_FLAGS="-DHAVE_CONFIG_H -DEPMD_PORT_NO=4369 -Dmain=epmd_ios_main \
+
+    # Stock OTP epmd.c calls `run_daemon(g)` unconditionally inside `if
+    # (g->is_daemon)`. With -DNO_DAEMON the function body is stripped but the
+    # call site still references the symbol, so the link fails with
+    # "Undefined symbols: _run_daemon". Idempotent inline patch wraps the
+    # call in `#ifndef NO_DAEMON` so both halves go away together. Future
+    # iOS-device tarballs ship with the patch already applied (see
+    # mob_dev/scripts/release/patches/0002-ios-device-epmd-no-daemon.patch).
+    if ! grep -q "ifndef NO_DAEMON" "$EPMD_SRC/epmd.c"; then
+        echo "  patching $EPMD_SRC/epmd.c (NO_DAEMON guard around run_daemon call)"
+        python3 -c "
+    import re, sys
+    p = '$EPMD_SRC/epmd.c'
+    src = open(p).read()
+    patched = re.sub(
+    r'(    if \(g->is_daemon\)  \{\n)(\trun_daemon\(g\);\n)(    \} else \{\n)',
+    r'\1#ifndef NO_DAEMON\n\2#endif\n\3',
+    src,
+    count=1,
+    )
+    if patched == src:
+    sys.stderr.write('WARNING: patch pattern did not match — manual fix required\n')
+    sys.exit(1)
+    open(p, 'w').write(patched)
+    "
+    fi
+
+    EPMD_FLAGS="-DHAVE_CONFIG_H -DEPMD_PORT_NO=4369 -Dmain=epmd_ios_main -DNO_DAEMON \
         -I $EPMD_BUILD_SRC/erts/aarch64-apple-ios \
         -I $EPMD_SRC \
         -I $EPMD_BUILD_SRC/erts/include \
@@ -1288,12 +1349,14 @@ defmodule MobDev.NativeBuild do
   #   New Apple format: 8-16 hex   (e.g. 00008110-001E1C3A34F8401E)
   # Simulator display_ids are exactly 8 hex chars. Android serials never match.
   defp ios_physical_udid?(id) do
-    Regex.match?(~r/^[0-9A-Fa-f]{40}$/, id) or
+    Regex.match?(Regex.compile!("^[0-9A-Fa-f]{40}$"), id) or
       Regex.match?(
-        ~r/^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$/,
+        Regex.compile!(
+          "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
+        ),
         id
       ) or
-      Regex.match?(~r/^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{16}$/, id)
+      Regex.match?(Regex.compile!("^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{16}$"), id)
   end
 
   # ── Toolchain availability ──────────────────────────────────────────────────
@@ -1334,7 +1397,7 @@ defmodule MobDev.NativeBuild do
     path = Path.join([project_dir, "android", "local.properties"])
 
     with {:ok, content} <- File.read(path),
-         [_, raw] <- Regex.run(~r/^\s*sdk\.dir\s*=\s*(.+?)\s*$/m, content) do
+         [_, raw] <- Regex.run(Regex.compile!("^\\s*sdk\\.dir\\s*=\\s*(.+?)\\s*$", "m"), content) do
       {:ok, expand_sdk_dir(raw)}
     else
       _ -> :error

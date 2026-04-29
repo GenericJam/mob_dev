@@ -1,0 +1,33 @@
+diff --git a/erts/emulator/sys/unix/sys_drivers.c b/erts/emulator/sys/unix/sys_drivers.c
+index c06d6b6603..42a23d1bb8 100644
+--- a/erts/emulator/sys/unix/sys_drivers.c
++++ b/erts/emulator/sys/unix/sys_drivers.c
+@@ -40,6 +40,11 @@
+ #include <sys/select.h>
+ #include <arpa/inet.h>
+ 
++/* mob_dev iOS device patch: detect device vs simulator at compile time. */
++#if defined(__IOS__)
++#  include <TargetConditionals.h>
++#endif
++
+ #ifdef ISC32
+ #include <sys/bsdtypes.h>
+ #endif
+@@ -1587,6 +1592,16 @@ extern struct termios erl_sys_initial_tty_mode;
+ static ErlDrvData forker_start(ErlDrvPort port_num, char* name,
+                                SysDriverOpts* opts)
+ {
++#if defined(__IOS__) && TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
++    /* mob_dev iOS device patch: iOS device sandbox blocks fork(). Skip
++     * the actual fork; the driver still loads, but spawn-external ports
++     * (Port.open({:spawn_executable, ...}), os:cmd/1, inet_gethost_native)
++     * will fail at port-open time. Mob/Phoenix's normal flow doesn't use
++     * those, so the BEAM boots fine. See
++     * mob_dev/scripts/release/patches/ for the patch source. */
++    forker_port = erts_drvport2id(port_num);
++    return (ErlDrvData)port_num;
++#endif
+ 
+     int i;
+     int fds[2];

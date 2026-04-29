@@ -1,0 +1,19 @@
+diff --git a/erts/epmd/src/epmd.c b/erts/epmd/src/epmd.c
+index 1733e5b400..dde2fff710 100644
+--- a/erts/epmd/src/epmd.c
++++ b/erts/epmd/src/epmd.c
+@@ -236,8 +236,14 @@ int main(int argc, char** argv)
+       g->max_conn = FD_SETSIZE;
+     }
+ 
++    /* mob_dev iOS device patch: NO_DAEMON strips run_daemon to avoid
++     * pulling in fork() (denied by iOS sandbox). The -daemon flag is
++     * never passed in our usage, so g->is_daemon is always 0; guard the
++     * call site so the unused branch doesn't keep the symbol live. */
+     if (g->is_daemon)  {
++#ifndef NO_DAEMON
+ 	run_daemon(g);
++#endif
+     } else {
+ 	run(g);
+     }

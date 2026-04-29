@@ -91,7 +91,7 @@ defmodule MobDev.Server.DevicePoller do
   defp read_android_battery(serial) do
     case System.cmd("adb", ["-s", serial, "shell", "dumpsys battery"], stderr_to_stdout: true) do
       {out, 0} ->
-        case Regex.run(~r/level:\s*(\d+)/, out) do
+        case Regex.run(Regex.compile!("level:\\s*(\\d+)"), out) do
           [_, pct] -> String.to_integer(pct)
           nil -> nil
         end

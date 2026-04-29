@@ -195,7 +195,7 @@ defmodule Mix.Tasks.Mob.Install do
     mix_exs = Path.join(project_dir, "mix.exs")
 
     with {:ok, content} <- File.read(mix_exs),
-         [_, rel] <- Regex.run(~r/\{:mob,\s+path:\s+"([^"]+)"/, content) do
+         [_, rel] <- Regex.run(Regex.compile!("\\{:mob,\\s+path:\\s+\"([^\"]+)\""), content) do
       Path.expand(rel, project_dir)
     else
       _ ->
@@ -263,7 +263,7 @@ defmodule Mix.Tasks.Mob.Install do
   @doc false
   @spec has_active_sdk_dir?(String.t()) :: boolean()
   def has_active_sdk_dir?(content) do
-    Regex.match?(~r/^\s*sdk\.dir\s*=/m, content)
+    Regex.match?(Regex.compile!("^\\s*sdk\\.dir\\s*=", "m"), content)
   end
 
   # Inserts or updates `sdk.dir=...` in local.properties when a real SDK path
@@ -275,13 +275,21 @@ defmodule Mix.Tasks.Mob.Install do
 
   def ensure_sdk_dir(content, sdk_path) when is_binary(sdk_path) do
     cond do
-      Regex.match?(~r/^\s*sdk\.dir\s*=/m, content) ->
+      Regex.match?(Regex.compile!("^\\s*sdk\\.dir\\s*=", "m"), content) ->
         # Active line already present — replace its value
-        Regex.replace(~r/^\s*sdk\.dir\s*=.*$/m, content, "sdk.dir=#{sdk_path}")
+        Regex.replace(
+          Regex.compile!("^\\s*sdk\\.dir\\s*=.*$", "m"),
+          content,
+          "sdk.dir=#{sdk_path}"
+        )
 
-      Regex.match?(~r/^\s*#\s*sdk\.dir\s*=/m, content) ->
+      Regex.match?(Regex.compile!("^\\s*#\\s*sdk\\.dir\\s*=", "m"), content) ->
         # Commented placeholder — replace it with the active line
-        Regex.replace(~r/^\s*#\s*sdk\.dir\s*=.*$/m, content, "sdk.dir=#{sdk_path}")
+        Regex.replace(
+          Regex.compile!("^\\s*#\\s*sdk\\.dir\\s*=.*$", "m"),
+          content,
+          "sdk.dir=#{sdk_path}"
+        )
 
       true ->
         # Neither — prepend the line so Gradle finds it without scanning the
@@ -337,7 +345,7 @@ defmodule Mix.Tasks.Mob.Install do
   @doc false
   @spec replace_prop(String.t(), String.t(), String.t() | nil) :: String.t()
   def replace_prop(content, key, value) when not is_nil(value) do
-    String.replace(content, ~r/^#{Regex.escape(key)}=.*$/m, "#{key}=#{value}")
+    String.replace(content, Regex.compile!("^#{Regex.escape(key)}=.*$", "m"), "#{key}=#{value}")
   end
 
   def replace_prop(content, _key, nil), do: content

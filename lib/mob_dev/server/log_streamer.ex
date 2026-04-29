@@ -175,7 +175,10 @@ defmodule MobDev.Server.LogStreamer do
   @spec parse_line(String.t(), String.t()) :: map()
   def parse_line(raw, serial) do
     # Android logcat brief: "I/MobBeam( 1234): message text"
-    case Regex.run(~r/^([EWIDVF])\/([^\(]+)\(\s*\d+\):\s*(.*)$/, String.trim(raw)) do
+    case Regex.run(
+           Regex.compile!("^([EWIDVF])/([^\\(]+)\\(\\s*\\d+\\):\\s*(.*)$"),
+           String.trim(raw)
+         ) do
       [_, level, tag, message] ->
         %{
           id: unique_id(),

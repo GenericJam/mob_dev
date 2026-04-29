@@ -263,7 +263,7 @@ defmodule MobDev.Bench.Probe do
   defp run_adb_battery(serial) do
     case System.cmd("adb", ["-s", serial, "shell", "dumpsys", "battery"], stderr_to_stdout: true) do
       {out, 0} ->
-        case Regex.run(~r/^\s*level:\s*(\d+)/m, out) do
+        case Regex.run(Regex.compile!("^\\s*level:\\s*(\\d+)", "m"), out) do
           [_, n_str] ->
             case Integer.parse(n_str) do
               {n, _} when n in 0..100 -> {:usb_ok, n, nil}

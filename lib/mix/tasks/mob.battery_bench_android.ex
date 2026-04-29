@@ -520,7 +520,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
       opts[:flags] ->
         header_dir = Path.join(System.tmp_dir!(), "mob_bench_flags_#{System.os_time(:second)}")
         File.mkdir_p!(header_dir)
-        flags_list = String.split(opts[:flags], ~r/\s+/, trim: true)
+        flags_list = String.split(opts[:flags], Regex.compile!("\\s+"), trim: true)
         c_literals = Enum.map_join(flags_list, ", ", &~s("#{&1}"))
 
         header =
@@ -618,7 +618,10 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
   # they'll need to rerun `mix mob.deploy --native` to restore ERTS before
   # launching the app again.
   defp handle_install_failure(device, apk, pkg, reason) do
-    IO.puts("  #{IO.ANSI.yellow()}⚠  install -r failed: #{String.slice(reason, 0, 200)}#{IO.ANSI.reset()}")
+    IO.puts(
+      "  #{IO.ANSI.yellow()}⚠  install -r failed: #{String.slice(reason, 0, 200)}#{IO.ANSI.reset()}"
+    )
+
     IO.puts("     Falling back to full uninstall+install. This will erase the")
     IO.puts("     OTP runtime in /data/data/#{pkg}/files/. After the bench finishes,")
     IO.puts("     re-run `mix mob.deploy --native --device #{device}` to restore ERTS.")
@@ -699,7 +702,8 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
     :timer.sleep(1000)
     screen = adb_out(device, ~w[shell dumpsys display])
 
-    if screen =~ ~r/mScreenState.*ON/i or screen =~ ~r/mState.*ON/i do
+    if screen =~ Regex.compile!("mScreenState.*ON", "i") or
+         screen =~ Regex.compile!("mState.*ON", "i") do
       adb!(device, ~w[shell input keyevent 26])
     end
 
@@ -713,7 +717,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
   defp read_charge_counter_mah(device) do
     out = adb_out(device, ~w[shell dumpsys battery])
 
-    case Regex.run(~r/Charge counter:\s*(\d+)/, out) do
+    case Regex.run(Regex.compile!("Charge counter:\\s*(\\d+)"), out) do
       [_, uah] ->
         div(String.to_integer(uah), 1000)
 
@@ -726,7 +730,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
   defp read_battery_pct(device) do
     out = adb_out(device, ~w[shell dumpsys battery])
 
-    case Regex.run(~r/level:\s*(\d+)/, out) do
+    case Regex.run(Regex.compile!("level:\\s*(\\d+)"), out) do
       [_, pct] -> String.to_integer(pct)
       nil -> 0
     end
@@ -943,7 +947,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
               body
               |> String.split("\n", trim: true)
               |> Enum.flat_map(fn line ->
-                case Regex.run(~r/^name (\S+) at port (\d+)$/, line) do
+                case Regex.run(Regex.compile!("^name (\\S+) at port (\\d+)$"), line) do
                   [_, name, port] -> [{name, String.to_integer(port)}]
                   _ -> []
                 end
@@ -1251,7 +1255,10 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
            stderr_to_stdout: true
          ) do
       {out, 0} ->
-        case Regex.run(~r/\bsrc\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})/, out) do
+        case Regex.run(
+               Regex.compile!("\\bsrc\\s+(\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3})"),
+               out
+             ) do
           [_, ip] ->
             ip
 

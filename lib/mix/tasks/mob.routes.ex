@@ -171,7 +171,7 @@ defmodule Mix.Tasks.Mob.Routes do
     # Plain lowercase atoms (e.g. :main) are registered names — runtime only.
     name = Atom.to_string(dest)
 
-    if String.match?(name, ~r/^[a-z]/) do
+    if String.match?(name, Regex.compile!("^[a-z]")) do
       # registered name atom — skip
       {true, true}
     else

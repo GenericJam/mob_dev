@@ -243,8 +243,12 @@ defmodule Mix.Tasks.Mob.Deploy do
   def update_beam_flags_in_config(content, flags) do
     value = inspect(flags)
 
-    if content =~ ~r/^\s+beam_flags:/m do
-      Regex.replace(~r/^(\s+beam_flags:).*$/m, content, "  beam_flags: #{value}")
+    if content =~ Regex.compile!("^\\s+beam_flags:", "m") do
+      Regex.replace(
+        Regex.compile!("^(\\s+beam_flags:).*$", "m"),
+        content,
+        "  beam_flags: #{value}"
+      )
     else
       String.trim_trailing(content) <> "\nconfig :mob_dev, beam_flags: #{value}\n"
     end

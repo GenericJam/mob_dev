@@ -140,7 +140,10 @@ defmodule MobDev.Tunnel do
           |> String.split("\n")
           |> Enum.find_value(fn line ->
             # Match resolved entries: kevins-iphone.local (169.254.x.x) at aa:bb:cc... on enN
-            case Regex.run(~r/\((169\.254\.\d+\.\d+)\) at [0-9a-f]{2}:[0-9a-f]{2}/, line) do
+            case Regex.run(
+                   Regex.compile!("\\((169\\.254\\.\\d+\\.\\d+)\\) at [0-9a-f]{2}:[0-9a-f]{2}"),
+                   line
+                 ) do
               [_, found_ip] -> found_ip
               _ -> nil
             end
@@ -162,7 +165,10 @@ defmodule MobDev.Tunnel do
         out
         |> String.split("\n")
         |> Enum.each(fn line ->
-          case Regex.run(~r/\((169\.254\.\d+\.\d+)\) at \(incomplete\)/, line) do
+          case Regex.run(
+                 Regex.compile!("\\((169\\.254\\.\\d+\\.\\d+)\\) at \\(incomplete\\)"),
+                 line
+               ) do
             [_, ip] ->
               System.cmd("ping", ["-c", "1", "-t", "2", ip], stderr_to_stdout: true)
 

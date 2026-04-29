@@ -107,7 +107,7 @@ defmodule Mix.Tasks.Mob.Provision do
          ) do
       {output, 0} ->
         identities =
-          Regex.scan(~r/\d+\) [0-9A-F]+ "([^"]+)"/, output)
+          Regex.scan(Regex.compile!("\\d+\\) [0-9A-F]+ \"([^\"]+)\""), output)
           |> Enum.map(fn [_, id] -> id end)
           |> Enum.filter(&String.contains?(&1, "Apple Development"))
           |> Enum.uniq()
@@ -165,7 +165,7 @@ defmodule Mix.Tasks.Mob.Provision do
 
         team = Mix.shell().prompt("  Enter Team ID:") |> String.trim()
 
-        unless Regex.match?(~r/^[A-Z0-9]{10}$/, team) do
+        unless Regex.match?(Regex.compile!("^[A-Z0-9]{10}$"), team) do
           Mix.raise(
             "Invalid Team ID '#{team}' — expected 10 uppercase alphanumeric characters (e.g. Q89CW299G8)"
           )
@@ -188,7 +188,10 @@ defmodule Mix.Tasks.Mob.Provision do
            {e, len} <- :binary.match(data, "</plist>") do
         xml = binary_part(data, s, e - s + len)
 
-        case Regex.run(~r/<key>TeamIdentifier<\/key>\s*<array>\s*<string>([^<]+)<\/string>/, xml) do
+        case Regex.run(
+               Regex.compile!("<key>TeamIdentifier</key>\\s*<array>\\s*<string>([^<]+)</string>"),
+               xml
+             ) do
           [_, team] -> String.trim(team)
           _ -> nil
         end
@@ -286,7 +289,7 @@ defmodule Mix.Tasks.Mob.Provision do
     # Print only the summary line on success
     output
     |> String.split("\n")
-    |> Enum.filter(&(&1 =~ ~r/^\*\* BUILD (SUCCEEDED|FAILED)/))
+    |> Enum.filter(&(&1 =~ Regex.compile!("^\\*\\* BUILD (SUCCEEDED|FAILED)")))
     |> Enum.each(&IO.puts/1)
 
     :ok
@@ -306,7 +309,9 @@ defmodule Mix.Tasks.Mob.Provision do
           {:ok, data} ->
             String.contains?(data, bundle_id) or
               Regex.match?(
-                ~r/<key>application-identifier<\/key>\s*<string>[^<]+\.\*<\/string>/,
+                Regex.compile!(
+                  "<key>application-identifier</key>\\s*<string>[^<]+\\.\\*</string>"
+                ),
                 data
               )
 

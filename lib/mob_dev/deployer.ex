@@ -261,7 +261,7 @@ defmodule MobDev.Deployer do
     device_vsn =
       case run_adb(["-s", serial, "shell", "run-as #{pkg} cat #{elixir_app}"]) do
         {:ok, content} ->
-          case Regex.run(~r/\{vsn,"([^"]+)"\}/, content) do
+          case Regex.run(Regex.compile!("\\{vsn,\"([^\"]+)\"\\}"), content) do
             [_, v] -> v
             _ -> nil
           end
@@ -609,7 +609,7 @@ defmodule MobDev.Deployer do
   defp exqlite_version do
     # Try mix.lock first (most reliable)
     with {:ok, lock} <- File.read("mix.lock"),
-         [_, vsn] <- Regex.run(~r/"exqlite"[^"]*"(\d+\.\d+\.\d+)"/, lock) do
+         [_, vsn] <- Regex.run(Regex.compile!("\"exqlite\"[^\"]*\"(\\d+\\.\\d+\\.\\d+)\""), lock) do
       vsn
     else
       _ ->
@@ -618,7 +618,7 @@ defmodule MobDev.Deployer do
           [app_file | _] ->
             case File.read(app_file) do
               {:ok, content} ->
-                case Regex.run(~r/\{vsn,"([^"]+)"\}/, content) do
+                case Regex.run(Regex.compile!("\\{vsn,\"([^\"]+)\"\\}"), content) do
                   [_, vsn] -> vsn
                   _ -> nil
                 end
@@ -866,7 +866,7 @@ defmodule MobDev.Deployer do
     # UDID before proceeding.
     udid = resolve_ios_udid_if_ip(udid)
 
-    if Regex.match?(~r/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/, udid) do
+    if Regex.match?(Regex.compile!("^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$"), udid) do
       throw(
         {:error,
          "device only reachable via WiFi (#{udid}) — use `mix mob.push` for BEAM-only updates, or connect via USB for a native deploy"}
@@ -975,7 +975,7 @@ defmodule MobDev.Deployer do
   # serial is the IP address. xcrun devicectl requires a hardware UDID or
   # CoreDevice UUID for --device. This function resolves an IP to a UDID.
   defp resolve_ios_udid_if_ip(udid) do
-    if Regex.match?(~r/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/, udid) do
+    if Regex.match?(Regex.compile!("^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$"), udid) do
       resolve_udid_from_ip(udid) || udid
     else
       udid

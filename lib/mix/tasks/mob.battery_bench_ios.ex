@@ -168,9 +168,12 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
           # Hardware UDID has no hyphens in the first segment (e.g. 00008110-...)
           # CoreDevice UUID has the standard 8-4-4-4-12 UUID format.
           hw =
-            if String.match?(given, ~r/^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}/),
-              do: nil,
-              else: given
+            if String.match?(
+                 given,
+                 Regex.compile!("^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}")
+               ),
+               do: nil,
+               else: given
 
           {hw, given}
 
@@ -685,7 +688,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
       opts[:flags] ->
         header_dir = Path.join(System.tmp_dir!(), "mob_bench_flags_#{System.os_time(:second)}")
         File.mkdir_p!(header_dir)
-        flags_list = String.split(opts[:flags], ~r/\s+/, trim: true)
+        flags_list = String.split(opts[:flags], Regex.compile!("\\s+"), trim: true)
         c_literals = Enum.map_join(flags_list, ", ", &~s("#{&1}"))
 
         header =
@@ -850,9 +853,9 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
            stderr_to_stdout: true
          ) do
       {out, 0} ->
-        case Regex.run(~r/\bprocess identifier\s+(\d+)/i, out) ||
-               Regex.run(~r/\bpid[:\s]+(\d+)/i, out) ||
-               Regex.run(~r/\b(\d{4,6})\b/, out) do
+        case Regex.run(Regex.compile!("\\bprocess identifier\\s+(\\d+)", "i"), out) ||
+               Regex.run(Regex.compile!("\\bpid[:\\s]+(\\d+)", "i"), out) ||
+               Regex.run(Regex.compile!("\\b(\\d{4,6})\\b"), out) do
           [_, pid_str] ->
             String.to_integer(pid_str)
 
@@ -1362,7 +1365,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
           |> String.split("\n")
           |> Enum.drop_while(&(not String.contains?(&1, "Schemes:")))
           |> Enum.drop(1)
-          |> Enum.take_while(&String.match?(&1, ~r/^\s+\S/))
+          |> Enum.take_while(&String.match?(&1, Regex.compile!("^\\s+\\S")))
           |> Enum.map(&String.trim/1)
           |> Enum.reject(&(&1 == ""))
 

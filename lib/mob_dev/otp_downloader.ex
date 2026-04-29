@@ -57,21 +57,57 @@ defmodule MobDev.OtpDownloader do
   defp ensure(name, tarball) do
     dir = cache_dir(name)
 
-    if valid_otp_dir?(dir) do
+    if valid_otp_dir?(dir, name) do
       {:ok, dir}
     else
       # Remove stale/incomplete directory before re-downloading.
-      # This happens when a previous download attempt failed after mkdir
-      # but before (or during) extraction — e.g. on Nix where curl may use
-      # different CA certificates, or on a flaky network.
+      # Two cases here:
+      #   1. previous download attempt failed mid-extraction (Nix curl, flaky net)
+      #   2. cached tarball predates a schema change — e.g. iOS device tarball
+      #      now ships EPMD source under `erts/epmd/src/`. Re-download picks up
+      #      the new asset at the same URL (same OTP hash, new revision uploaded).
       if File.dir?(dir), do: File.rm_rf!(dir)
       download_and_extract(name, tarball, dir)
     end
   end
 
   # A valid extracted OTP dir must contain at least one erts-* subdirectory.
-  defp valid_otp_dir?(dir) do
-    File.dir?(dir) and Path.wildcard(Path.join(dir, "erts-*")) != []
+  # The iOS device tarball additionally must ship EPMD source files at
+  # `erts/epmd/src/`, because `build_device.sh` static-links EPMD into the app
+  # and there's no other place to source those .c files from. Older tarballs
+  # (without source) extract cleanly but fail at iOS device build time with
+  # `clang: no such file or directory: epmd.c` — so we treat them as invalid
+  # and force a re-download to pick up the schema-bumped asset.
+  @doc false
+  @spec valid_otp_dir?(String.t(), String.t()) :: boolean()
+  def valid_otp_dir?(dir, name) do
+    base_valid? = File.dir?(dir) and Path.wildcard(Path.join(dir, "erts-*")) != []
+
+    cond do
+      not base_valid? -> false
+      String.starts_with?(name, "otp-ios-device-") -> ios_device_extras_present?(dir)
+      true -> true
+    end
+  end
+
+  @doc false
+  @spec ios_device_extras_present?(String.t()) :: boolean()
+  def ios_device_extras_present?(dir) do
+    # `build_device.sh` static-links EPMD into the iOS app — it needs both the
+    # .c sources AND the headers they #include (`epmd.h`, `epmd_int.h` — also
+    # in erts/epmd/src/). A tarball missing the headers extracts cleanly but
+    # fails at clang time with `'epmd.h' file not found`, so we treat it as
+    # invalid and force re-download.
+    Enum.all?(
+      ~w[
+        erts/epmd/src/epmd.c
+        erts/epmd/src/epmd_srv.c
+        erts/epmd/src/epmd_cli.c
+        erts/epmd/src/epmd.h
+        erts/epmd/src/epmd_int.h
+      ],
+      fn rel -> File.exists?(Path.join(dir, rel)) end
+    )
   end
 
   defp cache_dir(name) do

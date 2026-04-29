@@ -61,7 +61,10 @@ defmodule MobDev.Config do
     with true <- File.exists?(plist),
          {:ok, content} <- File.read(plist),
          [_, id] <-
-           Regex.run(~r/<key>CFBundleIdentifier<\/key>\s*<string>([^<]+)<\/string>/, content) do
+           Regex.run(
+             Regex.compile!("<key>CFBundleIdentifier</key>\\s*<string>([^<]+)</string>"),
+             content
+           ) do
       id
     else
       _ -> nil
@@ -74,8 +77,8 @@ defmodule MobDev.Config do
     with true <- File.exists?(gradle),
          {:ok, content} <- File.read(gradle),
          match when match != nil <-
-           Regex.run(~r/applicationId\s+["']([^"']+)["']/, content) ||
-             Regex.run(~r/applicationId\s*=\s*["']([^"']+)["']/, content) do
+           Regex.run(Regex.compile!("applicationId\\s+[\"']([^\"']+)[\"']"), content) ||
+             Regex.run(Regex.compile!("applicationId\\s*=\\s*[\"']([^\"']+)[\"']"), content) do
       Enum.at(match, 1)
     else
       _ -> nil

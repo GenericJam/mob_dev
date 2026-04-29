@@ -139,7 +139,7 @@ defmodule MobDev.Enable do
       content
     else
       Regex.replace(
-        ~r/<body([^>]*)>/,
+        Regex.compile!("<body([^>]*)>"),
         content,
         "<body\\1>\n    #{@mob_bridge_element}",
         global: false
@@ -180,7 +180,7 @@ defmodule MobDev.Enable do
   def read_app_name_from(mix_exs_path) do
     case File.read(mix_exs_path) do
       {:ok, content} ->
-        case Regex.run(~r/app:\s+:([a-z0-9_]+)/, content) do
+        case Regex.run(Regex.compile!("app:\\s+:([a-z0-9_]+)"), content) do
           [_, name] -> name
           _ -> raise "Could not read app name from #{mix_exs_path}"
         end
@@ -232,7 +232,7 @@ defmodule MobDev.Enable do
     else
       String.replace(
         manifest_content,
-        ~r/(<application\b)/,
+        Regex.compile!("(<application\\b)"),
         "\\1\n        android:networkSecurityConfig=\"@xml/network_security_config\"",
         global: false
       )
@@ -263,12 +263,12 @@ defmodule MobDev.Enable do
       String.contains?(content, "hooks: {}") ->
         String.replace(content, "hooks: {}", "hooks: {MobHook}")
 
-      Regex.match?(~r/hooks:\s*\{/, content) ->
-        Regex.replace(~r/(hooks:\s*\{)/, content, "\\1MobHook, ", global: false)
+      Regex.match?(Regex.compile!("hooks:\\s*\\{"), content) ->
+        Regex.replace(Regex.compile!("(hooks:\\s*\\{)"), content, "\\1MobHook, ", global: false)
 
       true ->
         Regex.replace(
-          ~r/(new LiveSocket\([^)]+)\)/,
+          Regex.compile!("(new LiveSocket\\([^)]+)\\)"),
           content,
           fn full, prefix ->
             if String.contains?(full, "{") do
