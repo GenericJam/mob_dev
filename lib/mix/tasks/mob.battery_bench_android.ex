@@ -576,12 +576,53 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
   defp install_apk(device, apk, pkg) do
     IO.puts("  Stopping app...")
     adb(device, ~w[shell am force-stop #{pkg}])
-    adb(device, ~w[uninstall #{pkg}])
     IO.puts("  Installing #{apk}...")
+
+    # `adb install -r` replaces the APK in-place. It re-extracts native libs
+    # to /data/app/<pkg>/lib/<abi>/ but preserves /data/data/<pkg>/, which is
+    # critical: that directory holds files/otp/erts-*/bin/ — pushed by
+    # `mix mob.deploy --native` during initial provisioning. A previous
+    # version of this code did `adb uninstall && adb install`, which nuked
+    # /data/data/ and left the device with no ERTS, so mob_start_beam would
+    # crash on every subsequent launch with "symlink erl_child_setup failed".
+    #
+    # Falls back to uninstall+install on signature mismatch
+    # (INSTALL_FAILED_UPDATE_INCOMPATIBLE) — that path will rebuild the OTP
+    # runtime via the next `mix mob.deploy --native`, but the user has been
+    # warned.
+    case adb(device, ~w[install -r #{apk}]) do
+      {:ok, out} ->
+        if String.contains?(out, "INSTALL_FAILED") do
+          handle_install_failure(device, apk, pkg, out)
+        else
+          :ok
+        end
+
+      {:error, reason} ->
+        if String.contains?(reason, "INSTALL_FAILED_UPDATE_INCOMPATIBLE") do
+          handle_install_failure(device, apk, pkg, reason)
+        else
+          Mix.raise("APK install failed: #{reason}")
+        end
+    end
+  end
+
+  # When `install -r` fails because the new APK has a different signing
+  # certificate from the installed one, fall back to uninstall + install. This
+  # destroys /data/data/<pkg>/ and any OTP runtime there, so warn the user
+  # they'll need to rerun `mix mob.deploy --native` to restore ERTS before
+  # launching the app again.
+  defp handle_install_failure(device, apk, pkg, reason) do
+    IO.puts("  #{IO.ANSI.yellow()}⚠  install -r failed: #{String.slice(reason, 0, 200)}#{IO.ANSI.reset()}")
+    IO.puts("     Falling back to full uninstall+install. This will erase the")
+    IO.puts("     OTP runtime in /data/data/#{pkg}/files/. After the bench finishes,")
+    IO.puts("     re-run `mix mob.deploy --native --device #{device}` to restore ERTS.")
+
+    adb(device, ~w[uninstall #{pkg}])
 
     case adb(device, ~w[install #{apk}]) do
       {:ok, _} -> :ok
-      {:error, reason} -> Mix.raise("APK install failed: #{reason}")
+      {:error, why} -> Mix.raise("APK install failed: #{why}")
     end
   end
 
