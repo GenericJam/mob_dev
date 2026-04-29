@@ -52,12 +52,19 @@ defmodule MobDev.Device do
   @doc """
   Returns the Erlang node name atom for a device.
 
-  - Android (emulator/physical): `<app>_android@127.0.0.1`
+  - Android (emulator/physical): `<app>_android_<serial-stub>@127.0.0.1`
+    (unique per device — Mac's EPMD is shared via adb-reverse so the suffix
+    is required to avoid collisions when two phones run the same app)
   - iOS simulator: `<app>_ios_<8-char-udid>@127.0.0.1` (unique per simulator,
     matches the name mob_beam.m builds using SIMULATOR_UDID)
   - iOS physical: `<app>_ios@<device-ip>` (mob_beam.m finds IP: USB > WiFi/LAN > Tailscale)
   """
   @spec node_name(t()) :: atom()
+  def node_name(%__MODULE__{platform: :android, serial: serial}) when is_binary(serial) do
+    suffix = MobDev.Discovery.Android.node_suffix_for(serial)
+    :"#{app_name()}_android_#{suffix}@127.0.0.1"
+  end
+
   def node_name(%__MODULE__{platform: :android}) do
     :"#{app_name()}_android@127.0.0.1"
   end

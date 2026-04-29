@@ -731,6 +731,7 @@ defmodule MobDev.Deployer do
 
   defp restart_android(serial, opts) do
     dist_port = Keyword.get(opts, :dist_port, 9100)
+    node_suffix = Keyword.get(opts, :node_suffix) || Android.node_suffix_for(serial)
     run_adb(["-s", serial, "shell", "am", "force-stop", android_package()])
     # Heal SELinux MCS category mismatch before start — APK reinstall changes
     # the app's category but leaves OTP files with stale labels.
@@ -754,7 +755,10 @@ defmodule MobDev.Deployer do
       "#{android_package()}/#{@android_activity}",
       "--ei",
       "mob_dist_port",
-      to_string(dist_port)
+      to_string(dist_port),
+      "--es",
+      "mob_node_suffix",
+      node_suffix
     ])
 
     :ok

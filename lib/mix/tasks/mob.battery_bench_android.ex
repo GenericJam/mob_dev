@@ -259,7 +259,12 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
     # 30-minute meaningless run.
     verify_app_running!(device, pkg)
 
-    node = :"#{app}_android@127.0.0.1"
+    # Try the per-device suffixed name first (post-2026-04 deploys), then the
+    # bare name (back-compat). try_connect_with_retry returns the first node
+    # that succeeds, or nil if both fail.
+    suffix = MobDev.Discovery.Android.node_suffix_for(device)
+    suffixed_node = :"#{app}_android_#{suffix}@127.0.0.1"
+    bare_node = :"#{app}_android@127.0.0.1"
 
     # Poll Node.connect for up to 10 s. The BEAM's `Mob.Dist` waits ~3 s
     # after app launch and only then registers — and the EPMD-name->port
@@ -267,13 +272,13 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
     # shot connect here would race with all of that and `active_node = nil`
     # for the rest of the run, leaving every probe stuck on `:unreachable`
     # even when the BEAM is healthy and Erlang dist works fine seconds later.
-    node_alive? = try_connect_with_retry(node, 10_000)
+    active_node =
+      try_connect_with_retry(suffixed_node, 10_000) ||
+        try_connect_with_retry(bare_node, 2_000)
 
-    active_node = if node_alive?, do: node, else: nil
-
-    if node_alive? and opts[:no_keep_alive] != true do
+    if active_node && opts[:no_keep_alive] != true do
       IO.puts("  Starting background keep-alive...")
-      :rpc.call(node, :mob_nif, :background_keep_alive, [], 5000)
+      :rpc.call(active_node, :mob_nif, :background_keep_alive, [], 5000)
     end
 
     # ── Preflight ──────────────────────────────────────────────────────────
@@ -820,20 +825,27 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
   # 30-minute run proceed where every RPC will fail.
   defp verify_app_running!(device, pkg) do
     app = app_name()
-    expected_node_name = "#{app}_android"
+    base_name = "#{app}_android"
+    suffix = MobDev.Discovery.Android.node_suffix_for(device)
+    suffixed_name = "#{base_name}_#{suffix}"
+
+    # Try the suffixed name first (post-2026-04 deploys). Fall back to the
+    # bare name for back-compat with apps deployed before per-device suffixes.
+    candidates = [suffixed_name, base_name]
 
     deadline_ms = System.monotonic_time(:millisecond) + 10_000
 
     result =
-      verify_loop(device, pkg, expected_node_name, deadline_ms,
+      verify_loop(device, pkg, candidates, deadline_ms,
         last_pid: nil,
-        last_epmd_entries: nil
+        last_epmd_entries: nil,
+        matched_name: nil
       )
 
     case result do
-      {:ok, pid, port} ->
+      {:ok, pid, port, matched} ->
         IO.puts("  ✓ App running on device (pid #{pid})")
-        IO.puts("  ✓ BEAM registered in EPMD as #{expected_node_name} (port #{port})")
+        IO.puts("  ✓ BEAM registered in EPMD as #{matched} (port #{port})")
 
       {:error, :no_process, _state} ->
         Mix.raise(crash_diagnosis_no_process(device, pkg))
@@ -848,24 +860,31 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
         IO.puts("  ✓ App running on device (pid #{state[:last_pid]})")
 
         IO.puts(
-          "  #{IO.ANSI.yellow()}⚠  EPMD has #{expected_node_name} at port #{state[:stale_port]} but Node.connect fails — stale entry from a prior run#{IO.ANSI.reset()}"
+          "  #{IO.ANSI.yellow()}⚠  EPMD has #{state[:matched_name]} at port #{state[:stale_port]} but Node.connect fails#{IO.ANSI.reset()}"
         )
 
         IO.puts(stale_epmd_recovery_hint(device, pkg))
     end
   end
 
-  defp verify_loop(device, pkg, expected_node_name, deadline_ms, state) do
+  defp verify_loop(device, pkg, candidates, deadline_ms, state) do
     :timer.sleep(500)
 
     pid = pid_of(device, pkg)
     epmd_entries = epmd_names_local()
-    registered_port = Map.get(epmd_entries, expected_node_name)
-    expected_node = :"#{expected_node_name}@127.0.0.1"
+
+    matched =
+      Enum.find_value(candidates, fn name ->
+        case Map.get(epmd_entries, name) do
+          nil -> nil
+          port -> {name, port}
+        end
+      end)
 
     cond do
-      pid && registered_port && beam_reachable?(expected_node) ->
-        {:ok, pid, registered_port}
+      pid && matched && beam_reachable?(:"#{elem(matched, 0)}@127.0.0.1") ->
+        {name, port} = matched
+        {:ok, pid, port, name}
 
       System.monotonic_time(:millisecond) >= deadline_ms ->
         cond do
@@ -873,19 +892,28 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
             {:error, :no_process, [last_pid: state[:last_pid], last_epmd_entries: epmd_entries]}
 
           # EPMD has an entry but Node.connect can't actually reach the BEAM
-          # — almost always a stale entry from a prior run.
-          registered_port ->
+          # — typically a stale entry from a prior run, or another device
+          # squatting on the same name (only possible with bare base name).
+          matched ->
+            {name, port} = matched
+
             {:error, :stale_epmd,
-             [last_pid: pid, last_epmd_entries: epmd_entries, stale_port: registered_port]}
+             [
+               last_pid: pid,
+               last_epmd_entries: epmd_entries,
+               stale_port: port,
+               matched_name: name
+             ]}
 
           true ->
             {:error, :process_no_beam, [last_pid: pid, last_epmd_entries: epmd_entries]}
         end
 
       true ->
-        verify_loop(device, pkg, expected_node_name, deadline_ms,
+        verify_loop(device, pkg, candidates, deadline_ms,
           last_pid: pid || state[:last_pid],
-          last_epmd_entries: epmd_entries
+          last_epmd_entries: epmd_entries,
+          matched_name: state[:matched_name]
         )
     end
   end
@@ -953,6 +981,10 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
   # `Mob.Dist` is still bringing up its listener — a single Node.connect
   # would fail and leave `active_node = nil` for the entire run, sending
   # every probe to `:unreachable` even when the BEAM is healthy.
+  #
+  # Returns the connected node atom on success, nil on timeout. The bench
+  # tries the per-device suffixed name first then falls back to the bare
+  # name; returning the actual node lets the caller pick whichever worked.
   defp try_connect_with_retry(node, timeout_ms) do
     deadline = System.monotonic_time(:millisecond) + timeout_ms
     do_try_connect(node, deadline, _attempts = 0)
@@ -961,7 +993,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
   defp do_try_connect(node, deadline, attempts) do
     if beam_reachable?(node) do
       IO.puts("  BEAM connected: #{node}")
-      true
+      node
     else
       if System.monotonic_time(:millisecond) < deadline do
         :timer.sleep(500)
@@ -969,7 +1001,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
       else
         IO.puts("  (BEAM not reachable after #{attempts + 1} attempts — USB-only readings)")
 
-        false
+        nil
       end
     end
   end

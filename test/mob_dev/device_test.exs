@@ -33,9 +33,16 @@ defmodule MobDev.DeviceTest do
   # ── node_name/1 ─────────────────────────────────────────────────────────────
 
   describe "node_name/1" do
-    test "returns android node name for android device" do
+    test "returns android node name for android device with serial-derived suffix" do
       app = Mix.Project.config()[:app]
       device = %Device{platform: :android, serial: "emulator-5554"}
+      # Suffix is the sanitized serial — "emulator-5554" → "emulator_5554"
+      assert Device.node_name(device) == :"#{app}_android_emulator_5554@127.0.0.1"
+    end
+
+    test "returns suffix-less android node name when serial is missing" do
+      app = Mix.Project.config()[:app]
+      device = %Device{platform: :android, serial: nil}
       assert Device.node_name(device) == :"#{app}_android@127.0.0.1"
     end
 

@@ -108,6 +108,30 @@ defmodule MobDev.Discovery.AndroidTest do
     end
   end
 
+  # ── node_suffix_for/1 ────────────────────────────────────────────────────────
+
+  describe "node_suffix_for/1" do
+    test "lowercases an alphanumeric USB serial" do
+      assert Android.node_suffix_for("ZY22CRLMWK") == "zy22crlmwk"
+    end
+
+    test "strips :port and replaces dots with underscores for WiFi-adb" do
+      assert Android.node_suffix_for("10.0.0.82:5555") == "10_0_0_82"
+    end
+
+    test "replaces hyphens with underscores in emulator serials" do
+      assert Android.node_suffix_for("emulator-5554") == "emulator_5554"
+    end
+
+    test "collapses runs of non-alphanumeric chars" do
+      assert Android.node_suffix_for("abc.--..def") == "abc_def"
+    end
+
+    test "trims leading and trailing underscores" do
+      assert Android.node_suffix_for("---abc---") == "abc"
+    end
+  end
+
   # ── integration: list_devices/0 ──────────────────────────────────────────────
 
   @tag :integration

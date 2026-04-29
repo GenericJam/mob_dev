@@ -167,6 +167,8 @@ defmodule MobDev.Discovery.Android do
           {:ok, String.t()} | {:error, String.t()}
   def restart_app(serial, package, activity, opts \\ []) do
     dist_port = Keyword.get(opts, :dist_port, 9100)
+    node_suffix = Keyword.get(opts, :node_suffix) || node_suffix_for(serial)
+
     app_data = "/data/data/#{package}/files"
     app_cache = "/data/data/#{package}/cache"
     run_adb(["-s", serial, "shell", "am", "force-stop", package])
@@ -174,18 +176,46 @@ defmodule MobDev.Discovery.Android do
     run_adb(["-s", serial, "shell", "chcon -hR $(stat -c %C #{app_cache}) #{app_data}/otp"])
     :timer.sleep(300)
 
-    run_adb([
-      "-s",
-      serial,
-      "shell",
-      "am",
-      "start",
-      "-n",
-      "#{package}/#{activity}",
-      "--ei",
-      "mob_dist_port",
-      to_string(dist_port)
-    ])
+    run_adb(
+      [
+        "-s",
+        serial,
+        "shell",
+        "am",
+        "start",
+        "-n",
+        "#{package}/#{activity}",
+        "--ei",
+        "mob_dist_port",
+        to_string(dist_port),
+        "--es",
+        "mob_node_suffix",
+        node_suffix
+      ]
+    )
+  end
+
+  @doc """
+  Returns the per-device suffix appended to the Android node name to keep
+  multiple phones running the same app distinguishable in Mac's shared
+  EPMD. The suffix is a lowercase alphanumeric stub derived from the adb
+  serial; collisions across simultaneously-connected devices are
+  vanishingly unlikely. Pure of side effects.
+
+      node_suffix_for("ZY22CRLMWK")        → "zy22crlmwk"
+      node_suffix_for("10.0.0.82:5555")    → "10_0_0_82"
+      node_suffix_for("emulator-5554")     → "emulator_5554"
+  """
+  @spec node_suffix_for(String.t()) :: String.t()
+  def node_suffix_for(serial) when is_binary(serial) do
+    # Strip the :port (WiFi-adb form), then sanitize: lowercase, replace any
+    # non-alphanumeric run with a single underscore, trim leading/trailing.
+    serial
+    |> String.split(":", parts: 2)
+    |> hd()
+    |> String.downcase()
+    |> String.replace(~r/[^a-z0-9]+/, "_")
+    |> String.trim("_")
   end
 
   defp run_adb(args) do
