@@ -257,6 +257,11 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
     if node do
       IO.puts("  BEAM connected: #{node}")
 
+      # If the user *didn't* pass --wifi-ip but we found the device anyway
+      # (devicectl + ARP/EPMD scan, which can take 5–15 s on a cold network),
+      # surface the IP so the next run can short-circuit straight to it.
+      hint_wifi_ip(node, opts[:wifi_ip])
+
       if opts[:no_keep_alive] do
         IO.puts("  (skipping background keep-alive — iOS will suspend the app when locked)")
       else
@@ -265,6 +270,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
       end
     else
       IO.puts("  (BEAM not reachable — will use ideviceinfo only, screen must stay on)")
+      hint_wifi_ip_on_failure(opts[:wifi_ip])
     end
 
     # ── Preflight ─────────────────────────────────────────────────────────────
@@ -930,6 +936,41 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
   # communication was over USB).
   @max_connect_attempts 5
   @connect_retry_sleep_ms 2_000
+
+  # If we connected to a non-loopback iOS device (i.e. a physical iPhone over
+  # WiFi) without the user passing --wifi-ip, suggest passing it next run.
+  # Discovery via devicectl + ARP/EPMD scan takes 5–15 s on a cold network;
+  # `--wifi-ip` skips it. Loopback nodes (simulators, sub-second discovery)
+  # don't get the hint — there's nothing to skip.
+  defp hint_wifi_ip(_node, wifi_ip) when is_binary(wifi_ip), do: :ok
+
+  defp hint_wifi_ip(node, _wifi_ip) when is_atom(node) do
+    case node |> Atom.to_string() |> String.split("@", parts: 2) do
+      [_, host] when host != "127.0.0.1" and host != "localhost" ->
+        IO.puts(
+          "  #{IO.ANSI.faint()}tip: pass `--wifi-ip #{host}` next time to skip discovery#{IO.ANSI.reset()}"
+        )
+
+      _ ->
+        :ok
+    end
+  end
+
+  # When discovery fails completely and the user didn't pass --wifi-ip, tell
+  # them the option exists. `mix mob.devices` shows the IP after a successful
+  # deploy, so the user has a way to learn it; we just need to point at the
+  # flag.
+  defp hint_wifi_ip_on_failure(wifi_ip) when is_binary(wifi_ip), do: :ok
+
+  defp hint_wifi_ip_on_failure(_) do
+    IO.puts(
+      "  #{IO.ANSI.faint()}tip: if you know the iPhone's WiFi IP, pass `--wifi-ip <ip>` to#{IO.ANSI.reset()}"
+    )
+
+    IO.puts(
+      "  #{IO.ANSI.faint()}     skip discovery entirely. `mix mob.devices` prints it after a deploy.#{IO.ANSI.reset()}"
+    )
+  end
 
   defp connect_beam_node(device_id, explicit_wifi_ip) do
     case Node.start(:"mob_bench@127.0.0.1", :longnames) do

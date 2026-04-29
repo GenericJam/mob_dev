@@ -21,13 +21,18 @@ defmodule MobDev.Discovery.IOS do
   Returns connected physical iOS devices.
 
   Always runs both USB discovery (`ideviceinfo`) and a LAN EPMD scan in
-  parallel. The LAN scan finds the device's actual node IP (which is WiFi-first
-  since mob_beam.m prefers a stable LAN address). The USB scan provides the
-  UDID and device name. Results are merged: one device with the correct WiFi IP
-  and full USB metadata.
+  parallel. The LAN scan finds the device's actual node IP (which is
+  WiFi-first since mob_beam.m prefers a stable LAN address). The USB scan
+  provides the UDID and device name. Results are merged: one device with the
+  correct WiFi IP and full USB metadata.
 
   If only one path finds the device, that result is used directly — so this
-  works on USB-only setups and WiFi-only setups equally.
+  works on USB-only setups and WiFi-only setups equally. When USB finds a
+  device but LAN scan doesn't (cold ARP, rapid app launch, etc.), the
+  result is enriched via `xcrun devicectl` — we ask for the device's known
+  hostnames + tunnel IPs, resolve to IPv4, and probe each with EPMD. Single
+  TCP probe per candidate, so it costs ~50 ms in the success case and
+  doesn't slow down the no-iOS path.
   """
   @spec list_physical() :: [Device.t()]
   def list_physical do
@@ -52,14 +57,122 @@ defmodule MobDev.Discovery.IOS do
       {[_ | _], []} ->
         lan
 
-      # USB found devices, LAN didn't (USB-only, no WiFi).
+      # USB found devices, LAN didn't — try devicectl-driven enrichment so the
+      # IP shows up in `mix mob.devices` and the bench can short-circuit to
+      # `--wifi-ip <ip>` next time.
       {[], [_ | _]} ->
-        usb
+        enrich_with_devicectl(usb)
 
       {[], []} ->
         []
     end
   end
+
+  # For each USB-discovered device, ask devicectl for known hostnames and
+  # tunnel IPs, resolve them to IPv4, and probe each with EPMD. The first
+  # successful probe attaches host_ip + node + dist_port to the USB device.
+  # If no probe succeeds, return the USB device unchanged.
+  defp enrich_with_devicectl(usb_devices) do
+    ips = devicectl_ipv4_addresses()
+
+    if ips == [] do
+      usb_devices
+    else
+      Enum.map(usb_devices, fn d ->
+        Enum.find_value(ips, d, fn ip ->
+          case find_physical_at(ip) do
+            %Device{} = lan_d ->
+              %{d | host_ip: ip, node: lan_d.node, dist_port: lan_d.dist_port}
+
+            _ ->
+              nil
+          end
+        end)
+      end)
+    end
+  end
+
+  @doc """
+  Returns the IPv4 addresses every connected physical device is known to
+  reach Mac at, derived from `xcrun devicectl list devices --json-output`.
+  Sources, in order:
+
+    1. `connectionProperties.tunnelIPAddress` if it's an IPv4 (CoreDevice
+       USB tunnel; sometimes IPv6, which Erlang dist doesn't speak)
+    2. `connectionProperties.localHostnames` resolved via `:inet.gethostbyname/1`
+       (mDNS hostnames like `Kevins-iPhone.coredevice.local`, which usually
+       resolve to the device's WiFi IPv4)
+
+  Returns `[]` if `xcrun` isn't installed, the JSON parse fails, or no
+  device has any IPv4. Pure of side effects beyond the temp file used to
+  capture devicectl's JSON output.
+  """
+  @spec devicectl_ipv4_addresses() :: [String.t()]
+  def devicectl_ipv4_addresses do
+    if System.find_executable("xcrun") do
+      tmp =
+        Path.join(
+          System.tmp_dir!(),
+          "mob_devs_ipv4_#{System.unique_integer([:positive])}.json"
+        )
+
+      try do
+        case System.cmd("xcrun", ["devicectl", "list", "devices", "--json-output", tmp],
+               stderr_to_stdout: true
+             ) do
+          {_, 0} ->
+            tmp
+            |> File.read!()
+            |> Jason.decode!()
+            |> get_in(["result", "devices"])
+            |> List.wrap()
+            |> Enum.flat_map(&device_ipv4_candidates/1)
+            |> Enum.uniq()
+
+          _ ->
+            []
+        end
+      rescue
+        _ -> []
+      after
+        File.rm(tmp)
+      end
+    else
+      []
+    end
+  end
+
+  defp device_ipv4_candidates(dev) do
+    conn = Map.get(dev, "connectionProperties", %{})
+
+    tunnel =
+      case conn["tunnelIPAddress"] do
+        ip when is_binary(ip) ->
+          if String.contains?(ip, ":"), do: nil, else: ip
+
+        _ ->
+          nil
+      end
+
+    hostname_ips =
+      conn["localHostnames"]
+      |> List.wrap()
+      |> Enum.flat_map(&resolve_hostname_to_ipv4/1)
+
+    [tunnel | hostname_ips] |> Enum.reject(&is_nil/1)
+  end
+
+  defp resolve_hostname_to_ipv4(hostname) when is_binary(hostname) do
+    case :inet.gethostbyname(String.to_charlist(hostname)) do
+      {:ok, {:hostent, _, _, :inet, 4, addrs}} when is_list(addrs) ->
+        Enum.map(addrs, fn addr -> addr |> Tuple.to_list() |> Enum.join(".") end)
+
+      _ ->
+        []
+    end
+  end
+
+  defp resolve_hostname_to_ipv4(_), do: []
 
   @doc "Returns all iOS devices (simulators + physical)."
   @spec list_devices() :: [Device.t()]
