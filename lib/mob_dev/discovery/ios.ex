@@ -272,38 +272,60 @@ defmodule MobDev.Discovery.IOS do
   # Query EPMD at ip:4369 for any *_ios node.
   # Returns {:ok, short_name, dist_port} using the actual name from EPMD,
   # so the result is independent of which Mix project is running mob_dev.
+  #
+  # Validates the dist port to avoid a phantom hit: an Android phone with
+  # `adb reverse tcp:4369 tcp:4369` configured will forward LAN connections
+  # to its port 4369 *back to Mac's EPMD*, so we'd see the simulator's
+  # entries and think they live on the Android device. The simulator's dist
+  # port isn't tunneled the same way, so probing it tells us whether the
+  # EPMD entry actually corresponds to a reachable BEAM at this IP.
   defp query_ios_epmd(ip) do
     host = String.to_charlist(ip)
 
-    case :gen_tcp.connect(host, 4369, [:binary, active: false], 1000) do
-      {:ok, s} ->
-        :gen_tcp.send(s, <<0, 1, ?n>>)
+    with {:ok, s} <- :gen_tcp.connect(host, 4369, [:binary, active: false], 1000),
+         :ok <- :gen_tcp.send(s, <<0, 1, ?n>>),
+         {:ok, <<_::32, names::binary>>} = recv <- :gen_tcp.recv(s, 0, 1000) do
+      :gen_tcp.close(s)
 
-        result =
-          case :gen_tcp.recv(s, 0, 1000) do
-            {:ok, <<_::32, names::binary>>} ->
-              names
-              |> String.split("\n")
-              |> Enum.find_value(fn line ->
-                case Regex.run(~r/name ([a-z0-9_]+_ios[^\s]*) at port (\d+)/i, line) do
-                  [_, short_name, port] -> {:ok, short_name, String.to_integer(port)}
-                  _ -> nil
-                end
-              end)
-              |> case do
-                nil -> {:error, :not_ios_node}
-                found -> found
-              end
-
-            _ ->
-              {:error, :recv_failed}
+      candidate =
+        names
+        |> String.split("\n")
+        |> Enum.find_value(fn line ->
+          case Regex.run(~r/name ([a-z0-9_]+_ios[^\s]*) at port (\d+)/i, line) do
+            [_, short_name, port] -> {short_name, String.to_integer(port)}
+            _ -> nil
           end
+        end)
 
+      _ = recv
+
+      case candidate do
+        nil ->
+          {:error, :not_ios_node}
+
+        {short_name, dist_port} ->
+          if dist_port_reachable?(ip, dist_port) do
+            {:ok, short_name, dist_port}
+          else
+            {:error, :dist_phantom}
+          end
+      end
+    else
+      _ -> {:error, :epmd_unreachable}
+    end
+  end
+
+  # TCP-probe the claimed dist port to confirm the EPMD entry isn't a phantom
+  # (e.g. tunneled-EPMD case described above). 500 ms is plenty for a LAN
+  # connect and short enough that scanning N hosts stays under a second total.
+  defp dist_port_reachable?(ip, port) do
+    case :gen_tcp.connect(String.to_charlist(ip), port, [:binary, active: false], 500) do
+      {:ok, s} ->
         :gen_tcp.close(s)
-        result
+        true
 
-      {:error, reason} ->
-        {:error, reason}
+      _ ->
+        false
     end
   end
 
