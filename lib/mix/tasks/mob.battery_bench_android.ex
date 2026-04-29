@@ -1031,22 +1031,98 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
     """
   end
 
-  defp stale_epmd_recovery_hint(device, _pkg) do
+  defp stale_epmd_recovery_hint(device, pkg) do
+    others = other_devices_running(device, pkg)
+
+    collision_block =
+      case others do
+        [] ->
+          """
+             No other adb-connected device appears to be running #{pkg}, so
+             the EPMD entry is most likely stale (left by a previous run).
+          """
+
+        _ ->
+          formatted =
+            Enum.map_join(others, "\n", fn {serial, pid} ->
+              "         adb -s #{serial} shell am force-stop #{pkg}   # pid #{pid}"
+            end)
+
+          """
+             Other adb-connected device(s) are also running #{pkg} — they're
+             holding the EPMD `<app>_android` slot. Force-stop them so this
+             bench's BEAM can register, OR disconnect those devices:
+
+          #{formatted}
+
+             (Each Android device hardcodes the same node name, so only one
+             can register in Mac's EPMD via adb-reverse at a time. The
+             structural fix is per-device unique node names, like iOS sims
+             do with their UDID suffix — not yet implemented.)
+          """
+      end
+
     """
        Bench will fall back to USB-only readings (no per-second RPC probes).
-       To recover the BEAM connection between runs:
 
+    #{collision_block}
+       Other recovery options:
+
+         # Force EPMD to forget every node (kills any other Mob iEx sessions):
          pkill -9 epmd && epmd -daemon
-         adb -s #{device} reverse --remove-all && adb -s #{device} reverse tcp:4369 tcp:4369
-
-       Stale entries usually come from another Android phone holding the
-       same node name (e.g. `smoke_test_android`) via a leftover adb
-       reverse-tunnel. If multiple devices are connected, only one can
-       register at a time.
+         adb -s #{device} reverse --remove-all && \\
+           adb -s #{device} reverse tcp:4369 tcp:4369
 
        Logcat tells you whether the BEAM tried distribution this run:
          adb -s #{device} logcat -d | grep -iE "Mob.Dist|step [0-9]"
     """
+  end
+
+  # Walk every adb-connected device, check whether it has `pkg` running, and
+  # return the [{serial, pid}] list excluding the bench's own target. Used to
+  # tell the user which other phone is squatting on the EPMD slot.
+  defp other_devices_running(this_device, pkg) do
+    case System.cmd("adb", ["devices"], stderr_to_stdout: true) do
+      {output, 0} ->
+        output
+        |> String.split("\n")
+        |> Enum.drop(1)
+        |> Enum.filter(&String.contains?(&1, "\tdevice"))
+        |> Enum.map(&hd(String.split(&1, "\t")))
+        |> Enum.reject(&same_device?(&1, this_device))
+        |> Enum.flat_map(fn serial ->
+          case System.cmd("adb", ["-s", serial, "shell", "pidof", pkg], stderr_to_stdout: true) do
+            {out, 0} ->
+              case String.trim(out) do
+                "" -> []
+                pid -> [{serial, pid}]
+              end
+
+            _ ->
+              []
+          end
+        end)
+
+      _ ->
+        []
+    end
+  end
+
+  # Two adb identifiers refer to the same physical device when one is the
+  # USB serial and the other is `<ip>:5555` for the same phone. We can't
+  # always tell that from the strings alone, so be lenient: equal-string match
+  # plus IP-port form for the bench's own device.
+  defp same_device?(serial, this_device) do
+    serial == this_device or
+      serial == strip_port(this_device) or
+      "#{serial}:5555" == this_device
+  end
+
+  defp strip_port(s) do
+    case String.split(s, ":", parts: 2) do
+      [host, _port] -> host
+      _ -> s
+    end
   end
 
   # If the user passed a USB serial (no IP:port), auto-enable WiFi ADB so
