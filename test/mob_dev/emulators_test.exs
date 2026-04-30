@@ -82,6 +82,66 @@ defmodule MobDev.EmulatorsTest do
       assert Emulators.parse_simctl_json("") == []
     end
 
+    test "returns [] for valid JSON missing the 'devices' key" do
+      assert Emulators.parse_simctl_json(~s({"foo": "bar"})) == []
+    end
+
+    test "returns [] for empty devices map" do
+      assert Emulators.parse_simctl_json(~s({"devices": {}})) == []
+    end
+
+    test "preserves UDID exactly (used by simctl boot/shutdown)" do
+      json = """
+      {
+        "devices": {
+          "com.apple.CoreSimulator.SimRuntime.iOS-26-4": [
+            {"name": "X", "udid": "78354490-EF38-44D7-A437-DD941C20524D",
+             "state": "Shutdown", "isAvailable": true}
+          ]
+        }
+      }
+      """
+
+      [sim] = Emulators.parse_simctl_json(json)
+      assert sim.id == "78354490-EF38-44D7-A437-DD941C20524D"
+      assert sim.serial == sim.id, "serial and id should match for sims"
+    end
+
+    test "treats missing isAvailable as available (defaults to true)" do
+      # Older simctl output didn't include isAvailable. Our parser must
+      # default to true so we don't silently drop sims on older Xcodes.
+      json = """
+      {
+        "devices": {
+          "com.apple.CoreSimulator.SimRuntime.iOS-26-4": [
+            {"name": "OldSchool", "udid": "78354490-EF38-44D7-A437-DD941C20524D",
+             "state": "Shutdown"}
+          ]
+        }
+      }
+      """
+
+      assert [%Emulators{name: "OldSchool"}] = Emulators.parse_simctl_json(json)
+    end
+
+    test "leaves non-standard runtime ids unparsed rather than crashing" do
+      # If Apple ever changes the runtime id format, fall back to the raw
+      # string so listing still works (just with an uglier label).
+      json = """
+      {
+        "devices": {
+          "weird.runtime.identifier": [
+            {"name": "Y", "udid": "78354490-EF38-44D7-A437-DD941C20524D",
+             "state": "Shutdown", "isAvailable": true}
+          ]
+        }
+      }
+      """
+
+      [sim] = Emulators.parse_simctl_json(json)
+      assert sim.runtime == "weird.runtime.identifier"
+    end
+
     test "uses Booted state to set running flag" do
       json = """
       {
