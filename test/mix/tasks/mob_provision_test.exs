@@ -113,6 +113,31 @@ defmodule Mix.Tasks.Mob.ProvisionTest do
              "snippet should be one line so it's pasteable into a search engine; got: #{inspect(snippet)}"
     end
 
+    test "every recognised error includes an Apple-official documentation URL" do
+      # We deliberately link `developer.apple.com/help/account/...` URLs
+      # rather than third-party walkthroughs — Apple's account-management
+      # docs are the most stable reference and least likely to rot.
+      # Pin all five matched cases here so a future hint refactor that
+      # accidentally drops the link gets caught.
+      cases = [
+        {"App ID name",
+         "error: An attribute in the provided entity has invalid value:\n The attribute 'name' is invalid: 'XC com example x'\n"},
+        {"signing cert", "error: No signing certificate \"iOS Development\" found\n"},
+        {"no team", "error: Signing for \"X\" requires a development team.\n"},
+        {"App ID quota", "error: There are too many App IDs registered. Please delete some\n"},
+        {"bundle id taken",
+         "error: Failed to register bundle identifier:\n The app identifier \"x\" cannot be registered\n"}
+      ]
+
+      for {name, output} <- cases do
+        assert {_, _, hint} = Provision.diagnose_xcodebuild_failure(output),
+               "expected pattern for #{name} to match"
+
+        assert hint =~ "developer.apple.com/help/account/",
+               "#{name}: hint must include an Apple-official help URL; got: #{hint}"
+      end
+    end
+
     test "patterns ordered by specificity — App-ID-name matches before bundle-id-taken" do
       # The 'name is invalid' pattern is more specific than the
       # 'Failed to register bundle identifier' header that often

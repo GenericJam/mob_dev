@@ -301,6 +301,20 @@ defmodule Mix.Tasks.Mob.Provision do
   # The Apple/xcodebuild text is preserved verbatim in `:snippet` so users
   # can paste it into a search engine and find existing community
   # answers — our hint is additive, not a replacement.
+  #
+  # ## URL stability
+  #
+  # Each hint includes a link to Apple's official docs (`developer.apple.com/help/account/...`),
+  # which is Apple's account-management knowledge base — more stable than
+  # blog posts or Developer Forum threads. Apple does occasionally
+  # reorganise these; if a link 404s, search "site:developer.apple.com"
+  # for the section title to find its new home, then update the
+  # `@apple_url_*` module attributes below. The pattern matchers are the
+  # long-term backstop: they catch the error even when the URL goes stale.
+
+  @apple_url_app_id "https://developer.apple.com/help/account/identifiers/register-an-app-id"
+  @apple_url_signing_cert "https://developer.apple.com/help/account/create-certificates/create-signing-certificates"
+  @apple_url_team_id "https://developer.apple.com/help/account/manage-your-team/locate-your-team-id"
 
   @doc false
   @spec diagnose_xcodebuild_failure(String.t()) ::
@@ -323,6 +337,8 @@ defmodule Mix.Tasks.Mob.Provision do
          Or regenerate with a shorter app name:
 
              mix mob.new <short_name>
+
+         Apple's App ID rules: #{@apple_url_app_id}
          """}
 
       snippet = match_no_signing_cert(output) ->
@@ -333,6 +349,8 @@ defmodule Mix.Tasks.Mob.Provision do
            2. select your team → "Manage Certificates" → "+" → Apple Development
 
          Then re-run `mix mob.provision`.
+
+         Apple's signing certificate guide: #{@apple_url_signing_cert}
          """}
 
       snippet = match_no_team(output) ->
@@ -346,6 +364,8 @@ defmodule Mix.Tasks.Mob.Provision do
            Paid ($99/yr): https://developer.apple.com/account → Membership
            Free (Personal Team): Xcode → Settings → Accounts →
                                  [your Apple ID] → Team column
+
+         Apple's "locate your Team ID" guide: #{@apple_url_team_id}
          """}
 
       snippet = match_app_id_quota(output) ->
@@ -357,6 +377,9 @@ defmodule Mix.Tasks.Mob.Provision do
          it explicitly in mob.exs:
 
              config :mob_dev, bundle_id: "com.example.<previously_registered>"
+
+         Apple's App ID registration page (mentions registration limits):
+         #{@apple_url_app_id}
          """}
 
       snippet = match_bundle_id_taken(output) ->
@@ -369,6 +392,9 @@ defmodule Mix.Tasks.Mob.Provision do
              config :mob_dev, bundle_id: "com.example.<app>.<your_suffix>"
 
          Or change MOB_BUNDLE_PREFIX away from the conflicting reverse-DNS.
+
+         Apple's App ID rules (uniqueness across teams):
+         #{@apple_url_app_id}
          """}
 
       true ->
