@@ -95,6 +95,11 @@ defmodule Mix.Tasks.Mob.Deploy do
     native = Keyword.get(opts, :native, false)
     device_id = opts[:device]
     platforms = resolve_platforms(opts)
+    # Narrow once at the task level so build_all and deploy_all both see the
+    # same platform list. Without this, the deployer iterates over the
+    # irrelevant platform and `filter_by_device_id` emits a misleading
+    # "No device matched" warning even when the targeted platform succeeded.
+    platforms = MobDev.NativeBuild.narrow_platforms_for_device(platforms, device_id)
     beam_flags = resolve_beam_flags(opts)
 
     # When no --device is given and we're doing a native iOS build, auto-detect

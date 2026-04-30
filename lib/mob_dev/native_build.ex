@@ -26,20 +26,7 @@ defmodule MobDev.NativeBuild do
     cfg = load_config()
     platforms = Keyword.get(opts, :platforms, [:android, :ios])
     device_id = Keyword.get(opts, :device, nil)
-
-    # When `--device <id>` is given, narrow `platforms` to just the platform
-    # the device lives on, so we don't also build for the other.
-    #
-    # `ios_device?/1` resolves the id against `IOS.list_devices/0` so both
-    # simulators (UUID format) and physical devices (UUID or 40-hex format)
-    # are recognised as iOS. Anything else — Android serials, partial
-    # display ids that we couldn't resolve — falls through and we drop iOS.
-    platforms =
-      cond do
-        is_nil(device_id) -> platforms
-        ios_device?(device_id) -> platforms -- [:android]
-        true -> platforms -- [:ios]
-      end
+    platforms = narrow_platforms_for_device(platforms, device_id)
 
     results = []
 
@@ -1353,6 +1340,30 @@ defmodule MobDev.NativeBuild do
   #   Standard UUID:   8-4-4-4-12 hex (e.g. 12345678-ABCD-1234-ABCD-1234567890AB)
   #   New Apple format: 8-16 hex   (e.g. 00008110-001E1C3A34F8401E)
   # Simulator display_ids are exactly 8 hex chars. Android serials never match.
+  @doc """
+  When `--device <id>` is given, narrow `platforms` to just the platform
+  the device lives on. Drops Android when the id resolves to an iOS
+  device (sim or physical), drops iOS otherwise.
+
+  Public so `mix mob.deploy` can apply the same narrowing before calling
+  `MobDev.Deployer.deploy_all/1` — otherwise the deployer's per-platform
+  `filter_by_device_id` complains "No device matched" against the
+  irrelevant platform even though the build itself was correctly
+  targeted.
+
+  Returns `platforms` unchanged when `device_id` is nil.
+  """
+  @spec narrow_platforms_for_device([atom()], String.t() | nil) :: [atom()]
+  def narrow_platforms_for_device(platforms, nil), do: platforms
+
+  def narrow_platforms_for_device(platforms, device_id) when is_binary(device_id) do
+    if ios_device?(device_id) do
+      platforms -- [:android]
+    else
+      platforms -- [:ios]
+    end
+  end
+
   # True when `id` matches *any* iOS device (sim or physical) in
   # `IOS.list_devices/0`. Used to decide whether `--device <id>` narrows
   # `platforms` to iOS or Android. Accepts the full serial, the
