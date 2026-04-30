@@ -1,5 +1,15 @@
 # mob_dev — Agent Instructions
 
+**Read [`AGENTS.md`](AGENTS.md) first**, then [`~/code/mob/AGENTS.md`](../mob/AGENTS.md)
+for the system view. They cover repo topology, public-but-undocumented
+seams (parsers/predicates kept public for testing), and the cross-repo
+pre-empt-failure rules. This file goes deeper on Claude Code-specific
+workflow.
+
+> **Keep AGENTS.md up to date** when you add a public seam, change a
+> convention, or hit a gotcha that should have been on the list. Same
+> commit as the change — not a follow-up.
+
 ## TDD is the practice here
 
 Write tests before or alongside new code. Every new function should have
