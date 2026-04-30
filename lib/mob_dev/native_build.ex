@@ -27,14 +27,19 @@ defmodule MobDev.NativeBuild do
     platforms = Keyword.get(opts, :platforms, [:android, :ios])
     device_id = Keyword.get(opts, :device, nil)
 
-    # When `--device <android-serial>` is given, the user wants that one phone
-    # only — skip the iOS build entirely so we don't install on the simulator
-    # too. iOS UDIDs and Android serials don't overlap in format, so we can
-    # detect this from the device_id alone.
+    # When `--device <id>` is given, narrow `platforms` to just the platform
+    # the device lives on, so we don't also build for the other.
+    #
+    # `ios_device?/1` resolves the id against `IOS.list_devices/0` so both
+    # simulators (UUID format) and physical devices (UUID or 40-hex format)
+    # are recognised as iOS. Anything else — Android serials, partial
+    # display ids that we couldn't resolve — falls through and we drop iOS.
     platforms =
-      if is_binary(device_id) and not ios_physical_udid?(device_id),
-        do: platforms -- [:ios],
-        else: platforms
+      cond do
+        is_nil(device_id) -> platforms
+        ios_device?(device_id) -> platforms -- [:android]
+        true -> platforms -- [:ios]
+      end
 
     results = []
 
@@ -1348,6 +1353,20 @@ defmodule MobDev.NativeBuild do
   #   Standard UUID:   8-4-4-4-12 hex (e.g. 12345678-ABCD-1234-ABCD-1234567890AB)
   #   New Apple format: 8-16 hex   (e.g. 00008110-001E1C3A34F8401E)
   # Simulator display_ids are exactly 8 hex chars. Android serials never match.
+  # True when `id` matches *any* iOS device (sim or physical) in
+  # `IOS.list_devices/0`. Used to decide whether `--device <id>` narrows
+  # `platforms` to iOS or Android. Accepts the full serial, the
+  # human-friendly `display_id` (e.g. the first 8 chars of a sim UUID
+  # which `mix mob.devices` prints), or — for offline devices that
+  # discovery doesn't return — the format-based fallback in
+  # `ios_physical_udid?/1`.
+  defp ios_device?(id) do
+    devices = MobDev.Discovery.IOS.list_devices()
+
+    Enum.any?(devices, fn d -> MobDev.Device.match_id?(d, id) end) or
+      ios_physical_udid?(id)
+  end
+
   # True when `id` is recognised as a connected physical iOS device.
   # Both simulator and physical UDIDs are UUIDs in modern Xcode (the
   # 36-char form), so format-only matching is ambiguous. We resolve by
