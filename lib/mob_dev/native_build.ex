@@ -1348,15 +1348,26 @@ defmodule MobDev.NativeBuild do
   #   Standard UUID:   8-4-4-4-12 hex (e.g. 12345678-ABCD-1234-ABCD-1234567890AB)
   #   New Apple format: 8-16 hex   (e.g. 00008110-001E1C3A34F8401E)
   # Simulator display_ids are exactly 8 hex chars. Android serials never match.
+  # True when `id` is recognised as a connected physical iOS device.
+  # Both simulator and physical UDIDs are UUIDs in modern Xcode (the
+  # 36-char form), so format-only matching is ambiguous. We resolve by
+  # asking IOS.list_devices/0 for the device type. Falls back to a
+  # format check only when discovery returns nothing — covers the case
+  # where a UDID was passed but the device is offline / not yet
+  # enumerable, in which case we err on the side of "physical" so the
+  # device build is attempted (40-char and short forms are physical-only).
   defp ios_physical_udid?(id) do
-    Regex.match?(Regex.compile!("^[0-9A-Fa-f]{40}$"), id) or
-      Regex.match?(
-        Regex.compile!(
-          "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
-        ),
-        id
-      ) or
-      Regex.match?(Regex.compile!("^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{16}$"), id)
+    case Enum.find(MobDev.Discovery.IOS.list_devices(), &(&1.serial == id)) do
+      %MobDev.Device{type: :physical} ->
+        true
+
+      %MobDev.Device{type: :simulator} ->
+        false
+
+      nil ->
+        Regex.match?(Regex.compile!("^[0-9A-Fa-f]{40}$"), id) or
+          Regex.match?(Regex.compile!("^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{16}$"), id)
+    end
   end
 
   # ── Toolchain availability ──────────────────────────────────────────────────
