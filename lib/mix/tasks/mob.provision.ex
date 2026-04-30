@@ -159,9 +159,14 @@ defmodule Mix.Tasks.Mob.Provision do
       true ->
         IO.puts("  #{yellow()}?#{reset()} Team ID — could not auto-detect")
 
+        IO.puts("     Paid Apple Developer Program ($99/yr):")
+
         IO.puts(
-          "     Find yours at #{cyan()}https://developer.apple.com/account#{reset()} → Membership → Team ID"
+          "       #{cyan()}https://developer.apple.com/account#{reset()} → Membership → Team ID"
         )
+
+        IO.puts("     Free tier (Personal Team, no $99):")
+        IO.puts("       Xcode → Settings → Accounts → [your Apple ID] → Team column")
 
         team = Mix.shell().prompt("  Enter Team ID:") |> String.trim()
 
@@ -269,21 +274,13 @@ defmodule Mix.Tasks.Mob.Provision do
     {output, rc} = System.cmd("xcodebuild", args, stderr_to_stdout: true)
 
     if rc != 0 do
-      # On failure, show the full output so the user can diagnose
+      # Show the full xcodebuild output first — keeps Apple's exact error
+      # text visible for google searches and for users comparing notes with
+      # online answers. The targeted hint below it is additive.
       IO.puts(output)
 
-      Mix.raise("""
-
-      xcodebuild provisioning failed (exit #{rc}).
-
-      Common causes:
-        - Xcode not signed in: open Xcode → Settings → Accounts → add Apple ID
-        - Bundle ID registered to a different team
-        - No internet connection (provisioning contacts Apple's servers)
-
-      To debug, run manually from #{File.cwd!()}:
-          xcodebuild #{Enum.join(args, " ")}
-      """)
+      hint = diagnose_xcodebuild_failure(output)
+      Mix.raise(format_xcodebuild_error(rc, hint, args))
     end
 
     # Print only the summary line on success
@@ -293,6 +290,168 @@ defmodule Mix.Tasks.Mob.Provision do
     |> Enum.each(&IO.puts/1)
 
     :ok
+  end
+
+  # ── xcodebuild error diagnosis ────────────────────────────────────────────
+  #
+  # Pattern-match against known Apple error strings and return a {label,
+  # snippet, hint} describing the targeted fix. Returns nil for unmatched
+  # errors — the caller falls back to a generic "common causes" message.
+  #
+  # The Apple/xcodebuild text is preserved verbatim in `:snippet` so users
+  # can paste it into a search engine and find existing community
+  # answers — our hint is additive, not a replacement.
+
+  @doc false
+  @spec diagnose_xcodebuild_failure(String.t()) ::
+          {label :: String.t(), snippet :: String.t(), hint :: String.t()} | nil
+  def diagnose_xcodebuild_failure(output) do
+    cond do
+      snippet = match_invalid_app_id_name(output) ->
+        {"Apple rejected the auto-generated App ID display name", snippet,
+         """
+         Apple derives the App ID display name from your bundle ID by
+         prepending "XC " and replacing dots with spaces. The result has
+         to fit Apple's portal validation (~30-char limit, no characters
+         their validator rejects — underscores have been flagged in some
+         years).
+
+         Fix: shorten the bundle ID's last segment in mob.exs:
+
+             config :mob_dev, bundle_id: "com.example.<short_name>"
+
+         Or regenerate with a shorter app name:
+
+             mix mob.new <short_name>
+         """}
+
+      snippet = match_no_signing_cert(output) ->
+        {"No Apple Development signing certificate", snippet,
+         """
+         Open Xcode → Settings → Accounts:
+           1. [+] → add your Apple ID (free at https://appleid.apple.com)
+           2. select your team → "Manage Certificates" → "+" → Apple Development
+
+         Then re-run `mix mob.provision`.
+         """}
+
+      snippet = match_no_team(output) ->
+        {"No team available for signing", snippet,
+         """
+         Set your Team ID in mob.exs:
+
+             config :mob_dev, ios_team_id: "ABC123XYZ4"
+
+         Find yours at:
+           Paid ($99/yr): https://developer.apple.com/account → Membership
+           Free (Personal Team): Xcode → Settings → Accounts →
+                                 [your Apple ID] → Team column
+         """}
+
+      snippet = match_app_id_quota(output) ->
+        {"Free-tier App ID limit (3 per 7 days) hit", snippet,
+         """
+         Apple caps Personal Team accounts at 3 distinct bundle IDs
+         registered per rolling 7-day window. Either wait it out, or
+         reuse a bundle ID Xcode already provisioned for you by setting
+         it explicitly in mob.exs:
+
+             config :mob_dev, bundle_id: "com.example.<previously_registered>"
+         """}
+
+      snippet = match_bundle_id_taken(output) ->
+        {"Bundle ID belongs to a different team", snippet,
+         """
+         Apple won't let two teams own the same App ID. Pick a unique
+         bundle ID — for personal projects, append your initials or a
+         random suffix:
+
+             config :mob_dev, bundle_id: "com.example.<app>.<your_suffix>"
+
+         Or change MOB_BUNDLE_PREFIX away from the conflicting reverse-DNS.
+         """}
+
+      true ->
+        nil
+    end
+  end
+
+  # Each match_* helper returns the verbatim snippet from xcodebuild output
+  # if the pattern is present, else nil. Keeping the snippet in the user's
+  # output (rather than rephrasing) keeps it google-searchable.
+
+  defp match_invalid_app_id_name(output) do
+    grep_first(output, "The attribute 'name' is invalid")
+  end
+
+  defp match_no_signing_cert(output) do
+    grep_first(output, "No signing certificate") ||
+      grep_first(output, "no Apple Development cert") ||
+      grep_first(output, "requires a development team")
+  end
+
+  defp match_no_team(output) do
+    grep_first(output, "no eligible accounts") ||
+      grep_first(output, "doesn't include any iOS App Development") ||
+      grep_first(output, "No development team")
+  end
+
+  defp match_app_id_quota(output) do
+    grep_first(output, "There are too many App IDs") ||
+      grep_first(output, "maximum allowed number of App IDs") ||
+      grep_first(output, "Maximum App IDs Reached")
+  end
+
+  defp match_bundle_id_taken(output) do
+    grep_first(output, "Failed to register bundle identifier") ||
+      grep_first(output, "An App ID with Identifier") ||
+      grep_first(output, "is not available. Please enter a different string")
+  end
+
+  # First line of `output` containing `needle`, or nil.
+  defp grep_first(output, needle) do
+    output
+    |> String.split("\n")
+    |> Enum.find(&String.contains?(&1, needle))
+    |> case do
+      nil -> nil
+      line -> String.trim(line)
+    end
+  end
+
+  defp format_xcodebuild_error(rc, nil, args) do
+    """
+
+    xcodebuild provisioning failed (exit #{rc}).
+
+    Common causes:
+      - Xcode not signed in: open Xcode → Settings → Accounts → add Apple ID
+      - Bundle ID registered to a different team
+      - No internet connection (provisioning contacts Apple's servers)
+      - Free-tier Apple ID hit the 3-App-IDs-per-7-days limit
+
+    The full xcodebuild output is above; search any error line you don't
+    recognise — Apple's text is fairly distinctive and there's almost always
+    a Stack Overflow / forum hit for it.
+
+    To debug, run manually from #{File.cwd!()}:
+        xcodebuild #{Enum.join(args, " ")}
+    """
+  end
+
+  defp format_xcodebuild_error(rc, {label, snippet, hint}, _args) do
+    """
+
+    xcodebuild provisioning failed (exit #{rc}).
+
+    #{IO.ANSI.bright()}#{label}#{IO.ANSI.reset()}
+
+    Apple's exact error (paste this into a search engine for community answers):
+
+        #{snippet}
+
+    #{hint}
+    """
   end
 
   defp verify_profile!(bundle_id) do
