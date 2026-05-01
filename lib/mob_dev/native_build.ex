@@ -1488,6 +1488,12 @@ defmodule MobDev.NativeBuild do
 
   # ── Config ───────────────────────────────────────────────────────────────────
 
+  @doc false
+  def __load_config__, do: load_config()
+
+  @doc false
+  def __resolve_elixir_lib__(configured), do: resolve_elixir_lib(configured)
+
   defp load_config do
     config_file = Path.join(File.cwd!(), "mob.exs")
 

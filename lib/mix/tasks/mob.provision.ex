@@ -4,13 +4,16 @@ defmodule Mix.Tasks.Mob.Provision do
   @shortdoc "Register your app ID and download an iOS provisioning profile"
 
   @moduledoc """
-  Registers your app's bundle ID with Apple and downloads a development
-  provisioning profile so `mix mob.deploy --native` can install to a
-  physical iPhone.
+  Registers your app's bundle ID with Apple and downloads an iOS
+  provisioning profile.
 
-  Run this once before your first physical device deploy:
+  Two modes:
 
-      mix mob.provision
+      mix mob.provision                 # development profile (default)
+      mix mob.provision --distribution  # App Store distribution profile
+
+  Run development provisioning once before your first `mix mob.deploy --native`.
+  Run distribution provisioning once before your first `mix mob.release`.
 
   ## What you need first
 
@@ -19,31 +22,41 @@ defmodule Mix.Tasks.Mob.Provision do
        open Xcode → Settings → Accounts → [+] → Apple ID
     3. **Apple Developer Program** — optional for personal device development,
        required for App Store distribution ($99/year).
-       Free accounts can deploy to your own devices; profiles expire every 7 days.
-       Paid accounts get 1-year profiles and App Store access.
+       Free accounts can deploy to their own devices; profiles expire every
+       7 days. Paid accounts get 1-year profiles and App Store access.
        Enroll at https://developer.apple.com/programs/enroll/
 
-  That's it. `mix mob.provision` handles everything else automatically.
+  Distribution mode requires a paid Developer Program membership.
 
-  ## What it does
+  ## What it does (development)
 
     1. Reads your signing team from the macOS keychain or existing profiles
-    2. Generates `ios/Provision.xcodeproj` — a minimal Xcode project used only
-       for provisioning (safe to commit; useful if you ever need to open Xcode)
-    3. Generates `ios/MobProvision.swift` — a two-line SwiftUI stub the project
-       compiles to satisfy xcodebuild
-    4. Runs `xcodebuild -allowProvisioningUpdates` which contacts Apple to:
+    2. Generates `ios/Provision.xcodeproj` — a minimal Xcode project used
+       only for provisioning (safe to commit)
+    3. Generates `ios/MobProvision.swift` — a two-line SwiftUI stub
+    4. Runs `xcodebuild -allowProvisioningUpdates build` which contacts
+       Apple to:
        - Register your bundle ID in your developer account (if not registered)
        - Create a development provisioning profile
        - Download it to ~/Library/Developer/Xcode/.../Provisioning Profiles/
     5. Verifies the profile is present
 
-  After provisioning, `mix mob.deploy --native` finds the profile automatically.
-  Re-run `mix mob.provision` when your profile expires.
+  ## What it does (distribution)
+
+  Same as above, but runs `xcodebuild archive -allowProvisioningUpdates`
+  with `CODE_SIGN_STYLE=Automatic` against the Release configuration.
+  Apple creates an App Store provisioning profile (and an Apple
+  Distribution certificate, if missing) and downloads them to your
+  keychain + provisioning profile directory.
   """
 
+  @switches [distribution: :boolean]
+
   @impl Mix.Task
-  def run(_args) do
+  def run(argv) do
+    {opts, _, _} = OptionParser.parse(argv, strict: @switches)
+    mode = if opts[:distribution], do: :distribution, else: :development
+
     unless macos?() do
       Mix.raise("mix mob.provision is only supported on macOS.")
     end
@@ -53,7 +66,8 @@ defmodule Mix.Tasks.Mob.Provision do
     end
 
     IO.puts("")
-    IO.puts("#{cyan()}=== iOS Provisioning ===#{reset()}")
+    label = if mode == :distribution, do: "Distribution", else: "Development"
+    IO.puts("#{cyan()}=== iOS Provisioning (#{label}) ===#{reset()}")
     IO.puts("")
     IO.puts("#{bright()}What you need before this step:#{reset()}")
     IO.puts("")
@@ -66,7 +80,7 @@ defmodule Mix.Tasks.Mob.Provision do
     IO.puts("#{bright()}Checking...#{reset()}")
     IO.puts("")
 
-    check_signing_identity!()
+    check_signing_identity!(mode)
     team_id = resolve_team_id()
     bundle_id = check_bundle_id!()
 
@@ -83,13 +97,21 @@ defmodule Mix.Tasks.Mob.Provision do
     IO.puts("(requires internet — may take 10–30 seconds)")
     IO.puts("")
 
-    run_xcodebuild!()
-    verify_profile!(bundle_id)
+    run_xcodebuild!(mode)
+    verify_profile!(bundle_id, mode)
 
     IO.puts("")
     IO.puts("#{green()}✓ Provisioning complete!#{reset()}")
     IO.puts("")
-    IO.puts("Next step: #{cyan()}mix mob.deploy --native#{reset()}")
+
+    case mode do
+      :distribution ->
+        IO.puts("Next step: #{cyan()}mix mob.release#{reset()}")
+
+      _ ->
+        IO.puts("Next step: #{cyan()}mix mob.deploy --native#{reset()}")
+    end
+
     IO.puts("")
 
     IO.puts(
@@ -101,7 +123,13 @@ defmodule Mix.Tasks.Mob.Provision do
 
   # ── Prerequisite checks ───────────────────────────────────────────────────────
 
-  defp check_signing_identity! do
+  defp check_signing_identity!(mode) do
+    cert_kind =
+      case mode do
+        :distribution -> "Apple Distribution"
+        _ -> "Apple Development"
+      end
+
     case System.cmd("security", ["find-identity", "-v", "-p", "codesigning"],
            stderr_to_stdout: true
          ) do
@@ -109,23 +137,32 @@ defmodule Mix.Tasks.Mob.Provision do
         identities =
           Regex.scan(Regex.compile!("\\d+\\) [0-9A-F]+ \"([^\"]+)\""), output)
           |> Enum.map(fn [_, id] -> id end)
-          |> Enum.filter(&String.contains?(&1, "Apple Development"))
+          |> Enum.filter(&String.contains?(&1, cert_kind))
           |> Enum.uniq()
 
         case identities do
           [] ->
-            IO.puts("  #{red()}✗#{reset()} Apple Development certificate — not found in keychain")
+            # For distribution, xcodebuild -allowProvisioningUpdates with the
+            # archive action can create the cert if missing — so this isn't
+            # fatal in distribution mode. Just warn and let xcodebuild try.
+            IO.puts("  #{yellow()}?#{reset()} #{cert_kind} certificate — not yet in keychain")
 
-            Mix.raise("""
+            if mode == :distribution do
+              IO.puts(
+                "     #{faint()}xcodebuild will attempt to create one when contacting Apple.#{reset()}"
+              )
+            else
+              Mix.raise("""
 
-            No Apple Development signing certificate found.
+              No #{cert_kind} signing certificate found.
 
-            One-time setup:
-              1. Open Xcode
-              2. Xcode → Settings → Accounts → [+] → add your Apple ID
-              3. Select your team → click "Download Manual Profiles"
-              4. Re-run: mix mob.provision
-            """)
+              One-time setup:
+                1. Open Xcode
+                2. Xcode → Settings → Accounts → [+] → add your Apple ID
+                3. Select your team → click "Manage Certificates" → "+"
+                4. Re-run: mix mob.provision
+              """)
+            end
 
           [id] ->
             IO.puts("  #{green()}✓#{reset()} Signing certificate — #{faint()}#{id}#{reset()}")
@@ -256,8 +293,8 @@ defmodule Mix.Tasks.Mob.Provision do
 
   # ── xcodebuild ────────────────────────────────────────────────────────────────
 
-  defp run_xcodebuild! do
-    args = [
+  defp run_xcodebuild!(mode) do
+    base = [
       "-project",
       "ios/Provision.xcodeproj",
       "-target",
@@ -267,9 +304,27 @@ defmodule Mix.Tasks.Mob.Provision do
       "-allowProvisioningUpdates",
       "-allowProvisioningDeviceRegistration",
       "SYMROOT=/tmp/mob_provision_build",
-      "OBJROOT=/tmp/mob_provision_build",
-      "build"
+      "OBJROOT=/tmp/mob_provision_build"
     ]
+
+    args =
+      case mode do
+        :distribution ->
+          # `archive` + Release config triggers Apple to create or refresh
+          # the App Store provisioning profile (and Distribution cert if
+          # missing) under automatic signing.
+          base ++
+            [
+              "-configuration",
+              "Release",
+              "-archivePath",
+              "/tmp/mob_provision_build/Provision.xcarchive",
+              "archive"
+            ]
+
+        _ ->
+          base ++ ["build"]
+      end
 
     {output, rc} = System.cmd("xcodebuild", args, stderr_to_stdout: true)
 
@@ -480,36 +535,51 @@ defmodule Mix.Tasks.Mob.Provision do
     """
   end
 
-  defp verify_profile!(bundle_id) do
+  defp verify_profile!(bundle_id, mode) do
     profile_dirs = [
       Path.expand("~/Library/Developer/Xcode/UserData/Provisioning Profiles"),
       Path.expand("~/Library/MobileDevice/Provisioning Profiles")
     ]
 
-    # Accept an exact bundle ID match or a wildcard profile (covers any bundle ID)
-    found =
+    matching =
       Enum.flat_map(profile_dirs, &Path.wildcard(Path.join(&1, "*.mobileprovision")))
-      |> Enum.any?(fn path ->
+      |> Enum.filter(fn path ->
         case File.read(path) do
           {:ok, data} ->
-            String.contains?(data, bundle_id) or
-              Regex.match?(
-                Regex.compile!(
-                  "<key>application-identifier</key>\\s*<string>[^<]+\\.\\*</string>"
-                ),
-                data
-              )
+            bundle_match =
+              String.contains?(data, bundle_id) or
+                Regex.match?(
+                  Regex.compile!(
+                    "<key>application-identifier</key>\\s*<string>[^<]+\\.\\*</string>"
+                  ),
+                  data
+                )
+
+            mode_match =
+              case mode do
+                :distribution ->
+                  # App Store profiles have no ProvisionedDevices array
+                  not String.contains?(data, "<key>ProvisionedDevices</key>") and
+                    not String.contains?(data, "<key>ProvisionsAllDevices</key>")
+
+                _ ->
+                  # Development profiles list ProvisionedDevices
+                  String.contains?(data, "<key>ProvisionedDevices</key>")
+              end
+
+            bundle_match and mode_match
 
           _ ->
             false
         end
       end)
 
-    if found do
-      IO.puts("  #{green()}✓#{reset()} Provisioning profile ready")
+    if matching != [] do
+      label = if mode == :distribution, do: "App Store", else: "development"
+      IO.puts("  #{green()}✓#{reset()} #{label} provisioning profile ready")
     else
       IO.puts(
-        "  #{yellow()}⚠#{reset()}  Profile not found — re-run `mix mob.provision` if deploy fails"
+        "  #{yellow()}⚠#{reset()}  Profile not found — re-run `mix mob.provision#{if mode == :distribution, do: " --distribution", else: ""}` if needed"
       )
     end
   end
