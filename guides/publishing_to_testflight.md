@@ -8,40 +8,44 @@ It assumes you already have a working development setup — `mix mob.deploy`
 runs your app on a connected iPhone. If you don't, work through
 [Getting Started](https://hexdocs.pm/mob/getting_started.html) first.
 
-> **Important — current status (mob 0.5.10 / mob_dev 0.3.27)**
+> **Status (mob 0.5.12 / mob_dev 0.3.30):** End-to-end works. A real
+> Mob app (Air Cart Maximizer) shipped through this exact pipeline on
+> 2026-05-02. If you follow the steps below in order you should land a
+> build in TestFlight on your first or second attempt.
 >
-> The provisioning, release-build, and upload pipeline (`mix mob.provision
-> --distribution`, `mix mob.release`, `mix mob.publish`) all work. They
-> produce a signed `.ipa` and hand it to App Store Connect.
->
-> However, App Store Connect's automated validator currently **rejects**
-> the resulting build because Mob bundles the OTP runtime tree (which
-> includes `.so` and `.a` files Apple doesn't allow in App Store
-> bundles) and uses the test-harness NIFs (which reference private
-> UIKit selectors).
->
-> See [Known limitation: App Store validator rejects the
-> bundle](#known-limitation-app-store-validator-rejects-the-bundle)
-> at the bottom of this guide for the full error breakdown and the
-> framework work needed to clear it. Until that work lands, the path
-> below gets you to the upload step but the build won't appear in
-> TestFlight.
->
-> The provisioning + release flow IS complete and useful — it's the
-> exact same path you'll use once the App Store validation work lands,
-> and it produces a working `.ipa` you can side-load via Xcode for ad-hoc
-> testing today.
+> Apple's validator runs in **two separate stages** — an upload
+> validator (catches obvious bundle problems) and a secondary scanner
+> (runs after upload, emails you if it finds anything). Most of the
+> troubleshooting at the bottom of this guide is for errors from the
+> second stage. They typically don't show up until after `mix mob.publish`
+> reports success. See [Two-stage validation](#part-3--two-stage-validation)
+> for the model.
 
 ---
 
 ## Prerequisites
 
-- macOS with Xcode (any recent version; Xcode 16+ is what most of this
-  has been tested against)
+- macOS with Xcode (Xcode 16+ tested; Xcode 26 produces App Store-grade
+  builds without quirks)
 - An Apple Developer Program membership ($99/year) — TestFlight requires
   this; the free tier can sideload but not publish
 - An iPhone you've successfully run the app on via `mix mob.deploy --native`
   (proves your dev signing works end-to-end)
+- iOS 17.0 simulator deployment target. If your project was generated
+  by `mix mob.new` from a mob_new before 0.1.30, your `ios/build.sh`
+  may say `version-min=16.0` — bump it:
+
+  ```bash
+  sed -i '' \
+    -e 's/version-min=16.0/version-min=17.0/g' \
+    -e 's/arm64-apple-ios16.0-simulator/arm64-apple-ios17.0-simulator/g' \
+    -e 's/--minimum-deployment-target 16.0/--minimum-deployment-target 17.0/g' \
+    ios/build.sh
+  ```
+
+  iOS 17 was released September 2023; older targets fail because the
+  framework's Swift code uses iOS 17+ APIs (modern `onChange(of:_:)`
+  closure form).
 
 You'll also create things in three Apple web portals during this guide:
 
@@ -116,36 +120,62 @@ defaultConfig {
 }
 ```
 
-### 1.3 Strip unused permissions from Info.plist
+### 1.3 Keep usage strings in Info.plist (counterintuitive — read this)
 
-`mix mob.new` scaffolds permission strings for camera, microphone, and
-several other capabilities that are part of the framework's
-device-capability surface. **If your app doesn't actually use them,
-remove them.** Apple's review team will ask why an offline calculator
-needs camera access; clean Info.plist sails through review unchallenged.
+Your first instinct will be to strip the `NSCameraUsageDescription`,
+`NSMicrophoneUsageDescription`, etc. that `mix mob.new` scaffolds —
+"my offline calculator doesn't use the camera, why declare it?"
 
-Common things to remove if your app doesn't use them:
+**Don't strip them.** Apple's secondary validator (the post-upload
+scanner that emails you) flags ITMS-90683 if any code in the bundle
+references a sensitive-data API and the corresponding usage string is
+missing. The Mob framework's NIFs in `mob_nif.m` reference all of these
+APIs (camera, mic, location, photo library, motion) regardless of
+whether your specific app calls them — Apple's scanner sees the API
+references and demands the strings.
+
+You have two valid paths:
+
+**Path A — keep all the usage strings** (recommended, easiest)
+
+Leave the strings as scaffolded. They only trigger user-visible
+permission prompts when the API is actually *called* at runtime — and
+your app never calls them, so users never see a prompt. From the App
+Store reviewer's perspective the strings are framework-required boilerplate.
+
+If your app legitimately doesn't use a capability, write an honest string
+that says so — App Store reviewers appreciate the clarity:
 
 ```xml
-<!-- Remove if your app doesn't use the camera -->
 <key>NSCameraUsageDescription</key>
-<string>...uses the camera for...</string>
-
-<!-- Remove if your app doesn't record audio -->
+<string>This app does not use the camera. The permission is declared
+because of a framework dependency only.</string>
 <key>NSMicrophoneUsageDescription</key>
-<string>...uses the microphone for...</string>
-
-<!-- Remove if your app doesn't play audio in the background -->
-<key>UIBackgroundModes</key>
-<array>
-    <string>audio</string>
-</array>
-
-<!-- Other usage descriptions — keep only what you actually use -->
+<string>This app does not use the microphone. The permission is declared
+because of a framework dependency only.</string>
 <key>NSLocationWhenInUseUsageDescription</key>
+<string>This app does not use your location. The permission is declared
+because of a framework dependency only.</string>
 <key>NSPhotoLibraryUsageDescription</key>
-<key>NSContactsUsageDescription</key>
+<string>This app does not access your photo library. The permission is
+declared because of a framework dependency only.</string>
+<key>NSMotionUsageDescription</key>
+<string>This app does not use motion sensors. The permission is declared
+because of a framework dependency only.</string>
 ```
+
+**Path B — strip strings AND opt out of the corresponding NIFs** (future)
+
+The clean fix is to compile the unused capability NIFs out of release
+builds via per-feature flags. mob doesn't currently expose this surface,
+but it's planned. When that lands, this section will get a "Path C —
+opt out per capability" subsection and Path A will become "if you don't
+care about the strings."
+
+For everything else — `UIBackgroundModes`, custom URL schemes,
+`UIRequiredDeviceCapabilities` — strip what your app legitimately
+doesn't need. Only the privacy usage strings are subject to the
+ITMS-90683 weirdness.
 
 ### 1.4 Register the App ID at Apple
 
@@ -361,29 +391,61 @@ anything's missing or stale. App Store profiles expire annually; this
 is the command to refresh one. Skip it if you ran it recently and
 nothing's changed.
 
-### 2.2 `mix mob.release`
+### 2.2 Bump `CFBundleVersion` BEFORE every `mix mob.release`
+
+Apple rejects uploads with a `CFBundleVersion` Apple has already seen
+for this app+`CFBundleShortVersionString` combination. Every upload
+needs a fresh integer.
+
+The convention: `CFBundleShortVersionString` is the public semver
+(`1.0.0`) — keep it stable across many builds of one release. Bump
+`CFBundleVersion` (an integer) every time you upload, even for trivial
+re-uploads:
+
+```bash
+# Quick bump from the command line — `git bump version` style
+CURRENT=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" ios/Info.plist)
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $((CURRENT + 1))" ios/Info.plist
+```
+
+If you forget, the upload validator will tell you (`The bundle version
+must be higher than the previously uploaded version`). Cheap to recover
+from but adds a round trip.
+
+### 2.3 `mix mob.release`
 
 Builds a release-signed `.ipa` at `_build/mob_release/<App>.ipa`:
 
-- Compiles BEAMs and copies them into the bundled OTP runtime
-- Builds native sources with `-DMOB_RELEASE` so Erlang distribution
-  + EPMD are dropped from the binary
-- Links the iOS device binary
+- Compiles BEAMs, strips them down to the apps your release actually
+  uses, drops the unused OTP libs (megaco, runtime_tools, erl_interface,
+  os_mon, wx, et, eunit, etc.) from the bundle
+- Removes `.so`/`.a`/standalone executables from the bundle (Apple's
+  one-Mach-O-per-`.app` policy) — the static archives are linked into
+  the main binary instead
+- Builds native sources with `-DMOB_RELEASE` to drop the Erlang
+  distribution surface, EPMD, AND the test harness (whose synthetic
+  touch NIFs use private UIKit selectors that App Store auto-rejects)
+- Synthesizes the full set of `DT*` build-environment plist keys
+  (`DTSDKName`, `DTSDKBuild`, `DTPlatformName`, `DTPlatformVersion`,
+  `DTPlatformBuild`, `DTXcode`, `DTXcodeBuild`, `DTCompiler`,
+  `BuildMachineOSBuild`) plus `MinimumOSVersion`, `UIDeviceFamily`,
+  and `CFBundleSupportedPlatforms`
 - Signs the `.app` with your distribution identity (no `get-task-allow`)
-- Packages as `Payload/<App>.app` zipped into `<App>.ipa`
+- Packages with `ditto -c -k --keepParent --norsrc --noextattr --noqtn`
+  to preserve the `_CodeSignature/CodeResources` symlink and avoid
+  `__MACOSX/`/`._<file>` AppleDouble pollution
 
-Bump `CFBundleVersion` in `ios/Info.plist` between uploads — Apple
-rejects re-uploads with the same build number. Keep
-`CFBundleShortVersionString` (the public version) the same across
-multiple builds of one release.
+The resulting `.ipa` is typically ~45 MB for a basic Mob app (vs ~64 MB
+before the strip-from-bundle pass).
 
-### 2.3 `mix mob.publish`
+### 2.4 `mix mob.publish`
 
 Uploads `_build/mob_release/<App>.ipa` to App Store Connect via
 `xcrun altool --upload-app` with API-key auth.
 
 The upload is silent for several minutes — `altool` doesn't print
-progress unless you pass `--verbose`. To verify it's still alive:
+progress unless you pass `--verbose`. **This is normal**, not a hang.
+To verify it's still alive:
 
 ```bash
 ps aux | grep -E "altool|java" | grep -v grep
@@ -398,10 +460,28 @@ If you want to see real-time progress:
 mix mob.publish --verbose
 ```
 
-After upload Apple processes the build for **5–15 minutes** before it
-appears in App Store Connect → your app → TestFlight tab.
+You'll likely see noise like:
 
-### 2.4 Add testers in TestFlight
+```
+[SSZipArchive] Set attributes failed for directory: ...Info.plist
+[SSZipArchive] Error setting directory file modification date attribute
+```
+
+**Harmless** — Info.plist is a file, not a directory, and altool's
+warning is bogus. Long-standing Apple-side noise.
+
+Successful upload ends with:
+
+```
+UPLOAD SUCCEEDED with no errors
+Delivery UUID: 6a1711f4-2f11-4023-9711-9ddcef583a73
+✓ Upload accepted by App Store Connect
+```
+
+This is **not the same as "your build is in TestFlight"** — see Part 3
+below.
+
+### 2.5 Add testers in TestFlight
 
 App Store Connect → your app → **TestFlight** tab → **Internal Testing**
 group → `+` to add testers by email.
@@ -416,6 +496,63 @@ the build via a public link or by email invite.
 For the first round of TestFlight beta testing, internal is usually
 the fastest path — you and a couple of trusted testers can be added as
 admins on your App Store Connect team.
+
+---
+
+## Part 3 — Two-stage validation
+
+**The single most non-obvious thing about App Store uploads.** Apple
+runs your build through TWO completely separate validators, and
+"upload succeeded" only means you cleared the first one.
+
+```
+mix mob.publish
+   │
+   ▼
+┌─ Stage 1: Upload validator ──────────────────────────────┐
+│ Runs while altool uploads. Catches obvious bundle        │
+│ problems (missing required keys, wrong file structure,   │
+│ disallowed content like .so/.a in the bundle, signature  │
+│ issues). If it fails, altool exits non-zero and prints   │
+│ the errors. mix mob.publish reports a failure.           │
+└──────────────────────────────────────────────────────────┘
+   │ "UPLOAD SUCCEEDED" → mix mob.publish exits 0
+   ▼
+┌─ Apple processes the build (5–15 min) ───────────────────┐
+│ App Store Connect ingests the .ipa, generates assets,    │
+│ runs the secondary validator against the ingested copy.  │
+└──────────────────────────────────────────────────────────┘
+   │
+   ▼
+┌─ Stage 2: Secondary scanner ─────────────────────────────┐
+│ Static-analyses the binary for symbol references         │
+│ (private API usage, missing usage strings for referenced │
+│ APIs), checks DT* keys against an allow-list of accepted │
+│ Xcode/SDK versions, etc. Issues are emailed to your      │
+│ team's primary contact and visible in App Store Connect  │
+│ → app → TestFlight tab → the build's "View Details"      │
+│ link.                                                    │
+└──────────────────────────────────────────────────────────┘
+   │
+   ▼
+Build either appears in TestFlight as "Ready to Test" or shows
+"Missing Compliance" / "Invalid Binary" with errors to fix.
+```
+
+**Practical consequence**: when `mix mob.publish` reports success, the
+real test is what arrives in your inbox 5-15 minutes later. If you
+don't see the build in the TestFlight tab after ~20 minutes, check
+your email for an "App Store Connect" message titled "We noticed one
+or more issues with a recent delivery". Those are stage-2 errors.
+
+The pipeline mob_dev 0.3.30 ships clears all the stage-1 errors and
+the common stage-2 errors (missing usage strings, missing
+`CFBundleSupportedPlatforms`, missing DT* keys, missing
+`UIDeviceFamily`) — your first stage-2 surprise will likely be
+something app-specific, not framework-level.
+
+The full list of stage-2 error codes Apple uses lives in the
+[Troubleshooting](#troubleshooting) section below.
 
 ---
 
@@ -484,99 +621,133 @@ If you closed the API key creation page without downloading the `.p8`,
 the private key is gone — Apple doesn't store it. Go back to the API
 key list, find the row, revoke it, create a fresh one. Costs nothing.
 
----
+### Stage-2 email: `ITMS-90683 Missing purpose string in Info.plist`
 
-## Known limitation: App Store validator rejects the bundle
-
-After `mix mob.publish` succeeds at uploading, Apple's automated
-validator runs and (as of mob 0.5.10) rejects the build with ~17
-errors across four categories:
-
-### Category 1 — Standalone binaries in the bundle (12 errors, code 90171)
+You'll get an email from Apple titled "We noticed one or more issues
+with a recent delivery". Body says:
 
 ```
-The "<App>.app/otp/lib/<otp_lib>/priv/lib/<thing>.so" binary file is not permitted.
-The "<App>.app/otp/lib/<otp_lib>/lib/<thing>.a" binary file is not permitted.
+The Info.plist file for the "<App>.app" bundle should contain a
+NSCameraUsageDescription key with a user-facing purpose string
+explaining clearly and completely why your app needs the data.
 ```
 
-Apple's policy: an iOS App Store bundle can only contain ONE Mach-O
-executable (the main `CFBundleExecutable`). No `.so`, no `.a`, no
-standalone CLI tools.
+Apple's static analyser found a reference to a sensitive-data API
+(camera, microphone, location, photos, motion, contacts, …) in your
+binary and the matching `NS<X>UsageDescription` key isn't present in
+Info.plist.
 
-The current Mob release pipeline copies the entire OTP runtime tree
-into the `.app/otp/` subdirectory, which includes:
+For Mob apps this almost always comes from the framework's NIFs in
+`mob_nif.m`, not your app code. See [Section 1.3](#13-keep-usage-strings-in-infoplist-counterintuitive--read-this).
+**Don't strip usage strings even when your app doesn't use the capability.**
 
-- `asn1rt_nif.so`, `dyntrace.so`, `trace_ip_drv.so`, `trace_file_drv.so`,
-  `megaco_flex_scanner_drv*.so` (loadable NIFs/drivers)
-- `libei.a`, `libei_st.a`, `sqlite3_nif.a` (static libs)
-- `erl_call`, `memsup` (standalone executables)
+The email lists ALL the missing strings, separated into "required to
+fix" (will block the build from TestFlight) and "wanted to make you
+aware of" (warnings — not blocking but worth fixing for App Store
+review later).
 
-There's no entitlement that allows these. The fix is structural:
+Fix → bump `CFBundleVersion` → `mix mob.release` → `mix mob.publish`.
 
-- Switch release builds to use a statically-linked `libbeam.a` (built
-  with `RELEASE_LIBBEAM=yes` in OTP) — single archive containing the
-  BEAM VM + all NIFs baked in, no `.so` files at all
-- Cross-compile third-party NIFs (e.g. `exqlite` for SQLite-backed apps)
-  as `.a` for `aarch64-apple-ios`, link them statically into the main
-  binary
-- Bundle only `.beam` bytecode files (Apple is fine with bytecode in
-  app resources)
-
-The `~/code/beam-ios-test` work in the same author's repos has proven
-this approach works (boot ~64ms on M4 Pro, ~120-180ms estimated on real
-A18 device, 3.5MB binary). Wiring it into mob's release pipeline is
-the framework work needed to clear this category.
-
-### Category 2 — Test-harness uses private UIKit selectors (1 error, code 50)
+### Stage-2: error 90562 — `CFBundleSupportedPlatforms` missing
 
 ```
-The app references non-public selectors:
-_addTouch:forDelayedDelivery:, _clearTouches, _hidEvent,
-_initWithEvent:touches:, _setHIDEvent:, _setLocationInWindow:resetPrevious:, ...
+Invalid Bundle. Info.plist should specify CFBundleSupportedPlatforms
+with an array containing a single platform.
 ```
 
-Mob's synthetic-touch injection NIFs (`tap_xy`, `swipe_xy`, `type_text`)
-in `mob/ios/mob_nif.m` use private UIKit APIs to drive UI from
-Erlang/Elixir for the agent test harness. App Store auto-scans
-binaries for these selector strings and rejects.
+mob_dev 0.3.30+ adds this defensively. Older versions don't —
+upgrade.
 
-The fix: wrap the test-harness NIF implementations in `#if !MOB_RELEASE`
-so they compile out of release builds. The NIF stubs in `mob_nif.erl`
-can stay (they'll just `nif_error` at runtime in release builds, which
-is fine — the test harness isn't supposed to work in release mode
-anyway).
-
-### Category 3 — Info.plist gaps (3 errors, codes 90065/90507/90530)
+### Stage-2: error 90534 — Unsupported SDK or Xcode version
 
 ```
-Invalid MinimumOSVersion. ... is ''.
+Your app was built with an SDK or version of Xcode that isn't supported.
+```
+
+Apple cross-references `DTSDKBuild` + `DTXcodeBuild` in your bundle
+Info.plist against an allow-list of accepted Xcode releases. Two ways
+this hits:
+
+1. Your `DT*` keys are missing or wrong. mob_dev 0.3.30+ synthesizes
+   the full set; older versions don't — upgrade.
+2. Your Xcode itself is too old (or a beta that hasn't been moved to
+   the accepted list yet). Update Xcode to the current release.
+
+### Stage-2: error 90102 — `UIDeviceFamily` missing
+
+```
+The UIDeviceFamily key must be present when requiring a MinimumOSVersion
+of at least 3.2.
+```
+
+mob_dev 0.3.30+ adds this defensively (defaults to `[1]` =
+iPhone-only). For universal apps that also support iPad, set
+`UIDeviceFamily` explicitly in your `ios/Info.plist`:
+
+```xml
+<key>UIDeviceFamily</key>
+<array>
+    <integer>1</integer>
+    <integer>2</integer>
+</array>
+```
+
+### Stage-1: errors 90065 / 90507 / 90530 — Info.plist gaps
+
+```
+Invalid MinimumOSVersion.
 Missing Info.plist value. A value for the key 'DTPlatformName' is required.
 Missing Deployment Target.
 ```
 
-The Mob-template Info.plist doesn't set `MinimumOSVersion` or
-`DTPlatformName`. Easy fix — add them. Both can be templated at
-project-generation time since they don't change per-release.
+mob_dev 0.3.30+ synthesizes these. Older versions don't.
 
-### Category 4 — CodeResources symlink (1 error, code 90071)
+### Stage-1: error 90071 — CodeResources not a symbolic link
 
 ```
 The CodeResources file must be a symbolic link to _CodeSignature/CodeResources.
 ```
 
-The IPA packaging step in `mob.release` uses standard `zip` which
-doesn't preserve the symlink that codesign creates. Switching to
-`ditto -c -k --keepParent --sequesterRsrc` preserves the symlink.
+mob_dev 0.3.30+ uses `ditto` with the right flags; older versions
+used `zip` which flattens the symlink.
 
----
+### Stage-1: error 90171 — `.so` / `.a` / standalone binary in bundle
 
-## Tracking the App Store work
+```
+The "<App>.app/otp/lib/<otp_lib>/priv/lib/<thing>.so" binary file is not
+permitted. Your app cannot contain standalone executables or libraries,
+other than a valid CFBundleExecutable of supported bundles.
+```
 
-The above four issues are tracked separately and will be resolved in
-upcoming mob releases. For now `mix mob.release` produces a valid
-*device-installable* `.ipa` that you can side-load via Xcode (Window →
-Devices and Simulators → drag the `.ipa` onto a connected device) for
-ad-hoc testing.
+Apple's bundle policy: one Mach-O per `.app`. mob_dev 0.3.30+ strips
+all `.so`/`.a`/standalone executables from the bundled OTP tree
+(static archives are linked into the main binary; unused OTP libs
+like megaco/runtime_tools/erl_interface are dropped entirely). Older
+versions copy the OTP tree wholesale and trip this rule.
 
-When the framework work lands, this guide will be updated and the
-"known limitation" section above will move into a changelog note.
+### Stage-1: error 50 — non-public selectors
+
+```
+The app references non-public selectors in Payload/<App>.app/<App>:
+_addTouch:forDelayedDelivery:, _clearTouches, _hidEvent,
+_initWithEvent:touches:, _setHIDEvent:, ...
+```
+
+Mob's test harness uses private UIKit selectors for synthetic touch
+injection. mob 0.5.12+ wraps the harness in `#if !MOB_RELEASE` so it
+compiles out of release builds. mob_dev 0.3.29+ defines `MOB_RELEASE`
+when compiling `mob_nif.m` for release. Both upgrades together clear
+this; either one alone won't.
+
+### "I see no email but the build isn't in TestFlight after 20 minutes"
+
+App Store Connect → your app → **Activity** tab. Pending or rejected
+builds show up here with a status. "Invalid Binary" usually means a
+stage-2 error and the email is on its way (or in spam). "Processing"
+means Apple is still ingesting — wait another 10 minutes.
+
+### "Build appears in TestFlight as `Missing Compliance`"
+
+Click into the build → answer the encryption-export-compliance question
+(most apps qualify for the standard exemption). Not blocking for
+internal testers but blocks external testing.
