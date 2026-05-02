@@ -319,7 +319,14 @@ defmodule MobDev.Release do
 
   # ── release_device.sh ────────────────────────────────────────────────────────
 
-  defp release_device_sh do
+  @doc false
+  # Public for testing — `mob_dev/test/mob_dev/release_script_test.exs`
+  # asserts the shape of the generated script (strip-from-bundle, full
+  # DT* set, ditto packaging, etc.) so accidental regressions of any of
+  # the App Store validator fixes get caught at `mix test` time rather
+  # than in a TestFlight upload round trip.
+  @spec release_device_sh() :: String.t()
+  def release_device_sh do
     ~S"""
     #!/bin/bash
     # ios/release_device.sh — App Store / TestFlight build for Mob (generated
