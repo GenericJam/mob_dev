@@ -4,7 +4,7 @@ defmodule MobDev.MixProject do
   def project do
     [
       app: :mob_dev,
-      version: "0.3.26",
+      version: "0.3.28",
       elixir: "~> 1.19",
       description: "Development tooling for the Mob mobile framework",
       source_url: "https://github.com/genericjam/mob_dev",
@@ -40,7 +40,13 @@ defmodule MobDev.MixProject do
       main: "readme",
       source_url: "https://github.com/genericjam/mob_dev",
       source_url_pattern: "https://github.com/genericjam/mob_dev/blob/main/%{path}#L%{line}",
-      extras: ["README.md": [title: "mob_dev"]],
+      extras: [
+        "README.md": [title: "mob_dev"],
+        "guides/publishing_to_testflight.md": [title: "Publishing to TestFlight (iOS)"]
+      ],
+      groups_for_extras: [
+        Guides: ~r/guides\/.*/
+      ],
       groups_for_modules: [
         "Mix Tasks": ~r/Mix\.Tasks\./,
         Server: ~r/MobDev\.Server/,
