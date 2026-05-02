@@ -1357,37 +1357,69 @@ defmodule MobDev.NativeBuild do
   def narrow_platforms_for_device(platforms, nil), do: platforms
 
   def narrow_platforms_for_device(platforms, device_id) when is_binary(device_id) do
-    if ios_device?(device_id) do
+    narrow_platforms_for_device(platforms, device_id, &MobDev.Discovery.IOS.list_devices/0)
+  end
+
+  @doc """
+  Variant that takes an iOS-discovery function so tests (and other
+  callers that already have the device list in hand) can avoid the
+  network-bound `IOS.list_devices/0` LAN scan.
+
+  The lister is called at most once per invocation; both `ios_device?`
+  and the physical-UDID format fallback consume the same result.
+  """
+  @spec narrow_platforms_for_device([atom()], String.t() | nil, (-> [MobDev.Device.t()])) ::
+          [atom()]
+  def narrow_platforms_for_device(platforms, nil, _lister), do: platforms
+
+  def narrow_platforms_for_device(platforms, device_id, lister)
+      when is_binary(device_id) and is_function(lister, 0) do
+    devices = lister.()
+
+    if ios_device?(device_id, devices) do
       platforms -- [:android]
     else
       platforms -- [:ios]
     end
   end
 
-  # True when `id` matches *any* iOS device (sim or physical) in
-  # `IOS.list_devices/0`. Used to decide whether `--device <id>` narrows
-  # `platforms` to iOS or Android. Accepts the full serial, the
-  # human-friendly `display_id` (e.g. the first 8 chars of a sim UUID
-  # which `mix mob.devices` prints), or — for offline devices that
-  # discovery doesn't return — the format-based fallback in
-  # `ios_physical_udid?/1`.
-  defp ios_device?(id) do
-    devices = MobDev.Discovery.IOS.list_devices()
+  # iOS device UDID format regexes — pre-compiled so we don't pay
+  # `Regex.compile!/1` per call (and avoid OTP 28's "regex re-compiled
+  # at runtime" warning).
+  @ios_udid_long ~r/^[0-9A-Fa-f]{40}$/
+  @ios_udid_short ~r/^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{16}$/
 
+  # True when `id` matches *any* iOS device (sim or physical) in the
+  # given `devices` list, OR matches an offline physical-UDID format.
+  # Used to decide whether `--device <id>` narrows `platforms` to iOS or
+  # Android. Accepts the full serial, the human-friendly `display_id`
+  # (e.g. the first 8 chars of a sim UUID which `mix mob.devices`
+  # prints), or — for offline devices that discovery doesn't return —
+  # the format-based fallback below.
+  defp ios_device?(id, devices) do
     Enum.any?(devices, fn d -> MobDev.Device.match_id?(d, id) end) or
-      ios_physical_udid?(id)
+      ios_physical_udid?(id, devices)
+  end
+
+  # Single-arg form used by build_all/1 — fetches iOS discovery itself
+  # since the caller doesn't already have the list. Tests should use the
+  # 2-arg form below (or call narrow_platforms_for_device/3) to avoid
+  # the network-bound LAN scan.
+  defp ios_physical_udid?(id) do
+    ios_physical_udid?(id, MobDev.Discovery.IOS.list_devices())
   end
 
   # True when `id` is recognised as a connected physical iOS device.
   # Both simulator and physical UDIDs are UUIDs in modern Xcode (the
   # 36-char form), so format-only matching is ambiguous. We resolve by
-  # asking IOS.list_devices/0 for the device type. Falls back to a
-  # format check only when discovery returns nothing — covers the case
-  # where a UDID was passed but the device is offline / not yet
+  # consulting `devices` for the device type. Falls back to a format
+  # check only when discovery returns nothing for that id — covers the
+  # case where a UDID was passed but the device is offline / not yet
   # enumerable, in which case we err on the side of "physical" so the
-  # device build is attempted (40-char and short forms are physical-only).
-  defp ios_physical_udid?(id) do
-    case Enum.find(MobDev.Discovery.IOS.list_devices(), &(&1.serial == id)) do
+  # device build is attempted (40-char and short forms are
+  # physical-only).
+  defp ios_physical_udid?(id, devices) do
+    case Enum.find(devices, &(&1.serial == id)) do
       %MobDev.Device{type: :physical} ->
         true
 
@@ -1395,8 +1427,7 @@ defmodule MobDev.NativeBuild do
         false
 
       nil ->
-        Regex.match?(Regex.compile!("^[0-9A-Fa-f]{40}$"), id) or
-          Regex.match?(Regex.compile!("^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{16}$"), id)
+        Regex.match?(@ios_udid_long, id) or Regex.match?(@ios_udid_short, id)
     end
   end
 

@@ -180,18 +180,23 @@ defmodule MobDev.NativeBuildTest do
   # connected when the tests run. The format-only fallback in
   # `ios_physical_udid?/1` covers the discovery-empty case for these.
 
-  describe "narrow_platforms_for_device/2" do
+  describe "narrow_platforms_for_device/2 and /3" do
+    # Tests inject an empty discovery list so the format-only fallback
+    # paths (ios_physical_udid?/1) are exercised without the LAN EPMD
+    # scan in IOS.list_devices/0 — that scan can take 60s+ in busy
+    # network environments and dominates the test runtime.
+
     test "returns platforms unchanged when device_id is nil" do
-      assert NativeBuild.narrow_platforms_for_device([:android, :ios], nil) ==
+      assert NativeBuild.narrow_platforms_for_device([:android, :ios], nil, no_devices()) ==
                [:android, :ios]
     end
 
     test "drops Android when device id is a 40-char physical iOS UDID" do
       # Old-style iPhone UDID (pre-Apple Silicon). Format-check fallback
-      # in ios_physical_udid?/1 picks this up even when not connected.
+      # picks this up even when not in the discovery list.
       udid = "abcdef0123456789abcdef0123456789abcdef01"
 
-      assert NativeBuild.narrow_platforms_for_device([:android, :ios], udid) ==
+      assert NativeBuild.narrow_platforms_for_device([:android, :ios], udid, no_devices()) ==
                [:ios]
     end
 
@@ -199,22 +204,31 @@ defmodule MobDev.NativeBuildTest do
       # Modern Apple Silicon iPhone UDID format.
       udid = "00008110-001E1C3A34F8401E"
 
-      assert NativeBuild.narrow_platforms_for_device([:android, :ios], udid) ==
+      assert NativeBuild.narrow_platforms_for_device([:android, :ios], udid, no_devices()) ==
                [:ios]
     end
 
     test "drops iOS when device id is an Android serial" do
       # Real Moto E serial form — letters + digits, no UUID structure.
-      assert NativeBuild.narrow_platforms_for_device([:android, :ios], "ZY22CRLMWK") ==
-               [:android]
+      assert NativeBuild.narrow_platforms_for_device(
+               [:android, :ios],
+               "ZY22CRLMWK",
+               no_devices()
+             ) == [:android]
 
-      assert NativeBuild.narrow_platforms_for_device([:android, :ios], "emulator-5554") ==
-               [:android]
+      assert NativeBuild.narrow_platforms_for_device(
+               [:android, :ios],
+               "emulator-5554",
+               no_devices()
+             ) == [:android]
     end
 
     test "drops iOS when device id is an Android adb-over-WiFi address" do
-      assert NativeBuild.narrow_platforms_for_device([:android, :ios], "10.0.0.17:5555") ==
-               [:android]
+      assert NativeBuild.narrow_platforms_for_device(
+               [:android, :ios],
+               "10.0.0.17:5555",
+               no_devices()
+             ) == [:android]
     end
 
     test "returns empty list when device id contradicts explicit platform" do
@@ -224,21 +238,84 @@ defmodule MobDev.NativeBuildTest do
       # behaviour: don't silently flip to iOS when the user explicitly
       # asked for Android only.
       udid = "00008110-001E1C3A34F8401E"
-      assert NativeBuild.narrow_platforms_for_device([:android], udid) == []
+      assert NativeBuild.narrow_platforms_for_device([:android], udid, no_devices()) == []
 
       # Mirror case: --ios + Android serial → iOS gets stripped, empty.
-      assert NativeBuild.narrow_platforms_for_device([:ios], "ZY22CRLMWK") == []
+      assert NativeBuild.narrow_platforms_for_device([:ios], "ZY22CRLMWK", no_devices()) == []
     end
 
     test "preserves order of remaining platforms when narrowing" do
       # The list-subtraction implementation preserves the order of the
       # remaining elements. Pin that so future refactors that reach for
       # MapSet/Enum-based dedup don't accidentally re-order the outputs.
-      assert NativeBuild.narrow_platforms_for_device([:ios, :android], "ZY22CRLMWK") ==
-               [:android]
+      assert NativeBuild.narrow_platforms_for_device(
+               [:ios, :android],
+               "ZY22CRLMWK",
+               no_devices()
+             ) == [:android]
 
-      assert NativeBuild.narrow_platforms_for_device([:android, :ios], "ZY22CRLMWK") ==
-               [:android]
+      assert NativeBuild.narrow_platforms_for_device(
+               [:android, :ios],
+               "ZY22CRLMWK",
+               no_devices()
+             ) == [:android]
+    end
+
+    test "discovery hit on a sim UDID drops Android (even when format is ambiguous)" do
+      # Simulator UDIDs use the same 36-char UUID format as physical
+      # devices, so we *must* consult discovery to disambiguate. With
+      # the device present in discovery as type :simulator, the iOS
+      # branch is taken via Device.match_id?/2 — not the physical-UDID
+      # format fallback (which would also return true here, but for the
+      # wrong reason).
+      sim_udid = "12345678-ABCD-1234-ABCD-1234567890AB"
+
+      sim = %MobDev.Device{
+        platform: :ios,
+        type: :simulator,
+        serial: sim_udid,
+        name: "iPhone 17",
+        status: :discovered
+      }
+
+      assert NativeBuild.narrow_platforms_for_device(
+               [:android, :ios],
+               sim_udid,
+               fn -> [sim] end
+             ) == [:ios]
+    end
+
+    test "discovery hit by display_id (8-char prefix) still drops Android" do
+      # `mix mob.devices` prints a short display id (first 8 chars of
+      # the sim UDID). Users sometimes paste that to --device. Device.match_id?/2
+      # accepts it, so the discovery branch fires.
+      sim_udid = "12345678-ABCD-1234-ABCD-1234567890AB"
+
+      sim = %MobDev.Device{
+        platform: :ios,
+        type: :simulator,
+        serial: sim_udid,
+        name: "iPhone 17",
+        status: :discovered
+      }
+
+      assert NativeBuild.narrow_platforms_for_device(
+               [:android, :ios],
+               "12345678",
+               fn -> [sim] end
+             ) == [:ios]
+    end
+
+    test "/2 form delegates to /3 with the real iOS discovery (smoke check)" do
+      # Don't exercise the network — just confirm the no-op nil branch
+      # still works through the public 2-arity entry that real callers
+      # use (mix mob.deploy, native_build.build_all).
+      assert NativeBuild.narrow_platforms_for_device([:android, :ios], nil) ==
+               [:android, :ios]
     end
   end
+
+  # Stub iOS lister: returns no devices so tests exercise the
+  # format-only fallback without hitting `MobDev.Discovery.IOS.list_devices/0`.
+  defp no_devices, do: fn -> [] end
 end
