@@ -658,6 +658,12 @@ defmodule MobDev.Release do
     /usr/libexec/PlistBuddy -c "Add :UIDeviceFamily array" "$APP/Info.plist" 2>/dev/null \
         && /usr/libexec/PlistBuddy -c "Add :UIDeviceFamily:0 integer 1" "$APP/Info.plist"
 
+    # CFBundleSupportedPlatforms: array with one string identifying the
+    # platform the binary was built for. "iPhoneOS" for device builds,
+    # "iPhoneSimulator" for sim. Apple validator error 90562 if missing.
+    /usr/libexec/PlistBuddy -c "Add :CFBundleSupportedPlatforms array" "$APP/Info.plist" 2>/dev/null \
+        && /usr/libexec/PlistBuddy -c "Add :CFBundleSupportedPlatforms:0 string iPhoneOS" "$APP/Info.plist"
+
     if [ -d "ios/Assets.xcassets/AppIcon.appiconset" ]; then
         ACTOOL_PLIST=$(mktemp /tmp/actool_XXXXXX.plist)
         xcrun actool ios/Assets.xcassets \
