@@ -376,43 +376,49 @@ That's the one-time setup. Everything below is the per-release flow.
 
 ## Part 2 — Per-release flow
 
-Once Part 1 is done, every subsequent release is three commands:
+Once Part 1 is done, every subsequent release is **one command**:
 
 ```bash
-mix mob.provision --distribution   # only when profile expires (annual)
-mix mob.release                    # builds the .ipa
-mix mob.publish                    # uploads to App Store Connect
+mix mob.republish --ios     # bump build number, mob.release, mob.publish --ios
 ```
 
-### 2.1 `mix mob.provision --distribution`
+That wraps the three steps below. Use the wrapper for the common path;
+drop down to the individual commands if you need to troubleshoot one
+in isolation, or you've bumped the build number some other way and
+just want to rebuild + upload.
+
+### 2.1 (Optional) `mix mob.provision --distribution`
 
 Idempotent — re-runs against existing artifacts and tells you if
 anything's missing or stale. App Store profiles expire annually; this
 is the command to refresh one. Skip it if you ran it recently and
-nothing's changed.
+nothing's changed. `mix mob.republish` does NOT re-run this — bake it
+into your annual calendar.
 
-### 2.2 Bump `CFBundleVersion` BEFORE every `mix mob.release`
+### 2.2 `mix mob.republish --ios` (the wrapper)
 
-Apple rejects uploads with a `CFBundleVersion` Apple has already seen
-for this app+`CFBundleShortVersionString` combination. Every upload
-needs a fresh integer.
+What it does, exactly:
 
-The convention: `CFBundleShortVersionString` is the public semver
-(`1.0.0`) — keep it stable across many builds of one release. Bump
-`CFBundleVersion` (an integer) every time you upload, even for trivial
-re-uploads:
+1. **Bump `CFBundleVersion`** — reads the current value from
+   `ios/Info.plist`, integer-bumps by 1, writes back. Refuses if the
+   current value isn't a clean integer (e.g. someone wrote `"1.0"` —
+   that's `CFBundleShortVersionString`'s job, not `CFBundleVersion`'s).
+2. **`mix mob.release`** — builds the `.ipa`. See section 2.3 for what
+   happens here.
+3. **`mix mob.publish --ios`** — uploads via `xcrun altool`. See
+   section 2.4 for what happens here.
 
-```bash
-# Quick bump from the command line — `git bump version` style
-CURRENT=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" ios/Info.plist)
-/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $((CURRENT + 1))" ios/Info.plist
-```
+Flags:
 
-If you forget, the upload validator will tell you (`The bundle version
-must be higher than the previously uploaded version`). Cheap to recover
-from but adds a round trip.
+- `--ios` — required. Mob is platform-agnostic; you must pick.
+- `--android` — errors with "not yet implemented" (Android publish
+  pipeline is on the roadmap).
+- `--no-bump` — skip step 1 (Apple will reject the same build number,
+  so this is mostly useful for testing the pipeline itself).
+- `--verbose` — passes through to `mix mob.publish` to show altool's
+  per-chunk upload progress.
 
-### 2.3 `mix mob.release`
+### 2.3 `mix mob.release` (manual equivalent of step 2 of `mix mob.republish --ios`)
 
 Builds a release-signed `.ipa` at `_build/mob_release/<App>.ipa`:
 
@@ -438,10 +444,14 @@ Builds a release-signed `.ipa` at `_build/mob_release/<App>.ipa`:
 The resulting `.ipa` is typically ~45 MB for a basic Mob app (vs ~64 MB
 before the strip-from-bundle pass).
 
-### 2.4 `mix mob.publish`
+### 2.4 `mix mob.publish --ios` (manual equivalent of step 3 of `mix mob.republish --ios`)
 
 Uploads `_build/mob_release/<App>.ipa` to App Store Connect via
 `xcrun altool --upload-app` with API-key auth.
+
+Platform flag is required (`--ios` or `--android`) — Mob refuses to
+default to either side so it's obvious from the command which store
+you're hitting. `--android` errors with "not yet implemented".
 
 The upload is silent for several minutes — `altool` doesn't print
 progress unless you pass `--verbose`. **This is normal**, not a hang.
@@ -457,7 +467,7 @@ engine). CPU and TIME columns climbing means it's working.
 If you want to see real-time progress:
 
 ```bash
-mix mob.publish --verbose
+mix mob.publish --ios --verbose
 ```
 
 You'll likely see noise like:
@@ -481,7 +491,44 @@ Delivery UUID: 6a1711f4-2f11-4023-9711-9ddcef583a73
 This is **not the same as "your build is in TestFlight"** — see Part 3
 below.
 
-### 2.5 Add testers in TestFlight
+### 2.5 If the wrapper isn't working — the manual three-step
+
+If `mix mob.republish` fails partway and you need to recover, or you'd
+rather run each step yourself, here's the long form. Each command is
+exactly what `mix mob.republish --ios` runs internally:
+
+```bash
+# 1. Bump the build number (Apple rejects re-uploads of the same number).
+#    Reads CFBundleVersion, integer-bumps by 1, writes back.
+CURRENT=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" ios/Info.plist)
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $((CURRENT + 1))" ios/Info.plist
+
+# 2. Build the IPA.
+mix mob.release
+
+# 3. Upload to App Store Connect.
+mix mob.publish --ios
+```
+
+The bump is a separate first step intentionally — the build number is
+baked into the binary at compile time, not added later. If you skip
+the bump and go straight to `mix mob.release`, the resulting `.ipa`
+will have the SAME build number as the previous one and Apple will
+reject the upload at validation time.
+
+Common recovery scenarios:
+
+- **`mix mob.release` failed** — fix the build error, then run `mix
+  mob.release && mix mob.publish --ios`. Don't bump again — the bump
+  already happened.
+- **`mix mob.publish --ios` failed mid-upload** — the bump is
+  "consumed" from Apple's POV (they've seen that build number now,
+  even if upload didn't complete). Bump again then re-publish:
+  `mix mob.republish --ios`.
+- **You bumped manually and want to re-build with the new number** —
+  `mix mob.republish --ios --no-bump` skips the bump step.
+
+### 2.6 Add testers in TestFlight
 
 App Store Connect → your app → **TestFlight** tab → **Internal Testing**
 group → `+` to add testers by email.
