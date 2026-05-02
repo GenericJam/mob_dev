@@ -21,6 +21,16 @@ mix test              # run all tests
 mix test --watch      # (with mix_test_watch dep, if added)
 ```
 
+## Pre-commit checklist
+
+Before committing changes, run **all three** in this order:
+
+```bash
+mix test            # full suite must pass (call out any pre-existing flake explicitly)
+mix format          # apply Elixir formatting
+mix credo --strict  # address new issues; pre-existing ones are tracked separately
+```
+
 ## What to test
 
 **Always testable (pure functions, no hardware):**

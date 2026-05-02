@@ -252,7 +252,15 @@ defmodule MobDev.Release do
 
       case {uuid, app_id, team} do
         {u, a, t} when is_binary(u) and is_binary(a) and is_binary(t) ->
-          [%{uuid: u, app_id: a, team_id: t, provisioned_devices?: pd, provisions_all_devices?: pad}]
+          [
+            %{
+              uuid: u,
+              app_id: a,
+              team_id: t,
+              provisioned_devices?: pd,
+              provisions_all_devices?: pad
+            }
+          ]
 
         _ ->
           []
@@ -305,8 +313,7 @@ defmodule MobDev.Release do
     if System.find_executable("xcrun") do
       :ok
     else
-      {:error,
-       "xcrun not found on PATH — install Xcode and run `xcode-select --install`."}
+      {:error, "xcrun not found on PATH — install Xcode and run `xcode-select --install`."}
     end
   end
 

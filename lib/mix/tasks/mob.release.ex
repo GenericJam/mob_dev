@@ -72,9 +72,14 @@ defmodule Mix.Tasks.Mob.Release do
     case File.stat(path) do
       {:ok, %{size: bytes}} ->
         cond do
-          bytes >= 1024 * 1024 -> :io_lib.format("~.1fM", [bytes / (1024 * 1024)]) |> List.flatten()
-          bytes >= 1024 -> :io_lib.format("~.1fK", [bytes / 1024]) |> List.flatten()
-          true -> "#{bytes}B"
+          bytes >= 1024 * 1024 ->
+            :io_lib.format("~.1fM", [bytes / (1024 * 1024)]) |> List.flatten()
+
+          bytes >= 1024 ->
+            :io_lib.format("~.1fK", [bytes / 1024]) |> List.flatten()
+
+          true ->
+            "#{bytes}B"
         end
         |> to_string()
 

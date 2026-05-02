@@ -82,7 +82,9 @@ defmodule Mix.Tasks.Mob.Icon do
     Mix.shell().info("  Android: android/app/src/main/res/mipmap-*/ic_launcher.png")
 
     if opts[:adaptive] do
-      Mix.shell().info("  Android (adaptive): mipmap-anydpi-v26/, ic_launcher_foreground.png, values/ic_launcher_background.xml")
+      Mix.shell().info(
+        "  Android (adaptive): mipmap-anydpi-v26/, ic_launcher_foreground.png, values/ic_launcher_background.xml"
+      )
     end
 
     Mix.shell().info("  iOS:     ios/Assets.xcassets/AppIcon.appiconset/")

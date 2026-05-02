@@ -765,7 +765,6 @@ defmodule Mix.Tasks.Mob.Provision do
   defp macos?, do: match?({:unix, :darwin}, :os.type())
   defp green, do: IO.ANSI.green()
   defp yellow, do: IO.ANSI.yellow()
-  defp red, do: IO.ANSI.red()
   defp cyan, do: IO.ANSI.cyan()
   defp bright, do: IO.ANSI.bright()
   defp faint, do: IO.ANSI.faint()
