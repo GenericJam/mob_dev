@@ -1,4 +1,6 @@
 defmodule MobDev.NativeBuild do
+  alias MobDev.Release
+
   @moduledoc """
   Builds native binaries (APK for Android, .app bundle for iOS simulator)
   for the current Mob project.
@@ -674,11 +676,23 @@ defmodule MobDev.NativeBuild do
 
     all_profiles =
       Enum.flat_map(profile_dirs, &Path.wildcard(Path.join(&1, "*.mobileprovision")))
-      |> Enum.flat_map(&parse_mobileprovision/1)
+      |> Enum.flat_map(&Release.parse_mobileprovision/1)
+
+    # `mix mob.deploy --native` is for installing dev builds on registered
+    # test devices (via xcrun devicectl). devicectl rejects App Store / Beta
+    # profiles with "Attempted to install a Beta profile without the proper
+    # entitlement" — so filter to Development profiles only:
+    #   - Development:  provisioned_devices? = true,  provisions_all_devices? = false
+    #   - Ad Hoc:       provisioned_devices? = true,  provisions_all_devices? = false (signed
+    #                   with Distribution cert; rare for our flow)
+    #   - App Store:    provisioned_devices? = false, provisions_all_devices? = false
+    #   - Enterprise:   provisioned_devices? = false, provisions_all_devices? = true
+    # We require provisioned_devices? = true. App Store profiles fall through to release.ex.
+    dev_profiles = Enum.filter(all_profiles, & &1.provisioned_devices?)
 
     # Prefer exact bundle ID match; fall back to wildcard profiles (app_id "TEAMID.*")
     exact_profiles =
-      Enum.filter(all_profiles, fn {_u, app_id, _team} ->
+      Enum.filter(dev_profiles, fn %{app_id: app_id} ->
         String.ends_with?(app_id, ".#{bundle_id}")
       end)
 
@@ -686,40 +700,26 @@ defmodule MobDev.NativeBuild do
       if exact_profiles != [] do
         exact_profiles
       else
-        Enum.filter(all_profiles, fn {_u, app_id, _team} ->
+        Enum.filter(dev_profiles, fn %{app_id: app_id} ->
           String.ends_with?(app_id, ".*")
         end)
       end
 
     candidates =
       if is_binary(uuid) do
-        Enum.filter(profiles, fn {u, _, _} -> u == uuid end)
+        Enum.filter(profiles, &(&1.uuid == uuid))
       else
         profiles
       end
 
     case candidates do
       [] ->
-        {:error,
-         """
-         No provisioning profile found for bundle ID '#{bundle_id}'.
+        {:error, no_dev_profile_message(bundle_id, all_profiles)}
 
-         One-time setup (only needed once per machine):
-         1. Open Xcode
-         2. Xcode → Settings → Accounts → add your Apple ID if not already listed
-         3. Select your team → click "Download Manual Profiles"
-         4. Close Xcode — you won't need to open it again
-
-         After that, `mix mob.deploy --native` will find the profile automatically.
-
-         If the bundle ID is not yet registered in your developer account:
-             open https://developer.apple.com/account/resources/identifiers/list
-         """}
-
-      [{found_uuid, app_id, team}] ->
+      [%{uuid: found_uuid, app_id: app_id, team_id: team}] ->
         unless is_binary(uuid) do
           IO.puts(
-            "  #{IO.ANSI.cyan()}Auto-detected provisioning profile: #{found_uuid} (team #{team})#{IO.ANSI.reset()}"
+            "  #{IO.ANSI.cyan()}Auto-detected Development profile: #{found_uuid} (team #{team})#{IO.ANSI.reset()}"
           )
         end
 
@@ -732,47 +732,62 @@ defmodule MobDev.NativeBuild do
         {:ok, {found_uuid, team}}
 
       many ->
-        choices = Enum.map_join(many, "\n", fn {u, app_id, _} -> "    #{u}  (#{app_id})" end)
+        choices = Enum.map_join(many, "\n", fn %{uuid: u, app_id: a} -> "    #{u}  (#{a})" end)
 
         {:error,
          """
-         Multiple provisioning profiles match '#{bundle_id}' — add ios_profile_uuid to mob.exs:
+         Multiple Development profiles match '#{bundle_id}' — add ios_profile_uuid to mob.exs:
 
              config :mob_dev, ios_profile_uuid: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 
-         Matching profiles:
+         Matching Development profiles:
          #{choices}
          """}
     end
   end
 
-  # Parses a .mobileprovision file (DER-wrapped plist) and returns [{uuid, app_id, team_id}].
-  # The plist XML is embedded as plain text inside the DER envelope.
-  defp parse_mobileprovision(path) do
-    with {:ok, data} <- File.read(path),
-         {s, _} <- :binary.match(data, "<?xml"),
-         {e, len} <- :binary.match(data, "</plist>") do
-      xml = binary_part(data, s, e - s + len)
-      uuid_match = Regex.run(Regex.compile!("<key>UUID</key>\\s*<string>([^<]+)</string>"), xml)
+  # Distinguish "no profiles at all" from "have App Store profile but no Development one".
+  # The latter is the conflict case we hit after setting up TestFlight publishing —
+  # the user has a working App Store profile but `mob.deploy` needs a Development one.
+  defp no_dev_profile_message(bundle_id, all_profiles) do
+    has_app_store_profile? =
+      Enum.any?(all_profiles, fn %{app_id: app_id} = p ->
+        not p.provisioned_devices? and not p.provisions_all_devices? and
+          String.ends_with?(app_id, ".#{bundle_id}")
+      end)
 
-      bundle_match =
-        Regex.run(
-          Regex.compile!("<key>application-identifier</key>\\s*<string>([^<]+)</string>"),
-          xml
-        )
+    if has_app_store_profile? do
+      """
+      No Development profile found for bundle ID '#{bundle_id}', but an App Store
+      profile exists. `mix mob.deploy --native` needs a Development profile —
+      App Store profiles can only be installed via TestFlight / App Store, not via
+      xcrun devicectl.
 
-      team_match =
-        Regex.run(
-          Regex.compile!("<key>TeamIdentifier</key>\\s*<array>\\s*<string>([^<]+)</string>"),
-          xml
-        )
+      To get one (one-time):
+        1. Open https://developer.apple.com/account/resources/profiles/list
+        2. Click + → iOS App Development → choose '#{bundle_id}' → select your dev cert
+           and the device(s) you want to install on → Generate
+        3. Open Xcode → Settings → Accounts → select your team → "Download Manual Profiles"
+        4. Re-run `mix mob.deploy --native`
 
-      case {uuid_match, bundle_match, team_match} do
-        {[_, u], [_, b], [_, t]} -> [{String.trim(u), String.trim(b), String.trim(t)}]
-        _ -> []
-      end
+      Now your machine has both profiles. mob_dev picks Development for `mob.deploy`
+      and App Store for `mob.release` automatically.
+      """
     else
-      _ -> []
+      """
+      No provisioning profile found for bundle ID '#{bundle_id}'.
+
+      One-time setup (only needed once per machine):
+      1. Open Xcode
+      2. Xcode → Settings → Accounts → add your Apple ID if not already listed
+      3. Select your team → click "Download Manual Profiles"
+      4. Close Xcode — you won't need to open it again
+
+      After that, `mix mob.deploy --native` will find the profile automatically.
+
+      If the bundle ID is not yet registered in your developer account:
+          open https://developer.apple.com/account/resources/identifiers/list
+      """
     end
   end
 
