@@ -1,17 +1,20 @@
 defmodule Mix.Tasks.Mob.Publish do
   use Mix.Task
 
-  @shortdoc "Upload a release .ipa to App Store Connect / TestFlight"
+  @shortdoc "Upload a release artifact to a platform store (--ios | --android)"
 
   @moduledoc """
-  Uploads a release-signed `.ipa` to App Store Connect using `xcrun altool`
-  with App Store Connect API key authentication. The build then appears in
-  TestFlight after Apple finishes processing (typically 5-15 minutes).
+  Uploads a release-signed artifact to the platform's app store.
 
-      mix mob.publish                       # uploads _build/mob_release/<App>.ipa
-      mix mob.publish path/to/Foo.ipa       # uploads a specific .ipa
+      mix mob.publish --ios                       # uploads _build/mob_release/<App>.ipa
+      mix mob.publish --ios path/to/Foo.ipa       # uploads a specific .ipa
+      mix mob.publish --android                   # (not yet implemented)
 
-  ## Prerequisites
+  Platform flag is **required** — Mob is intentionally platform-agnostic
+  and refuses to default to either side. Pick `--ios` or `--android`
+  explicitly so it's obvious from the command which store you're hitting.
+
+  ## --ios prerequisites
 
     1. App Store Connect API key (.p8 file). Create one at
        https://appstoreconnect.apple.com/access/api with App Manager role.
@@ -27,7 +30,7 @@ defmodule Mix.Tasks.Mob.Publish do
                key_path:  "~/.appstoreconnect/AuthKey_ABC123XYZ4.p8"
              ]
 
-  ## What it does
+  ## What --ios does
 
   Runs `xcrun altool --upload-app` with API-key auth. altool validates the
   IPA, uploads it, and returns when Apple has accepted the build for
@@ -35,15 +38,72 @@ defmodule Mix.Tasks.Mob.Publish do
   appears in TestFlight.
   """
 
-  @switches [verbose: :boolean]
+  @switches [verbose: :boolean, ios: :boolean, android: :boolean]
 
   @impl Mix.Task
   def run(argv) do
     {opts, args, _} = OptionParser.parse(argv, strict: @switches)
 
+    case pick_platform(opts) do
+      :ios -> publish_ios(opts, args)
+      :android -> raise_android_not_implemented()
+    end
+  end
+
+  # Platform selection — explicit-only. `mix mob.publish` with no flag
+  # is always wrong; `mix mob.publish --ios --android` is contradictory.
+  defp pick_platform(opts) do
+    case {opts[:ios], opts[:android]} do
+      {true, true} ->
+        Mix.raise(
+          "Pass exactly one of --ios or --android, not both. Each store has " <>
+            "a separate validator and credential set; one publish at a time."
+        )
+
+      {true, _} ->
+        :ios
+
+      {_, true} ->
+        :android
+
+      _ ->
+        Mix.raise("""
+        mix mob.publish requires --ios or --android.
+
+        Mob is platform-agnostic by design — neither side is the default.
+        Pick the store you want to publish to:
+
+            mix mob.publish --ios
+            mix mob.publish --android
+
+        Or use `mix mob.republish --ios` to bump the build number,
+        rebuild, and upload in one shot.
+        """)
+    end
+  end
+
+  defp raise_android_not_implemented do
+    Mix.raise("""
+    --android publish is not yet implemented in mob_dev.
+
+    For now, build your release .aab manually and upload via the Google
+    Play Console (https://play.google.com/console/u/0/developers/) or
+    fastlane supply. The mob.exs config block for Play Store credentials
+    will follow when this lands.
+
+    Track this on the Mob roadmap.
+    """)
+  end
+
+  # ── --ios path (existing behavior) ──────────────────────────────────────────
+
+  defp publish_ios(opts, args) do
     case :os.type() do
-      {:unix, :darwin} -> :ok
-      _ -> Mix.raise("mix mob.publish is only supported on macOS (xcrun altool is required).")
+      {:unix, :darwin} ->
+        :ok
+
+      _ ->
+        Mix.raise("mix mob.publish --ios is only supported on macOS (xcrun altool is required).")
     end
 
     unless System.find_executable("xcrun") do
