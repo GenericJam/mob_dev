@@ -1398,11 +1398,32 @@ defmodule MobDev.NativeBuild do
     end
   end
 
-  # iOS device UDID format regexes — pre-compiled so we don't pay
-  # `Regex.compile!/1` per call (and avoid OTP 28's "regex re-compiled
-  # at runtime" warning).
-  @ios_udid_long ~r/^[0-9A-Fa-f]{40}$/
-  @ios_udid_short ~r/^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{16}$/
+  # iOS device UDID matchers — string-based instead of regex so the check
+  # works across BEAM/OTP versions (OTP 28 won't reuse precompiled regexes
+  # stored in module attributes — `:re.import/1` is undefined or private).
+  defp matches_ios_udid_long?(id) when is_binary(id),
+    do: byte_size(id) == 40 and all_hex?(id)
+
+  defp matches_ios_udid_long?(_), do: false
+
+  defp matches_ios_udid_short?(id) when is_binary(id) and byte_size(id) == 25 do
+    case String.split(id, "-", parts: 2) do
+      [a, b] -> byte_size(a) == 8 and all_hex?(a) and byte_size(b) == 16 and all_hex?(b)
+      _ -> false
+    end
+  end
+
+  defp matches_ios_udid_short?(_), do: false
+
+  defp all_hex?(s) when is_binary(s), do: s |> String.to_charlist() |> Enum.all?(&hex?/1)
+
+  defp hex?(c)
+       when (c >= ?0 and c <= ?9) or
+              (c >= ?a and c <= ?f) or
+              (c >= ?A and c <= ?F),
+       do: true
+
+  defp hex?(_), do: false
 
   # True when `id` matches *any* iOS device (sim or physical) in the
   # given `devices` list, OR matches an offline physical-UDID format.
@@ -1442,7 +1463,7 @@ defmodule MobDev.NativeBuild do
         false
 
       nil ->
-        Regex.match?(@ios_udid_long, id) or Regex.match?(@ios_udid_short, id)
+        matches_ios_udid_long?(id) or matches_ios_udid_short?(id)
     end
   end
 
