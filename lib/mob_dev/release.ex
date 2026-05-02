@@ -546,11 +546,14 @@ defmodule MobDev.Release do
         "$MOB_DIR/ios/MobRootView.swift" \
         -c -o "$BUILD_DIR/swift_mob.o"
 
+    # MOB_RELEASE on mob_nif.m strips the test harness (synthetic-input
+    # NIFs that use private UIKit selectors — App Store auto-rejects).
     $CC -fobjc-arc -fmodules $IFLAGS \
-        -I "$BUILD_DIR" -DSTATIC_ERLANG_NIF \
+        -I "$BUILD_DIR" -DSTATIC_ERLANG_NIF -DMOB_RELEASE \
         -c "$MOB_DIR/ios/mob_nif.m" -o "$BUILD_DIR/mob_nif.o"
 
-    # MOB_RELEASE: drops -name/-setcookie/-kernel-dist BEAM args + EPMD thread.
+    # MOB_RELEASE on mob_beam.m drops -name/-setcookie/-kernel-dist BEAM
+    # args + EPMD thread (no Erlang distribution surface in shipped apps).
     $CC -fobjc-arc -fmodules $IFLAGS \
         -DMOB_BUNDLE_OTP \
         -DMOB_RELEASE \
@@ -601,6 +604,60 @@ defmodule MobDev.Release do
     /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable $APP_NAME"   "$APP/Info.plist"
     /usr/libexec/PlistBuddy -c "Set :CFBundleName $APP_NAME"         "$APP/Info.plist"
 
+    # Apple's App Store validator requires MinimumOSVersion and DTPlatformName
+    # in the bundle Info.plist (codes 90065/90507/90530). Both are derived
+    # from the build target — set them defensively here so any app gets
+    # them right without needing to remember to add them by hand.
+    # `Add` errors if the key already exists; fall through to `Set` for the
+    # idempotent case.
+    /usr/libexec/PlistBuddy -c "Add :MinimumOSVersion string 17.0" "$APP/Info.plist" 2>/dev/null \
+        || /usr/libexec/PlistBuddy -c "Set :MinimumOSVersion 17.0" "$APP/Info.plist"
+    /usr/libexec/PlistBuddy -c "Add :DTPlatformName string iphoneos" "$APP/Info.plist" 2>/dev/null \
+        || /usr/libexec/PlistBuddy -c "Set :DTPlatformName iphoneos" "$APP/Info.plist"
+
+    # The DT* keys ("Development Tools") record what built the bundle.
+    # App Store Connect's validator (error 90534) cross-references
+    # DTSDKBuild + DTXcodeBuild against an allow-list of accepted Xcode
+    # release versions. Without them the upload is rejected as "built
+    # with an unsupported SDK or Xcode version" even when Xcode is current.
+    SDK_VERSION=$(xcrun --sdk iphoneos --show-sdk-version)
+    SDK_BUILD=$(xcrun --sdk iphoneos --show-sdk-build-version)
+    XCODE_RAW=$(xcodebuild -version | head -1 | awk '{print $2}')
+    XCODE_BUILD=$(xcodebuild -version | sed -n '2p' | awk '{print $3}')
+    XCODE_MAJOR=$(echo "$XCODE_RAW" | cut -d. -f1)
+    XCODE_MINOR=$(echo "$XCODE_RAW" | cut -d. -f2)
+    [ -z "$XCODE_MINOR" ] && XCODE_MINOR=0
+    XCODE_PATCH=$(echo "$XCODE_RAW" | cut -d. -f3)
+    [ -z "$XCODE_PATCH" ] && XCODE_PATCH=0
+    # DTXcode encoding: e.g. "26.4" → "2640" (major × 1000 + minor × 10 +
+    # patch). Same scheme Xcode itself stamps into bundles. Computed via
+    # arithmetic so the result is always 4 digits regardless of how the
+    # version components were entered.
+    # Apple's encoding (per their IPA validator): Xcode 16.0 → 1600,
+    # 16.4 → 1640, 26.4 → 2640. Always 4 digits while major is 2-digit.
+    DTXCODE=$(( XCODE_MAJOR * 100 + XCODE_MINOR * 10 + XCODE_PATCH ))
+
+    for kv in \
+        "DTSDKName=iphoneos${SDK_VERSION}" \
+        "DTSDKBuild=${SDK_BUILD}" \
+        "DTPlatformVersion=${SDK_VERSION}" \
+        "DTPlatformBuild=${SDK_BUILD}" \
+        "DTXcode=${DTXCODE}" \
+        "DTXcodeBuild=${XCODE_BUILD}" \
+        "DTCompiler=com.apple.compilers.llvm.clang.1_0" \
+        "BuildMachineOSBuild=$(sw_vers -buildVersion)"; do
+        K="${kv%%=*}"
+        V="${kv#*=}"
+        /usr/libexec/PlistBuddy -c "Add :$K string $V" "$APP/Info.plist" 2>/dev/null \
+            || /usr/libexec/PlistBuddy -c "Set :$K $V" "$APP/Info.plist"
+    done
+    # UIDeviceFamily is required when MinimumOSVersion >= 3.2 (always, in
+    # practice). 1 = iPhone, 2 = iPad. Default to iPhone-only; apps that
+    # want universal can set the array explicitly in their Info.plist
+    # before this script runs (the `Add` will fail and we won't overwrite).
+    /usr/libexec/PlistBuddy -c "Add :UIDeviceFamily array" "$APP/Info.plist" 2>/dev/null \
+        && /usr/libexec/PlistBuddy -c "Add :UIDeviceFamily:0 integer 1" "$APP/Info.plist"
+
     if [ -d "ios/Assets.xcassets/AppIcon.appiconset" ]; then
         ACTOOL_PLIST=$(mktemp /tmp/actool_XXXXXX.plist)
         xcrun actool ios/Assets.xcassets \
@@ -622,6 +679,35 @@ defmodule MobDev.Release do
         [ -f "$f" ] && cp "$f" "$OTP_BUNDLE/"
     done
     mkdir -p "$OTP_BUNDLE/$ERTS_VSN/bin"
+
+    # ── App Store bundle policy: ONE Mach-O per .app, no .so/.a/standalone ──
+    # Apple's validator rejects the bundle if it contains any of:
+    #   - dynamic loadable libraries (.so files for NIFs/drivers)
+    #   - static archives (.a — these are linked into the main binary at
+    #     build time, but copying them into the bundle is still rejected)
+    #   - standalone executable files (erl_call, memsup, beam.smp, etc.)
+    # Strip them all from the bundled OTP tree. The static archives are
+    # already linked into $APP_NAME (the main Mach-O); the .so files
+    # belong to OTP libs the app doesn't actually use (megaco,
+    # runtime_tools, asn1's dynamic variant).
+    echo "=== Stripping disallowed binaries from bundle (App Store policy) ==="
+    find "$OTP_BUNDLE" -type f \( -name "*.so" -o -name "*.a" \) -delete
+    # OTP standalone executables — `priv/bin/*` (memsup, cpu_sup, etc.)
+    # and `erts-*/bin/*` (erl_call, erlexec, beam.smp, …). The BEAM is
+    # static-linked into the main binary, so these aren't reachable
+    # at runtime from a Mob app anyway.
+    find "$OTP_BUNDLE" -path "*/priv/bin/*" -type f -delete
+    find "$OTP_BUNDLE/$ERTS_VSN/bin" -type f -delete 2>/dev/null || true
+    # Whole OTP libs the framework doesn't use — saves bundle size and
+    # avoids any forbidden artifacts inside them being missed. One rm
+    # per prefix; the cost of forking rm a few dozen times is
+    # irrelevant for a release build.
+    for prefix in megaco runtime_tools erl_interface os_mon wx et eunit \
+                  observer debugger diameter edoc tools snmp dialyzer \
+                  syntax_tools parsetools xmerl reltool inets ftp tftp; do
+        rm -rf "$OTP_BUNDLE/lib/$prefix-"*
+    done
+    echo "  $(find "$OTP_BUNDLE" -type f | wc -l | tr -d ' ') files in bundle after strip"
 
     echo "=== Embedding App Store provisioning profile ==="
     PROFILE_DIR="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
@@ -661,12 +747,31 @@ defmodule MobDev.Release do
     codesign --verify --deep --strict --verbose=2 "$APP"
 
     echo "=== Packaging IPA ==="
+    # `ditto -c -k --keepParent` (rather than plain `zip -r`) preserves
+    # symlinks and bundle structure that App Store Connect's validator
+    # checks (error code 90071: "CodeResources must be a symbolic link").
+    # Skip --sequesterRsrc — that's for macOS resource forks, not iOS;
+    # adding it injects a __MACOSX/ sidecar tree that confuses the
+    # validator.
+    # cp -RP preserves symlinks (plain cp -R follows them and turns them
+    # into regular files, which would defeat the whole exercise).
     IPA_STAGE=$(mktemp -d)
     mkdir -p "$IPA_STAGE/Payload"
-    cp -r "$APP" "$IPA_STAGE/Payload/"
+    cp -RP "$APP" "$IPA_STAGE/Payload/"
+    # `dot_clean` removes the macOS AppleDouble (`._<file>`) sidecars
+    # that get created when `cp` preserves extended attributes across
+    # filesystems. Apple's validator can flag these.
+    dot_clean -m "$IPA_STAGE/Payload" 2>/dev/null || true
+    find "$IPA_STAGE/Payload" -name '._*' -delete 2>/dev/null || true
     IPA_PATH="$OUTPUT_DIR/$APP_NAME.ipa"
     rm -f "$IPA_PATH"
-    (cd "$IPA_STAGE" && zip -qr "$IPA_PATH" Payload)
+    # --norsrc / --noextattr / --noqtn: don't preserve resource forks,
+    # extended attributes, or quarantine flags. Without these, ditto
+    # creates `._<file>` AppleDouble sidecars inside the IPA for any
+    # source file that happens to have an xattr (the OTP cross-build
+    # leaves a bunch of these on the cached output). Apple's validator
+    # generally tolerates them but the IPA is cleaner without.
+    (cd "$IPA_STAGE" && ditto -c -k --norsrc --noextattr --noqtn --keepParent Payload "$IPA_PATH")
     rm -rf "$IPA_STAGE"
 
     echo "=== Done: $IPA_PATH ($(du -h "$IPA_PATH" | cut -f1)) ==="
