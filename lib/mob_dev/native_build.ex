@@ -804,7 +804,10 @@ defmodule MobDev.NativeBuild do
     # an escape hatch for advanced users pointing at a custom OTP tree.
     epmd_src = cfg[:ios_epmd_build_src] || otp_root
 
-    slim_flag = if Process.get(:mob_slim, true), do: "1", else: "0"
+    # Dev path defaults to OFF (slim adds ~5-10s per build that dev iteration
+    # doesn't want). `mix mob.deploy --slim` opts in. `mix mob.release` flips
+    # this default in its own env via MobDev.Release.
+    slim_flag = if Process.get(:mob_slim, false), do: "1", else: "0"
 
     [
       {"MOB_DIR", Path.expand(cfg[:mob_dir])},
@@ -1272,7 +1275,7 @@ defmodule MobDev.NativeBuild do
     mkdir -p "$OTP_BUNDLE/$ERTS_VSN/bin"
     echo "  OTP bundle: $(du -sh "$OTP_BUNDLE" | cut -f1)"
 
-    # ── Slim build (default on; opt out with --no-slim on the Mix task) ──
+    # ── Slim build (default off for dev; opt in with `mix mob.deploy --slim`) ──
     # Strip:
     #   * disallowed binaries (.so/.a, standalone execs)  — Apple-policy parity
     #   * unused OTP libs by prefix                       — bundle-size policy
@@ -1280,55 +1283,72 @@ defmodule MobDev.NativeBuild do
     #   * foreign apps from other projects                — cache hygiene
     #   * src/ + include/ dirs                            — runtime doesn't need source
     #   * .beam debug + doc chunks                        — runtime doesn't need debug info
-    # Same logic as MobDev.Release for the App Store path. Skipped when
-    # MOB_SLIM=0 (set by `mix mob.deploy --no-slim`).
-    if [ "${MOB_SLIM:-1}" = "1" ]; then
+    # Same logic as MobDev.Release for the App Store path. Each step echoes a
+    # tagged size delta so a broken build can be traced to a specific step.
+    # Search the build log for `[SLIM:<step>]` to locate each pass.
+    if [ "${MOB_SLIM:-0}" = "1" ]; then
+        slim_step() {
+            local label=$1
+            local before=$(du -sk "$OTP_BUNDLE" 2>/dev/null | awk '{print $1}')
+            shift
+            "$@"
+            local after=$(du -sk "$OTP_BUNDLE" 2>/dev/null | awk '{print $1}')
+            local delta=$((before - after))
+            printf "[SLIM:%s] %s KB → %s KB  (-%s KB)\n" "$label" "$before" "$after" "$delta"
+        }
+
         echo "=== Slim strip pass ==="
-        find "$OTP_BUNDLE" -type f \( -name "*.so" -o -name "*.a" \) -delete
-        find "$OTP_BUNDLE" -path "*/priv/bin/*" -type f -delete
-        find "$OTP_BUNDLE/$ERTS_VSN/bin" -type f -delete 2>/dev/null || true
 
-        for prefix in megaco runtime_tools erl_interface os_mon wx et eunit \
-                      observer debugger diameter edoc tools snmp dialyzer \
-                      syntax_tools parsetools xmerl reltool inets ftp tftp \
-                      common_test mnesia eldap odbc; do
-            rm -rf "$OTP_BUNDLE/lib/$prefix-"*
-        done
+        slim_step apple_binaries bash -c '
+            find "'"$OTP_BUNDLE"'" -type f \( -name "*.so" -o -name "*.a" \) -delete
+            find "'"$OTP_BUNDLE"'" -path "*/priv/bin/*" -type f -delete
+            find "'"$OTP_BUNDLE"'/'"$ERTS_VSN"'/bin" -type f -delete 2>/dev/null || true
+        '
 
-        for prefix in toy_ test_ mob_test scratch_; do
-            rm -rf "$OTP_BUNDLE/lib/$prefix"*-*
-        done
+        slim_step prefix_libs bash -c '
+            for prefix in megaco runtime_tools erl_interface os_mon wx et eunit \
+                          observer debugger diameter edoc tools snmp dialyzer \
+                          syntax_tools parsetools xmerl reltool inets ftp tftp \
+                          common_test mnesia eldap odbc; do
+                rm -rf "'"$OTP_BUNDLE"'/lib/$prefix-"*
+            done
+        '
 
-        # Dedup library versions (keep highest).
-        set +e
-        cd "$OTP_BUNDLE/lib"
-        for name in $(ls -1 2>/dev/null | sed 's/-[0-9].*$//' | sort -u); do
-            versions=$(ls -1d "${name}"-[0-9]* 2>/dev/null | sort -V)
-            [ -z "$versions" ] && continue
-            count=$(printf '%s\n' "$versions" | wc -l | tr -d ' ')
-            if [ "$count" -gt 1 ]; then
-                latest=$(printf '%s\n' "$versions" | tail -1)
-                for v in $versions; do
-                    [ "$v" != "$latest" ] && rm -rf "$v"
-                done
-            fi
-        done
-        cd "$BUILD_DIR"
-        set -e
+        slim_step foreign_apps bash -c '
+            for prefix in toy_ test_ mob_test scratch_; do
+                rm -rf "'"$OTP_BUNDLE"'/lib/$prefix"*-*
+            done
+        '
 
-        # Drop source + headers (compile-time only).
-        find "$OTP_BUNDLE" -type d \( -name src -o -name include \) -prune -exec rm -rf {} +
+        slim_step dedup_versions bash -c '
+            set +e
+            cd "'"$OTP_BUNDLE"'/lib"
+            for name in $(ls -1 2>/dev/null | sed "s/-[0-9].*$//" | sort -u); do
+                versions=$(ls -1d "${name}"-[0-9]* 2>/dev/null | sort -V)
+                [ -z "$versions" ] && continue
+                count=$(printf "%s\n" "$versions" | wc -l | tr -d " ")
+                if [ "$count" -gt 1 ]; then
+                    latest=$(printf "%s\n" "$versions" | tail -1)
+                    for v in $versions; do
+                        [ "$v" != "$latest" ] && rm -rf "$v"
+                    done
+                fi
+            done
+        '
 
-        # Strip Dbgi/Docs chunks from .beam files (~30% per file).
-        erl -noinput -boot start_clean -eval '
-          case beam_lib:strip_release("'"$OTP_BUNDLE"'") of
+        slim_step src_and_headers find "$OTP_BUNDLE" -type d \( -name src -o -name include \) -prune -exec rm -rf {} +
+
+        slim_step beam_chunks erl -noinput -boot start_clean -eval "
+          case beam_lib:strip_release(\"$OTP_BUNDLE\") of
             {ok, _} -> erlang:halt(0);
-            {error, beam_lib, _} -> erlang:halt(0)
-          end.'
+            {error, beam_lib, R} ->
+              io:format(standard_error, \"  strip_release error: ~p~n\", [R]),
+              erlang:halt(1)
+          end."
 
         echo "  Slim OTP bundle: $(du -sh "$OTP_BUNDLE" | cut -f1)"
     else
-        echo "=== Skipping slim strip (MOB_SLIM=0) ==="
+        echo "[SLIM:skipped] MOB_SLIM=0 — keeping full OTP runtime"
     fi
 
     echo "=== Embedding provisioning profile ==="
