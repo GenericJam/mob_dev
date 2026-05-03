@@ -758,6 +758,29 @@ defmodule MobDev.Release do
     cd "$BUILD_DIR"
     set -e
 
+    # Drop source code + headers from the bundled OTP libs. They're needed
+    # at COMPILE time, not RUNTIME — the `.beam` files in `ebin/` carry the
+    # bytecode the BEAM actually executes. Shipping `.erl` source bloats
+    # the IPA by ~16 MB on a typical Mob app (stdlib/src + kernel/src +
+    # compiler/src etc.). `include/` headers (`*.hrl`) are similarly
+    # compile-time only.
+    echo "=== Removing source + header dirs from bundled OTP ==="
+    find "$OTP_BUNDLE" -type d \( -name src -o -name include \) -prune -exec rm -rf {} +
+
+    # Strip optional chunks (Dbgi/Docs/etc.) from every shipped .beam.
+    # `:beam_lib.strip_release/1` walks the directory tree and rewrites
+    # each .beam in place, keeping only chunks needed for execution.
+    # Equivalent to mix release's `strip_beams: true`. Saves ~30% per .beam
+    # — typically 5-7 MB across the OTP libs.
+    echo "=== Stripping debug + doc chunks from .beam files ==="
+    erl -noinput -boot start_clean -eval '
+      case beam_lib:strip_release("'"$OTP_BUNDLE"'") of
+        {ok, _} -> erlang:halt(0);
+        {error, beam_lib, Reason} ->
+          io:format(standard_error, "  strip_release error: ~p~n", [Reason]),
+          erlang:halt(1)
+      end.'
+
     echo "  $(find "$OTP_BUNDLE" -type f | wc -l | tr -d ' ') files in bundle after strip"
 
     echo "=== Embedding App Store provisioning profile ==="
