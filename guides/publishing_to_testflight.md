@@ -441,8 +441,17 @@ Builds a release-signed `.ipa` at `_build/mob_release/<App>.ipa`:
   to preserve the `_CodeSignature/CodeResources` symlink and avoid
   `__MACOSX/`/`._<file>` AppleDouble pollution
 
-The resulting `.ipa` is typically ~45 MB for a basic Mob app (vs ~64 MB
-before the strip-from-bundle pass).
+The resulting `.ipa` is typically ~19.8 MB for a basic Mob app
+(down from ~45 MB before the slim build was added). The full breakdown
+of what gets stripped, why, and how to bisect a broken slim build is in
+[`slim_release.md`](slim_release.md).
+
+To validate a slim build runs on device _before_ the TestFlight
+round-trip, use:
+
+```bash
+mix mob.deploy --slim   # dev build with the same strips applied
+```
 
 ### 2.4 `mix mob.publish --ios` (manual equivalent of step 3 of `mix mob.republish --ios`)
 
