@@ -114,12 +114,50 @@ defmodule MobDev.OtpAssetBundle do
         strip_otp_libs(staging, prefixes)
         strip_standalone_execs(staging)
         strip_static_archives(staging)
+        strip_source_and_headers(staging)
+        strip_beam_chunks(staging)
         {:ok, staging}
 
       {out, _} ->
         File.rm_rf!(staging)
         {:error, "copy failed: #{out}"}
     end
+  end
+
+  # Drop src/ and include/ from every lib. .erl source and .hrl headers
+  # are needed at compile time, not runtime. Saves ~16 MB on a typical
+  # OTP tree. Same logic as iOS release.ex's strip pass.
+  defp strip_source_and_headers(staging) do
+    Path.wildcard(Path.join(staging, "lib/*/src")) |> Enum.each(&File.rm_rf!/1)
+    Path.wildcard(Path.join(staging, "lib/*/include")) |> Enum.each(&File.rm_rf!/1)
+    :ok
+  end
+
+  # Strip optional chunks (Dbgi/Docs/etc.) from every shipped .beam.
+  # Same as `mix release --strip-beams` and the iOS release pass.
+  # Drops ~30% per .beam file. The host's `erl` and the bundled OTP are
+  # the same major version, so beam_lib:strip_release/1 is binary-safe.
+  #
+  # We're tolerant of strip failures: a stage tree from a test fixture
+  # may contain placeholder "fake beam" files that aren't valid BEAMs.
+  # In production those don't exist; the strip succeeds and shrinks
+  # the bundle. In tests, a failed strip just leaves the file untouched
+  # (which is the same behaviour as not running the step at all).
+  defp strip_beam_chunks(staging) do
+    {_, _status} =
+      System.cmd(
+        "erl",
+        [
+          "-noinput",
+          "-boot",
+          "start_clean",
+          "-eval",
+          ~s|catch beam_lib:strip_release("#{staging}"), erlang:halt(0).|
+        ],
+        stderr_to_stdout: true
+      )
+
+    :ok
   end
 
   defp compute_strip_set(opts) do

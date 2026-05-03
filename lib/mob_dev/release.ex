@@ -783,6 +783,17 @@ defmodule MobDev.Release do
 
     echo "  $(find "$OTP_BUNDLE" -type f | wc -l | tr -d ' ') files in bundle after strip"
 
+    # Strip non-global symbols from the main Mach-O. The static-linked BEAM
+    # emulator + mob_nif + Swift code carry ~15K symbols by default; the
+    # ones with internal linkage are not needed at runtime. Apple's strip
+    # with -x removes them. Saves ~1 MB on the binary. Must happen BEFORE
+    # codesigning since strip rewrites the file (invalidating any signature).
+    echo "=== Stripping non-global symbols from main binary ==="
+    SIZE_BEFORE_STRIP=$(stat -f%z "$APP/$APP_NAME")
+    xcrun strip -x "$APP/$APP_NAME"
+    SIZE_AFTER_STRIP=$(stat -f%z "$APP/$APP_NAME")
+    echo "  $APP_NAME: $((SIZE_BEFORE_STRIP / 1024)) KB → $((SIZE_AFTER_STRIP / 1024)) KB"
+
     echo "=== Embedding App Store provisioning profile ==="
     PROFILE_DIR="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
     PROFILE="$PROFILE_DIR/${PROFILE_UUID}.mobileprovision"
