@@ -28,7 +28,9 @@ defmodule MobDev.NativeBuild do
     cfg = load_config()
     platforms = Keyword.get(opts, :platforms, [:android, :ios])
     device_id = Keyword.get(opts, :device, nil)
+    slim = Keyword.get(opts, :slim, true)
     platforms = narrow_platforms_for_device(platforms, device_id)
+    Process.put(:mob_slim, slim)
 
     results = []
 
@@ -802,6 +804,8 @@ defmodule MobDev.NativeBuild do
     # an escape hatch for advanced users pointing at a custom OTP tree.
     epmd_src = cfg[:ios_epmd_build_src] || otp_root
 
+    slim_flag = if Process.get(:mob_slim, true), do: "1", else: "0"
+
     [
       {"MOB_DIR", Path.expand(cfg[:mob_dir])},
       {"MOB_ELIXIR_LIB", Path.expand(elixir_lib)},
@@ -812,7 +816,8 @@ defmodule MobDev.NativeBuild do
       {"MOB_IOS_SIGN_IDENTITY", cfg[:ios_sign_identity]},
       {"MOB_IOS_PROFILE_UUID", cfg[:ios_profile_uuid]},
       {"MOB_APP_NAME", app_name},
-      {"MOB_APP_MODULE", app_module}
+      {"MOB_APP_MODULE", app_module},
+      {"MOB_SLIM", slim_flag}
     ]
   end
 
@@ -1266,6 +1271,65 @@ defmodule MobDev.NativeBuild do
     done
     mkdir -p "$OTP_BUNDLE/$ERTS_VSN/bin"
     echo "  OTP bundle: $(du -sh "$OTP_BUNDLE" | cut -f1)"
+
+    # ── Slim build (default on; opt out with --no-slim on the Mix task) ──
+    # Strip:
+    #   * disallowed binaries (.so/.a, standalone execs)  — Apple-policy parity
+    #   * unused OTP libs by prefix                       — bundle-size policy
+    #   * duplicate library versions                      — cache hygiene
+    #   * foreign apps from other projects                — cache hygiene
+    #   * src/ + include/ dirs                            — runtime doesn't need source
+    #   * .beam debug + doc chunks                        — runtime doesn't need debug info
+    # Same logic as MobDev.Release for the App Store path. Skipped when
+    # MOB_SLIM=0 (set by `mix mob.deploy --no-slim`).
+    if [ "${MOB_SLIM:-1}" = "1" ]; then
+        echo "=== Slim strip pass ==="
+        find "$OTP_BUNDLE" -type f \( -name "*.so" -o -name "*.a" \) -delete
+        find "$OTP_BUNDLE" -path "*/priv/bin/*" -type f -delete
+        find "$OTP_BUNDLE/$ERTS_VSN/bin" -type f -delete 2>/dev/null || true
+
+        for prefix in megaco runtime_tools erl_interface os_mon wx et eunit \
+                      observer debugger diameter edoc tools snmp dialyzer \
+                      syntax_tools parsetools xmerl reltool inets ftp tftp \
+                      common_test mnesia eldap odbc; do
+            rm -rf "$OTP_BUNDLE/lib/$prefix-"*
+        done
+
+        for prefix in toy_ test_ mob_test scratch_; do
+            rm -rf "$OTP_BUNDLE/lib/$prefix"*-*
+        done
+
+        # Dedup library versions (keep highest).
+        set +e
+        cd "$OTP_BUNDLE/lib"
+        for name in $(ls -1 2>/dev/null | sed 's/-[0-9].*$//' | sort -u); do
+            versions=$(ls -1d "${name}"-[0-9]* 2>/dev/null | sort -V)
+            [ -z "$versions" ] && continue
+            count=$(printf '%s\n' "$versions" | wc -l | tr -d ' ')
+            if [ "$count" -gt 1 ]; then
+                latest=$(printf '%s\n' "$versions" | tail -1)
+                for v in $versions; do
+                    [ "$v" != "$latest" ] && rm -rf "$v"
+                done
+            fi
+        done
+        cd "$BUILD_DIR"
+        set -e
+
+        # Drop source + headers (compile-time only).
+        find "$OTP_BUNDLE" -type d \( -name src -o -name include \) -prune -exec rm -rf {} +
+
+        # Strip Dbgi/Docs chunks from .beam files (~30% per file).
+        erl -noinput -boot start_clean -eval '
+          case beam_lib:strip_release("'"$OTP_BUNDLE"'") of
+            {ok, _} -> erlang:halt(0);
+            {error, beam_lib, _} -> erlang:halt(0)
+          end.'
+
+        echo "  Slim OTP bundle: $(du -sh "$OTP_BUNDLE" | cut -f1)"
+    else
+        echo "=== Skipping slim strip (MOB_SLIM=0) ==="
+    fi
 
     echo "=== Embedding provisioning profile ==="
     PROFILE_DIR="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"

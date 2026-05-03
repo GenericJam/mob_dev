@@ -42,7 +42,7 @@ defmodule Mix.Tasks.Mob.Release do
   """
 
   @impl Mix.Task
-  def run(_args) do
+  def run(args) do
     case :os.type() do
       {:unix, :darwin} -> :ok
       _ -> Mix.raise("mix mob.release is only supported on macOS.")
@@ -52,9 +52,12 @@ defmodule Mix.Tasks.Mob.Release do
       Mix.raise("No ios/ directory found. Run from the root of a mob iOS project.")
     end
 
+    {opts, _, _} = OptionParser.parse(args, switches: [slim: :boolean])
+    slim = Keyword.get(opts, :slim, true)
+
     Mix.Task.run("compile")
 
-    case MobDev.Release.build_ipa() do
+    case MobDev.Release.build_ipa(slim: slim) do
       {:ok, path} ->
         Mix.shell().info("")
         Mix.shell().info("#{green()}✓ Release build complete#{reset()}")
