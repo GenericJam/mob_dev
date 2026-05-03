@@ -26,6 +26,11 @@ defmodule Mix.Tasks.Mob.Deploy do
     * `--device <id>`         — target a specific device; use `mix mob.devices` to find IDs
     * `--schedulers <N>`      — set BEAM scheduler count (saved to mob.exs)
     * `--beam-flags "<flags>"` — arbitrary BEAM flags string (saved to mob.exs)
+    * `--slim`                — strip OTP source/debug for size measurement on
+                                a real device. OFF by default for dev iteration
+                                (the strip pass adds ~5-10s per build); use this
+                                to verify a slim build runs before
+                                `mix mob.republish` round-trips through TestFlight.
 
   ## BEAM scheduler tuning
 
@@ -126,7 +131,12 @@ defmodule Mix.Tasks.Mob.Deploy do
     Mix.Task.run("compile")
     IO.puts("\n#{IO.ANSI.cyan()}Deploying to devices...#{IO.ANSI.reset()}\n")
 
-    slim = Keyword.get(opts, :slim, true)
+    # Default OFF for dev iteration: slim adds the strip pass + erl spawn
+    # for beam_lib:strip_release + xcrun strip, which costs seconds. Dev
+    # cycle wants those seconds back. Opt in with `--slim` when you want
+    # to size-test before mix mob.republish round-trips through TestFlight
+    # (and the inevitable extra TestFlight build that confuses testers).
+    slim = Keyword.get(opts, :slim, false)
 
     native_ok =
       if native do
