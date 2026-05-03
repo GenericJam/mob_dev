@@ -1,0 +1,336 @@
+defmodule MobDev.OtpAudit do
+  @moduledoc """
+  Reachability analysis for the bundled OTP runtime tree of a Mob app.
+
+  Walks every `.beam` file under an OTP root, extracts the `imports` chunk
+  to learn who calls whom, and computes the transitive closure starting
+  from the app's entry-point modules. Anything not reachable is a strip
+  candidate — modules, whole libs, or duplicate library versions.
+
+  Used by `mix mob.audit_otp` (read-only report) and the planned
+  `mix mob.release --slim` flag (auto-strip based on the report).
+
+  ## Entry points
+
+  Reachability seeding is deliberately generous:
+
+    * App's `start/2` callback module (read from each `.app` file's `mod` key)
+    * All exported functions of `kernel` and `stdlib` (BEAM startup needs them)
+    * `elixir`, `logger`, `eex` (runtime support that gets called via macros)
+
+  Anything reachable from those is kept; the rest is candidate-for-strip.
+
+  ## Output
+
+  Returns a map with:
+
+    * `:libs` — every lib found, with reachable/total module counts and KB
+    * `:duplicates` — libs that appear multiple times (only newest is kept)
+    * `:foreign_apps` — non-OTP, non-app code in the lib dir (other projects)
+    * `:strippable_libs` — libs with zero reachable modules
+    * `:total_kb` / `:reachable_kb` / `:strippable_kb` — size summary
+
+  All sizes are post-strip — i.e. what `mix mob.release` actually ships,
+  not raw OTP source.
+  """
+
+  @type module_atom :: atom()
+  @type lib_name :: String.t()
+
+  @type lib_report :: %{
+          name: lib_name(),
+          version: String.t() | nil,
+          path: String.t(),
+          modules_total: non_neg_integer(),
+          modules_reachable: non_neg_integer(),
+          kb_total: non_neg_integer(),
+          kb_reachable: non_neg_integer(),
+          unreachable_modules: [module_atom()],
+          is_app_under_test?: boolean()
+        }
+
+  @type report :: %{
+          otp_root: String.t(),
+          app_name: String.t() | nil,
+          libs: [lib_report()],
+          duplicates: %{lib_name() => [String.t()]},
+          foreign_apps: [String.t()],
+          strippable_libs: [lib_name()],
+          total_kb: non_neg_integer(),
+          reachable_kb: non_neg_integer(),
+          strippable_kb: non_neg_integer()
+        }
+
+  # OTP runtime support that's called implicitly by every BEAM app.
+  # Some of these don't show up in the static call graph (init invokes
+  # them dynamically) so we seed them as always-reachable.
+  @runtime_seed_libs ~w(kernel stdlib elixir logger sasl)
+
+  @doc """
+  Run the audit. `otp_root` is the directory containing `lib/` and `erts-*/`
+  (typically the runtime tree extracted into the app bundle, or the cache
+  the release packaging copies from).
+
+  `:app_name` (option) — the application's atom name (e.g. `:air_cart_max`).
+  Used to seed reachability from the app's modules. If omitted, every lib
+  with no `mod` callback is treated as a potential entry point (broader,
+  finds less to strip).
+  """
+  @spec audit(String.t(), keyword()) :: report()
+  def audit(otp_root, opts \\ []) do
+    app_name = Keyword.get(opts, :app_name)
+    libs = discover_libs(otp_root)
+    {duplicates, libs} = collapse_duplicates(libs)
+    {foreign_apps, libs} = split_foreign_apps(libs, app_name)
+    module_to_lib = build_module_index(libs)
+    imports = build_import_graph(libs)
+
+    seed_modules = compute_seed_modules(libs, app_name)
+    reachable = bfs(seed_modules, imports)
+
+    lib_reports = build_lib_reports(libs, reachable, module_to_lib)
+    strippable = Enum.filter(lib_reports, &(&1.modules_reachable == 0)) |> Enum.map(& &1.name)
+
+    %{
+      otp_root: otp_root,
+      app_name: app_name,
+      libs: lib_reports,
+      duplicates: duplicates,
+      foreign_apps: foreign_apps,
+      strippable_libs: strippable,
+      total_kb: Enum.sum(Enum.map(lib_reports, & &1.kb_total)),
+      reachable_kb: Enum.sum(Enum.map(lib_reports, & &1.kb_reachable)),
+      strippable_kb:
+        lib_reports
+        |> Enum.filter(&(&1.modules_reachable == 0))
+        |> Enum.sum_by(& &1.kb_total)
+    }
+  end
+
+  # ── Discovery ─────────────────────────────────────────────────────────
+
+  defp discover_libs(otp_root) do
+    Path.join(otp_root, "lib/*")
+    |> Path.wildcard()
+    |> Enum.filter(&File.dir?/1)
+    |> Enum.map(fn dir ->
+      {name, version} = parse_lib_dirname(Path.basename(dir))
+
+      %{
+        name: name,
+        version: version,
+        path: dir,
+        beams: Path.wildcard(Path.join(dir, "ebin/*.beam")),
+        app_callback: read_app_callback(dir, name)
+      }
+    end)
+  end
+
+  defp parse_lib_dirname(dirname) do
+    case String.split(dirname, "-", parts: 2) do
+      [name, version] -> {name, version}
+      [name] -> {name, nil}
+    end
+  end
+
+  defp read_app_callback(lib_dir, name) do
+    app_file = Path.join(lib_dir, "ebin/#{name}.app")
+
+    with true <- File.exists?(app_file),
+         {:ok, [{:application, _, props}]} <- :file.consult(String.to_charlist(app_file)) do
+      case Keyword.get(props, :mod) do
+        {mod, _args} -> mod
+        _ -> nil
+      end
+    else
+      _ -> nil
+    end
+  end
+
+  # When the same lib appears in multiple versions (asn1-5.4, asn1-5.4.3),
+  # keep the highest version and report the others as duplicates.
+  defp collapse_duplicates(libs) do
+    by_name = Enum.group_by(libs, & &1.name)
+
+    {dupes, kept} =
+      Enum.reduce(by_name, {%{}, []}, fn
+        {_name, [single]}, {dupes, kept} ->
+          {dupes, [single | kept]}
+
+        {name, multiple}, {dupes, kept} ->
+          [latest | older] = Enum.sort_by(multiple, & &1.version, &version_gt/2)
+          dupe_paths = Enum.map(older, & &1.path)
+          {Map.put(dupes, name, dupe_paths), [latest | kept]}
+      end)
+
+    {dupes, Enum.reverse(kept)}
+  end
+
+  # Best-effort version comparison — handles `5.4` vs `5.4.3` correctly,
+  # falls back to string compare for anything weirder.
+  defp version_gt(a, b) when is_binary(a) and is_binary(b) do
+    case {Version.parse(loosen(a)), Version.parse(loosen(b))} do
+      {{:ok, va}, {:ok, vb}} -> Version.compare(va, vb) == :gt
+      _ -> a > b
+    end
+  end
+
+  defp version_gt(a, _b) when is_nil(a), do: false
+  defp version_gt(_a, nil), do: true
+
+  # Pad short versions ("5.4" → "5.4.0") so Version.parse accepts them.
+  defp loosen(v) do
+    parts = String.split(v, ".")
+
+    case length(parts) do
+      1 -> v <> ".0.0"
+      2 -> v <> ".0"
+      _ -> v
+    end
+  end
+
+  # Anything in `lib/` that isn't a known OTP library and isn't the
+  # current app is foreign (leaked from another project's release tree
+  # via a shared cache, almost always). Report separately so the user
+  # can clean their cache.
+  defp split_foreign_apps(libs, app_name) do
+    app_str = if app_name, do: to_string(app_name), else: nil
+
+    {foreign, kept} =
+      Enum.split_with(libs, fn lib ->
+        is_nil(lib.app_callback) and lib.name != app_str and lib.version != nil and
+          looks_like_user_app?(lib.name)
+      end)
+
+    {Enum.map(foreign, & &1.path), kept}
+  end
+
+  # Heuristic: real OTP libs are kernel/stdlib/etc. — no number suffix in
+  # the source name, and they ship with the OTP distribution. User apps
+  # are typically named differently; we err on the side of caution and
+  # only flag libs we explicitly recognize as test-app-shaped.
+  defp looks_like_user_app?(name) do
+    String.starts_with?(name, "test_") or String.starts_with?(name, "toy_") or
+      name in ~w(mob_test air_cart_max_test)
+  end
+
+  # ── Import graph ──────────────────────────────────────────────────────
+
+  defp build_module_index(libs) do
+    for lib <- libs,
+        beam <- lib.beams,
+        into: %{} do
+      module = beam |> Path.basename(".beam") |> String.to_atom()
+      {module, lib.name}
+    end
+  end
+
+  defp build_import_graph(libs) do
+    for lib <- libs,
+        beam <- lib.beams,
+        into: %{} do
+      module = beam |> Path.basename(".beam") |> String.to_atom()
+      imports = read_imports(beam)
+      {module, MapSet.new(imports, fn {m, _f, _a} -> m end)}
+    end
+  end
+
+  defp read_imports(beam) do
+    case :beam_lib.chunks(String.to_charlist(beam), [:imports]) do
+      {:ok, {_module, [{:imports, imports}]}} -> imports
+      _ -> []
+    end
+  end
+
+  # ── Reachability ──────────────────────────────────────────────────────
+
+  defp compute_seed_modules(libs, app_name) do
+    runtime_modules =
+      libs
+      |> Enum.filter(&(&1.name in @runtime_seed_libs))
+      |> Enum.flat_map(&modules_in/1)
+
+    app_modules =
+      if app_name do
+        case Enum.find(libs, &(&1.name == to_string(app_name))) do
+          nil -> []
+          lib -> modules_in(lib)
+        end
+      else
+        []
+      end
+
+    callback_modules =
+      libs
+      |> Enum.flat_map(fn
+        %{app_callback: cb} when is_atom(cb) and not is_nil(cb) -> [cb]
+        _ -> []
+      end)
+
+    MapSet.new(runtime_modules ++ app_modules ++ callback_modules)
+  end
+
+  defp modules_in(lib) do
+    Enum.map(lib.beams, fn b ->
+      b |> Path.basename(".beam") |> String.to_atom()
+    end)
+  end
+
+  defp bfs(seed, imports) do
+    do_bfs(MapSet.new(seed), MapSet.new(seed), imports)
+  end
+
+  defp do_bfs(reached, frontier, imports) do
+    next =
+      frontier
+      |> Enum.flat_map(fn mod -> Map.get(imports, mod, MapSet.new()) end)
+      |> MapSet.new()
+      |> MapSet.difference(reached)
+
+    if MapSet.size(next) == 0 do
+      reached
+    else
+      do_bfs(MapSet.union(reached, next), next, imports)
+    end
+  end
+
+  # ── Reporting ─────────────────────────────────────────────────────────
+
+  defp build_lib_reports(libs, reachable, _module_to_lib) do
+    Enum.map(libs, fn lib ->
+      modules = modules_in(lib) |> MapSet.new()
+      reach = MapSet.intersection(modules, reachable)
+
+      %{
+        name: lib.name,
+        version: lib.version,
+        path: lib.path,
+        modules_total: MapSet.size(modules),
+        modules_reachable: MapSet.size(reach),
+        kb_total: dir_size_kb(lib.path),
+        kb_reachable: beam_size_kb(lib.beams, reach),
+        unreachable_modules: MapSet.difference(modules, reach) |> Enum.sort(),
+        is_app_under_test?: false
+      }
+    end)
+    |> Enum.sort_by(& &1.kb_total, :desc)
+  end
+
+  defp dir_size_kb(path) do
+    case System.cmd("du", ["-sk", path], stderr_to_stdout: true) do
+      {out, 0} -> out |> String.split() |> List.first() |> String.to_integer()
+      _ -> 0
+    end
+  end
+
+  defp beam_size_kb(beams, reachable_modules) do
+    beams
+    |> Enum.filter(fn b ->
+      mod = b |> Path.basename(".beam") |> String.to_atom()
+      MapSet.member?(reachable_modules, mod)
+    end)
+    |> Enum.map(fn beam -> File.stat!(beam).size / 1024 end)
+    |> Enum.sum()
+    |> round()
+  end
+end
