@@ -714,12 +714,50 @@ defmodule MobDev.Release do
     # Whole OTP libs the framework doesn't use — saves bundle size and
     # avoids any forbidden artifacts inside them being missed. One rm
     # per prefix; the cost of forking rm a few dozen times is
-    # irrelevant for a release build.
+    # irrelevant for a release build. Audit-tool-confirmed (2026-05-02):
+    # the original list missed common_test (3.5MB), mnesia (2.3MB),
+    # eldap (268KB), odbc (140KB) — added them here. Run `mix mob.audit_otp`
+    # to find more candidates as your dep set evolves.
     for prefix in megaco runtime_tools erl_interface os_mon wx et eunit \
                   observer debugger diameter edoc tools snmp dialyzer \
-                  syntax_tools parsetools xmerl reltool inets ftp tftp; do
+                  syntax_tools parsetools xmerl reltool inets ftp tftp \
+                  common_test mnesia eldap odbc; do
         rm -rf "$OTP_BUNDLE/lib/$prefix-"*
     done
+
+    # Drop "foreign apps" — other projects' release dirs that leaked into
+    # the shared OTP cache (toy_app, test_demo, mob_test from someone's
+    # earlier `mix mob.release` against a different project). These have
+    # no business in this app's release tree.
+    for prefix in toy_ test_ mob_test scratch_; do
+        rm -rf "$OTP_BUNDLE/lib/$prefix"*-*
+    done
+
+    # Drop duplicate library versions. The cache may hold asn1-5.4 AND
+    # asn1-5.4.3, public_key-1.18 AND 1.20.x — only the highest version
+    # is reachable. Sort -V (version sort) handles "5.4" vs "5.4.3" right.
+    # set +e because globs and missing dirs are common and we don't want
+    # `set -e` to abort the script on a benign no-match.
+    echo "=== Removing duplicate library versions ==="
+    set +e
+    cd "$OTP_BUNDLE/lib"
+    for name in $(ls -1 2>/dev/null | sed 's/-[0-9].*$//' | sort -u); do
+        versions=$(ls -1d "${name}"-[0-9]* 2>/dev/null | sort -V)
+        [ -z "$versions" ] && continue
+        count=$(printf '%s\n' "$versions" | wc -l | tr -d ' ')
+        if [ "$count" -gt 1 ]; then
+            latest=$(printf '%s\n' "$versions" | tail -1)
+            for v in $versions; do
+                if [ "$v" != "$latest" ]; then
+                    echo "  removing duplicate: $v (keeping $latest)"
+                    rm -rf "$v"
+                fi
+            done
+        fi
+    done
+    cd "$BUILD_DIR"
+    set -e
+
     echo "  $(find "$OTP_BUNDLE" -type f | wc -l | tr -d ' ') files in bundle after strip"
 
     echo "=== Embedding App Store provisioning profile ==="
