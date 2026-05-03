@@ -24,6 +24,9 @@ end
 | `mix mob.install` | First-run setup: download OTP runtime, generate icons, write `mob.exs` |
 | `mix mob.deploy` | Compile and push BEAMs to all connected devices |
 | `mix mob.deploy --native` | Also build and install the native APK/iOS app |
+| `mix mob.deploy --slim` | Same, but with the App Store strip pass applied (slow, lets you verify a slim build before TestFlight — see [`guides/slim_release.md`](guides/slim_release.md)) |
+| `mix mob.release` | Build a signed `.ipa` for App Store / TestFlight (slim by default) |
+| `mix mob.audit_otp` | Reachability audit of the bundled OTP runtime (find strip candidates) |
 | `mix mob.connect` | Tunnel + restart + open IEx connected to device nodes (`--name` for multiple sessions) |
 | `mix mob.watch` | Auto-push BEAMs on file save |
 | `mix mob.watch_stop` | Stop a running `mix mob.watch` |
