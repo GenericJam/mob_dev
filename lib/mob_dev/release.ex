@@ -720,62 +720,66 @@ defmodule MobDev.Release do
     find "$OTP_BUNDLE/$ERTS_VSN/bin" -type f -delete 2>/dev/null || true
 
     # ── Slim strips (gated; opt out with `mix mob.release --no-slim`) ──
-    # Use --no-slim to keep the full OTP runtime + debug info in the bundle
-    # for diagnosing strip-induced regressions. Always-stripped libs above
-    # are still removed because Apple won't accept them either way.
+    # Each step echoes a tagged header AND the bundle size delta so a
+    # broken build can be traced to a specific step. The grep-friendly tag
+    # `[SLIM:<step>]` is what the docs walkthrough searches for.
     if [ "${MOB_SLIM:-1}" = "1" ]; then
+        # Helper to log size delta around a step. Bash function so each
+        # step's size delta is visible in the build log without bespoke code.
+        slim_step() {
+            local label=$1
+            local before=$(du -sk "$OTP_BUNDLE" 2>/dev/null | awk '{print $1}')
+            shift
+            "$@"
+            local after=$(du -sk "$OTP_BUNDLE" 2>/dev/null | awk '{print $1}')
+            local delta=$((before - after))
+            printf "[SLIM:%s] %s KB → %s KB  (-%s KB)\n" "$label" "$before" "$after" "$delta"
+        }
+
         echo "=== Slim strip pass ==="
 
-        # Whole OTP libs the framework doesn't use. Audit-tool-confirmed
-        # (mix mob.audit_otp). Add to this list as your dep set evolves.
-        for prefix in megaco runtime_tools erl_interface os_mon wx et eunit \
-                      observer debugger diameter edoc tools snmp dialyzer \
-                      syntax_tools parsetools xmerl reltool inets ftp tftp \
-                      common_test mnesia eldap odbc; do
-            rm -rf "$OTP_BUNDLE/lib/$prefix-"*
-        done
+        slim_step prefix_libs bash -c '
+            for prefix in megaco runtime_tools erl_interface os_mon wx et eunit \
+                          observer debugger diameter edoc tools snmp dialyzer \
+                          syntax_tools parsetools xmerl reltool inets ftp tftp \
+                          common_test mnesia eldap odbc; do
+                rm -rf "'"$OTP_BUNDLE"'/lib/$prefix-"*
+            done
+        '
 
-        # Foreign apps from a shared OTP cache — toy_*, test_*, scratch_*
-        # apps that leaked in from another project's mix mob.release run.
-        for prefix in toy_ test_ mob_test scratch_; do
-            rm -rf "$OTP_BUNDLE/lib/$prefix"*-*
-        done
+        slim_step foreign_apps bash -c '
+            for prefix in toy_ test_ mob_test scratch_; do
+                rm -rf "'"$OTP_BUNDLE"'/lib/$prefix"*-*
+            done
+        '
 
-        # Dedup library versions. The cache may hold asn1-5.4 AND
-        # asn1-5.4.3, public_key-1.18 AND 1.20.x — only the highest
-        # is reachable; sort -V handles "5.4" vs "5.4.3" right.
-        set +e
-        cd "$OTP_BUNDLE/lib"
-        for name in $(ls -1 2>/dev/null | sed 's/-[0-9].*$//' | sort -u); do
-            versions=$(ls -1d "${name}"-[0-9]* 2>/dev/null | sort -V)
-            [ -z "$versions" ] && continue
-            count=$(printf '%s\n' "$versions" | wc -l | tr -d ' ')
-            if [ "$count" -gt 1 ]; then
-                latest=$(printf '%s\n' "$versions" | tail -1)
-                for v in $versions; do
-                    if [ "$v" != "$latest" ]; then
-                        echo "  removing duplicate: $v (keeping $latest)"
-                        rm -rf "$v"
-                    fi
-                done
-            fi
-        done
-        cd "$BUILD_DIR"
-        set -e
+        slim_step dedup_versions bash -c '
+            set +e
+            cd "'"$OTP_BUNDLE"'/lib"
+            for name in $(ls -1 2>/dev/null | sed "s/-[0-9].*$//" | sort -u); do
+                versions=$(ls -1d "${name}"-[0-9]* 2>/dev/null | sort -V)
+                [ -z "$versions" ] && continue
+                count=$(printf "%s\n" "$versions" | wc -l | tr -d " ")
+                if [ "$count" -gt 1 ]; then
+                    latest=$(printf "%s\n" "$versions" | tail -1)
+                    for v in $versions; do
+                        [ "$v" != "$latest" ] && rm -rf "$v"
+                    done
+                fi
+            done
+        '
 
-        # Drop source + headers (compile-time only). Saves ~16 MB.
-        find "$OTP_BUNDLE" -type d \( -name src -o -name include \) -prune -exec rm -rf {} +
+        slim_step src_and_headers find "$OTP_BUNDLE" -type d \( -name src -o -name include \) -prune -exec rm -rf {} +
 
-        # Strip Dbgi/Docs chunks from .beam files (~30% per file).
-        erl -noinput -boot start_clean -eval '
-          case beam_lib:strip_release("'"$OTP_BUNDLE"'") of
+        slim_step beam_chunks erl -noinput -boot start_clean -eval "
+          case beam_lib:strip_release(\"$OTP_BUNDLE\") of
             {ok, _} -> erlang:halt(0);
-            {error, beam_lib, Reason} ->
-              io:format(standard_error, "  strip_release error: ~p~n", [Reason]),
+            {error, beam_lib, R} ->
+              io:format(standard_error, \"  strip_release error: ~p~n\", [R]),
               erlang:halt(1)
-          end.'
+          end."
     else
-        echo "=== Skipping slim strip pass (MOB_SLIM=0) ==="
+        echo "[SLIM:skipped] MOB_SLIM=0 — keeping full OTP runtime"
     fi
 
     echo "  $(find "$OTP_BUNDLE" -type f | wc -l | tr -d ' ') files in bundle after strip"
