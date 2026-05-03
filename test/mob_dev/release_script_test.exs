@@ -62,7 +62,10 @@ defmodule MobDev.ReleaseScriptTest do
       end
 
       # And the body of the loop should actually rm under $OTP_BUNDLE/lib.
-      assert sh =~ ~s|rm -rf "$OTP_BUNDLE/lib/$prefix-"|
+      # The loop body lives inside a `bash -c '...'` invocation (so each step
+      # gets a [SLIM:tag] size delta), which means $OTP_BUNDLE is unquoted out
+      # of the single-quoted heredoc — match either form.
+      assert sh =~ ~r/rm -rf "(?:'")?\$OTP_BUNDLE(?:"')?\/lib\/\$prefix-"/
     end
   end
 
@@ -232,6 +235,57 @@ defmodule MobDev.ReleaseScriptTest do
              "expected OTP lib/ to be rsynced into the bundle before the strip pass"
 
       assert strip =~ "find \"$OTP_BUNDLE\" -type f"
+    end
+  end
+
+  describe "MOB_SLIM gating and per-step traceability" do
+    # Every slim strip step is wrapped in a `slim_step <tag> ...` bash
+    # function call. The function emits `[SLIM:<tag>] N KB → M KB (-D KB)`
+    # so a broken build can be bisected to a single step from build logs.
+    # Both the gating shape and the tag set are part of the contract.
+
+    test "Apple-policy strips are NOT gated (always run for App Store validity)", %{sh: sh} do
+      # The .so/.a/standalone-bin strips happen above the MOB_SLIM check —
+      # `--no-slim` builds still need to pass App Store validation.
+      [apple, _slim] = String.split(sh, ~s|if [ "${MOB_SLIM:-1}" = "1" ]; then|, parts: 2)
+      assert apple =~ ~s|find "$OTP_BUNDLE" -type f \\( -name "*.so"|
+      assert apple =~ ~s|find "$OTP_BUNDLE" -path "*/priv/bin/*" -type f -delete|
+    end
+
+    test "slim block is gated on MOB_SLIM env var (default on for release)", %{sh: sh} do
+      assert sh =~ ~s|if [ "${MOB_SLIM:-1}" = "1" ]; then|,
+             "release.ex must default MOB_SLIM=1 — `mix mob.release --no-slim` opts out"
+    end
+
+    test "skip path emits [SLIM:skipped] when MOB_SLIM=0", %{sh: sh} do
+      assert sh =~ "[SLIM:skipped] MOB_SLIM=0",
+             "no-slim builds must announce themselves so the build log makes the choice obvious"
+    end
+
+    test "defines a slim_step bash helper that prints [SLIM:<label>] size delta", %{sh: sh} do
+      assert sh =~ "slim_step() {",
+             "expected a slim_step() bash helper to be defined inside the slim block"
+
+      assert sh =~ ~s|printf "[SLIM:%s] %s KB → %s KB  (-%s KB)\\n"|,
+             "slim_step must emit the [SLIM:tag] before/after/delta line — it's the grep target docs use"
+    end
+
+    test "every strip step routes through slim_step <tag>", %{sh: sh} do
+      # If a step is added without going through slim_step, it won't show
+      # up in the [SLIM:...] log and a regression in that step won't be
+      # bisectable from the build output.
+      for tag <- ~w(prefix_libs foreign_apps dedup_versions src_and_headers beam_chunks) do
+        assert sh =~ "slim_step #{tag}",
+               "expected slim_step invocation for tag `#{tag}`"
+      end
+    end
+
+    test "main-binary symbol strip is gated on MOB_SLIM", %{sh: sh} do
+      # `xcrun strip -x` rewrites the Mach-O — must NOT happen on
+      # `--no-slim` builds where the developer wants debug symbols
+      # preserved on the release-shaped binary.
+      [_, after_first_gate] = String.split(sh, ~s|if [ "${MOB_SLIM:-1}" = "1" ]; then|, parts: 2)
+      assert after_first_gate =~ "xcrun strip -x"
     end
   end
 end
