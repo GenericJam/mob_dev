@@ -29,8 +29,9 @@ defmodule MobDev.Release do
   Returns `{:ok, ipa_path}` or `{:error, reason}`.
   """
   @spec build_ipa(keyword()) :: {:ok, String.t()} | {:error, String.t()}
-  def build_ipa(_opts \\ []) do
+  def build_ipa(opts \\ []) do
     cfg = MobDev.NativeBuild.__load_config__()
+    slim = Keyword.get(opts, :slim, true)
 
     with :ok <- check_macos(),
          :ok <- check_xcrun(),
@@ -44,7 +45,11 @@ defmodule MobDev.Release do
       output_dir = Path.expand("_build/mob_release")
       File.mkdir_p!(output_dir)
 
-      env = [{"MOB_RELEASE_OUTPUT_DIR", output_dir} | env]
+      env = [
+        {"MOB_RELEASE_OUTPUT_DIR", output_dir},
+        {"MOB_SLIM", if(slim, do: "1", else: "0")}
+        | env
+      ]
 
       case System.cmd("bash", [script_path],
              env: env,
@@ -703,96 +708,87 @@ defmodule MobDev.Release do
     # already linked into $APP_NAME (the main Mach-O); the .so files
     # belong to OTP libs the app doesn't actually use (megaco,
     # runtime_tools, asn1's dynamic variant).
-    echo "=== Stripping disallowed binaries from bundle (App Store policy) ==="
+    # ── Apple-policy strips (always on; not optional for App Store) ──
+    # Apple's validator rejects bundles containing .so/.a (frameworks must
+    # use .framework), priv/bin executables, or extra binaries in erts-*/bin.
+    # The BEAM is static-linked into the main Mach-O so these are
+    # unreachable from runtime anyway. NOT gated on MOB_SLIM — even
+    # `--no-slim` builds need to pass App Store validation.
+    echo "=== Stripping App-Store-disallowed binaries (always on) ==="
     find "$OTP_BUNDLE" -type f \( -name "*.so" -o -name "*.a" \) -delete
-    # OTP standalone executables — `priv/bin/*` (memsup, cpu_sup, etc.)
-    # and `erts-*/bin/*` (erl_call, erlexec, beam.smp, …). The BEAM is
-    # static-linked into the main binary, so these aren't reachable
-    # at runtime from a Mob app anyway.
     find "$OTP_BUNDLE" -path "*/priv/bin/*" -type f -delete
     find "$OTP_BUNDLE/$ERTS_VSN/bin" -type f -delete 2>/dev/null || true
-    # Whole OTP libs the framework doesn't use — saves bundle size and
-    # avoids any forbidden artifacts inside them being missed. One rm
-    # per prefix; the cost of forking rm a few dozen times is
-    # irrelevant for a release build. Audit-tool-confirmed (2026-05-02):
-    # the original list missed common_test (3.5MB), mnesia (2.3MB),
-    # eldap (268KB), odbc (140KB) — added them here. Run `mix mob.audit_otp`
-    # to find more candidates as your dep set evolves.
-    for prefix in megaco runtime_tools erl_interface os_mon wx et eunit \
-                  observer debugger diameter edoc tools snmp dialyzer \
-                  syntax_tools parsetools xmerl reltool inets ftp tftp \
-                  common_test mnesia eldap odbc; do
-        rm -rf "$OTP_BUNDLE/lib/$prefix-"*
-    done
 
-    # Drop "foreign apps" — other projects' release dirs that leaked into
-    # the shared OTP cache (toy_app, test_demo, mob_test from someone's
-    # earlier `mix mob.release` against a different project). These have
-    # no business in this app's release tree.
-    for prefix in toy_ test_ mob_test scratch_; do
-        rm -rf "$OTP_BUNDLE/lib/$prefix"*-*
-    done
+    # ── Slim strips (gated; opt out with `mix mob.release --no-slim`) ──
+    # Use --no-slim to keep the full OTP runtime + debug info in the bundle
+    # for diagnosing strip-induced regressions. Always-stripped libs above
+    # are still removed because Apple won't accept them either way.
+    if [ "${MOB_SLIM:-1}" = "1" ]; then
+        echo "=== Slim strip pass ==="
 
-    # Drop duplicate library versions. The cache may hold asn1-5.4 AND
-    # asn1-5.4.3, public_key-1.18 AND 1.20.x — only the highest version
-    # is reachable. Sort -V (version sort) handles "5.4" vs "5.4.3" right.
-    # set +e because globs and missing dirs are common and we don't want
-    # `set -e` to abort the script on a benign no-match.
-    echo "=== Removing duplicate library versions ==="
-    set +e
-    cd "$OTP_BUNDLE/lib"
-    for name in $(ls -1 2>/dev/null | sed 's/-[0-9].*$//' | sort -u); do
-        versions=$(ls -1d "${name}"-[0-9]* 2>/dev/null | sort -V)
-        [ -z "$versions" ] && continue
-        count=$(printf '%s\n' "$versions" | wc -l | tr -d ' ')
-        if [ "$count" -gt 1 ]; then
-            latest=$(printf '%s\n' "$versions" | tail -1)
-            for v in $versions; do
-                if [ "$v" != "$latest" ]; then
-                    echo "  removing duplicate: $v (keeping $latest)"
-                    rm -rf "$v"
-                fi
-            done
-        fi
-    done
-    cd "$BUILD_DIR"
-    set -e
+        # Whole OTP libs the framework doesn't use. Audit-tool-confirmed
+        # (mix mob.audit_otp). Add to this list as your dep set evolves.
+        for prefix in megaco runtime_tools erl_interface os_mon wx et eunit \
+                      observer debugger diameter edoc tools snmp dialyzer \
+                      syntax_tools parsetools xmerl reltool inets ftp tftp \
+                      common_test mnesia eldap odbc; do
+            rm -rf "$OTP_BUNDLE/lib/$prefix-"*
+        done
 
-    # Drop source code + headers from the bundled OTP libs. They're needed
-    # at COMPILE time, not RUNTIME — the `.beam` files in `ebin/` carry the
-    # bytecode the BEAM actually executes. Shipping `.erl` source bloats
-    # the IPA by ~16 MB on a typical Mob app (stdlib/src + kernel/src +
-    # compiler/src etc.). `include/` headers (`*.hrl`) are similarly
-    # compile-time only.
-    echo "=== Removing source + header dirs from bundled OTP ==="
-    find "$OTP_BUNDLE" -type d \( -name src -o -name include \) -prune -exec rm -rf {} +
+        # Foreign apps from a shared OTP cache — toy_*, test_*, scratch_*
+        # apps that leaked in from another project's mix mob.release run.
+        for prefix in toy_ test_ mob_test scratch_; do
+            rm -rf "$OTP_BUNDLE/lib/$prefix"*-*
+        done
 
-    # Strip optional chunks (Dbgi/Docs/etc.) from every shipped .beam.
-    # `:beam_lib.strip_release/1` walks the directory tree and rewrites
-    # each .beam in place, keeping only chunks needed for execution.
-    # Equivalent to mix release's `strip_beams: true`. Saves ~30% per .beam
-    # — typically 5-7 MB across the OTP libs.
-    echo "=== Stripping debug + doc chunks from .beam files ==="
-    erl -noinput -boot start_clean -eval '
-      case beam_lib:strip_release("'"$OTP_BUNDLE"'") of
-        {ok, _} -> erlang:halt(0);
-        {error, beam_lib, Reason} ->
-          io:format(standard_error, "  strip_release error: ~p~n", [Reason]),
-          erlang:halt(1)
-      end.'
+        # Dedup library versions. The cache may hold asn1-5.4 AND
+        # asn1-5.4.3, public_key-1.18 AND 1.20.x — only the highest
+        # is reachable; sort -V handles "5.4" vs "5.4.3" right.
+        set +e
+        cd "$OTP_BUNDLE/lib"
+        for name in $(ls -1 2>/dev/null | sed 's/-[0-9].*$//' | sort -u); do
+            versions=$(ls -1d "${name}"-[0-9]* 2>/dev/null | sort -V)
+            [ -z "$versions" ] && continue
+            count=$(printf '%s\n' "$versions" | wc -l | tr -d ' ')
+            if [ "$count" -gt 1 ]; then
+                latest=$(printf '%s\n' "$versions" | tail -1)
+                for v in $versions; do
+                    if [ "$v" != "$latest" ]; then
+                        echo "  removing duplicate: $v (keeping $latest)"
+                        rm -rf "$v"
+                    fi
+                done
+            fi
+        done
+        cd "$BUILD_DIR"
+        set -e
+
+        # Drop source + headers (compile-time only). Saves ~16 MB.
+        find "$OTP_BUNDLE" -type d \( -name src -o -name include \) -prune -exec rm -rf {} +
+
+        # Strip Dbgi/Docs chunks from .beam files (~30% per file).
+        erl -noinput -boot start_clean -eval '
+          case beam_lib:strip_release("'"$OTP_BUNDLE"'") of
+            {ok, _} -> erlang:halt(0);
+            {error, beam_lib, Reason} ->
+              io:format(standard_error, "  strip_release error: ~p~n", [Reason]),
+              erlang:halt(1)
+          end.'
+    else
+        echo "=== Skipping slim strip pass (MOB_SLIM=0) ==="
+    fi
 
     echo "  $(find "$OTP_BUNDLE" -type f | wc -l | tr -d ' ') files in bundle after strip"
 
-    # Strip non-global symbols from the main Mach-O. The static-linked BEAM
-    # emulator + mob_nif + Swift code carry ~15K symbols by default; the
-    # ones with internal linkage are not needed at runtime. Apple's strip
-    # with -x removes them. Saves ~1 MB on the binary. Must happen BEFORE
-    # codesigning since strip rewrites the file (invalidating any signature).
-    echo "=== Stripping non-global symbols from main binary ==="
-    SIZE_BEFORE_STRIP=$(stat -f%z "$APP/$APP_NAME")
-    xcrun strip -x "$APP/$APP_NAME"
-    SIZE_AFTER_STRIP=$(stat -f%z "$APP/$APP_NAME")
-    echo "  $APP_NAME: $((SIZE_BEFORE_STRIP / 1024)) KB → $((SIZE_AFTER_STRIP / 1024)) KB"
+    # Strip non-global symbols from the main Mach-O — slim only.
+    # MUST happen before codesigning since strip rewrites the file.
+    if [ "${MOB_SLIM:-1}" = "1" ]; then
+        echo "=== Stripping non-global symbols from main binary ==="
+        SIZE_BEFORE_STRIP=$(stat -f%z "$APP/$APP_NAME")
+        xcrun strip -x "$APP/$APP_NAME"
+        SIZE_AFTER_STRIP=$(stat -f%z "$APP/$APP_NAME")
+        echo "  $APP_NAME: $((SIZE_BEFORE_STRIP / 1024)) KB → $((SIZE_AFTER_STRIP / 1024)) KB"
+    fi
 
     echo "=== Embedding App Store provisioning profile ==="
     PROFILE_DIR="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"

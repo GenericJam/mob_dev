@@ -226,7 +226,7 @@ defmodule MobDev.ReleaseScriptTest do
     test "copies $OTP_ROOT/lib/ before the strip pass runs", %{sh: sh} do
       [bundle, strip] =
         sh
-        |> String.split("Stripping disallowed binaries", parts: 2)
+        |> String.split("Stripping App-Store-disallowed binaries", parts: 2)
 
       assert bundle =~ ~s|rsync -a --delete "$OTP_ROOT/lib/"|,
              "expected OTP lib/ to be rsynced into the bundle before the strip pass"

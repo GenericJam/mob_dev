@@ -84,7 +84,12 @@ defmodule Mix.Tasks.Mob.Deploy do
     ios: :boolean,
     device: :string,
     schedulers: :integer,
-    beam_flags: :string
+    beam_flags: :string,
+    # Slim build (drops src/include + .beam debug chunks + Apple-policy strips).
+    # On by default for both dev and release. Pass `--no-slim` to keep the
+    # full OTP runtime in the bundle — useful if you need debug info on
+    # device, or to isolate a strip-induced regression during diagnosis.
+    slim: :boolean
   ]
 
   @impl Mix.Task
@@ -121,9 +126,15 @@ defmodule Mix.Tasks.Mob.Deploy do
     Mix.Task.run("compile")
     IO.puts("\n#{IO.ANSI.cyan()}Deploying to devices...#{IO.ANSI.reset()}\n")
 
+    slim = Keyword.get(opts, :slim, true)
+
     native_ok =
       if native do
-        MobDev.NativeBuild.build_all(platforms: platforms, device: effective_device_id)
+        MobDev.NativeBuild.build_all(
+          platforms: platforms,
+          device: effective_device_id,
+          slim: slim
+        )
       end
 
     # Skip BEAM push if native build failed — the APK/app bundle isn't installed
