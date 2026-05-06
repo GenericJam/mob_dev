@@ -43,6 +43,11 @@ cp "$OTP_SRC/erts/emulator/pcre/obj/arm-unknown-linux-androideabi/opt/libepcre.a
 cp "$OTP_SRC/erts/emulator/ryu/obj/arm-unknown-linux-androideabi/opt/libryu.a"     "$ERTS_LIB/"
 cp "$ASN1RT_NIF_ARM32"                                                              "$ERTS_LIB/asn1rt_nif.a"
 
+# Crypto: real OpenSSL static-linked into the app's libpigeon.so etc.
+cp "$OTP_SRC/lib/crypto/priv/lib/arm-unknown-linux-androideabi/crypto.a"           "$ERTS_LIB/"
+: "${OPENSSL_PREFIX_ARM32:=/tmp/openssl-android-arm32}"
+cp "$OPENSSL_PREFIX_ARM32/lib/libcrypto.a"                                          "$ERTS_LIB/"
+
 ERTS_INC="$STAGE/erts-$ERTS_VSN/include"
 mkdir -p "$ERTS_INC"
 cp "$OTP_SRC/erts/emulator/beam/erl_nif.h"                                          "$ERTS_INC/"
@@ -53,8 +58,12 @@ cp "$OTP_SRC/erts/include/erl_fixed_size_int_types.h"                           
 
 bundle_elixir_stdlib "$STAGE"
 
-EXQLITE_VSN=$(grep '"exqlite"' "$EXQLITE_BUILD/../../../mix.lock" \
+EXQLITE_VSN=$(grep '"exqlite"' "$EXQLITE_BUILD/../../../../mix.lock" \
     | grep -o '"[0-9][^"]*"' | head -1 | tr -d '"')
+if [ -z "$EXQLITE_VSN" ]; then
+    EXQLITE_VSN=$(grep -o '{vsn,"[^"]*"}' "$EXQLITE_BUILD/ebin/exqlite.app" \
+        | grep -o '"[^"]*"' | tr -d '"')
+fi
 [ -n "$EXQLITE_VSN" ] || fail "could not detect exqlite version"
 EXQLITE_LIB="$STAGE/lib/exqlite-$EXQLITE_VSN"
 mkdir -p "$EXQLITE_LIB/ebin" "$EXQLITE_LIB/priv"
@@ -73,5 +82,7 @@ verify_present() {
 verify_present "erts-$ERTS_VSN"
 verify_present "lib/elixir/ebin/elixir.app"
 verify_present "lib/exqlite-$EXQLITE_VSN"
+verify_present "erts-$ERTS_VSN/lib/crypto.a"
+verify_present "erts-$ERTS_VSN/lib/libcrypto.a"
 
 log "done: $TARBALL ($(du -h "$TARBALL" | cut -f1))"
