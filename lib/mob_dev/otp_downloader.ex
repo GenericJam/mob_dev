@@ -85,9 +85,21 @@ defmodule MobDev.OtpDownloader do
 
     cond do
       not base_valid? -> false
+      not crypto_present?(dir) -> false
       String.starts_with?(name, "otp-ios-device-") -> ios_device_extras_present?(dir)
       true -> true
     end
+  end
+
+  @doc false
+  @spec crypto_present?(String.t()) :: boolean()
+  def crypto_present?(dir) do
+    # Schema bump (2026-05-06): tarballs now ship erts-VSN/lib/crypto.a +
+    # erts-VSN/lib/libcrypto.a so apps can statically link real OpenSSL.
+    # Older tarballs at the same release tag predate this change and are
+    # treated as stale — re-download picks up the new content.
+    Path.wildcard(Path.join([dir, "erts-*", "lib", "crypto.a"])) != [] and
+      Path.wildcard(Path.join([dir, "erts-*", "lib", "libcrypto.a"])) != []
   end
 
   @doc false
