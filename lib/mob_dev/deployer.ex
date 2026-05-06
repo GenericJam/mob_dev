@@ -1136,21 +1136,50 @@ defmodule MobDev.Deployer do
     ssl_ebin = Path.join(to_string(:code.lib_dir(:ssl)), "ebin")
     ssl_dirs = if File.dir?(ssl_ebin), do: [ssl_ebin], else: []
 
-    # crypto is a required OTP app (listed in Ecto's .app) but the iOS and
-    # Android OTP builds omit it (no OpenSSL). Compile a minimal shim so
-    # ensure_all_started can start it. BEAM bytecode is platform-independent
-    # so erlc on the Mac produces a .beam that runs on both targets.
+    # crypto is a required OTP app. Older device-side OTP builds (pre-2026-05)
+    # were configured `--without-ssl` to skip OpenSSL, so the device runtime
+    # had no real crypto and we shipped a deliberately-insecure shim
+    # (md5-only hash, no x25519, no AEAD) just to let `ensure_all_started`
+    # succeed for HTTP-only Phoenix at loopback.
+    #
+    # Newer tarballs ship a real crypto.so NIF + crypto.beam built against
+    # OpenSSL 3.x. When the host has a cached OTP runtime that already
+    # contains crypto.beam, we MUST NOT push the shim — its `crypto.beam`
+    # would land first in the on-device code path and shadow the real one,
+    # making `crypto:generate_key/2` undef even though the NIF is loaded.
     shim_dirs =
-      case generate_crypto_shim() do
-        {:ok, dir} -> [dir]
-        _ -> []
+      if real_device_crypto_available?() do
+        []
+      else
+        case generate_crypto_shim() do
+          {:ok, dir} -> [dir]
+          _ -> []
+        end
       end
 
     app_dirs ++ stdlib_dirs ++ ssl_dirs ++ shim_dirs
   end
 
+  # Detects whether any cached device-side OTP runtime under ~/.mob/cache/
+  # already ships a real crypto.beam. If yes, the deployer must skip the
+  # shim — pushing the shim's crypto.beam shadows the real one in the
+  # on-device code path, making :crypto.generate_key/2 (and friends) undef
+  # despite the NIF being loaded.
+  @spec real_device_crypto_available?() :: boolean()
+  defp real_device_crypto_available? do
+    cache = Path.join([System.user_home!(), ".mob", "cache"])
+
+    Path.wildcard(Path.join([cache, "otp-*", "lib", "crypto-*", "ebin", "crypto.beam"]))
+    |> Enum.any?()
+  end
+
   # Generates crypto.beam + crypto.app in a temp dir and returns {:ok, dir}.
   # Returns {:error, reason} if erlc is not available.
+  #
+  # Used only as a fallback when the device-side OTP runtime was built
+  # `--without-ssl` (pre-2026-05 tarballs). Modern tarballs ship a real
+  # crypto.so NIF; in that case `real_device_crypto_available?/0` returns
+  # true and this shim is skipped.
   @doc false
   @spec generate_crypto_shim() :: {:ok, String.t()} | {:error, term()}
   def generate_crypto_shim do

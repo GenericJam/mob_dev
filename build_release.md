@@ -26,10 +26,14 @@ erts-<vsn>/
     libepcre.a      (iOS only)
     libryu.a        (iOS only)
     asn1rt_nif.a    (iOS only)
+    crypto.a              # OTP's crypto NIF, built with -DSTATIC_ERLANG_NIF
+    libcrypto.a           # OpenSSL 3.x, statically linked into crypto.a
     internal/
       liberts_internal_r.a
       libethread.a
 lib/            # OTP stdlib (kernel, stdlib, elixir, logger, ...)
+              # Includes lib/crypto-VSN, lib/public_key-VSN, lib/ssl-VSN
+              # — real crypto, not a shim.
 releases/
   29/
     start_clean.boot
@@ -338,11 +342,22 @@ xcrun --sdk iphoneos --show-sdk-path
 # libbeam.a (static) instead of libbeam.so. Same flag as for the sim build.
 export RELEASE_LIBBEAM=yes
 
-# Configure for the iOS arm64 device target. --without-ssl skips OpenSSL
-# (Mob ships an Elixir-side crypto shim for HTTP-only Phoenix on-device).
+# Configure for the iOS arm64 device target.
+#
+# `--with-ssl=$OPENSSL_PREFIX` points at a previously cross-compiled
+# OpenSSL 3.x install (see scripts/release/openssl/ios_device.sh).
+# `--disable-dynamic-ssl-lib` keeps OpenSSL static-linked into the
+# crypto NIF; no separate libcrypto.so/.dylib ends up in the app.
+# `--enable-static-nifs` registers crypto (and asn1rt_nif) in the
+# BEAM's static_nif_tab[] so `erlang:load_nif("crypto", ...)` resolves
+# `crypto_nif_init` via dlsym(RTLD_DEFAULT) — no dlopen of crypto.so.
+# The latter is required: Android's RTLD_LOCAL default makes a dlopen'd
+# crypto.so unable to see libpigeon.so's enif_* symbols.
 ./otp_build configure \
     --xcomp-conf=./xcomp/erl-xcomp-arm64-ios.conf \
-    --without-ssl
+    --with-ssl="$OPENSSL_PREFIX" \
+    --disable-dynamic-ssl-lib \
+    --enable-static-nifs
 
 # Build everything (ERTS, stdlib, and all OTP apps for the target).
 ./otp_build boot

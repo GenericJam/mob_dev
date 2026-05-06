@@ -42,6 +42,22 @@ cp "$OTP_SRC/erts/emulator/pcre/obj/aarch64-unknown-linux-android/opt/libepcre.a
 cp "$OTP_SRC/erts/emulator/ryu/obj/aarch64-unknown-linux-android/opt/libryu.a"    "$ERTS_LIB/"
 cp "$OTP_SRC/lib/asn1/priv/lib/aarch64-unknown-linux-android/asn1rt_nif.a"        "$ERTS_LIB/"
 
+# Crypto: real OpenSSL static-linked into the app's libpigeon.so.
+# Both archives are needed:
+#   - crypto.a: OTP's crypto NIF C wrapper, built with -DSTATIC_ERLANG_NIF
+#     (auto-emitted at OTP-build time when ./otp_build configure was
+#     passed --enable-static-nifs). ERL_NIF_INIT(crypto, ...) emits the
+#     crypto_nif_init symbol the BEAM resolves at load_nif time via
+#     dlsym(RTLD_DEFAULT) — no dlopen of crypto.so.
+#   - libcrypto.a: OpenSSL itself (provides EVP_*, ECDH, AEAD, etc.).
+# Android loads native libs RTLD_LOCAL by default, so dlopen'ing a
+# separate crypto.so doesn't see the BEAM's enif_* symbols. Static
+# linking sidesteps that entirely; the same .a is also App-Store-friendly
+# (no separate shared library shipped in the bundle).
+cp "$OTP_SRC/lib/crypto/priv/lib/aarch64-unknown-linux-android/crypto.a"           "$ERTS_LIB/"
+: "${OPENSSL_PREFIX_ARM64:=/tmp/openssl-android-arm64}"
+cp "$OPENSSL_PREFIX_ARM64/lib/libcrypto.a"                                         "$ERTS_LIB/"
+
 # Required headers.
 ERTS_INC="$STAGE/erts-$ERTS_VSN/include"
 mkdir -p "$ERTS_INC"
@@ -54,9 +70,14 @@ cp "$OTP_SRC/erts/include/erl_fixed_size_int_types.h"                           
 bundle_elixir_stdlib "$STAGE"
 
 # exqlite BEAMs (.so NIF lives in the APK; only ebin/ goes here).
-EXQLITE_VSN=$(grep '"exqlite"' "$EXQLITE_BUILD/../../../mix.lock" \
+# mix.lock is 4 levels up from .../_build/dev/lib/exqlite (project root).
+EXQLITE_VSN=$(grep '"exqlite"' "$EXQLITE_BUILD/../../../../mix.lock" \
     | grep -o '"[0-9][^"]*"' | head -1 | tr -d '"')
-[ -n "$EXQLITE_VSN" ] || fail "could not detect exqlite version from $EXQLITE_BUILD/../../../mix.lock"
+if [ -z "$EXQLITE_VSN" ]; then
+    EXQLITE_VSN=$(grep -o '{vsn,"[^"]*"}' "$EXQLITE_BUILD/ebin/exqlite.app" \
+        | grep -o '"[^"]*"' | tr -d '"')
+fi
+[ -n "$EXQLITE_VSN" ] || fail "could not detect exqlite version from $EXQLITE_BUILD"
 EXQLITE_LIB="$STAGE/lib/exqlite-$EXQLITE_VSN"
 mkdir -p "$EXQLITE_LIB/ebin" "$EXQLITE_LIB/priv"
 cp "$EXQLITE_BUILD/ebin/"* "$EXQLITE_LIB/ebin/"
@@ -74,5 +95,10 @@ verify_present() {
 verify_present "erts-$ERTS_VSN"
 verify_present "lib/elixir/ebin/elixir.app"
 verify_present "lib/exqlite-$EXQLITE_VSN"
+verify_present "lib/crypto-.*/priv/lib/crypto.so"
+verify_present "lib/public_key-.*/ebin/public_key.beam"
+verify_present "lib/ssl-.*/ebin/ssl.beam"
+verify_present "erts-$ERTS_VSN/lib/crypto.a"
+verify_present "erts-$ERTS_VSN/lib/libcrypto.a"
 
 log "done: $TARBALL ($(du -h "$TARBALL" | cut -f1))"
