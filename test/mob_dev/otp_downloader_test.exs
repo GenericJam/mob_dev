@@ -51,20 +51,36 @@ defmodule MobDev.OtpDownloaderTest do
       {:ok, tmp: tmp}
     end
 
-    test "Android tarball: erts-* alone is enough", %{tmp: tmp} do
+    # All tarballs (post-2026-05-06) ship crypto.a + libcrypto.a. Helper
+    # to populate them in test fixtures.
+    defp add_crypto(tmp) do
+      File.mkdir_p!(Path.join(tmp, "erts-16.1/lib"))
+      File.write!(Path.join(tmp, "erts-16.1/lib/crypto.a"), "")
+      File.write!(Path.join(tmp, "erts-16.1/lib/libcrypto.a"), "")
+    end
+
+    test "Android tarball: erts-* + crypto archives is enough", %{tmp: tmp} do
       File.mkdir_p!(Path.join(tmp, "erts-16.1"))
+      add_crypto(tmp)
       assert OtpDownloader.valid_otp_dir?(tmp, "otp-android-73ba6e0f")
       assert OtpDownloader.valid_otp_dir?(tmp, "otp-android-arm32-73ba6e0f")
     end
 
-    test "iOS sim tarball: erts-* alone is enough", %{tmp: tmp} do
+    test "Android tarball: missing crypto.a → invalid", %{tmp: tmp} do
       File.mkdir_p!(Path.join(tmp, "erts-16.1"))
+      refute OtpDownloader.valid_otp_dir?(tmp, "otp-android-73ba6e0f")
+    end
+
+    test "iOS sim tarball: erts-* + crypto archives is enough", %{tmp: tmp} do
+      File.mkdir_p!(Path.join(tmp, "erts-16.1"))
+      add_crypto(tmp)
       assert OtpDownloader.valid_otp_dir?(tmp, "otp-ios-sim-73ba6e0f")
     end
 
     test "iOS device tarball: needs erts-* AND EPMD .c sources AND .h headers",
          %{tmp: tmp} do
       File.mkdir_p!(Path.join(tmp, "erts-16.1"))
+      add_crypto(tmp)
       File.mkdir_p!(Path.join(tmp, "erts/epmd/src"))
 
       # No EPMD source yet — fails.
@@ -94,6 +110,7 @@ defmodule MobDev.OtpDownloaderTest do
       for missing <- required do
         File.rm_rf!(tmp)
         File.mkdir_p!(Path.join(tmp, "erts-16.1"))
+        add_crypto(tmp)
         File.mkdir_p!(Path.join(tmp, "erts/epmd/src"))
 
         for rel <- required, rel != missing do
