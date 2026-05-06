@@ -27,12 +27,18 @@ make distclean >/dev/null 2>&1 || true
 
 ./Configure android-arm \
     -D__ANDROID_API__="$ANDROID_API" \
+    -fPIC \
     --prefix="$PREFIX" \
     --openssldir="$PREFIX/ssl" \
     no-shared \
     no-tests \
     no-apps \
-    no-engine
+    no-engine \
+    no-asm     # OpenSSL's hand-written ARM assembly uses non-PIC
+                # absolute relocations against OPENSSL_armcap_P that
+                # ld.lld rejects when the .a is linked into a .so.
+                # Slower than the asm path but correct. C fallback
+                # implementations are still hardware-AES-aware.
 
 make -j8
 make install_sw
