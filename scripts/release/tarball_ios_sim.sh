@@ -36,6 +36,11 @@ cp "$OTP_SRC/erts/emulator/pcre/obj/aarch64-apple-iossimulator/opt/libepcre.a" "
 cp "$OTP_SRC/erts/emulator/ryu/obj/aarch64-apple-iossimulator/opt/libryu.a"    "$ERTS_LIB/"
 cp "$OTP_SRC/lib/asn1/priv/lib/aarch64-apple-iossimulator/asn1rt_nif.a"        "$ERTS_LIB/"
 
+# Crypto: real OpenSSL static-linked into the app's main native lib.
+cp "$OTP_SRC/lib/crypto/priv/lib/aarch64-apple-iossimulator/crypto.a"          "$ERTS_LIB/"
+: "${OPENSSL_PREFIX_IOS_SIM:=/tmp/openssl-ios-sim}"
+cp "$OPENSSL_PREFIX_IOS_SIM/lib/libcrypto.a"                                    "$ERTS_LIB/"
+
 # Add required headers.
 ERTS_INC="$STAGE/erts-$ERTS_VSN/include"
 mkdir -p "$ERTS_INC"
@@ -64,5 +69,7 @@ verify_present() {
 }
 verify_present "erts-$ERTS_VSN"
 verify_present "lib/elixir/ebin/elixir.app"
+verify_present "erts-$ERTS_VSN/lib/crypto.a"
+verify_present "erts-$ERTS_VSN/lib/libcrypto.a"
 
 log "done: $TARBALL ($(du -h "$TARBALL" | cut -f1))"

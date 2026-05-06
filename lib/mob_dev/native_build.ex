@@ -874,10 +874,9 @@ defmodule MobDev.NativeBuild do
             -I$OTP_ROOT/$ERTS_VSN/include/internal \
             -I$MOB_DIR/ios"
 
-    # Same lib set as the iOS sim build. `libmicro_openssl.a` was historically
-    # listed here to provide MD5Init/MD5Update/MD5Final, but `--without-ssl`
-    # OTP doesn't reference those symbols — libbeam.a's `erts_md5_*` covers
-    # everything that does get called. The link succeeds without it.
+    # Same lib set as the iOS sim build. `crypto.a` is OTP's crypto NIF
+    # built with -DSTATIC_ERLANG_NIF; `libcrypto.a` is statically-linked
+    # OpenSSL 3.x. App-Store-friendly (no separate dynamic libs ship).
     LIBS="
       $OTP_ROOT/$ERTS_VSN/lib/libbeam.a
       $OTP_ROOT/$ERTS_VSN/lib/internal/liberts_internal_r.a
@@ -886,6 +885,8 @@ defmodule MobDev.NativeBuild do
       $OTP_ROOT/$ERTS_VSN/lib/libepcre.a
       $OTP_ROOT/$ERTS_VSN/lib/libryu.a
       $OTP_ROOT/$ERTS_VSN/lib/asn1rt_nif.a
+      $OTP_ROOT/$ERTS_VSN/lib/crypto.a
+      $OTP_ROOT/$ERTS_VSN/lib/libcrypto.a
     "
 
     # ── Compile Elixir/Erlang ─────────────────────────────────────────────────────

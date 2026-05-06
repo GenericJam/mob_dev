@@ -42,6 +42,12 @@ cp "$OTP_SRC/erts/emulator/pcre/obj/aarch64-apple-ios/opt/libepcre.a"  "$ERTS_LI
 cp "$OTP_SRC/erts/emulator/ryu/obj/aarch64-apple-ios/opt/libryu.a"     "$ERTS_LIB/"
 cp "$OTP_SRC/lib/asn1/priv/lib/aarch64-apple-ios/asn1rt_nif.a"         "$ERTS_LIB/"
 
+# Crypto: real OpenSSL static-linked into the app's main native lib.
+# App-Store-friendly (no separate dynamic libs ship inside the .ipa).
+cp "$OTP_SRC/lib/crypto/priv/lib/aarch64-apple-ios/crypto.a"           "$ERTS_LIB/"
+: "${OPENSSL_PREFIX_IOS_DEVICE:=/tmp/openssl-ios-device}"
+cp "$OPENSSL_PREFIX_IOS_DEVICE/lib/libcrypto.a"                         "$ERTS_LIB/"
+
 # Add required headers.
 ERTS_INC="$STAGE/erts-$ERTS_VSN/include"
 mkdir -p "$ERTS_INC"
@@ -89,6 +95,8 @@ verify_present() {
         || fail "verify failed — tarball missing $1"
 }
 verify_present "erts-$ERTS_VSN"
+verify_present "erts-$ERTS_VSN/lib/crypto.a"
+verify_present "erts-$ERTS_VSN/lib/libcrypto.a"
 verify_present "erts/epmd/src/epmd.c"
 verify_present "erts/epmd/src/epmd_srv.c"
 verify_present "erts/epmd/src/epmd_cli.c"
