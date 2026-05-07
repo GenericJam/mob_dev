@@ -237,7 +237,7 @@ defmodule MobDev.IconGenerator do
   def normalise_hex!(hex) when is_binary(hex) do
     raw = String.trim(hex) |> String.upcase() |> String.trim_leading("#")
 
-    if Regex.match?(~r/^[0-9A-F]{6}$/, raw) do
+    if Regex.match?(Regex.compile!("^[0-9A-F]{6}$"), raw) do
       "#" <> raw
     else
       raise ArgumentError,
