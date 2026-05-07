@@ -12,7 +12,8 @@
 # Inputs (env):
 #   OTP_SRC          — OTP source checkout (default: ~/code/otp)
 #   OPENSSL_PREFIX   — pre-built OpenSSL install (default: /tmp/openssl-android-arm64)
-#   ANDROID_NDK_ROOT — NDK root (default: ~/Library/Android/sdk/ndk/27.2.12479018)
+#   NDK_VERSION      — NDK version (sourced from _lib.sh; matches MobDev.NdkVersion)
+#   ANDROID_NDK_ROOT — NDK root (default: ~/Library/Android/sdk/ndk/$NDK_VERSION)
 #   ANDROID_API      — minimum Android API (default: 24)
 #
 # Output:
@@ -23,9 +24,10 @@
 # target_link_libraries it via ${OTP_DIR}/${ERTS_VSN}/lib/crypto.a.
 set -euo pipefail
 
+. "$(dirname "$0")/_lib.sh"
+
 : "${OTP_SRC:=$HOME/code/otp}"
 : "${OPENSSL_PREFIX:=/tmp/openssl-android-arm64}"
-: "${ANDROID_NDK_ROOT:=$HOME/Library/Android/sdk/ndk/27.2.12479018}"
 : "${ANDROID_API:=24}"
 
 TOOLCHAIN="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/darwin-x86_64"

@@ -4,10 +4,11 @@
 # the per-arch static-lib and config.h artifacts under $OTP_SRC.
 set -euo pipefail
 
+. "$(dirname "$0")/_lib.sh"
+
 : "${OPENSSL_PREFIX:=/tmp/openssl-android-arm64}"
 : "${OTP_SRC:=$HOME/code/otp}"
 : "${OTP_RELEASE:=/tmp/otp-android}"
-: "${ANDROID_NDK_ROOT:=$HOME/Library/Android/sdk/ndk/27.2.12479018}"
 : "${NDK_ABI_PLAT:=android24}"
 
 [ -d "$OPENSSL_PREFIX" ] || { echo "missing $OPENSSL_PREFIX" >&2; exit 1; }
