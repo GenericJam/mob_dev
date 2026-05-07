@@ -21,7 +21,7 @@ defmodule MobDev.NdkVersionTest do
   describe "recommended/0" do
     test "returns a non-empty version string" do
       v = NdkVersion.recommended()
-      assert is_binary(v)
+      assert is_binary(v) and byte_size(v) > 0
       assert v =~ ~r/^\d+\.\d+\.\d+$/, "expected major.minor.patch, got #{inspect(v)}"
     end
   end

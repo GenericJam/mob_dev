@@ -1,3 +1,11 @@
+# credo:disable-for-this-file Credo.Check.Readability.Specs
+#
+# This is a characterization fixture: every public function exercises a
+# slice of Elixir/OTP and returns whatever the last expression
+# evaluates to (often a tuple of locals). Spec'ing each as `:: any()`
+# adds noise without information. The module is internal tooling for
+# `MobDev.OtpTrace.capture/1` — never an API surface third parties
+# build against.
 defmodule MobDev.OtpTrace.Harness do
   @moduledoc """
   Characterization harness: a curated set of Elixir features exercised
@@ -33,6 +41,8 @@ defmodule MobDev.OtpTrace.Harness do
   of `:elixir_*`, `:erl_lint`, `:sys_core_*`). Production apps don't run
   the compiler at runtime, so we exclude that surface from the baseline.
   """
+
+  require Logger
 
   # ── Modules used by the exercises (defined at compile time) ──────────
 
@@ -268,7 +278,6 @@ defmodule MobDev.OtpTrace.Harness do
     Supervisor.stop(sup)
 
     # Logger calls (ensure logger backend gets exercised)
-    require Logger
     Logger.info("trace harness — info")
     Logger.warning("trace harness — warning")
 
