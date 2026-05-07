@@ -90,6 +90,67 @@ defmodule MobDev.SecurityScan.FormatterTest do
     assert out =~ "skipped"
   end
 
+  test "markdown/1 produces a readable report with severity table and findings table" do
+    finding = %Finding{
+      id: "CVE-2024-1",
+      severity: :critical,
+      package: "openssl",
+      version: "3.4.0",
+      fixed_in: "3.4.1",
+      title: "Use after free in HTTP parser",
+      source: :openssl_feed,
+      layer: :bundled_runtime
+    }
+
+    report =
+      sample_report([
+        %LayerResult{
+          name: :bundled_runtime,
+          status: :ok,
+          findings: [finding],
+          tools_used: ["fingerprint"],
+          notes: ["scanned 1 tarball"]
+        }
+      ])
+
+    md = Formatter.markdown(report)
+
+    assert md =~ "# Mob Security Scan"
+    assert md =~ "**Total findings:** 1"
+    assert md =~ "## Severity counts"
+    assert md =~ "| Critical | High | Medium | Low | Unknown |"
+    assert md =~ "### `bundled_runtime` — ok"
+    assert md =~ "**Tools:** fingerprint"
+    assert md =~ "scanned 1 tarball"
+    assert md =~ "**Findings**"
+
+    assert md =~
+             "| CRITICAL | CVE-2024-1 | openssl | 3.4.0 | 3.4.1 | Use after free in HTTP parser |"
+  end
+
+  test "markdown/1 escapes pipes inside titles" do
+    report =
+      sample_report([
+        %LayerResult{
+          name: :hex_deps,
+          status: :ok,
+          findings: [
+            %Finding{
+              id: "X",
+              severity: :high,
+              title: "this | breaks | tables",
+              package: "p",
+              version: "1.0"
+            }
+          ]
+        }
+      ])
+
+    md = Formatter.markdown(report)
+    refute md =~ "this | breaks"
+    assert md =~ "this \\| breaks \\| tables"
+  end
+
   test "json/1 returns a parsable JSON string" do
     report =
       sample_report([
