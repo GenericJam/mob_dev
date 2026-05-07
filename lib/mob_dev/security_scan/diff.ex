@@ -31,6 +31,10 @@ defmodule MobDev.SecurityScan.Diff do
   Compute the diff between a previous state map (typically loaded
   from the state file) and the current report.
 
+  Both sides are keyed by the string form of `Finding.dedupe_key/1`
+  (`"id|package|version"`) so we can compare across the JSON state
+  file boundary.
+
   `now` is injectable so tests can pin timestamps.
   """
   @spec compute(StateFile.state(), Report.t(), DateTime.t()) :: t()
@@ -40,20 +44,44 @@ defmodule MobDev.SecurityScan.Diff do
     prev_keys = MapSet.new(Map.keys(prev_by_key))
 
     current_findings = Report.all_findings(report)
-    current_by_key = Map.new(current_findings, &{Finding.dedupe_key(&1), &1})
+    current_by_key = Map.new(current_findings, &{string_key(&1), &1})
     current_keys = MapSet.new(Map.keys(current_by_key))
 
     new_keys = MapSet.difference(current_keys, prev_keys)
     resolved_keys = MapSet.difference(prev_keys, current_keys)
     still_keys = MapSet.intersection(current_keys, prev_keys)
 
+    first_seen = build_first_seen(current_by_key, prev_by_key, now)
+
+    # Map back to tuple-keyed first_seen for downstream consumers
+    # (HistoryFormatter calls `Finding.dedupe_key/1` directly).
+    first_seen_tuple_keyed =
+      Map.new(first_seen, fn {string_key, ts} ->
+        {string_to_tuple(string_key), ts}
+      end)
+
     %__MODULE__{
       new: Enum.map(new_keys, &Map.fetch!(current_by_key, &1)),
       resolved: Enum.map(resolved_keys, &Map.fetch!(prev_by_key, &1)),
       still_present: Enum.map(still_keys, &Map.fetch!(current_by_key, &1)),
-      first_seen: build_first_seen(current_by_key, prev_by_key, now)
+      first_seen: first_seen_tuple_keyed
     }
   end
+
+  @doc "String form of `Finding.dedupe_key/1` — matches StateFile entry keys."
+  @spec string_key(Finding.t()) :: String.t()
+  def string_key(%Finding{} = f) do
+    {id, package, version} = Finding.dedupe_key(f)
+    "#{id || ""}|#{package || ""}|#{version || ""}"
+  end
+
+  defp string_to_tuple(string) do
+    [id, package, version] = String.split(string, "|", parts: 3)
+    {nil_if_empty(id), nil_if_empty(package), nil_if_empty(version)}
+  end
+
+  defp nil_if_empty(""), do: nil
+  defp nil_if_empty(s), do: s
 
   defp build_first_seen(current_by_key, prev_by_key, now) do
     Map.new(current_by_key, fn {key, _finding} ->
