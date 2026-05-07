@@ -31,7 +31,8 @@ defmodule MobDev.MixProject do
       {:plug_crypto, "~> 2.0"},
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
-      {:jump_credo_checks, "~> 0.1.0", only: [:dev, :test], runtime: false}
+      {:jump_credo_checks, "~> 0.1.0", only: [:dev, :test], runtime: false},
+      {:erlfmt, "~> 1.8", only: :dev, runtime: false}
     ]
   end
 
@@ -42,7 +43,8 @@ defmodule MobDev.MixProject do
       source_url_pattern: "https://github.com/genericjam/mob_dev/blob/main/%{path}#L%{line}",
       extras: [
         "README.md": [title: "mob_dev"],
-        "guides/publishing_to_testflight.md": [title: "Publishing to TestFlight (iOS)"]
+        "guides/publishing_to_testflight.md": [title: "Publishing to TestFlight (iOS)"],
+        "guides/publishing_to_google_play.md": [title: "Publishing to Google Play (Android)"]
       ],
       groups_for_extras: [
         Guides: ~r/guides\/.*/

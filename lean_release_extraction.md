@@ -55,6 +55,57 @@ Trigger conditions (any one of these):
 4. We have at least one non-Mob app using the audit (e.g. ran it
    manually against another Elixir release)
 
+## Prior art and references
+
+### `mix_unused` (Hauleth)
+
+`https://hexdocs.pm/mix_unused/Mix.Tasks.Compile.Unused.html` —
+community pointer when this work was discussed. Static AST analysis of
+**project source**, flags public functions never called.
+
+- Different layer than `OtpAudit`. We do app/module reachability across
+  the whole release; `mix_unused` does dead-public-function detection
+  inside one project. They stack, they don't compete.
+- Blind to dynamic dispatch (`apply/2`, `apply/3`, runtime module
+  lookup). Mob and its apps use a fair bit of this — render-tree
+  dispatch, NIF stub lookup, component registry — so expect false
+  positives needing an `ignore` list.
+- Trial plan when work resumes: install in `mob_dev` first (least
+  dynamic, highest signal), then `square_triangle`, then `mob` itself.
+  Decide whether the ignore-list maintenance pays for itself before
+  wiring it into `mix mob.doctor`.
+
+### Peer Stritzinger / GRiSP — closest prior art for shrinking
+
+Stritzinger has been doing the same thing we're doing, at one-tenth our
+scale. Headline result (mid-2025, Code BEAM Stockholm): **BEAM boots in
+16 MB on GRiSP Nano.** Reaches an Erlang shell, runs OTP, TCP/IP, USB.
+
+References:
+
+- `https://github.com/grisp/rebar3_grisp` — their build plugin. Most
+  useful artifact: shows how they decide which OTP modules to include
+  and how they assemble a stripped ERTS. This is the rebar3 analog of
+  what `mix lean_release.slim` should do. Read the source when starting
+  the slim-release implementation, not before — it'll inform the design
+  but isn't load-bearing for the audit work.
+- `https://www.grisp.org/resources` — current talk index. The 2025
+  Stockholm talk ("Squeezing the BEAM into 16MB" or similar) is the
+  current technical reference; the 2017-era YouTube video is older and
+  superseded.
+- Open question whether `lean_release` should reuse any GRiSP code or
+  just the techniques. They're rebar3-native; we're Mix-native. Likely
+  a re-implementation, not a port.
+
+### Outreach
+
+When `lean_release` is closer to extraction (per the trigger
+conditions above), reach out to Stritzinger directly. He's an active
+community member; the GRiSP work is the closest prior art in
+Erlang-land. Trading notes is likely valuable both ways — our trace
+harness (empirical reachability from a running app) is something
+embedded developers don't need but Phoenix/LiveView shops would use.
+
 ## Naming
 
 `lean_release` — descriptive, available on Hex, reads well in
@@ -76,3 +127,14 @@ calling our internal module that, fine for internal but generic on Hex).
 - [ ] mob_dev gains `{:lean_release, "~> 0.1"}` dep
 - [ ] README + guide on hexdocs
 - [ ] Initial Hex release as 0.1.0
+
+## When work resumes — quick start
+
+Before doing anything else:
+
+1. Read this whole file, including the prior art section above.
+2. Re-run `mix mob.audit_otp` against a current Mob iOS release to
+   establish the baseline (saved cruft total, current strip list).
+3. Decide whether the next phase is: (a) `mix_unused` evaluation,
+   (b) empirical-trace harness, or (c) `mix mob.release --slim`.
+   Pick one; don't fan out.
