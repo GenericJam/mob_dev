@@ -27,8 +27,15 @@ cd "$OPENSSL_SRC"
 # Clean any previous arch's config so Configure doesn't get confused.
 make distclean >/dev/null 2>&1 || true
 
+## Size flags: -Os over default -O3, plus per-function/data sections so
+## the linker can dead-strip unused crypto code from the final libpigeon.so
+## via -Wl,--gc-sections (set on the consuming link, not here). Per
+## GRiSP nano (2025-06-11): single biggest C-side shrink technique.
+## -fPIC explicit (NDK toolchain default but belt-and-suspenders).
 ./Configure android-arm64 \
     -D__ANDROID_API__="$ANDROID_API" \
+    -Os -ffunction-sections -fdata-sections \
+    -fPIC \
     --prefix="$PREFIX" \
     --openssldir="$PREFIX/ssl" \
     no-shared \

@@ -30,7 +30,7 @@ CFLAGS=(
     -fno-strict-overflow -fexceptions
     -fstack-protector-strong -fstack-clash-protection
     -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3
-    -fno-common -g -O2 -D_GNU_SOURCE -fPIC
+    -fno-common -g -Os -ffunction-sections -fdata-sections -D_GNU_SOURCE -fPIC
     -DHAVE_OPENSSL_CRYPTO_MEMCMP
     -DSTATIC_ERLANG_NIF
     -DDISABLE_EVP_DH=0 -DDISABLE_EVP_HMAC=0

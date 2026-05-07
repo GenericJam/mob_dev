@@ -23,7 +23,9 @@ export RANLIB="xcrun -sdk iphoneos ranlib"
 cd "$OPENSSL_SRC"
 make distclean >/dev/null 2>&1 || true
 
+## See android_arm64.sh for size-flag rationale.
 ./Configure ios64-xcrun \
+    -Os -ffunction-sections -fdata-sections \
     --prefix="$PREFIX" \
     --openssldir="$PREFIX/ssl" \
     no-shared \
