@@ -121,7 +121,7 @@ defmodule MobDev.SecurityScan.OsvScannerTest do
   describe "installed?/0" do
     @tag :integration
     test "returns boolean reflecting PATH" do
-      assert is_boolean(OsvScanner.installed?())
+      assert OsvScanner.installed?() in [true, false]
     end
   end
 end
