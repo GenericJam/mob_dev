@@ -54,9 +54,15 @@ defmodule MobDev.ReleaseScriptTest do
 
       # If apps emerge that DO need one of these, drop it from the strip
       # set in lib/mob_dev/release.ex AND from this test list.
+      #
+      # `compiler` and `ssh` were added 2026-05-06 — empirical snapshot
+      # from a running pigeon iOS-sim build showed 0 of 59 compiler
+      # modules + 0 of 43 ssh modules ever loaded. Saves ~4.4 MB.
+      # No mob app should need runtime Code.eval or SSH client/server.
       for prefix <- ~w(megaco runtime_tools erl_interface os_mon wx et eunit
                        observer debugger diameter edoc tools snmp dialyzer
-                       syntax_tools parsetools xmerl reltool inets ftp tftp) do
+                       syntax_tools parsetools xmerl reltool inets ftp tftp
+                       compiler ssh) do
         assert loop_head =~ prefix,
                "expected the OTP-strip loop to drop #{prefix}-* libs"
       end
