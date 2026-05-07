@@ -22,6 +22,7 @@ defmodule MobDev.MixProject do
     [
       {:eqrcode, "~> 0.2"},
       {:jason, "~> 1.4"},
+      {:mix_audit, "~> 2.1", runtime: false},
       {:avatarz, "~> 0.2", optional: true},
       {:image, "~> 0.54", optional: true},
       # Dev server
