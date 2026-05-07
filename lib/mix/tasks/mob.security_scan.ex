@@ -82,9 +82,8 @@ defmodule Mix.Tasks.Mob.SecurityScan do
     end
 
     if path = opts[:write_report] do
-      Mix.shell().info(
-        "(markdown report writer not yet implemented; --write-report #{path} ignored)"
-      )
+      File.write!(path, Formatter.markdown(report))
+      Mix.shell().info("wrote markdown report to #{path}")
     end
 
     maybe_exit_strict(report, opts[:strict])
