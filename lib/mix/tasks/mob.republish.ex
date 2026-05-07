@@ -170,9 +170,7 @@ defmodule Mix.Tasks.Mob.Republish do
         new_str = Integer.to_string(current + 1)
 
         updated =
-          String.replace(content, replace_re, "versionCode #{new_str}",
-            global: false
-          )
+          String.replace(content, replace_re, "versionCode #{new_str}", global: false)
 
         File.write!(gradle_path, updated)
         {current_str, new_str}
