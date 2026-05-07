@@ -6,9 +6,29 @@ defmodule Mix.Tasks.Mob.Release do
   @moduledoc """
   Builds a release-signed artifact ready to upload to the app store.
 
-      mix mob.release           # iOS .ipa (default)
-      mix mob.release --ios     # iOS .ipa (explicit)
-      mix mob.release --android # Android .aab
+      mix mob.release                     # iOS .ipa (default)
+      mix mob.release --ios               # iOS .ipa (explicit)
+      mix mob.release --android           # Android .aab
+      mix mob.release --security-gate     # run mix mob.security_scan first;
+                                          # abort the release on any
+                                          # critical/high/medium finding
+
+  ## --security-gate
+
+  Runs the full security scan against the project (every layer:
+  Hex/Gradle/Swift dep CVEs, bundled-runtime drift, C/Kotlin/Swift
+  static analysis) **before** building or signing. If the scan
+  surfaces any critical/high/medium finding, the release aborts
+  with a non-zero exit code — nothing is built, nothing is signed.
+  Combine with the rest of your release flags as needed:
+
+      mix mob.release --android --security-gate
+      mix mob.release --ios --security-gate
+
+  Equivalent to running `mix mob.security_scan --strict` and only
+  proceeding to `mix mob.release` if the scan exits 0; the gate
+  flag just bundles the two into one command so a wrong-order
+  invocation can't slip through.
 
   ## --ios output
 
@@ -48,7 +68,16 @@ defmodule Mix.Tasks.Mob.Release do
   @impl Mix.Task
   def run(args) do
     {opts, _, _} =
-      OptionParser.parse(args, switches: [ios: :boolean, android: :boolean, slim: :boolean])
+      OptionParser.parse(args,
+        switches: [
+          ios: :boolean,
+          android: :boolean,
+          slim: :boolean,
+          security_gate: :boolean
+        ]
+      )
+
+    if opts[:security_gate], do: run_security_gate()
 
     if opts[:android] do
       run_android(opts)
@@ -57,7 +86,34 @@ defmodule Mix.Tasks.Mob.Release do
     end
   end
 
-  defp run_android(_opts) do
+  # Runs the full security scan before the build kicks off. Aborts
+  # the release on any critical/high/medium finding so a vulnerable
+  # build never reaches signing. Tip: mention `--security-gate` in
+  # the success printouts so users discover it next time.
+  defp run_security_gate do
+    Mix.shell().info("→ #{cyan()}--security-gate#{reset()}: running mix mob.security_scan first")
+
+    report = MobDev.SecurityScan.run([])
+    counts = MobDev.SecurityScan.Report.severity_counts(report)
+    blocking = counts.critical + counts.high + counts.medium
+
+    if blocking > 0 do
+      Mix.shell().error("")
+      IO.write(MobDev.SecurityScan.Formatter.terminal(report))
+
+      Mix.raise(
+        "--security-gate: #{blocking} blocking finding(s) — release aborted before build. " <>
+          "Run `mix mob.security_scan` for the full breakdown, fix or `--skip` the offending layer, " <>
+          "and rerun."
+      )
+    end
+
+    Mix.shell().info(
+      "→ #{green()}✓ security scan clean#{reset()} (#{counts.low} low, #{counts.unknown} unknown — non-blocking)\n"
+    )
+  end
+
+  defp run_android(opts) do
     unless File.dir?("android") do
       Mix.raise("No android/ directory found. Run from the root of a Mob Android project.")
     end
@@ -75,6 +131,8 @@ defmodule Mix.Tasks.Mob.Release do
         Mix.shell().info(
           "Next: #{cyan()}mix mob.publish --android#{reset()} to upload to Google Play."
         )
+
+        maybe_security_gate_tip(opts)
 
       {:error, reason} ->
         Mix.raise(reason)
@@ -107,8 +165,22 @@ defmodule Mix.Tasks.Mob.Release do
           "Next: #{cyan()}mix mob.publish --ios#{reset()} to upload to TestFlight."
         )
 
+        maybe_security_gate_tip(opts)
+
       {:error, reason} ->
         Mix.raise(reason)
+    end
+  end
+
+  # Surface --security-gate in the post-build "next steps" block when
+  # it wasn't used. Discovery via the same terminal printout that
+  # already lists `mix mob.publish` keeps the option visible.
+  defp maybe_security_gate_tip(opts) do
+    unless opts[:security_gate] do
+      Mix.shell().info(
+        "Tip: #{cyan()}mix mob.release --security-gate#{reset()} " <>
+          "to run mix mob.security_scan first and abort on critical/high/medium findings."
+      )
     end
   end
 
