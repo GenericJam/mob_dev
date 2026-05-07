@@ -4,14 +4,16 @@
 # Output: $PREFIX/lib/libcrypto.a, $PREFIX/lib/libssl.a, $PREFIX/include/openssl/*.h
 #
 # Inputs (env):
-#   OPENSSL_SRC  — OpenSSL source checkout (default: ~/code/openssl)
-#   ANDROID_NDK_ROOT — NDK root (default: ~/Library/Android/sdk/ndk/27.2.12479018)
-#   PREFIX       — install dir (default: /tmp/openssl-android-arm64)
-#   ANDROID_API  — minimum Android API (default: 24)
+#   OPENSSL_SRC      — OpenSSL source checkout (default: ~/code/openssl)
+#   NDK_VERSION      — NDK version (sourced from _lib.sh; matches MobDev.NdkVersion)
+#   ANDROID_NDK_ROOT — NDK root (default: ~/Library/Android/sdk/ndk/$NDK_VERSION)
+#   PREFIX           — install dir (default: /tmp/openssl-android-arm64)
+#   ANDROID_API      — minimum Android API (default: 24)
 set -euo pipefail
 
+. "$(dirname "$0")/_lib.sh"
+
 : "${OPENSSL_SRC:=$HOME/code/openssl}"
-: "${ANDROID_NDK_ROOT:=$HOME/Library/Android/sdk/ndk/27.2.12479018}"
 : "${PREFIX:=/tmp/openssl-android-arm64}"
 : "${ANDROID_API:=24}"
 

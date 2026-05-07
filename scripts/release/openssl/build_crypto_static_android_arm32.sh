@@ -5,9 +5,10 @@
 # See header of that file for the why.
 set -euo pipefail
 
+. "$(dirname "$0")/_lib.sh"
+
 : "${OTP_SRC:=$HOME/code/otp}"
 : "${OPENSSL_PREFIX:=/tmp/openssl-android-arm32}"
-: "${ANDROID_NDK_ROOT:=$HOME/Library/Android/sdk/ndk/27.2.12479018}"
 : "${ANDROID_API:=24}"
 
 TOOLCHAIN="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/darwin-x86_64"
