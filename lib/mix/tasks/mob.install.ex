@@ -1,6 +1,8 @@
 defmodule Mix.Tasks.Mob.Install do
   use Mix.Task
 
+  alias MobDev.NdkVersion
+
   @shortdoc "First-run setup for a new Mob project"
 
   @moduledoc """
@@ -66,6 +68,7 @@ defmodule Mix.Tasks.Mob.Install do
 
     configure_paths(project_dir)
     download_otp()
+    check_android_ndk()
     setup_icon(project_dir, opts[:icon])
 
     Mix.shell().info("""
@@ -79,6 +82,58 @@ defmodule Mix.Tasks.Mob.Install do
 
     Run `mix mob.icon` to replace the placeholder icon with a custom one.
     """)
+  end
+
+  # ── Android NDK validation ───────────────────────────────────────────────────
+
+  # Mirrors `mob.doctor`'s NDK check at install time so users see the
+  # required-NDK message during onboarding rather than as a cryptic link
+  # error on first deploy. Doesn't fail the install — overrides are
+  # legitimate, the recommended NDK might not be installed yet on a
+  # fresh dev box, etc. Just warns loud.
+  defp check_android_ndk do
+    if has_android_project?() do
+      recommended = NdkVersion.recommended()
+      override = NdkVersion.override()
+
+      cond do
+        override == :none and NdkVersion.installed?(recommended) ->
+          Mix.shell().info([:green, "* Android NDK #{recommended}: installed ✓", :reset])
+
+        override == :none ->
+          Mix.shell().error("""
+
+          Warning: Android NDK #{recommended} is not installed locally.
+          Mob's bundled OTP runtime is cross-compiled against this NDK; using a
+          different NDK at build time produces a libc++ ABI mismatch that surfaces
+          as `undefined symbol: __cxa_allocate_exception` (or similar) at link.
+
+          Install with:
+            #{NdkVersion.install_command()}
+
+          Or via Android Studio → SDK Manager → SDK Tools → NDK (Side by side)
+          → check #{recommended}.
+
+          If you genuinely need a different NDK, set
+            config :mob_dev, android_ndk_version: "<your-version>"
+          in mob.exs (or export MOB_ANDROID_NDK_VERSION=<your-version>) and you'll
+          own the resulting ABI compatibility yourself. Run `mix mob.doctor` for
+          status.
+          """)
+
+        true ->
+          {source, version} = override
+          source_label = if source == :env, do: "MOB_ANDROID_NDK_VERSION", else: "mob.exs"
+
+          Mix.shell().error([
+            :yellow,
+            "* Android NDK override active: #{version} via #{source_label} " <>
+              "(recommended is #{recommended}). You're off the happy path; " <>
+              "ABI mismatches against Mob's libbeam.a are now your problem to debug.",
+            :reset
+          ])
+      end
+    end
   end
 
   # ── OTP download ─────────────────────────────────────────────────────────────
