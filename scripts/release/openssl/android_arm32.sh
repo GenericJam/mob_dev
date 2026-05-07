@@ -29,17 +29,21 @@ make distclean >/dev/null 2>&1 || true
 ## no-asm because OpenSSL's hand-written ARM assembly emits non-PIC
 ## absolute relocations against OPENSSL_armcap_P (ld.lld rejects
 ## these when libcrypto.a is linked into a .so).
+## See android_arm64.sh for the no-X rationale per algorithm.
+## arm32 needs no-asm too — non-PIC absolute relocations against
+## OPENSSL_armcap_P in the hand-written ARM assembly.
 ./Configure android-arm \
     -D__ANDROID_API__="$ANDROID_API" \
     -Os -ffunction-sections -fdata-sections \
     -fPIC \
     --prefix="$PREFIX" \
     --openssldir="$PREFIX/ssl" \
-    no-shared \
-    no-tests \
-    no-apps \
-    no-engine \
-    no-asm
+    no-shared no-tests no-apps no-engine no-asm \
+    no-md2 no-md4 no-mdc2 no-whirlpool no-rmd160 \
+    no-rc2 no-rc4 no-idea no-cast no-bf no-blake2 \
+    no-seed no-aria no-camellia no-gost \
+    no-weak-ssl-ciphers no-ssl3 no-tls1 no-tls1_1 \
+    no-srp no-psk no-nextprotoneg
 
 make -j8
 make install_sw

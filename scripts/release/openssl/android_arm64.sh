@@ -32,16 +32,35 @@ make distclean >/dev/null 2>&1 || true
 ## via -Wl,--gc-sections (set on the consuming link, not here). Per
 ## GRiSP nano (2025-06-11): single biggest C-side shrink technique.
 ## -fPIC explicit (NDK toolchain default but belt-and-suspenders).
+##
+## Pass 4 (2026-05-06): disable the legacy / rarely-used algorithms
+## that no Mob app should exercise. This is an additive list — every
+## entry has a justification. If an app actually needs one, drop it
+## from the list and rebuild.
+##
+##   md2/md4/mdc2/whirlpool/ripemd160 — superseded by SHA-2 / BLAKE2.
+##                                     No modern code uses them.
+##   rc2/rc4/idea/cast/bf/blake2/seed/aria/camellia — legacy ciphers.
+##                                     AES-GCM and ChaCha20-Poly1305
+##                                     cover real cryptography.
+##   gost — Russian-only standards.
+##   weak-ssl-ciphers — RC4, single-DES, NULL, EXPORT.
+##   ssl3, tls1, tls1_1 — pre-TLS-1.2. Refused by every modern server.
+##   srp — pre-shared password protocol. Niche.
+##   psk — pre-shared key TLS variant. Niche.
+##   nextprotoneg — superseded by ALPN.
 ./Configure android-arm64 \
     -D__ANDROID_API__="$ANDROID_API" \
     -Os -ffunction-sections -fdata-sections \
     -fPIC \
     --prefix="$PREFIX" \
     --openssldir="$PREFIX/ssl" \
-    no-shared \
-    no-tests \
-    no-apps \
-    no-engine
+    no-shared no-tests no-apps no-engine \
+    no-md2 no-md4 no-mdc2 no-whirlpool no-rmd160 \
+    no-rc2 no-rc4 no-idea no-cast no-bf no-blake2 \
+    no-seed no-aria no-camellia no-gost \
+    no-weak-ssl-ciphers no-ssl3 no-tls1 no-tls1_1 \
+    no-srp no-psk no-nextprotoneg
 
 make -j8
 make install_sw

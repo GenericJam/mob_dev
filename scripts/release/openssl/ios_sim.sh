@@ -26,14 +26,17 @@ cd "$OPENSSL_SRC"
 make distclean >/dev/null 2>&1 || true
 
 ## See android_arm64.sh for size-flag rationale.
+## See android_arm64.sh for the no-X rationale per algorithm.
 ./Configure iossimulator-xcrun \
     -Os -ffunction-sections -fdata-sections \
     --prefix="$PREFIX" \
     --openssldir="$PREFIX/ssl" \
-    no-shared \
-    no-tests \
-    no-apps \
-    no-engine
+    no-shared no-tests no-apps no-engine \
+    no-md2 no-md4 no-mdc2 no-whirlpool no-rmd160 \
+    no-rc2 no-rc4 no-idea no-cast no-bf no-blake2 \
+    no-seed no-aria no-camellia no-gost \
+    no-weak-ssl-ciphers no-ssl3 no-tls1 no-tls1_1 \
+    no-srp no-psk no-nextprotoneg
 
 make -j8
 make install_sw
