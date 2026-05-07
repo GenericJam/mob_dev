@@ -106,6 +106,64 @@ mix mob.routes --strict  # exit non-zero (for CI)
 
 Dynamic destinations (`push_screen(socket, var)`) and registered name atoms (`:main`) are skipped with a note.
 
+## Security scan (`mix mob.security_scan`)
+
+Audits a Mob app for known CVEs across **every surface a Mob app actually
+ships** — including the bundled OpenSSL, OTP runtime, and SQLite that
+ordinary scanners can't see (because they're statically linked into the
+app binary, not declared in any lockfile).
+
+### What it scans
+
+| Layer | Tool(s) | Covers |
+| ----- | ------- | ------ |
+| `hex_deps` | [`mix_audit`](https://hexdocs.pm/mix_audit/) + [`osv-scanner`](https://google.github.io/osv-scanner/) | Hex dependencies in `mix.lock` |
+| `gradle_deps` | `osv-scanner` | Android Gradle dependencies (when `gradle.lockfile` is enabled) |
+| `swift_deps` | `osv-scanner` | iOS `Package.resolved` / `Podfile.lock` |
+| `bundled_runtime` | `BundledVersions` manifest + binary fingerprint | OpenSSL, ERTS, Elixir, exqlite, SQLite *baked into the OTP tarball* — drift detection between the manifest and the actual binaries |
+| `c_source` | [`semgrep`](https://semgrep.dev/) + [`flawfinder`](https://dwheeler.com/flawfinder/) | Mob's NIF C/Objective-C plus the exqlite NIF wrapper |
+| `kotlin_source` | [`detekt`](https://detekt.dev/) | Kotlin/Java under `android/app/src/main/` |
+| `swift_source` | [`swiftlint`](https://github.com/realm/SwiftLint) | Swift under `ios/` |
+
+The bundled-runtime layer is what makes this task interesting — it
+opens `libcrypto.a` from the cached OTP tarball and reads the OpenSSL
+version banner directly out of the static archive. Generic dep
+scanners can't do this because the OpenSSL version isn't in any
+lockfile. See [`priv/security/bundled_versions.exs`](priv/security/bundled_versions.exs)
+for the manifest of what versions ship in each tarball.
+
+### Usage
+
+```bash
+mix mob.security_scan                           # full scan, pretty terminal output
+mix mob.security_scan --json                    # machine-readable JSON to stdout
+mix mob.security_scan --skip kotlin,c_source    # skip named layers
+mix mob.security_scan --strict                  # exit 1 if any high+ finding
+mix mob.security_scan --write-report SECURITY_SCAN.md   # also write a markdown report
+```
+
+### One-time tool installs
+
+Each layer soft-degrades when its scanner isn't installed. Install on
+macOS with:
+
+```bash
+brew install osv-scanner semgrep flawfinder detekt swiftlint
+```
+
+`mix_audit` is a Hex dependency of `mob_dev`; no separate install
+needed. The OpenSSL/SQLite/OTP fingerprinting is pure Elixir — no
+external `strings(1)` or similar required.
+
+### Updating after rebuilding the OTP tarballs
+
+When you rebuild the bundled OTP runtime ([`build_release.md`](build_release.md)),
+update the **`priv/security/bundled_versions.exs`** manifest to match
+the new versions baked into the tarball. The bundled-runtime scan
+fingerprints the cached binaries and emits a `:high` "drift" finding
+if the manifest disagrees with what's on disk — that's the exact
+failure mode the manifest exists to catch.
+
 ## Battery benchmarks
 
 Measure BEAM idle power draw with specific tuning flags. Both tasks share the same presets and flag interface.
