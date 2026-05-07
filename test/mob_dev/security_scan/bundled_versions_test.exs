@@ -6,19 +6,19 @@ defmodule MobDev.SecurityScan.BundledVersionsTest do
   describe "load/0 (real manifest)" do
     test "loads without raising" do
       assert %{active_hash: hash, bundles: bundles} = BundledVersions.load()
-      assert is_binary(hash)
-      assert is_map(bundles)
+      assert is_binary(hash) and byte_size(hash) > 0
+      assert is_map(bundles) and map_size(bundles) > 0
       assert Map.has_key?(bundles, hash)
     end
 
     test "active bundle has required fields" do
       bundle = BundledVersions.active()
 
-      assert is_binary(bundle.erts)
-      assert is_binary(bundle.otp_release)
-      assert is_binary(bundle.elixir)
-      assert is_binary(bundle.openssl)
-      assert is_binary(bundle.exqlite_beam)
+      assert is_binary(bundle.erts) and byte_size(bundle.erts) > 0
+      assert is_binary(bundle.otp_release) and byte_size(bundle.otp_release) > 0
+      assert is_binary(bundle.elixir) and byte_size(bundle.elixir) > 0
+      assert is_binary(bundle.openssl) and byte_size(bundle.openssl) > 0
+      assert is_binary(bundle.exqlite_beam) and byte_size(bundle.exqlite_beam) > 0
     end
   end
 
