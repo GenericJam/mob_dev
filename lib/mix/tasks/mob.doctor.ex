@@ -1,6 +1,8 @@
 defmodule Mix.Tasks.Mob.Doctor do
   use Mix.Task
 
+  alias MobDev.NdkVersion
+
   @shortdoc "Check your environment for common Mob setup issues"
 
   @moduledoc """
@@ -295,8 +297,72 @@ defmodule Mix.Tasks.Mob.Doctor do
               end
           end
       end,
-      check_android_sdk()
+      check_android_sdk(),
+      check_android_ndk()
     ]
+  end
+
+  # Validate the Android NDK install matches what mob's bundled OTP runtime
+  # was cross-compiled against. The libbeam.a in the OTP tarballs embeds
+  # libc++ ABI symbols using a specific inline namespace (NDK 27 = ne180000;
+  # NDK 25 = ne140000). An app's libpigeon.so must link against the same
+  # namespace or the C++ exception ABI symbols (__cxa_*) come up undefined.
+  #
+  # Three states surface here, matching the matrix in the side-quest doc:
+  #
+  #   ✓ recommended NDK installed and used (or override matches it)
+  #   ⚠ override active for a non-recommended version
+  #   ✗ recommended NDK not installed AND no override
+  defp check_android_ndk do
+    recommended = NdkVersion.recommended()
+    effective = NdkVersion.effective()
+    override = NdkVersion.override()
+
+    cond do
+      override == :none and effective == recommended and NdkVersion.installed?(recommended) ->
+        {:ok, "Android NDK", "#{recommended} (recommended) ✓", nil}
+
+      override == :none and not NdkVersion.installed?(recommended) ->
+        installed_hint =
+          case NdkVersion.installed_versions() do
+            [] -> "No NDKs installed."
+            versions -> "Installed: #{Enum.join(versions, ", ")}."
+          end
+
+        {:fail, "Android NDK",
+         "#{recommended} not installed (Mob's OTP runtime is built against this NDK).\n      #{installed_hint}",
+         "Install with:\n        #{NdkVersion.install_command()}\n      Or via Android Studio → SDK Manager → SDK Tools → NDK (Side by side)\n      → check 27.2.12479018 (or whatever the recommended is, see\n      ~/code/mob_dev/lib/mob_dev/ndk_version.ex `@recommended`)."}
+
+      override != :none ->
+        {source, version} = override
+
+        source_label =
+          if source == :env, do: "MOB_ANDROID_NDK_VERSION", else: "mob.exs :android_ndk_version"
+
+        installed_label =
+          if NdkVersion.installed?(version) do
+            "installed"
+          else
+            "NOT installed"
+          end
+
+        # The override case is always a warning (never a fail). The user
+        # opted out of the happy path; we just remind them what they took
+        # on. They get to debug the link errors themselves.
+        msg =
+          "override active: building with #{version} via #{source_label} (#{installed_label}). " <>
+            "Recommended is #{recommended}. You've opted out of the bundled-OTP libc++ ABI " <>
+            "guarantee — mismatched libc++ inline namespaces between your NDK and Mob's libbeam.a " <>
+            "surface as `undefined symbol: __cxa_allocate_exception` (or similar) at link time."
+
+        hint =
+          "To return to the happy path:\n" <>
+            "  - drop `:android_ndk_version` from mob.exs's :mob_dev config\n" <>
+            "  - or unset MOB_ANDROID_NDK_VERSION\n" <>
+            "Then run mob.doctor again. See ~/code/mob/common_fixes.md for ABI details."
+
+        {:warn, "Android NDK", msg, hint}
+    end
   end
 
   defp java_install_hint do
