@@ -1646,9 +1646,11 @@ defmodule MobDev.NativeBuild do
   # ── Config ───────────────────────────────────────────────────────────────────
 
   @doc false
+  @spec __load_config__() :: keyword()
   def __load_config__, do: load_config()
 
   @doc false
+  @spec __resolve_elixir_lib__(String.t() | nil) :: String.t()
   def __resolve_elixir_lib__(configured), do: resolve_elixir_lib(configured)
 
   defp load_config do
