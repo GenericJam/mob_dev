@@ -1,20 +1,24 @@
 defmodule Mix.Tasks.Mob.Release do
   use Mix.Task
 
-  @shortdoc "Build a signed iOS .ipa for App Store / TestFlight"
+  @shortdoc "Build a signed release artifact (.ipa or .aab) for the app store"
 
   @moduledoc """
-  Builds a release-signed iOS `.ipa` ready to upload to App Store Connect.
+  Builds a release-signed artifact ready to upload to the app store.
 
-      mix mob.release
+      mix mob.release           # iOS .ipa (default)
+      mix mob.release --ios     # iOS .ipa (explicit)
+      mix mob.release --android # Android .aab
 
-  ## Output
+  ## --ios output
 
   `_build/mob_release/<App>.ipa`
 
-  Use `mix mob.publish` to upload it to TestFlight.
+  ## --android output
 
-  ## Prerequisites
+  `android/app/build/outputs/bundle/release/app-release.aab`
+
+  ## --ios prerequisites
 
     1. Apple Developer Program membership (paid, $99/yr)
     2. An "Apple Distribution" certificate in your keychain
@@ -23,36 +27,70 @@ defmodule Mix.Tasks.Mob.Release do
        to `~/Library/Developer/Xcode/UserData/Provisioning Profiles/`.
        `mix mob.provision --distribution` automates the profile download.
 
-  ## What it does
+  ## --android prerequisites
 
-    1. Resolves a distribution signing identity + App Store profile
-       (auto-detect, or `:ios_dist_sign_identity` / `:ios_dist_profile_uuid`
-       in `mob.exs`)
-    2. Generates `ios/release_device.sh` and runs it:
-       - Compiles BEAMs and copies them into the OTP runtime
-       - Builds native sources with `-DMOB_RELEASE` so `mob_beam.m`
-         drops EPMD + the distribution BEAM args
-       - Links the iOS device binary, no EPMD object files
-       - Signs the `.app` with the distribution identity (no `get-task-allow`)
-       - Packages as `Payload/<App>.app` zipped into `<App>.ipa`
+    1. `android/keystore.properties` filled in with your upload keystore
+       credentials. `android/upload_jks.keystore` must exist. See
+       `android/keystore.properties.example`.
 
-  The shipped `.ipa` runs the full BEAM but with no Erlang distribution
-  surface — `Mob.Dist.ensure_started/1` no-ops at runtime when
-  `MOB_RELEASE=1`.
+  ## What --android does
+
+    1. Ensures the Android OTP runtime is cached (`~/.mob/cache/otp-android-*`).
+    2. Stages a temp tree: OTP runtime + app BEAMs + exqlite BEAMs.
+    3. Runs `MobDev.OtpAssetBundle.build/2` to produce
+       `android/app/src/main/assets/otp.zip` — stripped and compressed.
+       `MobBridge.extractOtpIfNeeded()` extracts this on first launch.
+    4. Runs `./gradlew bundleRelease` to produce the signed AAB.
+
+  Use `mix mob.publish --android` to upload to Google Play.
   """
 
   @impl Mix.Task
   def run(args) do
+    {opts, _, _} =
+      OptionParser.parse(args, switches: [ios: :boolean, android: :boolean, slim: :boolean])
+
+    if opts[:android] do
+      run_android(opts)
+    else
+      run_ios(opts)
+    end
+  end
+
+  defp run_android(_opts) do
+    unless File.dir?("android") do
+      Mix.raise("No android/ directory found. Run from the root of a Mob Android project.")
+    end
+
+    Mix.Task.run("compile")
+
+    case MobDev.ReleaseAndroid.build_aab() do
+      {:ok, path} ->
+        Mix.shell().info("")
+        Mix.shell().info("#{green()}✓ Release build complete#{reset()}")
+        Mix.shell().info("  AAB: #{cyan()}#{path}#{reset()}")
+        Mix.shell().info("  Size: #{file_size_human(path)}")
+        Mix.shell().info("")
+
+        Mix.shell().info(
+          "Next: #{cyan()}mix mob.publish --android#{reset()} to upload to Google Play."
+        )
+
+      {:error, reason} ->
+        Mix.raise(reason)
+    end
+  end
+
+  defp run_ios(opts) do
     case :os.type() do
       {:unix, :darwin} -> :ok
-      _ -> Mix.raise("mix mob.release is only supported on macOS.")
+      _ -> Mix.raise("mix mob.release --ios is only supported on macOS.")
     end
 
     unless File.dir?("ios") do
       Mix.raise("No ios/ directory found. Run from the root of a mob iOS project.")
     end
 
-    {opts, _, _} = OptionParser.parse(args, switches: [slim: :boolean])
     slim = Keyword.get(opts, :slim, true)
 
     Mix.Task.run("compile")
@@ -64,7 +102,10 @@ defmodule Mix.Tasks.Mob.Release do
         Mix.shell().info("  IPA: #{cyan()}#{path}#{reset()}")
         Mix.shell().info("  Size: #{file_size_human(path)}")
         Mix.shell().info("")
-        Mix.shell().info("Next: #{cyan()}mix mob.publish#{reset()} to upload to TestFlight.")
+
+        Mix.shell().info(
+          "Next: #{cyan()}mix mob.publish --ios#{reset()} to upload to TestFlight."
+        )
 
       {:error, reason} ->
         Mix.raise(reason)

@@ -93,7 +93,84 @@ defmodule Mix.Tasks.Mob.RepublishTest do
     end
   end
 
+  describe "bump_android_version_code!/1" do
+    test "bumps an integer versionCode by 1", %{tmp: tmp} do
+      gradle = Path.join(tmp, "build.gradle")
+      write_minimal_gradle!(gradle, 3)
+
+      assert {"3", "4"} = Republish.bump_android_version_code!(gradle)
+
+      assert read_version_code!(gradle) == "4"
+    end
+
+    test "handles starting value of 1 → 2", %{tmp: tmp} do
+      gradle = Path.join(tmp, "build.gradle")
+      write_minimal_gradle!(gradle, 1)
+
+      assert {"1", "2"} = Republish.bump_android_version_code!(gradle)
+    end
+
+    test "handles large values without integer overflow", %{tmp: tmp} do
+      gradle = Path.join(tmp, "build.gradle")
+      write_minimal_gradle!(gradle, 9999)
+
+      assert {"9999", "10000"} = Republish.bump_android_version_code!(gradle)
+    end
+
+    test "is idempotent under re-read — running twice bumps twice", %{tmp: tmp} do
+      gradle = Path.join(tmp, "build.gradle")
+      write_minimal_gradle!(gradle, 5)
+
+      assert {"5", "6"} = Republish.bump_android_version_code!(gradle)
+      assert {"6", "7"} = Republish.bump_android_version_code!(gradle)
+      assert {"7", "8"} = Republish.bump_android_version_code!(gradle)
+
+      assert read_version_code!(gradle) == "8"
+    end
+
+    test "only bumps the first versionCode occurrence (not versionName)", %{tmp: tmp} do
+      gradle = Path.join(tmp, "build.gradle")
+
+      File.write!(gradle, """
+      defaultConfig {
+          versionCode 2
+          versionName "2.0.0"
+      }
+      """)
+
+      assert {"2", "3"} = Republish.bump_android_version_code!(gradle)
+      content = File.read!(gradle)
+      assert content =~ ~r/versionCode 3/
+      assert content =~ ~r/versionName "2\.0\.0"/
+    end
+
+    test "raises with a clear message when versionCode is absent", %{tmp: tmp} do
+      gradle = Path.join(tmp, "build.gradle")
+      File.write!(gradle, "defaultConfig {\n    applicationId \"com.example.test\"\n}\n")
+
+      assert_raise Mix.Error, ~r/No versionCode found/, fn ->
+        Republish.bump_android_version_code!(gradle)
+      end
+    end
+  end
+
   # ── helpers ──────────────────────────────────────────────────────────────
+
+  defp write_minimal_gradle!(path, version_code) do
+    File.write!(path, """
+    defaultConfig {
+        applicationId "com.example.test"
+        versionCode #{version_code}
+        versionName "1.0.0"
+    }
+    """)
+  end
+
+  defp read_version_code!(path) do
+    content = File.read!(path)
+    [vc] = Regex.run(~r/\bversionCode\s+(\d+)/, content, capture: :all_but_first)
+    vc
+  end
 
   defp write_minimal_plist!(path, build_version) do
     File.write!(path, """

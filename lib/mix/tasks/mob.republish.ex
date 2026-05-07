@@ -7,9 +7,10 @@ defmodule Mix.Tasks.Mob.Republish do
   Convenience wrapper around the per-release flow. Bumps the platform's
   build number, rebuilds the release artifact, and uploads to the store.
 
-      mix mob.republish --ios               # bump CFBundleVersion, mob.release, mob.publish --ios
-      mix mob.republish --ios --no-bump     # skip the bump (Apple will reject same build #; mostly for testing)
-      mix mob.republish --android           # (not yet implemented)
+      mix mob.republish --ios                         # bump CFBundleVersion, mob.release, mob.publish --ios
+      mix mob.republish --ios --no-bump               # skip the bump (Apple will reject same build #; mostly for testing)
+      mix mob.republish --android                     # bump versionCode, gradlew bundleRelease, mob.publish --android
+      mix mob.republish --android --track production  # publish to a specific track
 
   Platform flag is **required** — Mob is intentionally platform-agnostic
   and refuses to default to either side.
@@ -58,7 +59,8 @@ defmodule Mix.Tasks.Mob.Republish do
     ios: :boolean,
     android: :boolean,
     no_bump: :boolean,
-    verbose: :boolean
+    verbose: :boolean,
+    track: :string
   ]
 
   @impl Mix.Task
@@ -67,7 +69,7 @@ defmodule Mix.Tasks.Mob.Republish do
 
     case pick_platform(opts) do
       :ios -> republish_ios(opts)
-      :android -> raise_android_not_implemented()
+      :android -> republish_android(opts)
     end
   end
 
@@ -97,16 +99,30 @@ defmodule Mix.Tasks.Mob.Republish do
     end
   end
 
-  defp raise_android_not_implemented do
-    Mix.raise("""
-    --android republish is not yet implemented in mob_dev.
+  defp republish_android(opts) do
+    gradle = Path.expand("android/app/build.gradle")
 
-    For now: bump `versionCode` in `android/app/build.gradle`, build
-    your release `.aab`, and upload via Google Play Console.
+    unless File.exists?(gradle) do
+      Mix.raise(
+        "android/app/build.gradle not found — run from the project root of a Mob Android app."
+      )
+    end
 
-    The mob.exs config block for Play Store credentials and the
-    `mix mob.publish --android` implementation will follow.
-    """)
+    unless opts[:no_bump] do
+      {old, new} = bump_android_version_code!(gradle)
+
+      Mix.shell().info(
+        "#{cyan()}Bumped versionCode: #{old} → #{new}#{reset()} " <>
+          "(Play rejects re-uploads of the same versionCode)"
+      )
+    end
+
+    Mix.Task.run("mob.release", ["--android"])
+    Mix.Task.reenable("mob.release")
+
+    publish_argv = ["--android"] ++ if(opts[:track], do: ["--track", opts[:track]], else: [])
+    Mix.Task.run("mob.publish", publish_argv)
+    Mix.Task.reenable("mob.publish")
   end
 
   defp republish_ios(opts) do
@@ -131,6 +147,46 @@ defmodule Mix.Tasks.Mob.Republish do
     publish_argv = ["--ios"] ++ if(opts[:verbose], do: ["--verbose"], else: [])
     Mix.Task.run("mob.publish", publish_argv)
     Mix.Task.reenable("mob.publish")
+  end
+
+  @doc """
+  Read `versionCode` from the given `build.gradle`, integer-bump it, and
+  write back. Returns `{old, new}` strings.
+
+  Raises with a clear message if no `versionCode` line is found.
+  """
+  @spec bump_android_version_code!(Path.t()) :: {String.t(), String.t()}
+  def bump_android_version_code!(gradle_path) do
+    content = File.read!(gradle_path)
+
+    # Regex.compile! used deliberately — ~r// bakes compiled patterns into the .beam,
+    # which breaks on OTP 28.0 (re.import/1 removed; fixed in 28.1).
+    find_re = Regex.compile!("\\bversionCode\\s+(\\d+)")
+    replace_re = Regex.compile!("\\bversionCode\\s+\\d+")
+
+    case Regex.run(find_re, content, capture: :all_but_first) do
+      [current_str] ->
+        current = String.to_integer(current_str)
+        new_str = Integer.to_string(current + 1)
+
+        updated =
+          String.replace(content, replace_re, "versionCode #{new_str}",
+            global: false
+          )
+
+        File.write!(gradle_path, updated)
+        {current_str, new_str}
+
+      nil ->
+        Mix.raise("""
+        No versionCode found in #{gradle_path}.
+
+        Expected a line like:
+            versionCode 1
+
+        inside the defaultConfig block.
+        """)
+    end
   end
 
   @doc """

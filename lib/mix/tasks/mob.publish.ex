@@ -8,7 +8,9 @@ defmodule Mix.Tasks.Mob.Publish do
 
       mix mob.publish --ios                       # uploads _build/mob_release/<App>.ipa
       mix mob.publish --ios path/to/Foo.ipa       # uploads a specific .ipa
-      mix mob.publish --android                   # (not yet implemented)
+      mix mob.publish --android                   # uploads android/app/build/outputs/bundle/release/app-release.aab
+      mix mob.publish --android path/to/app.aab   # uploads a specific .aab
+      mix mob.publish --android --track production # override track from mob.exs
 
   Platform flag is **required** — Mob is intentionally platform-agnostic
   and refuses to default to either side. Pick `--ios` or `--android`
@@ -38,7 +40,7 @@ defmodule Mix.Tasks.Mob.Publish do
   appears in TestFlight.
   """
 
-  @switches [verbose: :boolean, ios: :boolean, android: :boolean]
+  @switches [verbose: :boolean, ios: :boolean, android: :boolean, track: :string]
 
   @impl Mix.Task
   def run(argv) do
@@ -46,7 +48,7 @@ defmodule Mix.Tasks.Mob.Publish do
 
     case pick_platform(opts) do
       :ios -> publish_ios(opts, args)
-      :android -> raise_android_not_implemented()
+      :android -> publish_android(opts, args)
     end
   end
 
@@ -82,17 +84,32 @@ defmodule Mix.Tasks.Mob.Publish do
     end
   end
 
-  defp raise_android_not_implemented do
-    Mix.raise("""
-    --android publish is not yet implemented in mob_dev.
+  defp publish_android(opts, args) do
+    aab_path = resolve_aab_path(args)
+    gp = load_google_play_config!()
 
-    For now, build your release .aab manually and upload via the Google
-    Play Console (https://play.google.com/console/u/0/developers/) or
-    fastlane supply. The mob.exs config block for Play Store credentials
-    will follow when this lands.
+    track = opts[:track] || gp[:track] || "internal"
 
-    Track this on the Mob roadmap.
-    """)
+    Mix.shell().info("")
+    Mix.shell().info("#{cyan()}=== Uploading to Google Play ===#{reset()}")
+    Mix.shell().info("  AAB:          #{aab_path}")
+    Mix.shell().info("  Package:      #{gp[:package_name]}")
+    Mix.shell().info("  Track:        #{track}")
+    Mix.shell().info("  Service acct: #{gp[:service_account_json]}")
+    Mix.shell().info("")
+
+    case MobDev.GooglePlay.upload(aab_path, Keyword.put(gp, :track, track)) do
+      {:ok, version_code} ->
+        Mix.shell().info("")
+        Mix.shell().info("#{green()}✓ Upload accepted by Google Play#{reset()}")
+        Mix.shell().info("  versionCode #{version_code} is on the #{track} track.")
+        Mix.shell().info("")
+        Mix.shell().info("View it at:")
+        Mix.shell().info("  #{cyan()}https://play.google.com/console#{reset()}")
+
+      {:error, reason} ->
+        Mix.raise(reason)
+    end
   end
 
   # ── --ios path (existing behavior) ──────────────────────────────────────────
@@ -254,6 +271,80 @@ defmodule Mix.Tasks.Mob.Publish do
     end
 
     :ok
+  end
+
+  # ── AAB resolution ───────────────────────────────────────────────────────────
+
+  defp resolve_aab_path([path]) when is_binary(path) do
+    abs = Path.expand(path)
+    unless File.exists?(abs), do: Mix.raise("AAB not found at #{abs}")
+    abs
+  end
+
+  defp resolve_aab_path([]) do
+    output_dir = Path.expand("android/app/build/outputs/bundle/release")
+
+    case Path.wildcard(Path.join(output_dir, "*.aab")) do
+      [] ->
+        Mix.raise("""
+        No .aab found in #{output_dir}.
+
+        Run `cd android && ./gradlew bundleRelease` first, or pass an explicit path:
+
+            mix mob.publish --android path/to/app-release.aab
+        """)
+
+      [single] ->
+        single
+
+      many ->
+        Mix.raise("""
+        Multiple .aab files found; pass one explicitly:
+
+        #{Enum.map_join(many, "\n", &"    #{&1}")}
+        """)
+    end
+  end
+
+  defp resolve_aab_path(_), do: Mix.raise("Usage: mix mob.publish --android [path/to/app.aab]")
+
+  # ── Google Play config ───────────────────────────────────────────────────────
+
+  defp load_google_play_config! do
+    config_file = Path.join(File.cwd!(), "mob.exs")
+
+    unless File.exists?(config_file) do
+      Mix.raise("mob.exs not found in #{File.cwd!()} — run from the project root.")
+    end
+
+    cfg = Config.Reader.read!(config_file) |> Keyword.get(:mob_dev, [])
+    gp = cfg[:google_play]
+
+    unless is_list(gp) do
+      Mix.raise("""
+      Missing :google_play in mob.exs. Add:
+
+          config :mob_dev,
+            google_play: [
+              package_name:         "com.example.myapp",
+              service_account_json: "~/.google_play/my-service-account.json",
+              track:                "internal"
+            ]
+
+      Service account setup:
+        1. Play Console → Setup → API access → link a Google Cloud project
+        2. Google Cloud → IAM → Service Accounts → create account → download JSON key
+        3. Play Console → Setup → API access → grant the account "Release manager"
+      """)
+    end
+
+    Enum.each([:package_name, :service_account_json], fn key ->
+      unless is_binary(gp[key]) do
+        Mix.raise("google_play[:#{key}] missing or not a string in mob.exs")
+      end
+    end)
+
+    Keyword.update!(gp, :service_account_json, &Path.expand/1)
   end
 
   defp green, do: IO.ANSI.green()

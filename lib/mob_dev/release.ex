@@ -93,7 +93,7 @@ defmodule MobDev.Release do
          ) do
       {output, 0} ->
         identities =
-          Regex.scan(~r/\d+\) [0-9A-F]+ "([^"]+)"/, output)
+          Regex.scan(Regex.compile!("\\d+\\) [0-9A-F]+ \"([^\"]+)\""), output)
           |> Enum.map(fn [_, full] -> full end)
           |> Enum.filter(&String.contains?(&1, "Apple Distribution"))
           |> Enum.uniq()
@@ -243,13 +243,20 @@ defmodule MobDev.Release do
          {s, _} <- :binary.match(data, "<?xml"),
          {e, len} <- :binary.match(data, "</plist>") do
       xml = binary_part(data, s, e - s + len)
-      uuid = capture(xml, ~r/<key>UUID<\/key>\s*<string>([^<]+)<\/string>/)
-      app_id = capture(xml, ~r/<key>application-identifier<\/key>\s*<string>([^<]+)<\/string>/)
+      uuid = capture(xml, Regex.compile!("<key>UUID<\\/key>\\s*<string>([^<]+)<\\/string>"))
+
+      app_id =
+        capture(
+          xml,
+          Regex.compile!("<key>application-identifier<\\/key>\\s*<string>([^<]+)<\\/string>")
+        )
 
       team =
         capture(
           xml,
-          ~r/<key>TeamIdentifier<\/key>\s*<array>\s*<string>([^<]+)<\/string>/
+          Regex.compile!(
+            "<key>TeamIdentifier<\\/key>\\s*<array>\\s*<string>([^<]+)<\\/string>"
+          )
         )
 
       pd = String.contains?(xml, "<key>ProvisionedDevices</key>")
