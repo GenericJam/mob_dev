@@ -26,16 +26,25 @@ mix test --watch      # (with mix_test_watch dep, if added)
 Before committing changes, run **all** in this order:
 
 ```bash
-mix test            # full suite must pass (call out any pre-existing flake explicitly)
-mix format          # apply Elixir formatting
-mix credo --strict  # address new issues; pre-existing ones are tracked separately
-mix erlfmt --check priv/android/crypto.erl      # Erlang formatting
+mix test                   # full suite must pass (call out any pre-existing flake explicitly)
+mix format                 # apply Elixir formatting
+mix credo --strict         # address new issues; pre-existing ones are tracked separately
+mix erlfmt --check priv/android/crypto.erl     # Erlang formatting
+mix mob.security_scan --strict                 # surface new CVEs / drift before they ship
 ```
 
 Auto-fix:
 ```bash
 mix erlfmt --write priv/android/crypto.erl
 ```
+
+`mix mob.security_scan` covers Hex deps, Android Gradle deps, iOS
+Swift Package deps, the **bundled OpenSSL/OTP/Elixir/SQLite versions**
+(via fingerprint of `~/.mob/cache/otp-*-{hash}/` against
+`priv/security/bundled_versions.exs`), and C/Kotlin/Swift static
+analysis. See [`README.md`](README.md#security-scan-mix-mobsecurity_scan)
+for the full layer list and the one-time `brew install` of external
+scanners.
 
 ## What to test
 
