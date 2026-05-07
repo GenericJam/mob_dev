@@ -48,8 +48,7 @@ defmodule MobDev.SecurityScan.OsvScanner do
   """
   @spec scan(target(), atom(), keyword()) ::
           {:ok, [Finding.t()]}
-          | {:error,
-             :not_installed | {:not_found, Path.t()} | {:scan_failed, String.t()}}
+          | {:error, :not_installed | {:not_found, Path.t()} | {:scan_failed, String.t()}}
   def scan(target, layer, opts \\ []) when is_atom(layer) do
     runner = Keyword.get(opts, :runner, &default_runner/1)
 
