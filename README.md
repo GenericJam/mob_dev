@@ -155,6 +155,76 @@ brew install osv-scanner semgrep flawfinder detekt swiftlint
 needed. The OpenSSL/SQLite/OTP fingerprinting is pure Elixir — no
 external `strings(1)` or similar required.
 
+### Scheduled changelog (`mix mob.security_scan.log`)
+
+For "did we get better or worse this week?" you want a *changelog*,
+not a snapshot. `mix mob.security_scan.log` is the scheduled-run
+companion: each invocation writes three files at the project root:
+
+| File | Purpose |
+| ---- | ------- |
+| `SECURITY_SCAN.md` | Current-state snapshot (overwritten each run). The "what's the situation right now" file. |
+| `SECURITY_HISTORY.md` | Append-only changelog. Each run prepends one entry: timestamp, severity counts, and the **New / Resolved / Still present** delta against the previous run. Findings still present from earlier runs carry their `first seen N days ago` patch-lag suffix. |
+| `.security_scan/state.json` | Internal sidecar that records the last-known finding set + per-finding `first_seen_at` timestamps. Diff computation depends on it. |
+
+**Commit all three.** The state file is what makes the changelog
+meaningful across machines and CI runs — without it, every run
+reports every finding as "new" and the timeline loses signal.
+
+A typical entry looks like:
+
+```markdown
+## 2026-05-07T13:59:24Z
+
+**Project:** `/path/to/app`
+**Total findings:** 2 (0 critical, 2 high, ...)
+
+### New since last scan (1)
+- **HIGH** `mob/otp-tarball@ios_sim` `[MOB-DRIFT-ios_sim-elixir]` — manifest=1.19.5 binary=1.20.0-rc.4
+
+### Resolved since last scan (1) ✓
+- **HIGH** `phoenix@1.8.5` `[EEF-CVE-2026-32689]` — Long-poll NDJSON body splitting
+
+### Still present from last scan (1)
+- **CRITICAL** `openssl@3.4.0` ... _(first seen 22 days ago)_
+```
+
+#### Cron / GitHub Actions wiring
+
+The task is designed for unattended invocation. A simple cron entry:
+
+```bash
+# daily at 06:00 local
+0 6 * * *  cd /path/to/project && mix mob.security_scan.log >> /tmp/security_scan.log 2>&1
+```
+
+A GitHub Actions workflow that opens a PR with the updated files:
+
+```yaml
+name: security-scan
+on:
+  schedule: [{cron: "0 6 * * *"}]
+  workflow_dispatch:
+jobs:
+  scan:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with: {elixir-version: "1.19", otp-version: "28"}
+      - run: brew install osv-scanner semgrep flawfinder detekt swiftlint
+      - run: mix deps.get
+      - run: mix mob.security_scan.log
+      - uses: peter-evans/create-pull-request@v6
+        with:
+          title: "security: weekly scan update"
+          branch: security-scan-update
+          add-paths: |
+            SECURITY_SCAN.md
+            SECURITY_HISTORY.md
+            .security_scan/state.json
+```
+
 ### Updating after rebuilding the OTP tarballs
 
 When you rebuild the bundled OTP runtime ([`build_release.md`](build_release.md)),
