@@ -78,6 +78,7 @@ defmodule MobDev.MixProject do
       source_url_pattern: "https://github.com/genericjam/mob_dev/blob/main/%{path}#L%{line}",
       extras: [
         "README.md": [title: "mob_dev"],
+        "guides/security_scan.md": [title: "Security scanning"],
         "guides/publishing_to_testflight.md": [title: "Publishing to TestFlight (iOS)"],
         "guides/publishing_to_google_play.md": [title: "Publishing to Google Play (Android)"]
       ],
