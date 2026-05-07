@@ -110,7 +110,11 @@ defmodule MobDev.GooglePlay.SetupWizard do
         else
           shell.info("  Skipping keystore. Generate it later with:")
           shell.info("    keytool -genkey -v -keystore android/upload_jks.keystore \\")
-          shell.info("      -alias upload -keyalg RSA -keysize 2048 -validity 10000 -storetype JKS")
+
+          shell.info(
+            "      -alias upload -keyalg RSA -keysize 2048 -validity 10000 -storetype JKS"
+          )
+
           :ok
         end
     end
@@ -347,9 +351,17 @@ defmodule MobDev.GooglePlay.SetupWizard do
     shell.info("")
     shell.info("  Play Console → Setup → API access → Link to a Google Cloud project")
     shell.info("")
-    shell.info(dry_tag() <> " Would prompt for developer account ID (the number in the Play Console URL)")
+
+    shell.info(
+      dry_tag() <> " Would prompt for developer account ID (the number in the Play Console URL)"
+    )
+
     shell.info(dry_tag() <> " Would POST to Play Developer API accounts.grants.create:")
-    shell.info("           androidpublisher.googleapis.com/androidpublisher/v3/accounts/{id}/grants")
+
+    shell.info(
+      "           androidpublisher.googleapis.com/androidpublisher/v3/accounts/{id}/grants"
+    )
+
     shell.info("           grantee: #{sa_email}")
     shell.info("           permissions: CAN_MANAGE_RELEASES, CAN_ACCESS_DRAFT_APPS")
     shell.info(dry_tag() <> " Falls back to printing manual instructions if API grant fails")
