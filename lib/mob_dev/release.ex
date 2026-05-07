@@ -254,9 +254,7 @@ defmodule MobDev.Release do
       team =
         capture(
           xml,
-          Regex.compile!(
-            "<key>TeamIdentifier<\\/key>\\s*<array>\\s*<string>([^<]+)<\\/string>"
-          )
+          Regex.compile!("<key>TeamIdentifier<\\/key>\\s*<array>\\s*<string>([^<]+)<\\/string>")
         )
 
       pd = String.contains?(xml, "<key>ProvisionedDevices</key>")
@@ -749,7 +747,8 @@ defmodule MobDev.Release do
             for prefix in megaco runtime_tools erl_interface os_mon wx et eunit \
                           observer debugger diameter edoc tools snmp dialyzer \
                           syntax_tools parsetools xmerl reltool inets ftp tftp \
-                          common_test mnesia eldap odbc; do
+                          common_test mnesia eldap odbc \
+                          compiler ssh; do
                 rm -rf "'"$OTP_BUNDLE"'/lib/$prefix-"*
             done
         '

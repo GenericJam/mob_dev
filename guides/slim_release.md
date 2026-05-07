@@ -120,7 +120,22 @@ megaco runtime_tools erl_interface os_mon wx et eunit
 observer debugger diameter edoc tools snmp dialyzer
 syntax_tools parsetools xmerl reltool inets ftp tftp
 common_test mnesia eldap odbc
+compiler ssh                                     # 2026-05-06
 ```
+
+The 2026-05-06 additions came from `Mob.Diag.loaded_snapshot/0` against
+a running pigeon iOS-sim build: 0 of 59 `compiler-9.0.5` modules and
+0 of 43 `ssh-5.5.1` modules ever loaded. ~4.4 MB win, no observed
+regressions on either platform. **Risk floor:** any mob app that calls
+`Code.eval_string/1`, `Code.compile_string/1`, `:erl_eval.eval_str/1`,
+or starts an `:ssh` client/server breaks. None of the apps in this
+tree do; new apps with those needs need to drop the strip in
+`MobDev.Release` / `MobDev.NativeBuild`.
+
+**Empirical-snapshot-driven additions are the way.** Apps that
+shouldn't have made the strip set show up in the next loaded_snapshot
+diff. The dance: deploy → `mob.snapshot_loaded` → see what's loaded
+that shouldn't be vs. shipped that's never used → iterate.
 
 Adding to this list is a one-line change in `lib/mob_dev/release.ex`
 (and the matching `lib/mob_dev/native_build.ex` for dev parity, plus

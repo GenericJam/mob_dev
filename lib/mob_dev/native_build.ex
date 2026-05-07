@@ -1314,7 +1314,8 @@ defmodule MobDev.NativeBuild do
             for prefix in megaco runtime_tools erl_interface os_mon wx et eunit \
                           observer debugger diameter edoc tools snmp dialyzer \
                           syntax_tools parsetools xmerl reltool inets ftp tftp \
-                          common_test mnesia eldap odbc; do
+                          common_test mnesia eldap odbc \
+                          compiler ssh; do
                 rm -rf "'"$OTP_BUNDLE"'/lib/$prefix-"*
             done
         '
