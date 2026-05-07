@@ -20,7 +20,15 @@ defmodule MobDev.SecurityScan.BundledVersions do
   what shipped — and the fingerprinter then catches drift.
   """
 
-  @external_resource Path.join([__DIR__, "..", "..", "..", "priv", "security", "bundled_versions.exs"])
+  @external_resource Path.join([
+                       __DIR__,
+                       "..",
+                       "..",
+                       "..",
+                       "priv",
+                       "security",
+                       "bundled_versions.exs"
+                     ])
 
   @manifest_path Path.join([
                    :code.priv_dir(:mob_dev) |> to_string(),
