@@ -82,7 +82,10 @@ defmodule MobDev.SecurityScan.Layers.GradleDepsTest do
           osv_scan_fn: fn _t, _l, _o -> {:ok, []} end
         )
 
-      assert Enum.any?(result.notes, &String.contains?(&1, "scanned manifests including gradle.lockfile"))
+      assert Enum.any?(
+               result.notes,
+               &String.contains?(&1, "scanned manifests including gradle.lockfile")
+             )
     end
   end
 end

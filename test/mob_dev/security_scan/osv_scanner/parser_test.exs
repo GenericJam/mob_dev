@@ -118,7 +118,9 @@ defmodule MobDev.SecurityScan.OsvScanner.ParserTest do
     test "unparseable / missing scores are :unknown" do
       [%Finding{severity: :unknown}] = Parser.findings(osv_json(max_severity: nil), :hex_deps)
       [%Finding{severity: :unknown}] = Parser.findings(osv_json(max_severity: ""), :hex_deps)
-      [%Finding{severity: :unknown}] = Parser.findings(osv_json(max_severity: "garbage"), :hex_deps)
+
+      [%Finding{severity: :unknown}] =
+        Parser.findings(osv_json(max_severity: "garbage"), :hex_deps)
     end
   end
 

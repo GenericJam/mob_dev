@@ -495,6 +495,35 @@ Edit `lib/mob_dev/otp_downloader.ex` — update the hash and ERTS version:
 If the ERTS version changed (e.g. from 16.3 to 16.4), update `build_release.md`
 to match.
 
+## Step 6 — Update the bundled-versions manifest
+
+Edit [`priv/security/bundled_versions.exs`](priv/security/bundled_versions.exs)
+— update `:active_hash` and add (or modify) the `:bundles` entry for the new
+hash with the versions baked into the new tarballs:
+
+```elixir
+%{
+  active_hash: "<new-hash>",
+  bundles: %{
+    "<new-hash>" => %{
+      erts: "16.3",            # erts-* directory in the tarball
+      otp_release: "28",
+      elixir: "1.19.5",
+      openssl: "3.4.0",        # `strings libcrypto.a | grep '^OpenSSL'`
+      exqlite_beam: "0.36.0",
+      openssl_release_date: "2024-10-22"
+    }
+  }
+}
+```
+
+This file is the source of truth that `mix mob.security_scan` checks against.
+The bundled-runtime scan layer fingerprints the cached tarball and raises if
+the binary disagrees with what's declared here — drift between what we say
+shipped and what actually shipped is exactly what this manifest is designed
+to catch. Update it in the **same PR** as the OTP hash bump; otherwise the
+scan will report a `:high` "manifest mismatch" finding for every Mob app.
+
 ---
 
 ## Troubleshooting

@@ -36,6 +36,7 @@ defmodule MobDev.SecurityScan.Layers.HexDepsTest do
   test "returns :not_applicable when no mix.lock", %{tmp_dir: dir} do
     result =
       HexDeps.run(project_root: dir, advisories_fn: fn -> [] end, osv_scan_fn: no_osv())
+
     assert result.status == :not_applicable
     assert result.findings == []
     assert Enum.any?(result.notes, &String.contains?(&1, "no mix.lock"))
