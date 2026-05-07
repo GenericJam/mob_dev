@@ -66,7 +66,10 @@ defmodule MobDev.SecurityScan.BundledRuntime.Fingerprint do
   end
 
   defp decode_tarball_dir(path) do
-    case Regex.run(~r/^otp-(android-arm32|android|ios-sim|ios-device)-([0-9a-f]+)$/, Path.basename(path)) do
+    case Regex.run(
+           ~r/^otp-(android-arm32|android|ios-sim|ios-device)-([0-9a-f]+)$/,
+           Path.basename(path)
+         ) do
       [_, "android", hash] -> [%{platform: :android, hash: hash, path: path}]
       [_, "android-arm32", hash] -> [%{platform: :android_arm32, hash: hash, path: path}]
       [_, "ios-sim", hash] -> [%{platform: :ios_sim, hash: hash, path: path}]

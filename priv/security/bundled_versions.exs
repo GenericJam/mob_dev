@@ -47,7 +47,15 @@
       openssl: "3.4.0",
       exqlite_beam: "0.36.0",
       openssl_release_date: "2024-10-22",
-      platforms: [:android, :android_arm32, :ios_sim, :ios_device]
+      platforms: [:android, :android_arm32, :ios_sim, :ios_device],
+      # Per-platform overrides. A field here replaces the bundle-level
+      # default for that platform; setting it to `nil` means "this
+      # platform deliberately does not ship that artifact" (and the
+      # fingerprinter should not flag its absence as drift).
+      per_platform: %{
+        ios_sim: %{exqlite_beam: nil},
+        ios_device: %{exqlite_beam: nil}
+      }
     }
   }
 }

@@ -26,7 +26,8 @@ defmodule MobDev.SecurityScan do
   @default_layers [
     MobDev.SecurityScan.Layers.HexDeps,
     MobDev.SecurityScan.Layers.GradleDeps,
-    MobDev.SecurityScan.Layers.SwiftDeps
+    MobDev.SecurityScan.Layers.SwiftDeps,
+    MobDev.SecurityScan.Layers.BundledRuntime
   ]
 
   @doc """
