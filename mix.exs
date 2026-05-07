@@ -8,11 +8,40 @@ defmodule MobDev.MixProject do
       elixir: "~> 1.19",
       description: "Development tooling for the Mob mobile framework",
       source_url: "https://github.com/genericjam/mob_dev",
+      compilers: compilers(Mix.env()) ++ Mix.compilers(),
       deps: deps(),
       package: package(),
-      docs: docs()
+      docs: docs(),
+      unused: [
+        ignore: [
+          # GenServer / behaviour callbacks (mix_unused can't see callbacks).
+          {:_, :init, 1},
+          {:_, :handle_call, 3},
+          {:_, :handle_cast, 2},
+          {:_, :handle_info, 2},
+          {:_, :handle_continue, 2},
+          {:_, :terminate, 2},
+          {:_, :code_change, 3},
+          {:_, :format_status, 1},
+          # Mix task entry points are dispatched by name.
+          {~r/^Mix\.Tasks\..+$/, :run, 1},
+          # Public API surface intended for downstream apps + IEx exploration —
+          # these are documented entry points, even when no internal caller
+          # references them.
+          {~r/^MobDev\.GooglePlay\..+$/, :_, :_},
+          {~r/^MobDev\.Server\..+$/, :_, :_},
+          # Test helpers exposed via @doc false for diagnosis.
+          {~r/^MobDev\..+/, :__test_only__, :_}
+        ]
+      ]
     ]
   end
+
+  # `:unused` only runs in dev. Adding it to test or prod compile would
+  # spam the test output and slow CI for no benefit (test fixtures
+  # legitimately have unused public functions).
+  defp compilers(:dev), do: [:unused]
+  defp compilers(_), do: []
 
   def application do
     [extra_applications: [:logger]]
@@ -33,7 +62,12 @@ defmodule MobDev.MixProject do
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:jump_credo_checks, "~> 0.1.0", only: [:dev, :test], runtime: false},
-      {:erlfmt, "~> 1.8", only: :dev, runtime: false}
+      {:erlfmt, "~> 1.8", only: :dev, runtime: false},
+      # Dev-only dead-code detector. Wires in via the `:unused` compiler
+      # tracer; ignore list maintained inline below since this codebase has
+      # legitimate dynamic dispatch (NIF on_load stubs, GenServer
+      # callbacks, behaviour implementations).
+      {:mix_unused, "~> 0.4", only: :dev, runtime: false}
     ]
   end
 
