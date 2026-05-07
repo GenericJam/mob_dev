@@ -9,7 +9,7 @@ defmodule MobDev.SecurityScan.HistoryFormatter do
   is the first thing a reader sees.
   """
 
-  alias MobDev.SecurityScan.{Diff, Finding, Report, StateFile}
+  alias MobDev.SecurityScan.{Diff, Finding, Report}
 
   @doc """
   Build a single Markdown changelog entry for the given report+diff.
