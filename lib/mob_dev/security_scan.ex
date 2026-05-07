@@ -27,7 +27,10 @@ defmodule MobDev.SecurityScan do
     MobDev.SecurityScan.Layers.HexDeps,
     MobDev.SecurityScan.Layers.GradleDeps,
     MobDev.SecurityScan.Layers.SwiftDeps,
-    MobDev.SecurityScan.Layers.BundledRuntime
+    MobDev.SecurityScan.Layers.BundledRuntime,
+    MobDev.SecurityScan.Layers.CSource,
+    MobDev.SecurityScan.Layers.KotlinSource,
+    MobDev.SecurityScan.Layers.SwiftSource
   ]
 
   @doc """
