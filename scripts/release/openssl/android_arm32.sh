@@ -25,8 +25,13 @@ export PATH="$TOOLCHAIN/bin:$PATH"
 cd "$OPENSSL_SRC"
 make distclean >/dev/null 2>&1 || true
 
+## See android_arm64.sh for size-flag rationale. arm32 also needs
+## no-asm because OpenSSL's hand-written ARM assembly emits non-PIC
+## absolute relocations against OPENSSL_armcap_P (ld.lld rejects
+## these when libcrypto.a is linked into a .so).
 ./Configure android-arm \
     -D__ANDROID_API__="$ANDROID_API" \
+    -Os -ffunction-sections -fdata-sections \
     -fPIC \
     --prefix="$PREFIX" \
     --openssldir="$PREFIX/ssl" \
@@ -34,11 +39,7 @@ make distclean >/dev/null 2>&1 || true
     no-tests \
     no-apps \
     no-engine \
-    no-asm     # OpenSSL's hand-written ARM assembly uses non-PIC
-                # absolute relocations against OPENSSL_armcap_P that
-                # ld.lld rejects when the .a is linked into a .so.
-                # Slower than the asm path but correct. C fallback
-                # implementations are still hardware-AES-aware.
+    no-asm
 
 make -j8
 make install_sw

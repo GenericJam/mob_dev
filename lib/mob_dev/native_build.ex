@@ -868,7 +868,10 @@ defmodule MobDev.NativeBuild do
     BEAMS_DIR="$OTP_ROOT/$APP_MODULE"
     SDKROOT=$(xcrun -sdk iphoneos --show-sdk-path)
     HOSTCC=$(xcrun -find cc)
-    CC="$HOSTCC -arch arm64 -miphoneos-version-min=17.0 -isysroot $SDKROOT"
+    # -Os + per-section emission for linker dead-strip on the final app
+    # binary. Per GRiSP nano 2025-06-11 — the C-side analog of
+    # beam_lib:strip_release/1 for BEAMs.
+    CC="$HOSTCC -arch arm64 -miphoneos-version-min=17.0 -isysroot $SDKROOT -Os -ffunction-sections -fdata-sections"
 
     IFLAGS="-I$OTP_ROOT/$ERTS_VSN/include \
             -I$OTP_ROOT/$ERTS_VSN/include/internal \
@@ -1233,6 +1236,7 @@ defmodule MobDev.NativeBuild do
         $LIBS \
         "$SQLITE_STATIC_LIB" \
         -lz -lc++ -lpthread \
+        -Xlinker -dead_strip \
         -Xlinker -framework -Xlinker UIKit \
         -Xlinker -framework -Xlinker Foundation \
         -Xlinker -framework -Xlinker CoreGraphics \

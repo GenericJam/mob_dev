@@ -31,7 +31,7 @@ log.
 
 ---
 
-## The 45 → 19.8 MB journey
+## The 45 → 19.8 → ?? MB journey
 
 | Build  | IPA size | What changed                                                            |
 | ------ | -------- | ----------------------------------------------------------------------- |
@@ -39,6 +39,37 @@ log.
 | Step 1 | 37 MB    | Apple-policy strips made traceable + made always-on                     |
 | Step 2 | 27 MB    | Added `prefix_libs`, `foreign_apps`, `dedup_versions`, `src_and_headers`|
 | Step 3 | 19.8 MB  | `beam_chunks` strip (Dbgi/Docs chunks, `:beam_lib.strip_release/1`)     |
+| Step 4 | TBD      | Pass 1: C-side `-Os -ffunction-sections -fdata-sections` + `--gc-sections` |
+
+### Pass 1: C-side dead-section elimination (2026-05-06)
+
+Inspired by the [GRiSP nano writeup (2025-06-11)](https://www.grisp.org/blog/posts/2025-06-11-grisp-nano-codebeam-sto)
+where the same flags were the single biggest C-side shrink for fitting
+the BEAM into 16 MB of OctoSPI DRAM. The mechanic:
+
+- `-Os` (size-optimised) over the default `-O2` / `-O3`.
+- `-ffunction-sections -fdata-sections` puts every function and global
+  data object in its own ELF/Mach-O section.
+- `-Wl,--gc-sections` (GNU ld, used on Android) and `-Wl,-dead_strip`
+  (ld64, used on iOS) drop sections nothing references at link time.
+
+Together they let the linker delete unused functions from `libbeam.a`,
+`libcrypto.a`, our `crypto.a` static NIF wrapper, and our own
+`libpigeon.so` / iOS app binary. This is the C-side analog of what
+`beam_lib:strip_release/1` does for `.beam` files.
+
+Applied to:
+- All four OTP cross-compiles (`xcomp/erl-xcomp-*-android.conf`,
+  `xcomp/erl-xcomp-arm64-ios{,simulator}.conf`).
+- All four OpenSSL cross-compile scripts in `scripts/release/openssl/`.
+- The custom `build_crypto_static_*.sh` scripts that recompile
+  crypto's NIF C sources with `-DSTATIC_ERLANG_NIF -fPIC`.
+- The Android `CMakeLists.txt` template in `mob_new` and
+  `mob_dev/lib/mob_dev/native_build.ex`'s generated iOS-device link.
+- The iOS `build.sh.eex` template (sim-build link).
+
+Size delta recorded in `~/code/mob/crypto_plan.md` once the rebuild +
+republish cycle completes.
 
 Sample `[SLIM:...]` log from a recent release build:
 
