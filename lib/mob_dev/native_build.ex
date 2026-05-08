@@ -164,13 +164,122 @@ defmodule MobDev.NativeBuild do
   defp ensure_python_android_libs(bundle_dir) do
     Enum.each(@android_python_abis, fn abi ->
       copy_python_jni_libs(bundle_dir, abi)
+      cross_compile_libpythonx_android(abi, bundle_dir)
     end)
 
     copy_python_assets(bundle_dir)
-
-    IO.puts("  ⚠  libpythonx.so for Android NDK is NOT yet cross-compiled.")
-    IO.puts("     Pythonx.eval will fail at runtime. See python_embedding guide.")
     :ok
+  end
+
+  # Cross-compiles Pythonx's NIF (deps/pythonx/c_src/{pythonx,python}.cpp)
+  # for Android against the NDK and the Chaquopy headers. Output drops
+  # into android/app/src/main/jniLibs/<abi>/libpythonx.so so the APK
+  # packager picks it up alongside the OTP runtime helper libs.
+  #
+  # Pythonx's design — runtime dlopen+dlsym for libpython AND enif_*
+  # symbols resolved by the loaded BEAM — means libpythonx.so has many
+  # undefined symbols at link time. `--unresolved-symbols=ignore-all`
+  # tells lld this is intentional. Apps that load the NIF via
+  # `:erlang.load_nif/2` resolve enif_* against the host BEAM, and
+  # Pythonx.init/4 resolves Py* against the dlopen'd libpython.so.
+  defp cross_compile_libpythonx_android(abi, bundle_dir) do
+    pythonx_src = "deps/pythonx/c_src"
+
+    if File.dir?(pythonx_src) do
+      ndk_version = MobDev.NdkVersion.effective()
+      sdk_root = MobDev.NdkVersion.sdk_root()
+
+      cond do
+        is_nil(sdk_root) ->
+          IO.puts("  ⚠  Android SDK not found — skipping libpythonx.so cross-compile")
+          :ok
+
+        not MobDev.NdkVersion.installed?(ndk_version) ->
+          IO.puts("  ⚠  Android NDK #{ndk_version} not installed — skipping libpythonx.so")
+          IO.puts("     Install with: #{MobDev.NdkVersion.install_command()}")
+          :ok
+
+        true ->
+          do_cross_compile_libpythonx_android(abi, bundle_dir, sdk_root, ndk_version)
+      end
+    else
+      :ok
+    end
+  end
+
+  defp do_cross_compile_libpythonx_android(abi, bundle_dir, sdk_root, ndk_version) do
+    triple = android_triple(abi)
+    api = android_api_level()
+    host = android_ndk_host()
+
+    clang =
+      Path.join([
+        sdk_root,
+        "ndk",
+        ndk_version,
+        "toolchains",
+        "llvm",
+        "prebuilt",
+        host,
+        "bin",
+        "#{triple}#{api}-clang++"
+      ])
+
+    unless File.regular?(clang) do
+      IO.puts("  ⚠  NDK clang++ not found at #{clang} — skipping libpythonx.so")
+      :ok
+    end
+
+    pythonx_src = "deps/pythonx/c_src"
+    fine_inc = "deps/fine/c_include"
+    python_inc = MobDev.PythonAndroidSupport.headers_dir(bundle_dir, abi)
+
+    erts_inc =
+      Path.wildcard("#{MobDev.OtpDownloader.android_otp_dir()}/erts-*/include")
+      |> List.first()
+
+    out = "android/app/src/main/jniLibs/#{abi}/libpythonx.so"
+    File.mkdir_p!(Path.dirname(out))
+
+    args =
+      ["-shared", "-fPIC", "-fvisibility=hidden", "-std=c++17", "-Os"] ++
+        ["-ffunction-sections", "-fdata-sections"] ++
+        ["-I", erts_inc, "-I", "#{erts_inc}/internal"] ++
+        ["-I", fine_inc, "-I", python_inc] ++
+        ["-Wno-unused-parameter", "-Wno-comment"] ++
+        ["-Wl,--unresolved-symbols=ignore-all"] ++
+        ["#{pythonx_src}/pythonx.cpp", "#{pythonx_src}/python.cpp"] ++
+        ["-o", out]
+
+    case System.cmd(clang, args, stderr_to_stdout: true) do
+      {_, 0} ->
+        IO.puts("  ✓ cross-compiled #{out}")
+        :ok
+
+      {output, code} ->
+        IO.puts(:stderr, "  ✗ libpythonx.so cross-compile failed (exit #{code})")
+        IO.puts(:stderr, output)
+        {:error, "libpythonx.so cross-compile failed for #{abi}"}
+    end
+  end
+
+  defp android_triple("arm64-v8a"), do: "aarch64-linux-android"
+  defp android_triple("x86_64"), do: "x86_64-linux-android"
+
+  # Match mob_new's android template `minSdk 28`. Using API 28 keeps
+  # the NIF compatible with the same device floor as the rest of the
+  # Mob-generated app code.
+  defp android_api_level, do: "28"
+
+  # Pre-built NDK toolchains are named for the host that runs them.
+  # Mob is a macOS-first dev environment; Linux hosts use the same
+  # `darwin-x86_64` directory name on Apple Silicon thanks to Rosetta.
+  defp android_ndk_host do
+    case :os.type() do
+      {:unix, :darwin} -> "darwin-x86_64"
+      {:unix, _} -> "linux-x86_64"
+      _ -> "darwin-x86_64"
+    end
   end
 
   defp copy_python_jni_libs(bundle_dir, abi) do
