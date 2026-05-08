@@ -83,9 +83,41 @@ defmodule Mix.Tasks.Mob.Enable do
     and `Mob.Notify.register_push(socket)` at runtime to obtain a device token.
   - Android: runtime only — `POST_NOTIFICATIONS` is requested at runtime, no
     manifest key needed.
+
+  ### `python`
+
+  Enables embedded CPython via [Pythonx](https://hex.pm/packages/pythonx).
+
+  - **iOS only.** Android Python is intentionally out of scope; if your app
+    runs on Android too, you'll need a manual integration (Chaquopy or
+    python-for-android — both differ from BeeWare's iOS toolchain).
+  - **Bare CPython only.** The bundled `Python.xcframework` ships the
+    interpreter, the standard library, and standard arch-specific C
+    extensions (`_ssl`, `_ctypes`, `_hashlib`, …). Third-party wheels
+    (`cryptography`, `numpy`, `RNS`, …) are out of scope — produce your own
+    with [BeeWare's `mobile-forge`](https://github.com/beeware/mobile-forge)
+    and drop them into your project. Mob does not manage wheel installation.
+
+  What it does:
+
+    - Adds `{:pythonx, "~> 0.4"}` to `mix.exs` deps.
+    - Generates `lib/<app>/python_paths.ex` — pure detection module that
+      locates the bundled framework at runtime (`:desktop` / `{:ios, paths}` /
+      `{:partial, missing}`).
+    - Appends a `MOB_TARGET=ios`-gated `:pythonx, :uv_init` block to
+      `config/config.exs` so desktop development still uses uv-managed
+      CPython.
+
+  Bundle size impact: ~70 MB (CPython framework + stdlib + 68
+  arch-specific C extensions). Apply this only when you actually want
+  to call Python from BEAM — non-Python apps stay vanilla.
+
+  After running, your `Mob.App.on_start/0` should ensure `:pythonx` is
+  started and feed `<App>.PythonPaths.detect/1` into `Pythonx.init/4` for
+  the iOS branch. See `guides/python_embedding.md` for the full template.
   """
 
-  @valid_features ~w(liveview camera photo_library file_sharing location notifications)
+  @valid_features ~w(liveview camera photo_library file_sharing location notifications python)
 
   @impl Mix.Task
   def run([]) do
@@ -170,6 +202,31 @@ defmodule Mix.Tasks.Mob.Enable do
     )
 
     ios_create_push_entitlements(project_dir, app_name)
+  end
+
+  defp enable("python", project_dir, app_name) do
+    android_noop("python", "iOS only — Android Python embedding intentionally out of scope")
+
+    pythonx_inject_dep(project_dir)
+    pythonx_generate_paths_module(project_dir, app_name)
+    pythonx_patch_config(project_dir, app_name)
+
+    Mix.shell().info("""
+
+      Next steps:
+        1. Run `mix deps.get` to fetch :pythonx
+        2. In your `Mob.App.on_start/0`, call:
+             {:ok, _} = Application.ensure_all_started(:pythonx)
+             case #{Macro.camelize(app_name)}.PythonPaths.detect(to_string(:code.root_dir())) do
+               :desktop -> :ok  # Pythonx auto-init handles this
+               {:ios, %{dl_path: dl, home_path: home}} ->
+                 Pythonx.init(dl, home, dl, sys_paths: [])
+               {:partial, missing} ->
+                 # log + bail out — bundle is incomplete
+                 nil
+             end
+        3. `mix mob.deploy --native --device <udid>` (downloads BeeWare bundle on first run)
+    """)
   end
 
   # ── LiveView: generate MobScreen ─────────────────────────────────────────
@@ -482,6 +539,71 @@ defmodule Mix.Tasks.Mob.Enable do
 
   defp android_noop(feature, reason) do
     Mix.shell().info("  * Android #{feature}: #{reason}")
+  end
+
+  # ── Python feature: helpers ───────────────────────────────────────────────
+
+  defp pythonx_inject_dep(project_dir) do
+    path = Path.join(project_dir, "mix.exs")
+    content = File.read!(path)
+    patched = MobDev.Enable.inject_pythonx_dep(content)
+
+    cond do
+      patched == content and String.contains?(content, ":pythonx") ->
+        Mix.shell().info("  * skip mix.exs (:pythonx already in deps)")
+
+      patched == content ->
+        Mix.shell().info(
+          "  * skip mix.exs (no recognizable `defp deps do [` block — add {:pythonx, \"~> 0.4\"} manually)"
+        )
+
+      true ->
+        File.write!(path, patched)
+        Mix.shell().info([:green, "  * patch ", :reset, path, " (added :pythonx dep)"])
+    end
+  end
+
+  defp pythonx_generate_paths_module(project_dir, app_name) do
+    module_name = Macro.camelize(app_name)
+    dir = Path.join([project_dir, "lib", app_name])
+    path = Path.join(dir, "python_paths.ex")
+
+    if File.exists?(path) do
+      Mix.shell().info("  * skip #{path} (already exists)")
+    else
+      File.mkdir_p!(dir)
+      File.write!(path, MobDev.Enable.python_paths_module_template(module_name))
+      Mix.shell().info([:green, "  * create ", :reset, path])
+    end
+  end
+
+  defp pythonx_patch_config(project_dir, app_name) do
+    config_dir = Path.join(project_dir, "config")
+    File.mkdir_p!(config_dir)
+    path = Path.join(config_dir, "config.exs")
+
+    content =
+      if File.exists?(path) do
+        File.read!(path)
+      else
+        "import Config\n"
+      end
+
+    patched = MobDev.Enable.inject_pythonx_uv_init_gate(content, app_name)
+
+    cond do
+      patched == content and String.contains?(content, "MOB_TARGET") ->
+        Mix.shell().info("  * skip #{path} (MOB_TARGET=ios gate already present)")
+
+      patched == content ->
+        Mix.shell().info(
+          "  * skip #{path} (existing :pythonx config left untouched — wrap manually if needed)"
+        )
+
+      true ->
+        File.write!(path, patched)
+        Mix.shell().info([:green, "  * patch ", :reset, path, " (added MOB_TARGET=ios gate)"])
+    end
   end
 
   # ── Helpers ───────────────────────────────────────────────────────────────
