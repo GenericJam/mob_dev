@@ -313,28 +313,47 @@ defmodule MobDev.Enable do
   Returns the source for the `<App>.PythonPaths` module that
   `mix mob.enable python` writes to `lib/<app>/python_paths.ex`.
 
-  Pure — no filesystem access. The generated module reads
-  `:code.root_dir/0` at runtime to locate the bundled CPython.
+  Pure — no filesystem access. The generated module supports iOS
+  (paths under `<otp_root>/python/`) and Android (paths from
+  `MOB_PYTHON_HOME` / `MOB_PYTHON_DL` env vars set by the user's
+  `MainActivity.kt` before BEAM startup).
   """
   @spec python_paths_module_template(String.t()) :: String.t()
   def python_paths_module_template(module_name) when is_binary(module_name) do
     """
     defmodule #{module_name}.PythonPaths do
       @moduledoc \"\"\"
-      Detects bundled CPython on iOS and reports the paths needed for
-      `Pythonx.init/4` (dl_path, home_path, stdlib_path).
+      Detects bundled CPython at runtime and reports the paths needed
+      for `Pythonx.init/4` (dl_path, home_path, stdlib_path).
 
       Pure detection logic — see your app's `App` module for how the
       result is fed into `Pythonx.init/4` at boot.
 
+      ## Per-platform layout
+
+        * **iOS**: ios/build_device.sh bundles `Python.framework`,
+          stdlib, and lib-dynload at `<App>.app/otp/python/`. Detection
+          reads `:code.root_dir/0` and inspects that subtree.
+
+        * **Android**: `mix mob.deploy --native` bundles libpython.so
+          into the APK's `jniLibs/<abi>/` (auto-extracted by the
+          installer to `applicationInfo.nativeLibraryDir`) and
+          stdlib + lib-dynload into `assets/python/` (extracted to
+          `filesDir/python/` by `MainActivity.onCreate` on first
+          launch). MainActivity exports the resolved paths via
+          `MOB_PYTHON_DL` and `MOB_PYTHON_HOME` env vars before
+          starting the BEAM.
+
       ## Returns
 
-        * `:desktop` — no `<otp_root>/python/` present; Pythonx's
+        * `:desktop` — no platform bundle found. Pythonx's
           `Application.start/2` handles desktop init via `:uv_init`.
-        * `{:ios, paths}` — full bundle present; pass paths into
+        * `{:ios, paths}` — iOS bundle present; pass into
           `Pythonx.init/4`.
-        * `{:partial, missing}` — directory exists but artifacts are
-          missing; surface the list to the user.
+        * `{:android, paths}` — Android bundle present; pass into
+          `Pythonx.init/4`.
+        * `{:partial, missing}` — bundle is incomplete; surface to
+          the user.
       \"\"\"
 
       @type python_paths :: %{
@@ -346,34 +365,47 @@ defmodule MobDev.Enable do
       @type detection ::
               :desktop
               | {:ios, python_paths()}
+              | {:android, python_paths()}
               | {:partial, [atom()]}
 
       @python_version "python3.13"
 
       @doc \"\"\"
-      Inspect `<otp_root>/python/` and decide what we have. `otp_root`
-      is typically `to_string(:code.root_dir())`.
+      Decide which platform's bundle (if any) is present. `otp_root` is
+      typically `to_string(:code.root_dir())` and is used for the iOS
+      layout — Android resolution comes from env vars MainActivity
+      exports.
       \"\"\"
       @spec detect(String.t()) :: detection()
       def detect(otp_root) when is_binary(otp_root) do
-        paths = build_paths(otp_root)
+        cond do
+          File.dir?(Path.join(otp_root, "python")) ->
+            paths = build_ios_paths(otp_root)
 
-        if File.dir?(Path.join(otp_root, "python")) do
-          case missing(paths) do
-            [] -> {:ios, paths}
-            missing -> {:partial, missing}
-          end
-        else
-          :desktop
+            case missing(paths) do
+              [] -> {:ios, paths}
+              missing -> {:partial, missing}
+            end
+
+          android_python? ->
+            paths = build_android_paths()
+
+            case missing(paths) do
+              [] -> {:android, paths}
+              missing -> {:partial, missing}
+            end
+
+          true ->
+            :desktop
         end
       end
 
       @doc \"\"\"
-      Construct the path map under `<otp_root>/python/` without
-      checking existence. Pure — no filesystem access.
+      Construct the iOS path map under `<otp_root>/python/`. Pure —
+      no filesystem access.
       \"\"\"
-      @spec build_paths(String.t()) :: python_paths()
-      def build_paths(otp_root) when is_binary(otp_root) do
+      @spec build_ios_paths(String.t()) :: python_paths()
+      def build_ios_paths(otp_root) when is_binary(otp_root) do
         python_dir = Path.join(otp_root, "python")
 
         %{
@@ -384,8 +416,26 @@ defmodule MobDev.Enable do
       end
 
       @doc \"\"\"
-      Returns the keys (`:dl_path` / `:home_path` / `:stdlib_path`) whose
-      artifacts are absent on disk. Empty list means the bundle is complete.
+      Construct the Android path map from `MOB_PYTHON_HOME` and
+      `MOB_PYTHON_DL` env vars. Returns the empty-string default when
+      vars aren't set so callers see :partial rather than crashing.
+      \"\"\"
+      @spec build_android_paths() :: python_paths()
+      def build_android_paths do
+        home = System.get_env("MOB_PYTHON_HOME") || ""
+        dl = System.get_env("MOB_PYTHON_DL") || ""
+
+        %{
+          dl_path: dl,
+          home_path: home,
+          stdlib_path: if(home == "", do: "", else: Path.join([home, "stdlib"]))
+        }
+      end
+
+      @doc \"\"\"
+      Returns the keys (`:dl_path` / `:home_path` / `:stdlib_path`)
+      whose artifacts are absent on disk. Empty list means the bundle
+      is complete.
       \"\"\"
       @spec missing(python_paths()) :: [atom()]
       def missing(%{dl_path: dl, home_path: home, stdlib_path: stdlib}) do
@@ -396,6 +446,10 @@ defmodule MobDev.Enable do
         ]
         |> Enum.reject(fn {_, present?} -> present? end)
         |> Enum.map(&elem(&1, 0))
+      end
+
+      defp android_python? do
+        System.get_env("MOB_PYTHON_HOME") != nil
       end
     end
     """
