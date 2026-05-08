@@ -529,14 +529,16 @@ defmodule MobDev.NativeBuild do
   defp build_ios(cfg) do
     with :ok <- check_path(cfg[:mob_dir], "mob_dir"),
          :ok <- check_path(cfg[:elixir_lib], "elixir_lib"),
-         {:ok, otp_root} <- MobDev.OtpDownloader.ensure_ios_sim() do
+         {:ok, otp_root} <- MobDev.OtpDownloader.ensure_ios_sim(),
+         {:ok, python_bundle} <- maybe_ensure_python_bundle() do
       IO.puts("  Building iOS simulator app...")
 
-      env = [
-        {"MOB_DIR", Path.expand(cfg[:mob_dir])},
-        {"MOB_ELIXIR_LIB", Path.expand(cfg[:elixir_lib])},
-        {"MOB_IOS_OTP_ROOT", otp_root}
-      ]
+      env =
+        [
+          {"MOB_DIR", Path.expand(cfg[:mob_dir])},
+          {"MOB_ELIXIR_LIB", Path.expand(cfg[:elixir_lib])},
+          {"MOB_IOS_OTP_ROOT", otp_root}
+        ] ++ python_apple_support_env(pythonx_in_project?(), python_bundle)
 
       case System.cmd("bash", ["ios/build.sh"],
              env: env,
