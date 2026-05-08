@@ -404,11 +404,19 @@ defmodule MobDev.EnableTest do
       assert result =~ "defmodule MyApp.PythonPaths do"
     end
 
-    test "exposes detect/1, build_paths/1, missing/1" do
+    test "exposes detect/1, build_ios_paths/1, build_android_paths/0, missing/1" do
       result = Enable.python_paths_module_template("MyApp")
       assert result =~ "def detect("
-      assert result =~ "def build_paths("
+      assert result =~ "def build_ios_paths("
+      assert result =~ "def build_android_paths"
       assert result =~ "def missing("
+    end
+
+    test "supports Android via MOB_PYTHON_HOME / MOB_PYTHON_DL env vars" do
+      result = Enable.python_paths_module_template("MyApp")
+      assert result =~ "MOB_PYTHON_HOME"
+      assert result =~ "MOB_PYTHON_DL"
+      assert result =~ "{:android, paths}"
     end
 
     test "uses python3.13 in stdlib path" do
