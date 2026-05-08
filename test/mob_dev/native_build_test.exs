@@ -318,4 +318,93 @@ defmodule MobDev.NativeBuildTest do
   # Stub iOS lister: returns no devices so tests exercise the
   # format-only fallback without hitting `MobDev.Discovery.IOS.list_devices/0`.
   defp no_devices, do: fn -> [] end
+
+  # ── Pythonx integration ────────────────────────────────────────────────────
+
+  describe "pythonx_in_project?/1" do
+    @tag :tmp_dir
+    test "false when no _build/dev/lib/pythonx", %{tmp_dir: tmp} do
+      refute NativeBuild.pythonx_in_project?(tmp)
+    end
+
+    @tag :tmp_dir
+    test "true when _build/dev/lib/pythonx exists", %{tmp_dir: tmp} do
+      File.mkdir_p!(Path.join([tmp, "_build", "dev", "lib", "pythonx", "ebin"]))
+      assert NativeBuild.pythonx_in_project?(tmp)
+    end
+  end
+
+  describe "python_apple_support_env/2" do
+    test "returns empty list when pythonx not in project" do
+      assert NativeBuild.python_apple_support_env(false, "/some/path") == []
+    end
+
+    test "returns PYTHON_APPLE_SUPPORT env var when pythonx is in project" do
+      assert NativeBuild.python_apple_support_env(true, "/path/to/extracted") == [
+               {"PYTHON_APPLE_SUPPORT", "/path/to/extracted"}
+             ]
+    end
+  end
+
+  describe "generate_build_device_sh/2 — pythonx bundling block" do
+    setup do
+      cfg = [
+        bundle_id: "com.example.test",
+        ios_team_id: "ABC123",
+        ios_sign_identity: "Apple Development: t@e (X)",
+        ios_profile_uuid: "uuid",
+        mob_dir: "/tmp/mob",
+        elixir_lib: "/tmp/elixir/lib"
+      ]
+
+      {:ok, sh: NativeBuild.generate_build_device_sh(cfg, "/tmp/otp")}
+    end
+
+    test "gates Pythonx work behind _build/dev/lib/pythonx detection", %{sh: sh} do
+      assert sh =~ ~s|if [ -d "_build/dev/lib/pythonx" ]|
+    end
+
+    test "installs pythonx as OTP library (mirrors exqlite pattern)", %{sh: sh} do
+      assert sh =~ "Installing pythonx as OTP library"
+      assert sh =~ ~s|PYTHONX_LIB_DIR="$OTP_ROOT/lib/pythonx-${PYTHONX_VSN}"|
+    end
+
+    test "cross-compiles libpythonx.so for iphoneos arm64", %{sh: sh} do
+      assert sh =~ "Cross-compiling libpythonx.so"
+      assert sh =~ "xcrun -sdk iphoneos clang++"
+      assert sh =~ "-miphoneos-version-min=17.0"
+      assert sh =~ "-undefined dynamic_lookup"
+    end
+
+    test "bundles Python.framework + stdlib + lib-dynload (device arch)", %{sh: sh} do
+      assert sh =~ "ios-arm64/Python.framework"
+      assert sh =~ "ios-arm64/lib-arm64/python3.13/lib-dynload"
+      assert sh =~ ~s|"$OTP_ROOT/python/Python.framework"|
+      assert sh =~ ~s|"$OTP_ROOT/python/lib/python3.13"|
+    end
+
+    test "rsyncs python/ into the .app's OTP bundle when present", %{sh: sh} do
+      assert sh =~ ~r/rsync.*"\$OTP_ROOT\/python\/"\s+"\$OTP_BUNDLE\/python\/"/
+    end
+
+    test "codesigns each lib-dynload .so before final app sign", %{sh: sh} do
+      assert sh =~ "Codesigning bundled Python dylibs"
+      assert sh =~ ~r/find\s+"\$OTP_BUNDLE\/python\/lib\/python3\.13\/lib-dynload".*\.so/
+      assert sh =~ ~s|codesign --force --sign "$SIGN_IDENTITY"|
+    end
+
+    test "codesigns Python.framework binary", %{sh: sh} do
+      assert sh =~ ~s|"$OTP_BUNDLE/python/Python.framework/Python"|
+    end
+
+    test "codesigns libpythonx.so", %{sh: sh} do
+      assert sh =~ "libpythonx.so"
+    end
+
+    test "errors clearly when PYTHON_APPLE_SUPPORT unset but pythonx present", %{sh: sh} do
+      assert sh =~ "PYTHON_APPLE_SUPPORT"
+      # Either explicit error or :? expansion
+      assert sh =~ ~r/PYTHON_APPLE_SUPPORT.*not set|PYTHON_APPLE_SUPPORT:\?/
+    end
+  end
 end
