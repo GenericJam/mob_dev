@@ -3,8 +3,9 @@
 # Cross-compile OTP for iOS arm64 device. Mirrors Step 3b.0 of build_release.md.
 #
 # Inputs (env or default):
-#   OTP_SRC      — OTP source checkout (default: ~/code/otp)
-#   RELEASE_ROOT — install dir to populate (default: /tmp/otp-ios-device)
+#   OTP_SRC         — OTP source checkout (default: ~/code/otp)
+#   OPENSSL_PREFIX  — pre-built OpenSSL install (default: /tmp/openssl-ios-device)
+#   RELEASE_ROOT    — install dir to populate (default: /tmp/otp-ios-device)
 #
 # Output:
 #   $RELEASE_ROOT/{bin,erts-<vsn>,lib,releases,...}
@@ -16,12 +17,17 @@
 
 set -euo pipefail
 
-cd "$(dirname "$0")"
+# Resolve our own dir before cd'ing — `dirname "$0"` returns a relative path
+# and the subshell trick on line 37 would fail after we're already cd'd here.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
 source ./_lib.sh
 
+: "${OPENSSL_PREFIX:=/tmp/openssl-ios-device}"
 : "${RELEASE_ROOT:=/tmp/otp-ios-device}"
 
 log "OTP_SRC=$OTP_SRC"
+log "OPENSSL_PREFIX=$OPENSSL_PREFIX"
 log "RELEASE_ROOT=$RELEASE_ROOT"
 
 # Sanity: iPhoneOS SDK must be installed.
@@ -29,7 +35,9 @@ if ! xcrun --sdk iphoneos --show-sdk-path >/dev/null 2>&1; then
     fail "iPhoneOS SDK not found — install Xcode + run 'xcode-select --install'"
 fi
 
-PATCHES_DIR="$(cd "$(dirname "$0")" && pwd)/patches"
+[ -d "$OPENSSL_PREFIX" ] || fail "OPENSSL_PREFIX missing at $OPENSSL_PREFIX — run scripts/release/openssl/ios_device.sh first (used later by build_crypto_static_ios_device.sh, not the OTP cross-compile itself)"
+
+PATCHES_DIR="$SCRIPT_DIR/patches"
 
 cd "$OTP_SRC"
 
@@ -61,8 +69,20 @@ apply_patch "$PATCHES_DIR/0002-ios-device-epmd-no-daemon.patch" \
 # iOS doesn't allow shared libraries; emit static libbeam.a instead of .so.
 export RELEASE_LIBBEAM=yes
 
-# Configure for the iOS arm64 device target. --without-ssl skips OpenSSL
-# (Mob ships an Elixir-side crypto shim for HTTP-only Phoenix on-device).
+# Clean prior arch's config so configure doesn't get confused.
+make distclean >/dev/null 2>&1 || true
+
+# `--without-ssl` is intentional: iOS xcomp configs set --enable-static-nifs,
+# which static-links the crypto NIF into beam.emu at OTP build time. With
+# --with-ssl, beam.emu's link line needs OpenSSL but OTP's build system
+# doesn't propagate the --with-ssl prefix to that link, so the build fails
+# with undefined references to RAND_seed / OSSL_PROVIDER_load / etc.
+#
+# Android's pattern works around this by building static crypto.a in a
+# separate step (build_crypto_static_android_*.sh) — we do the same on iOS
+# via build_crypto_static_ios_device.sh, run after this cross-compile. The
+# tarball script then ships crypto.a + libcrypto.a, and the user's app
+# links them at app-build time.
 log "configuring for arm64-apple-ios..."
 ./otp_build configure \
     --xcomp-conf=./xcomp/erl-xcomp-arm64-ios.conf \
