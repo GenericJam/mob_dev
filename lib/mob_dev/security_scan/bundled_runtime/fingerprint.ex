@@ -66,10 +66,12 @@ defmodule MobDev.SecurityScan.BundledRuntime.Fingerprint do
   end
 
   defp decode_tarball_dir(path) do
-    case Regex.run(
-           ~r/^otp-(android-arm32|android|ios-sim|ios-device)-([0-9a-f]+)$/,
-           Path.basename(path)
-         ) do
+    # Regex.compile!/1 (not ~r/.../) to sidestep OTP 28.0's `:re.import/1`
+    # undefined-function bug on sigil-precompiled regexes loaded from beam
+    # files. See MobDev.NdkVersion.project_pinned/1 for the same workaround.
+    pattern = Regex.compile!("^otp-(android-arm32|android|ios-sim|ios-device)-([0-9a-f]+)$")
+
+    case Regex.run(pattern, Path.basename(path)) do
       [_, "android", hash] -> [%{platform: :android, hash: hash, path: path}]
       [_, "android-arm32", hash] -> [%{platform: :android_arm32, hash: hash, path: path}]
       [_, "ios-sim", hash] -> [%{platform: :ios_sim, hash: hash, path: path}]
@@ -129,7 +131,7 @@ defmodule MobDev.SecurityScan.BundledRuntime.Fingerprint do
           {:halt, e}
 
         line ->
-          case Regex.run(~r/^#define\s+SQLITE_VERSION\s+"([^"]+)"/, line) do
+          case Regex.run(Regex.compile!(~S<^#define\s+SQLITE_VERSION\s+"([^"]+)">), line) do
             [_, version] -> {:halt, {:ok, version}}
             nil -> {:cont, {:error, :unparseable}}
           end
@@ -153,7 +155,7 @@ defmodule MobDev.SecurityScan.BundledRuntime.Fingerprint do
 
     case File.read(app_file) do
       {:ok, content} ->
-        case Regex.run(~r/\{vsn,\s*"([^"]+)"\}/, content) do
+        case Regex.run(Regex.compile!(~S<\{vsn,\s*"([^"]+)"\}>), content) do
           [_, version] -> version
           nil -> nil
         end
@@ -216,7 +218,7 @@ defmodule MobDev.SecurityScan.BundledRuntime.Fingerprint do
       |> :binary.split(<<0>>)
       |> List.first()
 
-    case Regex.run(~r/^OpenSSL\s+(\d+\.\d+\.\d+[a-z]?)\b/, blob) do
+    case Regex.run(Regex.compile!(~S<^OpenSSL\s+(\d+\.\d+\.\d+[a-z]?)\b>), blob) do
       [_, version] -> version
       _ -> nil
     end
