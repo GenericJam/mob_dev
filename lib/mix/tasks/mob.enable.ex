@@ -77,8 +77,12 @@ defmodule Mix.Tasks.Mob.Enable do
 
   ### `notifications`
 
-  - iOS: runtime only — no plist key needed
-  - Android: adds `POST_NOTIFICATIONS` permission (API 33+)
+  - iOS: creates `ios/<app>.entitlements` with `aps-environment: development`.
+    After running, execute `mix mob.provision` so Xcode downloads a push-capable
+    provisioning profile. Then call `Mob.Permissions.request(socket, :notifications)`
+    and `Mob.Notify.register_push(socket)` at runtime to obtain a device token.
+  - Android: runtime only — `POST_NOTIFICATIONS` is requested at runtime, no
+    manifest key needed.
   """
 
   @valid_features ~w(liveview camera photo_library file_sharing location notifications)
@@ -159,16 +163,13 @@ defmodule Mix.Tasks.Mob.Enable do
     android_add_permission(project_dir, "android.permission.ACCESS_FINE_LOCATION")
   end
 
-  defp enable("notifications", _project_dir, _app_name) do
+  defp enable("notifications", project_dir, app_name) do
     android_noop(
       "notifications",
       "POST_NOTIFICATIONS is requested at runtime, no manifest key needed"
     )
 
-    ios_noop(
-      "notifications",
-      "iOS notification permission is requested at runtime, no plist key needed"
-    )
+    ios_create_push_entitlements(project_dir, app_name)
   end
 
   # ── LiveView: generate MobScreen ─────────────────────────────────────────
@@ -323,8 +324,34 @@ defmodule Mix.Tasks.Mob.Enable do
     end)
   end
 
-  defp ios_noop(feature, reason) do
-    Mix.shell().info("  * iOS #{feature}: #{reason}")
+  defp ios_create_push_entitlements(project_dir, app_name) do
+    ios_dir = Path.join(project_dir, "ios")
+    path = Path.join(ios_dir, "#{app_name}.entitlements")
+
+    if File.exists?(path) do
+      Mix.shell().info("  * skip #{path} (already exists)")
+    else
+      File.mkdir_p!(ios_dir)
+      File.write!(path, push_entitlements_plist())
+      Mix.shell().info([:green, "  * create ", :reset, path])
+
+      Mix.shell().info(
+        "    Run `mix mob.provision` to download a push-capable provisioning profile."
+      )
+    end
+  end
+
+  defp push_entitlements_plist do
+    """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+    <plist version="1.0">
+    <dict>
+        <key>aps-environment</key>
+        <string>development</string>
+    </dict>
+    </plist>
+    """
   end
 
   # ── Android manifest helpers ──────────────────────────────────────────────
