@@ -205,7 +205,12 @@ defmodule Mix.Tasks.Mob.Enable do
   end
 
   defp enable("python", project_dir, app_name) do
-    android_noop("python", "iOS only — Android Python embedding intentionally out of scope")
+    android_noop(
+      "python",
+      "Android: Chaquopy distribution gets bundled by `mix mob.deploy --native`; " <>
+        "libpythonx.so NDK cross-compile + runtime asset extraction are still WIP. " <>
+        "iOS works end-to-end."
+    )
 
     pythonx_inject_dep(project_dir)
     pythonx_generate_paths_module(project_dir, app_name)
