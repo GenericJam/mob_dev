@@ -35,6 +35,22 @@ log "staging at $STAGE"
 # Copy the OTP runtime install tree.
 cp -r "$OTP_RELEASE/." "$STAGE"
 
+# iOS OTP is cross-compiled --without-ssl (--enable-static-nifs in the iOS
+# xcomp configs would break beam.emu's link with --with-ssl). Borrow the
+# crypto / public_key / ssl applications from the Android install — BEAM
+# bytecode is platform-neutral, and the priv/lib/ NIF artifacts these apps
+# normally ship are obsolete here anyway (we replace crypto.so with the
+# static crypto.a + libcrypto.a below).
+: "${ANDROID_OTP_RELEASE:=/tmp/otp-android}"
+[ -d "$ANDROID_OTP_RELEASE" ] || fail "missing $ANDROID_OTP_RELEASE — needed for crypto/public_key/ssl beams (cross-compile Android arm64 first)"
+
+for app in crypto public_key ssl; do
+    src=$(ls -d "$ANDROID_OTP_RELEASE/lib/$app-"* 2>/dev/null | head -1)
+    [ -n "$src" ] || fail "no $app-*/ in $ANDROID_OTP_RELEASE/lib"
+    cp -r "$src" "$STAGE/lib/"
+    log "borrowed $(basename "$src") from Android install"
+done
+
 # Add extra static libs (same set as the sim tarball, but iOS-device arch).
 ERTS_LIB="$STAGE/erts-$ERTS_VSN/lib"
 cp "$OTP_SRC/erts/emulator/zstd/obj/aarch64-apple-ios/opt/libzstd.a"   "$ERTS_LIB/"

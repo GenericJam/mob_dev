@@ -127,7 +127,7 @@ Built from a cross-compiled OTP for `aarch64-apple-iossimulator`. Needs:
 
 ## Prerequisites
 
-- A cross-compiled OTP build. The OTP source tree at `~/code/otp` (commit `73ba6e0f`)
+- A cross-compiled OTP build. The OTP source tree at `~/code/otp` (commit `7721ab74`)
   has iOS simulator and Android targets already compiled.
 - `gh` CLI authenticated to the `GenericJam` GitHub account.
 
@@ -137,7 +137,7 @@ Built from a cross-compiled OTP for `aarch64-apple-iossimulator`. Needs:
 
 ```bash
 cd ~/code/otp
-git rev-parse --short HEAD   # e.g. 73ba6e0f
+git rev-parse --short HEAD   # e.g. 7721ab74
 ```
 
 Use this hash everywhere below as `<hash>`.
@@ -442,7 +442,7 @@ tar tzf "/tmp/otp-ios-device-$HASH.tar.gz" | grep "lib/elixir/ebin/elixir.app"
 
 ## Step 4 — Publish the GitHub release
 
-Tag format: `otp-<hash>` (e.g. `otp-73ba6e0f`).
+Tag format: `otp-<hash>` (e.g. `otp-7721ab74`).
 
 ```bash
 HASH=<hash>
@@ -489,7 +489,7 @@ No hash bump, no user action needed.
 Edit `lib/mob_dev/otp_downloader.ex` — update the hash and ERTS version:
 
 ```elixir
-@otp_hash    "73ba6e0f"    # ← new hash
+@otp_hash    "7721ab74"    # ← new hash
 ```
 
 If the ERTS version changed (e.g. from 16.3 to 16.4), update `build_release.md`

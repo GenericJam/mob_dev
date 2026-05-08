@@ -62,19 +62,19 @@ defmodule MobDev.OtpDownloaderTest do
     test "Android tarball: erts-* + crypto archives is enough", %{tmp: tmp} do
       File.mkdir_p!(Path.join(tmp, "erts-16.1"))
       add_crypto(tmp)
-      assert OtpDownloader.valid_otp_dir?(tmp, "otp-android-73ba6e0f")
-      assert OtpDownloader.valid_otp_dir?(tmp, "otp-android-arm32-73ba6e0f")
+      assert OtpDownloader.valid_otp_dir?(tmp, "otp-android-7721ab74")
+      assert OtpDownloader.valid_otp_dir?(tmp, "otp-android-arm32-7721ab74")
     end
 
     test "Android tarball: missing crypto.a → invalid", %{tmp: tmp} do
       File.mkdir_p!(Path.join(tmp, "erts-16.1"))
-      refute OtpDownloader.valid_otp_dir?(tmp, "otp-android-73ba6e0f")
+      refute OtpDownloader.valid_otp_dir?(tmp, "otp-android-7721ab74")
     end
 
     test "iOS sim tarball: erts-* + crypto archives is enough", %{tmp: tmp} do
       File.mkdir_p!(Path.join(tmp, "erts-16.1"))
       add_crypto(tmp)
-      assert OtpDownloader.valid_otp_dir?(tmp, "otp-ios-sim-73ba6e0f")
+      assert OtpDownloader.valid_otp_dir?(tmp, "otp-ios-sim-7721ab74")
     end
 
     test "iOS device tarball: needs erts-* AND EPMD .c sources AND .h headers",
@@ -84,7 +84,7 @@ defmodule MobDev.OtpDownloaderTest do
       File.mkdir_p!(Path.join(tmp, "erts/epmd/src"))
 
       # No EPMD source yet — fails.
-      refute OtpDownloader.valid_otp_dir?(tmp, "otp-ios-device-73ba6e0f")
+      refute OtpDownloader.valid_otp_dir?(tmp, "otp-ios-device-7721ab74")
 
       # All three .c files present, but no headers — still fails. This is the
       # regression we're guarding against: a tarball with sources but no
@@ -94,14 +94,14 @@ defmodule MobDev.OtpDownloaderTest do
         File.write!(Path.join(tmp, "erts/epmd/src/#{rel}"), "")
       end
 
-      refute OtpDownloader.valid_otp_dir?(tmp, "otp-ios-device-73ba6e0f")
+      refute OtpDownloader.valid_otp_dir?(tmp, "otp-ios-device-7721ab74")
 
       # Add headers — now passes.
       for rel <- ~w[epmd.h epmd_int.h] do
         File.write!(Path.join(tmp, "erts/epmd/src/#{rel}"), "")
       end
 
-      assert OtpDownloader.valid_otp_dir?(tmp, "otp-ios-device-73ba6e0f")
+      assert OtpDownloader.valid_otp_dir?(tmp, "otp-ios-device-7721ab74")
     end
 
     test "iOS device tarball: missing any one required file invalidates", %{tmp: tmp} do
@@ -117,19 +117,19 @@ defmodule MobDev.OtpDownloaderTest do
           File.write!(Path.join(tmp, "erts/epmd/src/#{rel}"), "")
         end
 
-        refute OtpDownloader.valid_otp_dir?(tmp, "otp-ios-device-73ba6e0f"),
+        refute OtpDownloader.valid_otp_dir?(tmp, "otp-ios-device-7721ab74"),
                "expected invalid when #{missing} is missing"
       end
     end
 
     test "no erts-* dir → invalid regardless of name", %{tmp: tmp} do
-      refute OtpDownloader.valid_otp_dir?(tmp, "otp-android-73ba6e0f")
-      refute OtpDownloader.valid_otp_dir?(tmp, "otp-ios-device-73ba6e0f")
-      refute OtpDownloader.valid_otp_dir?(tmp, "otp-ios-sim-73ba6e0f")
+      refute OtpDownloader.valid_otp_dir?(tmp, "otp-android-7721ab74")
+      refute OtpDownloader.valid_otp_dir?(tmp, "otp-ios-device-7721ab74")
+      refute OtpDownloader.valid_otp_dir?(tmp, "otp-ios-sim-7721ab74")
     end
 
     test "non-existent dir → invalid" do
-      refute OtpDownloader.valid_otp_dir?("/nonexistent/path", "otp-ios-device-73ba6e0f")
+      refute OtpDownloader.valid_otp_dir?("/nonexistent/path", "otp-ios-device-7721ab74")
     end
   end
 end
