@@ -317,6 +317,106 @@ defmodule MobDev.EnableTest do
     end
   end
 
+  # ── inject_pythonx_dep/1 ──────────────────────────────────────────────────
+
+  describe "inject_pythonx_dep/1" do
+    test "adds {:pythonx, ...} to deps when missing" do
+      mix_exs = """
+      defp deps do
+        [
+          {:mob, "~> 0.5"}
+        ]
+      end
+      """
+
+      result = Enable.inject_pythonx_dep(mix_exs)
+      assert result =~ ":pythonx"
+      assert result =~ ~r/{:pythonx,\s*"~>/
+      # Original entry preserved
+      assert result =~ ":mob"
+    end
+
+    test "is idempotent — leaves content unchanged when :pythonx already present" do
+      mix_exs = """
+      defp deps do
+        [
+          {:mob, "~> 0.5"},
+          {:pythonx, "~> 0.4"}
+        ]
+      end
+      """
+
+      assert Enable.inject_pythonx_dep(mix_exs) == mix_exs
+    end
+
+    test "returns content unchanged when no defp deps block found" do
+      assert Enable.inject_pythonx_dep("# no deps here") == "# no deps here"
+    end
+  end
+
+  # ── inject_pythonx_uv_init_gate/2 ─────────────────────────────────────────
+
+  describe "inject_pythonx_uv_init_gate/2" do
+    test "appends gated pythonx config when no existing pythonx config" do
+      content = """
+      import Config
+
+      config :mob, :something, foo: :bar
+      """
+
+      result = Enable.inject_pythonx_uv_init_gate(content, "my_app")
+      assert result =~ "MOB_TARGET"
+      assert result =~ "config :pythonx, :uv_init"
+      assert result =~ ~s|name = "my_app"|
+      # Existing config preserved
+      assert result =~ "config :mob, :something"
+    end
+
+    test "is idempotent — content unchanged when MOB_TARGET gate already present" do
+      content = """
+      import Config
+
+      unless System.get_env("MOB_TARGET") == "ios" do
+        config :pythonx, :uv_init, pyproject_toml: "x"
+      end
+      """
+
+      assert Enable.inject_pythonx_uv_init_gate(content, "my_app") == content
+    end
+
+    test "leaves user's manual pythonx config alone when present without gate" do
+      content = """
+      import Config
+
+      config :pythonx, :uv_init, pyproject_toml: "manual config"
+      """
+
+      # Should not modify or duplicate — user has their own setup.
+      assert Enable.inject_pythonx_uv_init_gate(content, "my_app") == content
+    end
+  end
+
+  # ── python_paths_module_template/1 ────────────────────────────────────────
+
+  describe "python_paths_module_template/1" do
+    test "interpolates module name into the defmodule line" do
+      result = Enable.python_paths_module_template("MyApp")
+      assert result =~ "defmodule MyApp.PythonPaths do"
+    end
+
+    test "exposes detect/1, build_paths/1, missing/1" do
+      result = Enable.python_paths_module_template("MyApp")
+      assert result =~ "def detect("
+      assert result =~ "def build_paths("
+      assert result =~ "def missing("
+    end
+
+    test "uses python3.13 in stdlib path" do
+      result = Enable.python_paths_module_template("MyApp")
+      assert result =~ ~s|"python3.13"|
+    end
+  end
+
   # ── helpers ───────────────────────────────────────────────────────────────
 
   defp write_tmp_mix_exs(content) do
