@@ -116,8 +116,10 @@ defmodule MobDev.NativeBuild do
 
     with {:ok, otp_arm64} <- MobDev.OtpDownloader.ensure_android("arm64-v8a"),
          {:ok, otp_arm32} <- MobDev.OtpDownloader.ensure_android("armeabi-v7a"),
+         {:ok, python_android_bundle} <- maybe_ensure_python_android_bundle(),
          :ok <- ensure_jni_libs(otp_arm64, "arm64-v8a"),
          :ok <- ensure_jni_libs(otp_arm32, "armeabi-v7a"),
+         :ok <- ensure_python_android_libs(python_android_bundle),
          :ok <- gradle_assemble(),
          :ok <- adb_install_all(apk, bundle_id, device_id),
          :ok <-
@@ -132,6 +134,88 @@ defmodule MobDev.NativeBuild do
     else
       {:error, reason} -> {:error, "Android", reason}
     end
+  end
+
+  # Downloads Chaquopy's CPython distribution iff Pythonx is a dep.
+  # Returns `{:ok, nil}` for projects without Pythonx so the rest of the
+  # Android pipeline runs unchanged.
+  defp maybe_ensure_python_android_bundle do
+    if pythonx_in_project?() do
+      MobDev.PythonAndroidSupport.ensure()
+    else
+      {:ok, nil}
+    end
+  end
+
+  # Copies Chaquopy's libpython*.so + bundled OpenSSL/SQLite into the
+  # user's android/app/src/main/jniLibs/<abi>/ tree so the APK packager
+  # picks them up. lib-dynload + stdlib go into assets/python/ for
+  # runtime extraction by the user's app on first launch.
+  #
+  # No-op when bundle is nil (project without Pythonx).
+  #
+  # NOTE: this places the Python distribution but does NOT yet
+  # cross-compile libpythonx.so (the Pythonx NIF) for Android NDK.
+  # Without that, Pythonx.NIF.__on_load__/0 raises at runtime. The NDK
+  # cross-compile is the next piece — see python_embedding guide.
+  @android_python_abis ~w(arm64-v8a x86_64)
+  defp ensure_python_android_libs(nil), do: :ok
+
+  defp ensure_python_android_libs(bundle_dir) do
+    Enum.each(@android_python_abis, fn abi ->
+      copy_python_jni_libs(bundle_dir, abi)
+    end)
+
+    copy_python_assets(bundle_dir)
+
+    IO.puts("  ⚠  libpythonx.so for Android NDK is NOT yet cross-compiled.")
+    IO.puts("     Pythonx.eval will fail at runtime. See python_embedding guide.")
+    :ok
+  end
+
+  defp copy_python_jni_libs(bundle_dir, abi) do
+    src_dir = MobDev.PythonAndroidSupport.jni_libs_dir(bundle_dir, abi)
+    dst_dir = "android/app/src/main/jniLibs/#{abi}"
+    File.mkdir_p!(dst_dir)
+
+    if File.dir?(src_dir) do
+      Path.wildcard(Path.join(src_dir, "*.so"))
+      |> Enum.each(fn src ->
+        dst = Path.join(dst_dir, Path.basename(src))
+        cp(src, dst)
+      end)
+    end
+
+    :ok
+  end
+
+  # Place the (slice-independent) stdlib and per-abi lib-dynload into
+  # android/app/src/main/assets/python/. The APK packager will ship
+  # them as packaged assets; the user's app extracts them to internal
+  # storage on first launch (see <App>.PythonPaths).
+  defp copy_python_assets(bundle_dir) do
+    assets_root = "android/app/src/main/assets/python"
+    File.mkdir_p!(assets_root)
+
+    stdlib_src = MobDev.PythonAndroidSupport.stdlib_dir(bundle_dir)
+    stdlib_dst = Path.join(assets_root, "stdlib")
+
+    if File.dir?(stdlib_src) and not File.dir?(stdlib_dst) do
+      File.mkdir_p!(stdlib_dst)
+      System.cmd("cp", ["-R", stdlib_src <> "/.", stdlib_dst])
+    end
+
+    Enum.each(@android_python_abis, fn abi ->
+      ld_src = MobDev.PythonAndroidSupport.lib_dynload_dir(bundle_dir, abi)
+      ld_dst = Path.join([assets_root, "lib-dynload", abi])
+
+      if File.dir?(ld_src) and not File.dir?(ld_dst) do
+        File.mkdir_p!(ld_dst)
+        System.cmd("cp", ["-R", ld_src <> "/.", ld_dst])
+      end
+    end)
+
+    :ok
   end
 
   # Copies ERTS helper executables into jniLibs as lib*.so so Android grants
