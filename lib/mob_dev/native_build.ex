@@ -1219,6 +1219,15 @@ defmodule MobDev.NativeBuild do
     $CC -fobjc-arc -fmodules $IFLAGS \
         -c ios/beam_main.m -o "$BUILD_DIR/beam_main.o"
 
+    # ── Stub for erl_errno_id_unknown (missing from libbeam.a in OTP 17.0) ───────
+    # The function was split into a separate compilation unit in OTP 17.0 but the
+    # pre-built tarball omits it. A weak definition here satisfies the linker and
+    # loses to the real symbol if a future tarball includes it again.
+    cat > "$BUILD_DIR/erl_errno_id_compat.c" << 'COMPATEOF'
+    __attribute__((weak)) const char *erl_errno_id_unknown(int error) { return "unknown"; }
+    COMPATEOF
+    $CC -c "$BUILD_DIR/erl_errno_id_compat.c" -o "$BUILD_DIR/erl_errno_id_compat.o"
+
     # ── Link ─────────────────────────────────────────────────────────────────────
     echo "=== Linking $APP_NAME binary ==="
     xcrun -sdk iphoneos swiftc \
@@ -1233,6 +1242,7 @@ defmodule MobDev.NativeBuild do
         "$BUILD_DIR/epmd_cli.o" \
         "$BUILD_DIR/AppDelegate.o" \
         "$BUILD_DIR/beam_main.o" \
+        "$BUILD_DIR/erl_errno_id_compat.o" \
         $LIBS \
         "$SQLITE_STATIC_LIB" \
         -lz -lc++ -lpthread \

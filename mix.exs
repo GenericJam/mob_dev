@@ -40,7 +40,12 @@ defmodule MobDev.MixProject do
   # `:unused` only runs in dev. Adding it to test or prod compile would
   # spam the test output and slow CI for no benefit (test fixtures
   # legitimately have unused public functions).
-  defp compilers(:dev), do: [:unused]
+  # mix_unused 0.4.1 uses :re.import/1 which was removed in OTP 28, so
+  # skip it there until a compatible release is available.
+  defp compilers(:dev) do
+    if String.to_integer(System.otp_release()) >= 28, do: [], else: [:unused]
+  end
+
   defp compilers(_), do: []
 
   def application do

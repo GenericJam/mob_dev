@@ -273,7 +273,9 @@ defmodule Mix.Tasks.Mob.Provision do
   defp generate_xcodeproj(bundle_id, team_id, profile_specifier) do
     proj_dir = "ios/Provision.xcodeproj"
     proj_file = Path.join(proj_dir, "project.pbxproj")
-    expected = project_pbxproj(bundle_id, team_id, profile_specifier)
+    entitlements = detect_push_entitlements()
+    if entitlements, do: IO.puts("  Push entitlements detected: #{entitlements}")
+    expected = project_pbxproj(bundle_id, team_id, profile_specifier, entitlements)
 
     needs_write =
       case File.read(proj_file) do
@@ -292,6 +294,24 @@ defmodule Mix.Tasks.Mob.Provision do
       File.write!(proj_file, expected)
     else
       IO.puts("  #{green()}✓#{reset()} ios/Provision.xcodeproj — up to date")
+    end
+  end
+
+  # Look for ios/*.entitlements files that declare aps-environment, indicating
+  # the app wants push notifications. Returns the filename (not full path) of
+  # the first matching file, or nil if none found.
+  defp detect_push_entitlements do
+    "ios/*.entitlements"
+    |> Path.wildcard()
+    |> Enum.find(fn path ->
+      case File.read(path) do
+        {:ok, content} -> String.contains?(content, "aps-environment")
+        _ -> false
+      end
+    end)
+    |> case do
+      nil -> nil
+      path -> Path.basename(path)
     end
   end
 
@@ -728,8 +748,36 @@ defmodule Mix.Tasks.Mob.Provision do
   # only need to be unique within this file). MobProvision.swift is referenced
   # relative to the ios/ directory (the directory containing Provision.xcodeproj).
 
-  defp project_pbxproj(bundle_id, team_id, profile_specifier)
+  defp project_pbxproj(bundle_id, team_id, profile_specifier, entitlements_file)
        when is_binary(profile_specifier) do
+    entitlements_ref =
+      if entitlements_file do
+        "\t\tAA00000F /* #{entitlements_file} */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = #{entitlements_file}; sourceTree = \"<group>\"; };\n"
+      else
+        ""
+      end
+
+    entitlements_group_entry =
+      if entitlements_file do
+        "\t\t\t\tAA00000F /* #{entitlements_file} */,\n"
+      else
+        ""
+      end
+
+    target_attributes =
+      if entitlements_file do
+        "\t\t\t\tTargetAttributes = {\n\t\t\t\t\tAA000006 = {\n\t\t\t\t\t\tSystemCapabilities = {\n\t\t\t\t\t\t\t\"com.apple.Push\" = {\n\t\t\t\t\t\t\t\tenabled = 1;\n\t\t\t\t\t\t\t};\n\t\t\t\t\t\t};\n\t\t\t\t\t};\n\t\t\t\t};\n"
+      else
+        ""
+      end
+
+    entitlements_setting =
+      if entitlements_file do
+        "\t\t\t\tCODE_SIGN_ENTITLEMENTS = #{entitlements_file};\n"
+      else
+        ""
+      end
+
     """
     // !$*UTF8*$!
     {
@@ -746,14 +794,14 @@ defmodule Mix.Tasks.Mob.Provision do
     /* Begin PBXFileReference section */
     \t\tAA000002 /* MobProvision.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobProvision.swift; sourceTree = "<group>"; };
     \t\tAA000003 /* MobProvision.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MobProvision.app; sourceTree = BUILT_PRODUCTS_DIR; };
-    /* End PBXFileReference section */
+    #{entitlements_ref}/* End PBXFileReference section */
 
     /* Begin PBXGroup section */
     \t\tAA000004 = {
     \t\t\tisa = PBXGroup;
     \t\t\tchildren = (
     \t\t\t\tAA000002 /* MobProvision.swift */,
-    \t\t\t\tAA000005 /* Products */,
+    #{entitlements_group_entry}\t\t\t\tAA000005 /* Products */,
     \t\t\t);
     \t\t\tsourceTree = "<group>";
     \t\t};
@@ -791,7 +839,7 @@ defmodule Mix.Tasks.Mob.Provision do
     \t\t\tattributes = {
     \t\t\t\tBuildIndependentTargetsInParallel = YES;
     \t\t\t\tLastUpgradeCheck = 1600;
-    \t\t\t};
+    #{target_attributes}\t\t\t};
     \t\t\tbuildConfigurationList = AA00000A /* Build configuration list for PBXProject "Provision" */;
     \t\t\tdevelopmentRegion = en;
     \t\t\thasScannedForEncodings = 0;
@@ -825,7 +873,7 @@ defmodule Mix.Tasks.Mob.Provision do
     \t\t\tisa = XCBuildConfiguration;
     \t\t\tbuildSettings = {
     \t\t\t\tCODE_SIGN_STYLE = Automatic;
-    \t\t\t\tDEVELOPMENT_TEAM = #{team_id};
+    #{entitlements_setting}\t\t\t\tDEVELOPMENT_TEAM = #{team_id};
     \t\t\t\tGENERATE_INFOPLIST_FILE = YES;
     \t\t\t\tINFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
     \t\t\t\tINFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -844,7 +892,7 @@ defmodule Mix.Tasks.Mob.Provision do
     \t\t\t\tCODE_SIGN_STYLE = Manual;
     \t\t\t\tCODE_SIGN_IDENTITY = "Apple Distribution";
     \t\t\t\t"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "Apple Distribution";
-    \t\t\t\tDEVELOPMENT_TEAM = #{team_id};
+    #{entitlements_setting}\t\t\t\tDEVELOPMENT_TEAM = #{team_id};
     \t\t\t\tPROVISIONING_PROFILE_SPECIFIER = "#{profile_specifier}";
     \t\t\t\tGENERATE_INFOPLIST_FILE = YES;
     \t\t\t\tINFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
