@@ -271,21 +271,25 @@ defmodule MobDev.Enable do
   end
 
   @doc """
-  Patches `config/config.exs` content with the `MOB_TARGET=ios` gate around
-  Pythonx's `:uv_init` desktop venv setup.
+  Patches `config/config.exs` content with the Pythonx `:uv_init` desktop
+  venv config.
 
-  When no existing `:pythonx` config is found, appends the default block.
-  When a gate is already present (`MOB_TARGET`), returns content unchanged.
-  When the user has their own non-gated `:pythonx` config, leaves it alone
-  (we don't second-guess manual setup) — caller should print a friendly
-  notice that the gate was skipped.
+  No gate — the same `:uv_init` value lands at compile time AND runtime,
+  so Pythonx's `validate_compile_env` check is satisfied unconditionally.
+  On mobile, the user's `Mob.App.on_start/0` skips
+  `Application.ensure_all_started(:pythonx)` and calls `Pythonx.init/4`
+  directly, which doesn't trigger uv. See the next-steps message printed
+  by `mix mob.enable python`.
+
+  Idempotent — returns content unchanged when `:pythonx` config already
+  present.
   """
   @spec inject_pythonx_uv_init_gate(String.t(), String.t()) :: String.t()
   def inject_pythonx_uv_init_gate(content, app_name) when is_binary(app_name) do
-    cond do
-      String.contains?(content, "MOB_TARGET") -> content
-      String.contains?(content, ":pythonx") -> content
-      true -> content <> pythonx_uv_init_default_block(app_name)
+    if String.contains?(content, ":pythonx") do
+      content
+    else
+      content <> pythonx_uv_init_default_block(app_name)
     end
   end
 
@@ -293,19 +297,19 @@ defmodule MobDev.Enable do
     """
 
     # Pythonx desktop venv setup (added by `mix mob.enable python`).
-    # On iOS the build script sets MOB_TARGET=ios, which short-circuits
-    # this block — Pythonx is initialized at runtime against the bundled
-    # framework instead. Adjust pyproject_toml as your project grows.
-    unless System.get_env("MOB_TARGET") == "ios" do
-      config :pythonx, :uv_init,
-        pyproject_toml: \"\"\"
-        [project]
-        name = "#{app_name}"
-        version = "0.1.0"
-        requires-python = "==3.13.*"
-        dependencies = []
-        \"\"\"
-    end
+    # The same value lands at compile time AND runtime so Pythonx's
+    # validate_compile_env check is satisfied. On mobile,
+    # `Mob.App.on_start/0` skips `Application.ensure_all_started(:pythonx)`
+    # and calls `Pythonx.init/4` directly with bundled paths — uv never
+    # runs on device.
+    config :pythonx, :uv_init,
+      pyproject_toml: \"\"\"
+      [project]
+      name = "#{app_name}"
+      version = "0.1.0"
+      requires-python = "==3.13.*"
+      dependencies = []
+      \"\"\"
     """
   end
 
@@ -387,7 +391,7 @@ defmodule MobDev.Enable do
               missing -> {:partial, missing}
             end
 
-          android_python? ->
+          android_python?() ->
             paths = build_android_paths()
 
             case missing(paths) do
@@ -419,6 +423,10 @@ defmodule MobDev.Enable do
       Construct the Android path map from `MOB_PYTHON_HOME` and
       `MOB_PYTHON_DL` env vars. Returns the empty-string default when
       vars aren't set so callers see :partial rather than crashing.
+
+      Android stdlib lives at `<home>/lib/python3.13/` to match
+      Python's PYTHONHOME bootstrap contract (Python looks for
+      `encodings/` and friends at that path before sys.path is set up).
       \"\"\"
       @spec build_android_paths() :: python_paths()
       def build_android_paths do
@@ -428,7 +436,7 @@ defmodule MobDev.Enable do
         %{
           dl_path: dl,
           home_path: home,
-          stdlib_path: if(home == "", do: "", else: Path.join([home, "stdlib"]))
+          stdlib_path: if(home == "", do: "", else: Path.join([home, "lib", @python_version]))
         }
       end
 

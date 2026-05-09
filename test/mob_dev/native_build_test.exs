@@ -360,12 +360,12 @@ defmodule MobDev.NativeBuildTest do
       {:ok, sh: NativeBuild.generate_build_device_sh(cfg, "/tmp/otp")}
     end
 
-    test "exports MOB_TARGET=ios so the user's config.exs gate fires at mix compile",
+    test "exports MOB_TARGET=ios so user code can branch on platform at compile",
          %{sh: sh} do
-      # The python feature relies on `unless System.get_env("MOB_TARGET") ==
-      # "ios" do` in config.exs to skip Pythonx's desktop uv_init at compile
-      # time. Without this export the BEAMs ship with uv_init enabled, which
-      # crashes on device (no uv, no internet at boot).
+      # The python feature no longer requires this for compile-env
+      # correctness — the same `:uv_init` config lands at compile and
+      # runtime. The export is kept so user code (and any legacy gated
+      # configs) can still introspect the build target if needed.
       assert sh =~ "export MOB_TARGET=ios"
     end
 
