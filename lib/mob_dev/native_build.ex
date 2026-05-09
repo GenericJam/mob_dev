@@ -547,6 +547,34 @@ defmodule MobDev.NativeBuild do
       end)
     end
 
+    copy_project_python_jni_libs(abi, dst_dir)
+
+    :ok
+  end
+
+  # Project-supplied native libs that need to land in jniLibs/<abi>/
+  # rather than site-packages. Wheels for cffi-using packages
+  # (cryptography, etc.) reference `libffi.so` via a NEEDED entry,
+  # which the Android dynamic loader resolves out of the app's
+  # `nativeLibraryDir` — i.e. the jniLibs/<abi>/ contents. Putting
+  # the .so under filesDir/python/ doesn't help because the loader
+  # has already given up by the time Python imports happen.
+  #
+  # Convention: project drops <name>.so files into
+  # `priv/python_jni_libs/<abi>/`. Each one is copied into
+  # `android/app/src/main/jniLibs/<abi>/` verbatim. Mob doesn't try
+  # to know what's inside — that's the project's call.
+  defp copy_project_python_jni_libs(abi, dst_dir) do
+    src_dir = Path.join(["priv", "python_jni_libs", abi])
+
+    if File.dir?(src_dir) do
+      Path.wildcard(Path.join(src_dir, "*.so"))
+      |> Enum.each(fn src ->
+        dst = Path.join(dst_dir, Path.basename(src))
+        cp(src, dst)
+      end)
+    end
+
     :ok
   end
 
@@ -583,6 +611,44 @@ defmodule MobDev.NativeBuild do
         System.cmd("cp", ["-R", ld_src <> "/.", ld_dst])
       end
     end)
+
+    copy_project_python_wheels(assets_root)
+
+    :ok
+  end
+
+  # Drops project-supplied Python packages from `priv/python_wheels/`
+  # into the APK's `assets/python/.../site-packages/`.
+  #
+  # Each subdirectory of `priv/python_wheels/` is treated as an
+  # already-extracted wheel — copy the directory contents directly into
+  # site-packages. Wheel-extraction is the project's job (the wheel
+  # format is package-specific and per-platform), but landing the
+  # extracted layout into the APK is a generic step worth owning here
+  # so every Mob+Pythonx project doesn't reimplement asset placement.
+  #
+  # Layout convention: `priv/python_wheels/<wheel-name>/` contains the
+  # wheel's unzipped contents. A typical `cryptography-X.Y/` directory
+  # holds `cryptography/`, `cryptography-X.Y.dist-info/`, and any
+  # `*.cpython-313-android_*.so` files. Everything inside gets copied
+  # verbatim — site-packages discovery handles the rest.
+  defp copy_project_python_wheels(assets_root) do
+    wheels_dir = Path.join("priv", "python_wheels")
+
+    if File.dir?(wheels_dir) do
+      site_packages = Path.join([assets_root, "lib", "python3.13", "site-packages"])
+      File.mkdir_p!(site_packages)
+
+      wheels_dir
+      |> File.ls!()
+      |> Enum.each(fn entry ->
+        src = Path.join(wheels_dir, entry)
+
+        if File.dir?(src) do
+          System.cmd("cp", ["-R", src <> "/.", site_packages])
+        end
+      end)
+    end
 
     :ok
   end
