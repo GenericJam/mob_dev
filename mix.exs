@@ -4,7 +4,7 @@ defmodule MobDev.MixProject do
   def project do
     [
       app: :mob_dev,
-      version: "0.3.37",
+      version: "0.4.0",
       elixir: "~> 1.19",
       description: "Development tooling for the Mob mobile framework",
       source_url: "https://github.com/genericjam/mob_dev",
@@ -87,7 +87,8 @@ defmodule MobDev.MixProject do
         "guides/security_scan.md": [title: "Security scanning"],
         "guides/slim_release.md": [title: "Slim Release (bundle size)"],
         "guides/publishing_to_testflight.md": [title: "Publishing to TestFlight (iOS)"],
-        "guides/publishing_to_google_play.md": [title: "Publishing to Google Play (Android)"]
+        "guides/publishing_to_google_play.md": [title: "Publishing to Google Play (Android)"],
+        "guides/python_embedding.md": [title: "Embedded CPython (iOS)"]
       ],
       groups_for_extras: [
         Guides: ~r/guides\/.*/

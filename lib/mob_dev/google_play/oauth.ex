@@ -117,7 +117,7 @@ defmodule MobDev.GooglePlay.OAuth do
   """
   @spec parse_callback_request(String.t()) :: {:ok, String.t()} | {:error, String.t()}
   def parse_callback_request(request_line) do
-    case Regex.run(~r{(?:GET|HEAD) /[^?]*\?([^ ]+)}, request_line) do
+    case Regex.run(Regex.compile!(~S{(?:GET|HEAD) /[^?]*\?([^ ]+)}), request_line) do
       [_, query] ->
         params = URI.decode_query(query)
 
