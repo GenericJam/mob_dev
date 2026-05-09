@@ -314,6 +314,55 @@ defmodule MobDev.Enable do
   end
 
   @doc """
+  Inspects the project's existing native build templates for the markers
+  `mix mob.deploy --native` expects when Pythonx is enabled. Returns a
+  list of `{relative_path, missing_marker}` tuples for every file that
+  exists but is missing the marker. An empty list means everything looks
+  fresh.
+
+  We deliberately do not auto-patch — these files are typically
+  hand-customized after `mix mob.new`, and silently inserting blocks is
+  riskier than asking the user to copy from the template.
+
+  Files that don't exist yet (e.g. a project that never generated an
+  ios/build.sh) are skipped — this is "stale-template detection," not
+  "missing-platform detection."
+  """
+  @spec detect_stale_pythonx_templates(Path.t(), String.t()) ::
+          [{String.t(), String.t()}]
+  def detect_stale_pythonx_templates(project_dir, _app_name) do
+    fixed = [
+      {Path.join(["ios", "build.sh"]), "Cross-compiling libpythonx.so"},
+      {Path.join(["ios", "build_device.sh"]), "Cross-compiling libpythonx.so"},
+      {Path.join(["android", "app", "src", "main", "jni", "CMakeLists.txt"]), "enif_keepalive.c"}
+    ]
+
+    # Java package layout varies by app. Glob instead of guessing.
+    main_activities =
+      Path.wildcard(Path.join(project_dir, "android/app/src/main/java/**/MainActivity.kt"))
+
+    activity_checks =
+      Enum.map(main_activities, fn abs ->
+        rel = Path.relative_to(abs, project_dir)
+        {rel, "extractPythonAssetsIfNeeded"}
+      end)
+
+    (fixed ++ activity_checks)
+    |> Enum.flat_map(fn {rel, marker} ->
+      abs =
+        if Path.type(rel) == :absolute,
+          do: rel,
+          else: Path.join(project_dir, rel)
+
+      cond do
+        not File.exists?(abs) -> []
+        File.read!(abs) =~ marker -> []
+        true -> [{to_string(rel), marker}]
+      end
+    end)
+  end
+
+  @doc """
   Returns the source for the `<App>.PythonPaths` module that
   `mix mob.enable python` writes to `lib/<app>/python_paths.ex`.
 

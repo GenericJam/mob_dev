@@ -221,6 +221,7 @@ defmodule Mix.Tasks.Mob.Enable do
     pythonx_inject_dep(project_dir)
     pythonx_generate_paths_module(project_dir, app_name)
     pythonx_patch_config(project_dir, app_name)
+    pythonx_check_native_templates(project_dir, app_name)
 
     module = Macro.camelize(app_name)
 
@@ -622,7 +623,42 @@ defmodule Mix.Tasks.Mob.Enable do
 
       true ->
         File.write!(path, patched)
-        Mix.shell().info([:green, "  * patch ", :reset, path, " (added MOB_TARGET=ios gate)"])
+        Mix.shell().info([:green, "  * patch ", :reset, path, " (added :pythonx, :uv_init)"])
+    end
+  end
+
+  # Existing projects generated before the Pythonx work was upstreamed
+  # don't have the build-time hooks the deploy expects. We can't safely
+  # auto-patch existing build.sh / CMakeLists / MainActivity (they're
+  # often hand-customized), so detect and surface a clear next step.
+  defp pythonx_check_native_templates(project_dir, app_name) do
+    findings = MobDev.Enable.detect_stale_pythonx_templates(project_dir, app_name)
+
+    case findings do
+      [] ->
+        Mix.shell().info("  * native templates look up to date")
+
+      stale ->
+        Mix.shell().info([
+          :yellow,
+          "\n  ! Native build templates are stale — Pythonx requires extra ",
+          "build steps that aren't present in your project:",
+          :reset
+        ])
+
+        Enum.each(stale, fn {file, marker} ->
+          Mix.shell().info("      - #{file} (missing: #{marker})")
+        end)
+
+        Mix.shell().info("""
+
+        Either generate a fresh project with `mix mob.new` and copy your
+        app code over, or copy the missing blocks from
+        ~/.mix/archives/mob_new-*/priv/templates/mob.new/. The reference
+        markers in each file (e.g. `=== Cross-compiling libpythonx.so`,
+        `extractPythonAssetsIfNeeded`, `enif_keepalive.c`) bracket the
+        regions that need to be added.
+        """)
     end
   end
 

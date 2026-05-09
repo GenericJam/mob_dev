@@ -387,6 +387,70 @@ defmodule MobDev.EnableTest do
     end
   end
 
+  # ── detect_stale_pythonx_templates/2 ──────────────────────────────────────
+
+  describe "detect_stale_pythonx_templates/2" do
+    setup do
+      dir =
+        Path.join(
+          System.tmp_dir!(),
+          "mob_enable_stale_test_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+      {:ok, dir: dir}
+    end
+
+    test "returns [] when no native files exist (nothing to be stale)", %{dir: dir} do
+      assert Enable.detect_stale_pythonx_templates(dir, "my_app") == []
+    end
+
+    test "flags an existing build.sh that lacks the libpythonx marker", %{dir: dir} do
+      File.mkdir_p!(Path.join(dir, "ios"))
+      File.write!(Path.join(dir, "ios/build.sh"), "#!/bin/sh\nxcodebuild ...\n")
+
+      stale = Enable.detect_stale_pythonx_templates(dir, "my_app")
+      assert {"ios/build.sh", "Cross-compiling libpythonx.so"} in stale
+    end
+
+    test "doesn't flag a build.sh that already has the marker", %{dir: dir} do
+      File.mkdir_p!(Path.join(dir, "ios"))
+
+      File.write!(
+        Path.join(dir, "ios/build.sh"),
+        "#!/bin/sh\necho '=== Cross-compiling libpythonx.so ==='\n"
+      )
+
+      stale = Enable.detect_stale_pythonx_templates(dir, "my_app")
+      refute Enum.any?(stale, fn {rel, _} -> rel == "ios/build.sh" end)
+    end
+
+    test "flags MainActivity.kt regardless of java package", %{dir: dir} do
+      pkg_dir = Path.join(dir, "android/app/src/main/java/com/something/odd/my_app")
+      File.mkdir_p!(pkg_dir)
+      File.write!(Path.join(pkg_dir, "MainActivity.kt"), "package com.something.odd.my_app\n")
+
+      stale = Enable.detect_stale_pythonx_templates(dir, "my_app")
+
+      assert Enum.any?(stale, fn {rel, marker} ->
+               String.ends_with?(rel, "MainActivity.kt") and
+                 marker == "extractPythonAssetsIfNeeded"
+             end)
+    end
+
+    test "flags CMakeLists.txt missing the enif_keepalive include", %{dir: dir} do
+      cmake_dir = Path.join(dir, "android/app/src/main/jni")
+      File.mkdir_p!(cmake_dir)
+      File.write!(Path.join(cmake_dir, "CMakeLists.txt"), "add_library(myapp SHARED foo.c)\n")
+
+      stale = Enable.detect_stale_pythonx_templates(dir, "my_app")
+
+      assert {Path.join(["android", "app", "src", "main", "jni", "CMakeLists.txt"]),
+              "enif_keepalive.c"} in stale
+    end
+  end
+
   # ── python_paths_module_template/1 ────────────────────────────────────────
 
   describe "python_paths_module_template/1" do
