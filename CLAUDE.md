@@ -10,6 +10,33 @@ workflow.
 > convention, or hit a gotcha that should have been on the list. Same
 > commit as the change — not a follow-up.
 
+For the in-flight build-system refactor (Mix → Igniter → Zig build),
+see [`~/code/mob/build_system_migration.md`](../mob/build_system_migration.md) —
+multi-month sequenced plan; phase ownership lives there.
+
+## Worktrees
+
+**Default assumption: work happens in a git worktree.** The user runs
+multiple agents in parallel; each task in its own worktree prevents conflicts
+between agents and keeps `master` clean while work is in flight.
+
+If you're assigned a task and worktree usage **isn't mentioned**, ask:
+
+> "Should I use a worktree for this?"
+
+The user will answer:
+
+- **yes** — long task, or other agents may be working in parallel; create a
+  worktree (use `EnterWorktree` or spawn the work via Agent with
+  `isolation: "worktree"`)
+- **no** — quick change with no parallel agent work; work in-place on the
+  current branch
+
+If the user explicitly says "use worktrees" up front, do so without asking.
+If the task is trivially small (single-file doc edit, one-line config change)
+and clearly won't conflict with anything, working in-place is acceptable —
+but if in doubt, ask.
+
 ## TDD is the practice here
 
 Write tests before or alongside new code. Every new function should have
