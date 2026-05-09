@@ -650,7 +650,51 @@ mix mob.push --all    # force-push every module
 mix mob.deploy          # push changed BEAMs, restart
 mix mob.deploy --native # full native rebuild + install
 ```
-````
+
+## iOS push notifications (APNs)
+
+For APNs push tokens to be delivered, the app binary must have `aps-environment`
+in its codesigning entitlements — the provisioning profile having it is not
+sufficient.
+
+### Automatic (recommended)
+
+`mix mob.deploy --native` extracts `aps-environment` from the embedded
+provisioning profile and mirrors it into the fallback entitlements when no
+explicit entitlements file exists. If the provisioning profile was created
+with push enabled, nothing extra is needed.
+
+### Explicit entitlements file
+
+Create `ios/<AppName>.entitlements` in your project root:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>application-identifier</key>
+    <string>TEAM_ID.com.example.myapp</string>
+    <key>com.apple.developer.team-identifier</key>
+    <string>TEAM_ID</string>
+    <key>get-task-allow</key>
+    <true/>
+    <key>aps-environment</key>
+    <string>development</string>
+</dict>
+</plist>
+```
+
+When this file is present, `mix mob.deploy --native` uses it verbatim (no
+auto-mirroring). Use `development` for Xcode/mob development builds and
+`production` for App Store / TestFlight production builds.
+
+### Verifying entitlements on a built app
+
+```bash
+codesign -d --entitlements :- path/to/MyApp.app | plutil -p -
+# Should include: "aps-environment" => "development"
+```
 
 ### Agent workflow example
 

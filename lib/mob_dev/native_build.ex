@@ -1382,24 +1382,26 @@ defmodule MobDev.NativeBuild do
     cp "$PROFILE" "$APP/embedded.mobileprovision"
 
     echo "=== Code signing ==="
-    # Use project entitlements if present; otherwise generate minimal ones.
+    # Use project entitlements if present; otherwise generate from the profile.
     ENTITLEMENTS_FILE=$(ls ios/*.entitlements 2>/dev/null | head -1 || true)
     if [ -z "$ENTITLEMENTS_FILE" ]; then
         ENTITLEMENTS_FILE="$BUILD_DIR/mob_device.entitlements"
-        cat > "$ENTITLEMENTS_FILE" << ENTEOF
-    <?xml version="1.0" encoding="UTF-8"?>
-    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-    <plist version="1.0">
-    <dict>
-        <key>application-identifier</key>
-        <string>${TEAM_ID}.${BUNDLE_ID}</string>
-        <key>com.apple.developer.team-identifier</key>
-        <string>${TEAM_ID}</string>
-        <key>get-task-allow</key>
-        <true/>
-    </dict>
-    </plist>
-    ENTEOF
+        # Mirror aps-environment from the profile so the binary entitlement
+        # matches what the profile grants — without this, APNs registration
+        # silently fails and the push token is never delivered.
+        APS_ENV=$(security cms -D -i "$APP/embedded.mobileprovision" 2>/dev/null \
+            | /usr/libexec/PlistBuddy -c "Print :Entitlements:aps-environment" /dev/stdin 2>/dev/null \
+            || true)
+        {
+            printf '<?xml version="1.0" encoding="UTF-8"?>\n'
+            printf '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+            printf '<plist version="1.0">\n<dict>\n'
+            printf '    <key>application-identifier</key>\n    <string>%s.%s</string>\n' "${TEAM_ID}" "${BUNDLE_ID}"
+            printf '    <key>com.apple.developer.team-identifier</key>\n    <string>%s</string>\n' "${TEAM_ID}"
+            printf '    <key>get-task-allow</key>\n    <true/>\n'
+            [ -n "$APS_ENV" ] && printf '    <key>aps-environment</key>\n    <string>%s</string>\n' "${APS_ENV}"
+            printf '</dict>\n</plist>\n'
+        } > "$ENTITLEMENTS_FILE"
     fi
     codesign --force --sign "$SIGN_IDENTITY" \
         --entitlements "$ENTITLEMENTS_FILE" \
@@ -1615,6 +1617,43 @@ defmodule MobDev.NativeBuild do
   # Java's `Properties.store()` writes "/Users/me/Android/sdk" but with
   # backslash-colons on Windows; on Unix it round-trips fine. Just trim.
   defp expand_sdk_dir(raw), do: String.trim(raw) |> Path.expand()
+
+  @doc """
+  Generates the fallback entitlements plist that `build_device.sh` writes when
+  no `ios/*.entitlements` file is found in the project.
+
+  `aps_env` should be `"development"`, `"production"`, or `nil`.  When non-nil
+  the `aps-environment` key is included, allowing APNs push token registration
+  to succeed.  When nil the key is omitted (the historic default, suitable for
+  apps that do not use push notifications).
+
+  This function is public so it can be unit-tested independently of the shell
+  script that actually writes the file on device builds.
+  """
+  @spec fallback_entitlements_plist(String.t(), String.t(), String.t() | nil) :: String.t()
+  def fallback_entitlements_plist(team_id, bundle_id, aps_env \\ nil) do
+    aps_entry =
+      if aps_env do
+        "    <key>aps-environment</key>\n    <string>#{aps_env}</string>\n"
+      else
+        ""
+      end
+
+    """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+    <plist version="1.0">
+    <dict>
+        <key>application-identifier</key>
+        <string>#{team_id}.#{bundle_id}</string>
+        <key>com.apple.developer.team-identifier</key>
+        <string>#{team_id}</string>
+        <key>get-task-allow</key>
+        <true/>
+    #{aps_entry}</dict>
+    </plist>
+    """
+  end
 
   defp adb_available?, do: System.find_executable("adb") != nil
 
