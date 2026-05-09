@@ -514,10 +514,49 @@ defmodule Mix.Tasks.Mob.Doctor do
     if File.exists?("mix.exs") do
       List.flatten([
         check_deps_fetched(),
-        check_compiled()
+        check_compiled(),
+        check_driver_tab()
       ])
     else
       []
+    end
+  end
+
+  # ── Driver_tab manifest drift ────────────────────────────────────────────────
+  #
+  # If the project uses the per-app generated driver_tab (Phase 0 of the build
+  # system migration), check that on-disk priv/generated/driver_tab_*.c match
+  # what the current :static_nifs declaration would produce. Drift means
+  # someone changed the manifest but didn't run `mix mob.regen_driver_tab`.
+
+  defp check_driver_tab do
+    paths = Mix.Tasks.Mob.RegenDriverTab.target_paths()
+
+    case Enum.filter([paths.ios, paths.android], &File.exists?/1) do
+      [] ->
+        []
+
+      _present ->
+        nifs = Mix.Tasks.Mob.RegenDriverTab.resolved_nifs()
+        ios_expected = MobDev.StaticNifs.generate(:ios, nifs) |> IO.iodata_to_binary()
+        android_expected = MobDev.StaticNifs.generate(:android, nifs) |> IO.iodata_to_binary()
+
+        drifted =
+          [{paths.ios, ios_expected}, {paths.android, android_expected}]
+          |> Enum.filter(fn {path, expected} ->
+            File.exists?(path) and File.read!(path) != expected
+          end)
+          |> Enum.map(fn {path, _} -> path end)
+
+        case drifted do
+          [] ->
+            {:ok, "driver_tab", "in sync with :static_nifs", nil}
+
+          paths ->
+            {:warn, "driver_tab",
+             "drift detected — these files don't match :static_nifs:\n  - " <>
+               Enum.join(paths, "\n  - "), "Run:  mix mob.regen_driver_tab"}
+        end
     end
   end
 
