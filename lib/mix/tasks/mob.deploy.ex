@@ -120,6 +120,14 @@ defmodule Mix.Tasks.Mob.Deploy do
         if native and :ios in platforms,
           do: MobDev.NativeBuild.detect_physical_ios()
 
+    # Validate every targeted device against the project's enabled
+    # features (Pythonx, etc.) BEFORE we waste time on a multi-minute
+    # native build that the device couldn't have run anyway. See
+    # `MobDev.SupportMatrix` for the per-feature requirements and why
+    # silent failures here are particularly costly for users on older
+    # / cheaper hardware.
+    validate_device_compatibility!(platforms, effective_device_id)
+
     IO.puts("")
 
     if native do
@@ -228,6 +236,90 @@ defmodule Mix.Tasks.Mob.Deploy do
   end
 
   defp macos?, do: match?({:unix, :darwin}, :os.type())
+
+  # ── Pre-build device compatibility check ────────────────────────────────────
+  #
+  # The instinct in mobile build pipelines is "let it fail at install / runtime
+  # and tell the user something went wrong." That instinct is hostile to users
+  # with older or cheaper hardware — they buy a phone, deploy, get a cryptic
+  # error, and walk away assuming the framework is broken.
+  #
+  # We instead query each candidate device's properties up front, cross-
+  # reference them against the project's enabled features (Pythonx, etc.), and
+  # refuse to proceed with a clear, named-feature, named-reason error when
+  # there's a mismatch. The user finds out which device(s) won't work and why
+  # before any build runs.
+  #
+  # We deliberately don't filter — if any one of the targeted devices fails,
+  # we halt and surface every device that fails. Skipping unsupported devices
+  # silently would just regrow the silent-failure problem at a different layer.
+  defp validate_device_compatibility!(platforms, device_id) do
+    project_dir = File.cwd!()
+    features = MobDev.SupportMatrix.enabled_features(project_dir)
+
+    if features == [] do
+      :ok
+    else
+      devices = candidate_devices(platforms, device_id)
+
+      issues =
+        devices
+        |> Enum.flat_map(fn device ->
+          case MobDev.SupportMatrix.check_device(device, features) do
+            :ok -> []
+            {:error, items} -> items
+          end
+        end)
+
+      case issues do
+        [] ->
+          :ok
+
+        _ ->
+          IO.puts("")
+          IO.puts("#{IO.ANSI.red()}Device compatibility check failed.#{IO.ANSI.reset()}")
+          IO.puts(MobDev.SupportMatrix.format_error(issues))
+          IO.puts("")
+
+          IO.puts(
+            "  See guides/support_matrix.md for the per-feature device floor, " <>
+              "or pick a different device with #{IO.ANSI.cyan()}--device <id>#{IO.ANSI.reset()}."
+          )
+
+          Mix.raise("Device compatibility check failed")
+      end
+    end
+  end
+
+  # Returns the connected devices that mob.deploy would actually target.
+  # Mirrors what the deployer / build pipeline does internally — narrow by
+  # platform and (if given) by --device id.
+  defp candidate_devices(platforms, device_id) do
+    devices =
+      []
+      |> maybe_concat(:android in platforms, fn ->
+        try do
+          MobDev.Discovery.Android.list_devices()
+        rescue
+          _ -> []
+        end
+      end)
+      |> maybe_concat(:ios in platforms, fn ->
+        try do
+          MobDev.Discovery.IOS.list_simulators()
+        rescue
+          _ -> []
+        end
+      end)
+
+    case device_id do
+      nil -> devices
+      id -> Enum.filter(devices, &MobDev.Device.match_id?(&1, id))
+    end
+  end
+
+  defp maybe_concat(list, true, fun), do: list ++ fun.()
+  defp maybe_concat(list, false, _fun), do: list
 
   # Resolve --schedulers / --beam-flags into a combined flags string, save to
   # mob.exs, and return it (or the previously saved value if no flags given).
