@@ -417,12 +417,23 @@ defmodule MobDev.NativeBuild do
     # the implementations.
     stub_so = build_libpython_android_test_stub_so(bin_dir, triple, api, abi)
 
+    # `-l<name>` looks for `lib<name>.so` — derive `<name>` from the
+    # actual stub SONAME we just built so projects whose main lib
+    # isn't `libpython_android_test.so` (every real project) still
+    # link. Strip the `lib` prefix and `.so` suffix.
+    stub_lib_name =
+      if stub_so do
+        stub_so
+        |> Path.basename()
+        |> String.replace_prefix("lib", "")
+        |> String.replace_suffix(".so", "")
+      end
+
     # Static-link libc++ so the resulting .so doesn't depend on
     # libc++_shared.so being in the app's jniLibs/.
     # Link against the stub: gives libpythonx.so a NEEDED
-    # libpython_android_test.so entry plus link-time symbol
-    # resolution for enif_*. The stub itself is discarded after
-    # link.
+    # lib<app>.so entry plus link-time symbol resolution for enif_*.
+    # The stub itself is discarded after link.
     args =
       ["-shared", "-fPIC", "-fvisibility=hidden", "-std=c++17", "-Os"] ++
         ["-ffunction-sections", "-fdata-sections"] ++
@@ -430,7 +441,7 @@ defmodule MobDev.NativeBuild do
         ["-I", erts_inc, "-I", "#{erts_inc}/internal"] ++
         ["-I", fine_inc, "-I", python_inc] ++
         ["-Wno-unused-parameter", "-Wno-comment"] ++
-        if(stub_so, do: ["-L", Path.dirname(stub_so), "-lpython_android_test"], else: []) ++
+        if(stub_so, do: ["-L", Path.dirname(stub_so), "-l#{stub_lib_name}"], else: []) ++
         ["#{pythonx_src}/pythonx.cpp", "#{pythonx_src}/python.cpp"] ++
         ["-o", out]
 
