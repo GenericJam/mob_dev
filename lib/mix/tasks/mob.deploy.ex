@@ -126,7 +126,20 @@ defmodule Mix.Tasks.Mob.Deploy do
     # `MobDev.SupportMatrix` for the per-feature requirements and why
     # silent failures here are particularly costly for users on older
     # / cheaper hardware.
-    validate_device_compatibility!(platforms, effective_device_id)
+    #
+    # `MOB_FORCE_DEPLOY=1` bypasses for the trust-but-verify case
+    # ("I know my device is below the floor; show me what actually
+    # breaks"). The Moto e empirical run that uncovered the corrected
+    # `:base` armv7 floor used this — the SupportMatrix message is
+    # only as good as the data it's based on, and an escape hatch is
+    # how we keep that data honest.
+    if System.get_env("MOB_FORCE_DEPLOY") in [nil, ""] do
+      validate_device_compatibility!(platforms, effective_device_id)
+    else
+      IO.puts(
+        "  #{IO.ANSI.yellow()}MOB_FORCE_DEPLOY set — skipping device compatibility check#{IO.ANSI.reset()}"
+      )
+    end
 
     IO.puts("")
 

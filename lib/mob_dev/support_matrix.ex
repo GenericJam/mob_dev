@@ -72,14 +72,26 @@ defmodule MobDev.SupportMatrix do
   # floor don't need a separate clause in feature_requirements/1 —
   # they're covered by `:base`.
 
+  # Empirically corrected after a 32-bit Moto e deploy:
+  #   - The BEAM, libpigeon.so, and erts helper binaries all build
+  #     and run on armeabi-v7a (`mob.install` already fetches an
+  #     `otp-android-arm32-*` cache and the gradle build's
+  #     abiFilters include armeabi-v7a). A vanilla Mob app boots
+  #     through all 5 launcher steps on a 2018-vintage Moto e.
+  #   - The 32-bit failure mode lives in `:pythonx`, not the base.
+  #     Chaquopy stopped shipping armv7 CPython, so `:pythonx` apps
+  #     fall through PythonPaths.detect → `:desktop`, then crash on
+  #     `Pythonx.Uv.fetch` because uv has no
+  #     `arm-unknown-linux-androideabi` build either.
   @base %{
     android: %{
-      abis: ["arm64-v8a", "x86_64"],
+      abis: ["arm64-v8a", "x86_64", "armeabi-v7a"],
       min_sdk: 28,
       reason:
-        "Mob's BEAM/erts runtime is built for arm64-v8a and x86_64 (emulator) only. " <>
-          "32-bit Android (armeabi-v7a) is not built — the OTP runtime tarballs " <>
-          "in mob_dev's GitHub releases don't have an armv7 slice."
+        "Mob's BEAM/erts is built for arm64-v8a, x86_64 (emulator), " <>
+          "and armeabi-v7a. Older 32-bit Android phones (Moto e, " <>
+          "low-end devices through ~2018) can run vanilla Mob apps " <>
+          "— the per-feature constraints below are what cut deeper."
     },
     ios: %{
       abis: ["arm64"],
@@ -114,8 +126,12 @@ defmodule MobDev.SupportMatrix do
         reason:
           "Pythonx on Android bundles Chaquopy's prebuilt CPython distribution. " <>
             "Chaquopy ships arm64-v8a and x86_64 only — they dropped armeabi-v7a " <>
-            "(32-bit ARM) several releases back. Apps that target Pythonx cannot " <>
-            "run on 32-bit Android phones, regardless of OS version."
+            "(32-bit ARM) several releases back. On a 32-bit phone the asset " <>
+            "extraction yields no usable lib-dynload, MOB_PYTHON_DL stays unset, " <>
+            "PythonPaths.detect/1 falls through to :desktop, and Pythonx.Uv.fetch " <>
+            "then crashes with \"uv is not available for architecture: " <>
+            "arm-unknown-linux-androideabi\" — there's no uv build for armv7 " <>
+            "Android either. Verified empirically on a Moto e (Android 10)."
       },
       ios: %{
         abis: ["arm64"],
