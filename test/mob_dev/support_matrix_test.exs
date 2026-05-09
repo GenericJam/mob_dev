@@ -8,7 +8,11 @@ defmodule MobDev.SupportMatrixTest do
       reqs = SupportMatrix.feature_requirements(:base)
       assert "arm64-v8a" in reqs.android.abis
       assert "x86_64" in reqs.android.abis
-      refute "armeabi-v7a" in reqs.android.abis
+      # armv7 included after Moto e empirical verification — Mob's
+      # BEAM/erts + libapp.so build and run on armeabi-v7a. The
+      # device floor for vanilla apps is much wider than for
+      # Pythonx-enabled ones.
+      assert "armeabi-v7a" in reqs.android.abis
       assert reqs.android.min_sdk >= 28
       assert "arm64" in reqs.ios.abis
       assert reqs.ios.min_sdk >= 13
@@ -88,7 +92,7 @@ defmodule MobDev.SupportMatrixTest do
       assert SupportMatrix.check_device(device, [:pythonx]) == :ok
     end
 
-    test "fails the Moto e (armeabi-v7a) on Pythonx with a Chaquopy citation" do
+    test "Moto e (armeabi-v7a): vanilla Mob OK, Pythonx blocked" do
       device = %Device{
         platform: :android,
         serial: "10.0.0.82:5555",
@@ -97,17 +101,19 @@ defmodule MobDev.SupportMatrixTest do
         sdk_level: 29
       }
 
-      assert {:error, issues} = SupportMatrix.check_device(device, [:pythonx])
+      # Empirical: vanilla Mob (no Pythonx) boots on a Moto e.
+      # Verified by deploying Pigeon-without-Pythonx and seeing
+      # the BEAM reach all 5 launcher steps before on_start.
+      assert SupportMatrix.check_device(device, []) == :ok
 
-      # Two issues: pythonx (named with vendor reason) AND the base
-      # Mob runtime (which also doesn't ship armv7).
-      assert Enum.any?(issues, fn %{feature: f, reason: r} ->
-               f == :pythonx and r =~ "Chaquopy" and r =~ "armeabi-v7a"
-             end)
-
-      assert Enum.any?(issues, fn %{feature: f, reason: r} ->
-               f == :base and r =~ "armeabi-v7a"
-             end)
+      # Pythonx adds a real constraint — Chaquopy doesn't ship
+      # 32-bit Python. ONE issue (not two): :base passes, only
+      # :pythonx fails.
+      assert {:error, [issue]} = SupportMatrix.check_device(device, [:pythonx])
+      assert issue.feature == :pythonx
+      assert issue.reason =~ "Chaquopy"
+      assert issue.reason =~ "armeabi-v7a"
+      assert issue.reason =~ "uv is not available"
     end
 
     test "fails an old Android (SDK 26) on the base SDK floor" do
