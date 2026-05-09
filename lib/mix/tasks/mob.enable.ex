@@ -109,23 +109,24 @@ defmodule Mix.Tasks.Mob.Enable do
     - Generates `lib/<app>/python_paths.ex` — pure detection module that
       locates the bundled framework at runtime (`:desktop` /
       `{:ios, paths}` / `{:android, paths}` / `{:partial, missing}`).
-    - Appends a `:pythonx, :uv_init` block to `config/config.exs`. The
-      same value is set at compile time AND runtime so Pythonx's
-      `validate_compile_env` check is always satisfied — no env-var gate.
-      uv only runs at boot when `Application.ensure_all_started(:pythonx)`
-      is called, which the on_start template only does on `:desktop`.
+    - **No `:uv_init` config patch.** Pythonx ships an Application
+      that auto-runs uv at boot if `:uv_init` is in compile-time config,
+      and uv doesn't exist on device. Instead the on_start template
+      inlines `pyproject_toml` and calls `Pythonx.Uv.fetch/2 +
+      Pythonx.Uv.init/2` only on the `:desktop` branch. Same code path
+      `iex -S mix` would use, just opt-in.
 
   Bundle size impact: ~70 MB on iOS, ~30 MB on Android (interpreter +
   stdlib + arch-specific C extensions). Apply this only when you actually
   want to call Python from BEAM — non-Python apps stay vanilla.
 
-  After running, your `Mob.App.on_start/0` should call
-  `<App>.PythonPaths.detect/1` and:
+  After running, your `Mob.App.on_start/0` should:
 
-    - on `:desktop`, call `Application.ensure_all_started(:pythonx)`
-      (the desktop venv is set up by uv);
-    - on `{:ios, paths}` / `{:android, paths}`, call `Pythonx.init/4`
-      directly with the bundled paths — uv is never invoked on device.
+    - call `Application.ensure_all_started(:pythonx)` (starts the
+      `Pythonx.Janitor`, required for `Pythonx.eval/3`);
+    - case-match `<App>.PythonPaths.detect/1` and call `Pythonx.Uv.fetch
+      + init` on `:desktop` (provisioning a uv-managed CPython on first
+      run) or `Pythonx.init/4` on `{:ios, _}` / `{:android, _}`.
 
   See `guides/python_embedding.md` for the full template.
   """
@@ -220,7 +221,6 @@ defmodule Mix.Tasks.Mob.Enable do
   defp enable("python", project_dir, app_name) do
     pythonx_inject_dep(project_dir)
     pythonx_generate_paths_module(project_dir, app_name)
-    pythonx_patch_config(project_dir, app_name)
     pythonx_check_native_templates(project_dir, app_name)
 
     module = Macro.camelize(app_name)
@@ -230,15 +230,22 @@ defmodule Mix.Tasks.Mob.Enable do
       Next steps:
         1. Run `mix deps.get` to fetch :pythonx
         2. In your `Mob.App.on_start/0`, call:
+
+             {:ok, _} = Application.ensure_all_started(:pythonx)
+
              case #{module}.PythonPaths.detect(to_string(:code.root_dir())) do
                :desktop ->
-                 # Desktop: uv handles venv setup at app start.
-                 {:ok, _} = Application.ensure_all_started(:pythonx)
+                 toml = \"\"\"
+                 [project]
+                 name = "#{app_name}"
+                 version = "0.1.0"
+                 requires-python = "==3.13.*"
+                 dependencies = []
+                 \"\"\"
+                 Pythonx.Uv.fetch(toml, false)
+                 Pythonx.Uv.init(toml, false)
 
                {:ios, %{dl_path: dl, home_path: home}} ->
-                 # On device, skip ensure_all_started/1 — Pythonx.UvInit
-                 # would try to run `uv` and fail. Pythonx.init/4 loads
-                 # the NIF directly against the bundled framework.
                  Pythonx.init(dl, home, dl, sys_paths: [])
 
                {:android, %{dl_path: dl, home_path: home}} ->
@@ -249,6 +256,10 @@ defmodule Mix.Tasks.Mob.Enable do
                  # log + bail out — bundle is incomplete
                  nil
              end
+
+           pyproject_toml is inlined so it's NOT in compile-time config —
+           Pythonx.Application would otherwise auto-run uv at app boot,
+           which fails on device.
         3. `mix mob.deploy --native --device <udid>` to bundle CPython +
            install on device. iOS downloads the BeeWare framework on first
            run; Android pulls Chaquopy's prebuilt distribution.
@@ -600,30 +611,6 @@ defmodule Mix.Tasks.Mob.Enable do
       File.mkdir_p!(dir)
       File.write!(path, MobDev.Enable.python_paths_module_template(module_name))
       Mix.shell().info([:green, "  * create ", :reset, path])
-    end
-  end
-
-  defp pythonx_patch_config(project_dir, app_name) do
-    config_dir = Path.join(project_dir, "config")
-    File.mkdir_p!(config_dir)
-    path = Path.join(config_dir, "config.exs")
-
-    content =
-      if File.exists?(path) do
-        File.read!(path)
-      else
-        "import Config\n"
-      end
-
-    patched = MobDev.Enable.inject_pythonx_uv_init_gate(content, app_name)
-
-    cond do
-      patched == content ->
-        Mix.shell().info("  * skip #{path} (:pythonx config already present — leave it alone)")
-
-      true ->
-        File.write!(path, patched)
-        Mix.shell().info([:green, "  * patch ", :reset, path, " (added :pythonx, :uv_init)"])
     end
   end
 

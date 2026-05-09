@@ -354,36 +354,15 @@ defmodule MobDev.EnableTest do
     end
   end
 
-  # ── inject_pythonx_uv_init_gate/2 ─────────────────────────────────────────
+  # ── default_pyproject_toml/1 ──────────────────────────────────────────────
 
-  describe "inject_pythonx_uv_init_gate/2" do
-    test "appends ungated pythonx config when no existing pythonx config" do
-      content = """
-      import Config
-
-      config :mob, :something, foo: :bar
-      """
-
-      result = Enable.inject_pythonx_uv_init_gate(content, "my_app")
-      assert result =~ "config :pythonx, :uv_init"
+  describe "default_pyproject_toml/1" do
+    test "returns a TOML string with the app name as project name" do
+      result = Enable.default_pyproject_toml("my_app")
+      assert result =~ "[project]"
       assert result =~ ~s|name = "my_app"|
-      # No env-var gate — same value at compile time AND runtime so
-      # Pythonx's validate_compile_env check is satisfied unconditionally.
-      refute result =~ "MOB_TARGET"
-      refute result =~ "System.get_env"
-      # Existing config preserved
-      assert result =~ "config :mob, :something"
-    end
-
-    test "leaves user's manual pythonx config alone when present" do
-      content = """
-      import Config
-
-      config :pythonx, :uv_init, pyproject_toml: "manual config"
-      """
-
-      # Should not modify or duplicate — user has their own setup.
-      assert Enable.inject_pythonx_uv_init_gate(content, "my_app") == content
+      assert result =~ ~s|requires-python = "==3.13.*"|
+      assert result =~ "dependencies = []"
     end
   end
 

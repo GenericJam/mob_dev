@@ -271,45 +271,18 @@ defmodule MobDev.Enable do
   end
 
   @doc """
-  Patches `config/config.exs` content with the Pythonx `:uv_init` desktop
-  venv config.
-
-  No gate — the same `:uv_init` value lands at compile time AND runtime,
-  so Pythonx's `validate_compile_env` check is satisfied unconditionally.
-  On mobile, the user's `Mob.App.on_start/0` skips
-  `Application.ensure_all_started(:pythonx)` and calls `Pythonx.init/4`
-  directly, which doesn't trigger uv. See the next-steps message printed
-  by `mix mob.enable python`.
-
-  Idempotent — returns content unchanged when `:pythonx` config already
-  present.
+  Returns the canonical `pyproject.toml` string for a freshly-enabled
+  Pythonx project. Used by the on_start template generator and by the
+  desktop `Pythonx.Uv.fetch/init` calls in user code.
   """
-  @spec inject_pythonx_uv_init_gate(String.t(), String.t()) :: String.t()
-  def inject_pythonx_uv_init_gate(content, app_name) when is_binary(app_name) do
-    if String.contains?(content, ":pythonx") do
-      content
-    else
-      content <> pythonx_uv_init_default_block(app_name)
-    end
-  end
-
-  defp pythonx_uv_init_default_block(app_name) do
+  @spec default_pyproject_toml(String.t()) :: String.t()
+  def default_pyproject_toml(app_name) when is_binary(app_name) do
     """
-
-    # Pythonx desktop venv setup (added by `mix mob.enable python`).
-    # The same value lands at compile time AND runtime so Pythonx's
-    # validate_compile_env check is satisfied. On mobile,
-    # `Mob.App.on_start/0` skips `Application.ensure_all_started(:pythonx)`
-    # and calls `Pythonx.init/4` directly with bundled paths — uv never
-    # runs on device.
-    config :pythonx, :uv_init,
-      pyproject_toml: \"\"\"
-      [project]
-      name = "#{app_name}"
-      version = "0.1.0"
-      requires-python = "==3.13.*"
-      dependencies = []
-      \"\"\"
+    [project]
+    name = "#{app_name}"
+    version = "0.1.0"
+    requires-python = "==3.13.*"
+    dependencies = []
     """
   end
 
