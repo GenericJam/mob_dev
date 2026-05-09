@@ -156,7 +156,29 @@ defmodule Mix.Tasks.Mob.Connect do
       Node.connect(d.node)
     end)
 
-    # Hand off to IEx in this process — tunnels stay alive via adb daemon.
-    IEx.start()
+    # In Elixir 1.19, IEx.start/0 was removed. Following the same pattern as
+    # `mix iex` itself (which is a stub that prints `iex -S mix`), we print
+    # the exact `iex --remsh` command for the user to run. Tunnels (adb
+    # forward/reverse) stay up via the adb daemon, so the new IEx process
+    # inherits them transparently.
+    [first | rest] = connected
+
+    cmd =
+      "iex --name #{local_name} --cookie #{cookie} --remsh #{first.node}"
+
+    IO.puts("")
+    IO.puts(IO.ANSI.green() <> "Tunnels are up. Connect with:" <> IO.ANSI.reset())
+    IO.puts("")
+    IO.puts("  " <> IO.ANSI.bright() <> cmd <> IO.ANSI.reset())
+    IO.puts("")
+
+    unless rest == [] do
+      IO.puts("Then in IEx, connect to additional devices:")
+      Enum.each(rest, fn d ->
+        IO.puts("  Node.connect(:\"#{d.node}\")")
+      end)
+      IO.puts("")
+    end
   end
+
 end
