@@ -78,7 +78,7 @@ defmodule MobDev.NativeBuild do
             [build_ios_physical(cfg, physical_udid) | results]
 
           File.exists?("ios/build.sh") ->
-            [build_ios(cfg) | results]
+            [build_ios(cfg, device_id) | results]
 
           true ->
             results
@@ -1056,7 +1056,7 @@ defmodule MobDev.NativeBuild do
 
   # ── iOS ──────────────────────────────────────────────────────────────────────
 
-  defp build_ios(cfg) do
+  defp build_ios(cfg, device_id) do
     with :ok <- check_path(cfg[:mob_dir], "mob_dir"),
          :ok <- check_path(cfg[:elixir_lib], "elixir_lib"),
          {:ok, otp_root} <- MobDev.OtpDownloader.ensure_ios_sim(),
@@ -1070,16 +1070,141 @@ defmodule MobDev.NativeBuild do
           {"MOB_IOS_OTP_ROOT", otp_root}
         ] ++ python_apple_support_env(pythonx_in_project?(), python_bundle)
 
-      case System.cmd("bash", ["ios/build.sh"],
-             env: env,
-             stderr_to_stdout: true,
-             into: IO.stream()
-           ) do
-        {_, 0} -> {:ok, "iOS"}
-        {_, _} -> {:error, "iOS", "build.sh failed — check output above"}
+      with {_, 0} <-
+             System.cmd("bash", ["ios/build.sh"],
+               env: env,
+               stderr_to_stdout: true,
+               into: IO.stream()
+             ),
+           {:ok, sim_id} <- pick_ios_sim(device_id),
+           display_name = ios_display_name(),
+           binary_path = "ios/zig-out/#{display_name}",
+           :ok <- check_path(binary_path, "iOS binary"),
+           {:ok, app_path} <- bundle_ios_app(binary_path, display_name),
+           :ok <- install_ios_sim(sim_id, app_path) do
+        {:ok, "iOS"}
+      else
+        {:error, reason} -> {:error, "iOS", reason}
+        {_, exit_code} when is_integer(exit_code) ->
+          {:error, "iOS", "build.sh exited #{exit_code} — check output above"}
       end
     else
       {:error, reason} -> {:error, "iOS", reason}
+    end
+  end
+
+  # Phase 2 iter 6: Bundle assembly + simctl install moved out of build.sh.
+  # The shell script now ends after `zig build binary`; everything below
+  # used to live as the `# ── Bundle + install ──` block in ios/build.sh.eex.
+
+  defp ios_display_name do
+    Mix.Project.config()
+    |> Keyword.fetch!(:app)
+    |> Atom.to_string()
+    |> Macro.camelize()
+  end
+
+  defp pick_ios_sim(device_id) when is_binary(device_id), do: {:ok, device_id}
+
+  defp pick_ios_sim(nil) do
+    case System.cmd("xcrun", ~w(simctl list devices booted -j), stderr_to_stdout: true) do
+      {json, 0} ->
+        with {:ok, %{"devices" => by_runtime}} <- Jason.decode(json),
+             udid when is_binary(udid) <- find_booted_udid(by_runtime) do
+          {:ok, udid}
+        else
+          _ ->
+            {:error,
+             "No booted simulator. Boot one in Simulator.app or pass `--device <UDID>`."}
+        end
+
+      _ ->
+        {:error, "xcrun simctl list failed — is Xcode installed?"}
+    end
+  end
+
+  defp find_booted_udid(by_runtime) do
+    by_runtime
+    |> Map.values()
+    |> List.flatten()
+    |> Enum.find_value(fn
+      %{"state" => "Booted", "udid" => udid} -> udid
+      _ -> nil
+    end)
+  end
+
+  defp bundle_ios_app(binary_path, display_name) do
+    build_dir =
+      Path.join(System.tmp_dir!(), "mob_ios_bundle_#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(build_dir)
+    app_path = Path.join(build_dir, "#{display_name}.app")
+    File.rm_rf!(app_path)
+    File.mkdir_p!(app_path)
+
+    IO.puts("  Building .app bundle at #{app_path}...")
+    File.cp!(binary_path, Path.join(app_path, display_name))
+
+    cond do
+      not File.exists?("ios/Info.plist") ->
+        {:error, "ios/Info.plist not found — required for the .app bundle"}
+
+      true ->
+        File.cp!("ios/Info.plist", Path.join(app_path, "Info.plist"))
+        if File.dir?("ios/Assets.xcassets/AppIcon.appiconset"), do: compile_ios_icons(app_path)
+        {:ok, app_path}
+    end
+  end
+
+  defp compile_ios_icons(app_path) do
+    actool_plist = Path.join(System.tmp_dir!(), "mob_actool_#{System.unique_integer([:positive])}.plist")
+
+    # actool can be flaky and is non-critical (the binary still runs without
+    # icons compiled — just shows the system default). Mirror the build.sh
+    # `2>/dev/null || true` posture so a broken Assets.xcassets doesn't kill
+    # an otherwise-successful native build.
+    case System.cmd(
+           "xcrun",
+           [
+             "actool",
+             "ios/Assets.xcassets",
+             "--compile",
+             app_path,
+             "--platform",
+             "iphonesimulator",
+             "--minimum-deployment-target",
+             "17.0",
+             "--app-icon",
+             "AppIcon",
+             "--output-partial-info-plist",
+             actool_plist
+           ],
+           stderr_to_stdout: true
+         ) do
+      {_, 0} ->
+        _ =
+          System.cmd("/usr/libexec/PlistBuddy", [
+            "-c",
+            "Merge #{actool_plist}",
+            Path.join(app_path, "Info.plist")
+          ], stderr_to_stdout: true)
+
+      _ ->
+        :ok
+    end
+
+    File.rm(actool_plist)
+  end
+
+  defp install_ios_sim(sim_id, app_path) do
+    IO.puts("  Installing on simulator #{sim_id}...")
+
+    case System.cmd("xcrun", ["simctl", "install", sim_id, app_path],
+           stderr_to_stdout: true,
+           into: IO.stream()
+         ) do
+      {_, 0} -> :ok
+      {_, _} -> {:error, "xcrun simctl install failed — check output above"}
     end
   end
 
