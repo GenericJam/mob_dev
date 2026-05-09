@@ -26,7 +26,15 @@ defmodule MobDev.Device do
     # :discovered | :unauthorized | :tunneled | :connected | :error
     :status,
     # error message string if status == :error
-    :error
+    :error,
+    # Android: "arm64-v8a" | "armeabi-v7a" | "x86_64" | "x86"
+    # iOS: nil — Apple devices are arm64 across the supported floor (iOS 13+)
+    #      and the simulator picks arch from the host. Captured via
+    #      MobDev.SupportMatrix derivation, not adb getprop.
+    :abi,
+    # Android API level (29 = Android 10, 33 = Android 13, etc.)
+    # iOS major version as integer (17 from "iOS 17.4.1")
+    :sdk_level
   ]
 
   @doc """

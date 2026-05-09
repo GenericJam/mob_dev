@@ -81,6 +81,8 @@ defmodule MobDev.Discovery.Android do
   defp enrich(%Device{serial: serial} = d) do
     name = getprop(serial, "ro.product.model")
     version = getprop(serial, "ro.build.version.release")
+    abi = getprop(serial, "ro.product.cpu.abi")
+    sdk_level = parse_int(getprop(serial, "ro.build.version.sdk"))
 
     # Compute the node name from the device's stable hardware serial
     # (`ro.serialno`) rather than the adb id we used to talk to it, so the
@@ -101,7 +103,25 @@ defmodule MobDev.Discovery.Android do
     # emulator's internal NAT subnet (10.0.2.x) which isn't reachable
     # from the host and just creates confusion in the devices listing.
     host_ip = if d.type == :emulator, do: nil, else: device_ip(serial)
-    %{d | name: name, version: "Android #{version}", node: node, host_ip: host_ip}
+
+    %{
+      d
+      | name: name,
+        version: "Android #{version}",
+        node: node,
+        host_ip: host_ip,
+        abi: abi,
+        sdk_level: sdk_level
+    }
+  end
+
+  defp parse_int(nil), do: nil
+
+  defp parse_int(str) when is_binary(str) do
+    case Integer.parse(str) do
+      {n, _} -> n
+      :error -> nil
+    end
   end
 
   defp getprop(serial, prop) do
