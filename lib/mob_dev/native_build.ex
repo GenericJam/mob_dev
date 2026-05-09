@@ -116,8 +116,10 @@ defmodule MobDev.NativeBuild do
 
     with {:ok, otp_arm64} <- MobDev.OtpDownloader.ensure_android("arm64-v8a"),
          {:ok, otp_arm32} <- MobDev.OtpDownloader.ensure_android("armeabi-v7a"),
+         {:ok, python_android_bundle} <- maybe_ensure_python_android_bundle(),
          :ok <- ensure_jni_libs(otp_arm64, "arm64-v8a"),
          :ok <- ensure_jni_libs(otp_arm32, "armeabi-v7a"),
+         :ok <- ensure_python_android_libs(python_android_bundle),
          :ok <- gradle_assemble(),
          :ok <- adb_install_all(apk, bundle_id, device_id),
          :ok <-
@@ -132,6 +134,534 @@ defmodule MobDev.NativeBuild do
     else
       {:error, reason} -> {:error, "Android", reason}
     end
+  end
+
+  # Downloads Chaquopy's CPython distribution iff Pythonx is a dep.
+  # Returns `{:ok, nil}` for projects without Pythonx so the rest of the
+  # Android pipeline runs unchanged.
+  defp maybe_ensure_python_android_bundle do
+    if pythonx_in_project?() do
+      MobDev.PythonAndroidSupport.ensure()
+    else
+      {:ok, nil}
+    end
+  end
+
+  # Copies Chaquopy's libpython*.so + bundled OpenSSL/SQLite into the
+  # user's android/app/src/main/jniLibs/<abi>/ tree so the APK packager
+  # picks them up. lib-dynload + stdlib go into assets/python/ for
+  # runtime extraction by the user's app on first launch.
+  #
+  # No-op when bundle is nil (project without Pythonx).
+  #
+  # NOTE: this places the Python distribution but does NOT yet
+  # cross-compile libpythonx.so (the Pythonx NIF) for Android NDK.
+  # Without that, Pythonx.NIF.__on_load__/0 raises at runtime. The NDK
+  # cross-compile is the next piece — see python_embedding guide.
+  @android_python_abis ~w(arm64-v8a x86_64)
+  defp ensure_python_android_libs(nil), do: :ok
+
+  defp ensure_python_android_libs(bundle_dir) do
+    Enum.each(@android_python_abis, fn abi ->
+      copy_python_jni_libs(bundle_dir, abi)
+      cross_compile_libpythonx_android(abi, bundle_dir)
+    end)
+
+    generate_android_enif_keepalive()
+    install_pythonx_otp_lib_android()
+    copy_python_assets(bundle_dir)
+    :ok
+  end
+
+  # Mirrors the iOS enif_* keep-alive table. Without it, --gc-sections
+  # in the user's CMakeLists strips enif_* symbols from
+  # libpython_android_test.so, and dlopen of libpythonx.so fails at
+  # runtime with "cannot locate symbol enif_keep_resource".
+  #
+  # Generates `android/app/src/main/jni/enif_keepalive.c` with one
+  # __attribute__((used)) reference per `T _enif_*` exported by
+  # erl_nif.o inside the Android OTP cache's libbeam.a. The CMakeLists
+  # template (in mob_new) picks it up if present.
+  defp generate_android_enif_keepalive do
+    otp_dir = MobDev.OtpDownloader.android_otp_dir("arm64-v8a")
+
+    libbeam =
+      Path.wildcard("#{otp_dir}/erts-*/lib/libbeam.a")
+      |> List.first()
+
+    cond do
+      is_nil(libbeam) or not File.exists?(libbeam) ->
+        :ok
+
+      true ->
+        # macOS BSD `ar` chokes on the Linux-format archive Mob ships
+        # (entries listed as "erl_nif.o/" with trailing slash). Use the
+        # NDK's llvm-ar / llvm-nm, which handle either format cleanly.
+        sdk_root = MobDev.NdkVersion.sdk_root()
+        ndk_version = MobDev.NdkVersion.effective()
+
+        bin =
+          Path.join([
+            sdk_root || "",
+            "ndk",
+            ndk_version,
+            "toolchains",
+            "llvm",
+            "prebuilt",
+            android_ndk_host(),
+            "bin"
+          ])
+
+        ar = Path.join(bin, "llvm-ar")
+        nm = Path.join(bin, "llvm-nm")
+
+        if File.regular?(ar) and File.regular?(nm) do
+          generate_android_enif_keepalive_with(ar, nm, libbeam)
+        else
+          IO.puts("  ⚠  NDK llvm-ar / llvm-nm not found — skipping enif_* keep-alive table")
+          :ok
+        end
+    end
+  end
+
+  defp generate_android_enif_keepalive_with(ar, nm, libbeam) do
+    tmp = System.tmp_dir!() |> Path.join("mob_enif_extract_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(tmp)
+
+    System.cmd(ar, ["x", libbeam, "erl_nif.o"], cd: tmp, stderr_to_stdout: true)
+    erl_nif_o = Path.join(tmp, "erl_nif.o")
+
+    if File.exists?(erl_nif_o) do
+      {nm_out, _} = System.cmd(nm, [erl_nif_o], stderr_to_stdout: true)
+
+      symbols =
+        nm_out
+        |> String.split("\n")
+        |> Enum.filter(&Regex.match?(Regex.compile!(~S{\sT\senif_}), &1))
+        |> Enum.map(fn line -> line |> String.split() |> List.last() end)
+        |> Enum.uniq()
+
+      out = "android/app/src/main/jni/enif_keepalive.c"
+      File.mkdir_p!(Path.dirname(out))
+      File.write!(out, generate_android_enif_keepalive_source(symbols))
+      IO.puts("  ✓ generated #{out} (#{length(symbols)} enif_* symbols pinned)")
+    end
+
+    File.rm_rf(tmp)
+    :ok
+  end
+
+  defp generate_android_enif_keepalive_source(symbols) do
+    refs =
+      symbols
+      |> Enum.map_join("\n", fn sym ->
+        "extern void #{sym}(void); __attribute__((used)) static void *_keep_#{sym} = (void *)&#{sym};"
+      end)
+
+    """
+    /* Auto-generated by mob_dev/native_build.ex.
+     * References every enif_* symbol exported by libbeam.a's erl_nif.o
+     * so the user's CMakeLists --gc-sections doesn't strip them. Without
+     * these references, dlopen of dynamic NIFs (libpythonx.so) fails at
+     * runtime with "cannot locate symbol enif_*".
+     *
+     * Regenerated on every `mix mob.deploy --native --device <android>`.
+     */
+    #{refs}
+    """
+  end
+
+  # Mirrors the "Installing pythonx as OTP library" step in iOS's
+  # build_device.sh: places the pythonx beams + .app into
+  # <otp_arm64>/lib/pythonx-VSN/ebin and copies libpythonx.so to
+  # priv/, so `:code.priv_dir(:pythonx)` resolves on device once the
+  # OTP runtime is pushed.
+  #
+  # Only the arm64-v8a NIF goes into priv/ — Mob's Android OTP cache
+  # is per-cache, not per-device. x86_64 emulator support would require
+  # a per-device push (TODO). Apple Silicon Macs run arm64 Android
+  # emulators natively, so the arm64-only restriction is rarely felt.
+  defp install_pythonx_otp_lib_android do
+    pythonx_vsn = read_pythonx_version()
+
+    if pythonx_vsn do
+      otp_dir = MobDev.OtpDownloader.android_otp_dir("arm64-v8a")
+      pythonx_lib_dir = Path.join([otp_dir, "lib", "pythonx-#{pythonx_vsn}"])
+
+      File.rm_rf!(pythonx_lib_dir)
+      File.mkdir_p!(Path.join(pythonx_lib_dir, "ebin"))
+      File.mkdir_p!(Path.join(pythonx_lib_dir, "priv"))
+
+      Path.wildcard("_build/dev/lib/pythonx/ebin/*.beam")
+      |> Enum.each(fn src ->
+        cp(src, Path.join([pythonx_lib_dir, "ebin", Path.basename(src)]))
+      end)
+
+      if File.exists?("_build/dev/lib/pythonx/ebin/pythonx.app") do
+        cp(
+          "_build/dev/lib/pythonx/ebin/pythonx.app",
+          Path.join([pythonx_lib_dir, "ebin", "pythonx.app"])
+        )
+      end
+
+      src = "android/app/src/main/jniLibs/arm64-v8a/libpythonx.so"
+
+      if File.exists?(src) do
+        cp(src, Path.join([pythonx_lib_dir, "priv", "libpythonx.so"]))
+      end
+    end
+
+    :ok
+  end
+
+  defp read_pythonx_version do
+    cond do
+      File.exists?("_build/dev/lib/pythonx/ebin/pythonx.app") ->
+        case File.read("_build/dev/lib/pythonx/ebin/pythonx.app") do
+          {:ok, content} ->
+            case Regex.run(Regex.compile!(~S<{vsn,\s*"([^"]+)"}>), content) do
+              [_, vsn] -> vsn
+              _ -> nil
+            end
+
+          _ ->
+            nil
+        end
+
+      true ->
+        nil
+    end
+  end
+
+  # Chaquopy's arm64-v8a slice corresponds to the standard android arm64
+  # OTP cache; x86_64 emulators use the same arm64 cache (Mob doesn't
+  # build a separate x86_64 OTP, so the 64-bit emulator runs the arm64
+  # OTP under translation).
+  defp android_otp_abi("arm64-v8a"), do: "arm64-v8a"
+  defp android_otp_abi("x86_64"), do: "arm64-v8a"
+
+  # Cross-compiles Pythonx's NIF (deps/pythonx/c_src/{pythonx,python}.cpp)
+  # for Android against the NDK and the Chaquopy headers. Output drops
+  # into android/app/src/main/jniLibs/<abi>/libpythonx.so so the APK
+  # packager picks it up alongside the OTP runtime helper libs.
+  #
+  # Pythonx's design — runtime dlopen+dlsym for libpython AND enif_*
+  # symbols resolved by the loaded BEAM — means libpythonx.so has many
+  # undefined symbols at link time. `--unresolved-symbols=ignore-all`
+  # tells lld this is intentional. Apps that load the NIF via
+  # `:erlang.load_nif/2` resolve enif_* against the host BEAM, and
+  # Pythonx.init/4 resolves Py* against the dlopen'd libpython.so.
+  defp cross_compile_libpythonx_android(abi, bundle_dir) do
+    pythonx_src = "deps/pythonx/c_src"
+
+    if File.dir?(pythonx_src) do
+      ndk_version = MobDev.NdkVersion.effective()
+      sdk_root = MobDev.NdkVersion.sdk_root()
+
+      cond do
+        is_nil(sdk_root) ->
+          IO.puts("  ⚠  Android SDK not found — skipping libpythonx.so cross-compile")
+          :ok
+
+        not MobDev.NdkVersion.installed?(ndk_version) ->
+          IO.puts("  ⚠  Android NDK #{ndk_version} not installed — skipping libpythonx.so")
+          IO.puts("     Install with: #{MobDev.NdkVersion.install_command()}")
+          :ok
+
+        true ->
+          do_cross_compile_libpythonx_android(abi, bundle_dir, sdk_root, ndk_version)
+      end
+    else
+      :ok
+    end
+  end
+
+  defp do_cross_compile_libpythonx_android(abi, bundle_dir, sdk_root, ndk_version) do
+    triple = android_triple(abi)
+    api = android_api_level()
+    host = android_ndk_host()
+
+    bin_dir =
+      Path.join([sdk_root, "ndk", ndk_version, "toolchains", "llvm", "prebuilt", host, "bin"])
+
+    clang = Path.join(bin_dir, "#{triple}#{api}-clang++")
+
+    unless File.regular?(clang) do
+      IO.puts("  ⚠  NDK clang++ not found at #{clang} — skipping libpythonx.so")
+      :ok
+    end
+
+    pythonx_src = "deps/pythonx/c_src"
+    fine_inc = "deps/fine/c_include"
+    python_inc = MobDev.PythonAndroidSupport.headers_dir(bundle_dir, abi)
+
+    erts_inc =
+      Path.wildcard("#{MobDev.OtpDownloader.android_otp_dir()}/erts-*/include")
+      |> List.first()
+
+    out = "android/app/src/main/jniLibs/#{abi}/libpythonx.so"
+    File.mkdir_p!(Path.dirname(out))
+
+    # libpythonx.so references enif_* symbols defined by the user's
+    # libpython_android_test.so (via libbeam.a, statically linked into
+    # it by Gradle). For Android's loader to resolve those at dlopen
+    # time, libpythonx.so needs a `NEEDED libpython_android_test.so`
+    # entry — otherwise the lookup happens in the wrong namespace and
+    # fails with "cannot locate symbol enif_*".
+    #
+    # The real lib is built by Gradle AFTER this step. We work around
+    # the chicken-and-egg with a tiny stub library that exports the
+    # enif_* symbols and carries SONAME=libpython_android_test.so. At
+    # runtime Android resolves the NEEDED entry by SONAME match, so
+    # the real lib (already loaded via System.loadLibrary) provides
+    # the implementations.
+    stub_so = build_libpython_android_test_stub_so(bin_dir, triple, api, abi)
+
+    # `-l<name>` looks for `lib<name>.so` — derive `<name>` from the
+    # actual stub SONAME we just built so projects whose main lib
+    # isn't `libpython_android_test.so` (every real project) still
+    # link. Strip the `lib` prefix and `.so` suffix.
+    stub_lib_name =
+      if stub_so do
+        stub_so
+        |> Path.basename()
+        |> String.replace_prefix("lib", "")
+        |> String.replace_suffix(".so", "")
+      end
+
+    # Static-link libc++ so the resulting .so doesn't depend on
+    # libc++_shared.so being in the app's jniLibs/.
+    # Link against the stub: gives libpythonx.so a NEEDED
+    # lib<app>.so entry plus link-time symbol resolution for enif_*.
+    # The stub itself is discarded after link.
+    args =
+      ["-shared", "-fPIC", "-fvisibility=hidden", "-std=c++17", "-Os"] ++
+        ["-ffunction-sections", "-fdata-sections"] ++
+        ["-static-libstdc++"] ++
+        ["-I", erts_inc, "-I", "#{erts_inc}/internal"] ++
+        ["-I", fine_inc, "-I", python_inc] ++
+        ["-Wno-unused-parameter", "-Wno-comment"] ++
+        if(stub_so, do: ["-L", Path.dirname(stub_so), "-l#{stub_lib_name}"], else: []) ++
+        ["#{pythonx_src}/pythonx.cpp", "#{pythonx_src}/python.cpp"] ++
+        ["-o", out]
+
+    case System.cmd(clang, args, stderr_to_stdout: true) do
+      {_, 0} ->
+        IO.puts("  ✓ cross-compiled #{out}")
+        if stub_so, do: File.rm_rf!(Path.dirname(stub_so))
+        :ok
+
+      {output, code} ->
+        if stub_so, do: File.rm_rf!(Path.dirname(stub_so))
+        IO.puts(:stderr, "  ✗ libpythonx.so cross-compile failed (exit #{code})")
+        IO.puts(:stderr, output)
+        {:error, "libpythonx.so cross-compile failed for #{abi}"}
+    end
+  end
+
+  # Builds a tiny stub `libpython_android_test.so` (or whatever the user's
+  # main lib is called, which we read from the keepalive .c we generated)
+  # that exports the enif_* symbols libpythonx.so references. Link-time only;
+  # the real lib provides symbols at runtime via SONAME match.
+  defp build_libpython_android_test_stub_so(bin_dir, triple, api, abi) do
+    cc = Path.join(bin_dir, "#{triple}#{api}-clang")
+    keepalive = "android/app/src/main/jni/enif_keepalive.c"
+
+    if File.regular?(cc) and File.exists?(keepalive) do
+      build_stub_with_symbols(cc, keepalive, abi)
+    end
+  end
+
+  defp build_stub_with_symbols(cc, keepalive, abi) do
+    symbols =
+      keepalive
+      |> File.read!()
+      |> String.split("\n")
+      |> Enum.map(&Regex.run(Regex.compile!(~S{extern void (enif_\w+)}), &1))
+      |> Enum.reject(&is_nil/1)
+      |> Enum.map(fn [_, name] -> name end)
+      |> Enum.uniq()
+
+    if symbols != [] do
+      # Mob's main lib SONAME is `lib<app_name>.so`. Detect from the
+      # generated CMakeLists' `add_library` directive.
+      soname = detect_main_lib_soname() || "libpython_android_test.so"
+
+      tmp =
+        System.tmp_dir!()
+        |> Path.join("mob_pythonx_stub_#{abi}_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(tmp)
+      stub_c = Path.join(tmp, "stub.c")
+      stub_so = Path.join(tmp, soname)
+
+      body = Enum.map_join(symbols, "\n", fn sym -> "void #{sym}(void) {}" end)
+      File.write!(stub_c, body <> "\n")
+
+      case System.cmd(
+             cc,
+             ["-shared", "-fPIC", "-Wl,-soname,#{soname}", stub_c, "-o", stub_so],
+             stderr_to_stdout: true
+           ) do
+        {_, 0} ->
+          stub_so
+
+        _ ->
+          File.rm_rf!(tmp)
+          nil
+      end
+    end
+  end
+
+  defp detect_main_lib_soname do
+    case File.read("android/app/src/main/jni/CMakeLists.txt") do
+      {:ok, content} ->
+        case Regex.run(Regex.compile!(~S{add_library\(\s*(\S+)\s+SHARED}), content) do
+          [_, name] -> "lib#{name}.so"
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp android_triple("arm64-v8a"), do: "aarch64-linux-android"
+  defp android_triple("x86_64"), do: "x86_64-linux-android"
+
+  # Match mob_new's android template `minSdk 28`. Using API 28 keeps
+  # the NIF compatible with the same device floor as the rest of the
+  # Mob-generated app code.
+  defp android_api_level, do: "28"
+
+  # Pre-built NDK toolchains are named for the host that runs them.
+  # Mob is a macOS-first dev environment; Linux hosts use the same
+  # `darwin-x86_64` directory name on Apple Silicon thanks to Rosetta.
+  defp android_ndk_host do
+    case :os.type() do
+      {:unix, :darwin} -> "darwin-x86_64"
+      {:unix, _} -> "linux-x86_64"
+      _ -> "darwin-x86_64"
+    end
+  end
+
+  defp copy_python_jni_libs(bundle_dir, abi) do
+    src_dir = MobDev.PythonAndroidSupport.jni_libs_dir(bundle_dir, abi)
+    dst_dir = "android/app/src/main/jniLibs/#{abi}"
+    File.mkdir_p!(dst_dir)
+
+    if File.dir?(src_dir) do
+      Path.wildcard(Path.join(src_dir, "*.so"))
+      |> Enum.each(fn src ->
+        dst = Path.join(dst_dir, Path.basename(src))
+        cp(src, dst)
+      end)
+    end
+
+    copy_project_python_jni_libs(abi, dst_dir)
+
+    :ok
+  end
+
+  # Project-supplied native libs that need to land in jniLibs/<abi>/
+  # rather than site-packages. Wheels for cffi-using packages
+  # (cryptography, etc.) reference `libffi.so` via a NEEDED entry,
+  # which the Android dynamic loader resolves out of the app's
+  # `nativeLibraryDir` — i.e. the jniLibs/<abi>/ contents. Putting
+  # the .so under filesDir/python/ doesn't help because the loader
+  # has already given up by the time Python imports happen.
+  #
+  # Convention: project drops <name>.so files into
+  # `priv/python_jni_libs/<abi>/`. Each one is copied into
+  # `android/app/src/main/jniLibs/<abi>/` verbatim. Mob doesn't try
+  # to know what's inside — that's the project's call.
+  defp copy_project_python_jni_libs(abi, dst_dir) do
+    src_dir = Path.join(["priv", "python_jni_libs", abi])
+
+    if File.dir?(src_dir) do
+      Path.wildcard(Path.join(src_dir, "*.so"))
+      |> Enum.each(fn src ->
+        dst = Path.join(dst_dir, Path.basename(src))
+        cp(src, dst)
+      end)
+    end
+
+    :ok
+  end
+
+  # Place the (slice-independent) stdlib and per-abi lib-dynload into
+  # android/app/src/main/assets/python/. The APK packager will ship
+  # them as packaged assets; the user's app extracts them to internal
+  # storage on first launch (see <App>.PythonPaths).
+  defp copy_python_assets(bundle_dir) do
+    # Extract layout follows the PYTHONHOME contract:
+    #   <filesDir>/python/lib/python3.13/        ← shared pure-Python stdlib
+    #   <filesDir>/python/lib/python3.13/lib-dynload/<abi>/  ← arch-specific .so
+    # Mirrors iOS's <App>.app/otp/python/ layout — Python's own bootstrap
+    # walks `<home>/lib/pythonX.Y` to find encodings/ etc. before sys.path
+    # is even initialized.
+    assets_root = "android/app/src/main/assets/python"
+    File.mkdir_p!(assets_root)
+
+    stdlib_src = MobDev.PythonAndroidSupport.stdlib_dir(bundle_dir)
+    stdlib_dst = Path.join([assets_root, "lib", "python3.13"])
+
+    if File.dir?(stdlib_src) and not File.dir?(stdlib_dst) do
+      File.mkdir_p!(stdlib_dst)
+      System.cmd("cp", ["-R", stdlib_src <> "/.", stdlib_dst])
+    end
+
+    Enum.each(@android_python_abis, fn abi ->
+      ld_src = MobDev.PythonAndroidSupport.lib_dynload_dir(bundle_dir, abi)
+      # lib-dynload nests under stdlib for Python's own discovery, but
+      # we keep per-abi subdirs since we ship multiple architectures.
+      ld_dst = Path.join([assets_root, "lib", "python3.13", "lib-dynload", abi])
+
+      if File.dir?(ld_src) and not File.dir?(ld_dst) do
+        File.mkdir_p!(ld_dst)
+        System.cmd("cp", ["-R", ld_src <> "/.", ld_dst])
+      end
+    end)
+
+    copy_project_python_wheels(assets_root)
+
+    :ok
+  end
+
+  # Drops project-supplied Python packages from `priv/python_wheels/`
+  # into the APK's `assets/python/.../site-packages/`.
+  #
+  # Each subdirectory of `priv/python_wheels/` is treated as an
+  # already-extracted wheel — copy the directory contents directly into
+  # site-packages. Wheel-extraction is the project's job (the wheel
+  # format is package-specific and per-platform), but landing the
+  # extracted layout into the APK is a generic step worth owning here
+  # so every Mob+Pythonx project doesn't reimplement asset placement.
+  #
+  # Layout convention: `priv/python_wheels/<wheel-name>/` contains the
+  # wheel's unzipped contents. A typical `cryptography-X.Y/` directory
+  # holds `cryptography/`, `cryptography-X.Y.dist-info/`, and any
+  # `*.cpython-313-android_*.so` files. Everything inside gets copied
+  # verbatim — site-packages discovery handles the rest.
+  defp copy_project_python_wheels(assets_root) do
+    wheels_dir = Path.join("priv", "python_wheels")
+
+    if File.dir?(wheels_dir) do
+      site_packages = Path.join([assets_root, "lib", "python3.13", "site-packages"])
+      File.mkdir_p!(site_packages)
+
+      wheels_dir
+      |> File.ls!()
+      |> Enum.each(fn entry ->
+        src = Path.join(wheels_dir, entry)
+
+        if File.dir?(src) do
+          System.cmd("cp", ["-R", src <> "/.", site_packages])
+        end
+      end)
+    end
+
+    :ok
   end
 
   # Copies ERTS helper executables into jniLibs as lib*.so so Android grants
@@ -529,14 +1059,16 @@ defmodule MobDev.NativeBuild do
   defp build_ios(cfg) do
     with :ok <- check_path(cfg[:mob_dir], "mob_dir"),
          :ok <- check_path(cfg[:elixir_lib], "elixir_lib"),
-         {:ok, otp_root} <- MobDev.OtpDownloader.ensure_ios_sim() do
+         {:ok, otp_root} <- MobDev.OtpDownloader.ensure_ios_sim(),
+         {:ok, python_bundle} <- maybe_ensure_python_bundle() do
       IO.puts("  Building iOS simulator app...")
 
-      env = [
-        {"MOB_DIR", Path.expand(cfg[:mob_dir])},
-        {"MOB_ELIXIR_LIB", Path.expand(cfg[:elixir_lib])},
-        {"MOB_IOS_OTP_ROOT", otp_root}
-      ]
+      env =
+        [
+          {"MOB_DIR", Path.expand(cfg[:mob_dir])},
+          {"MOB_ELIXIR_LIB", Path.expand(cfg[:elixir_lib])},
+          {"MOB_IOS_OTP_ROOT", otp_root}
+        ] ++ python_apple_support_env(pythonx_in_project?(), python_bundle)
 
       case System.cmd("bash", ["ios/build.sh"],
              env: env,
@@ -568,13 +1100,14 @@ defmodule MobDev.NativeBuild do
     IO.puts("  Building iOS app for physical device #{udid}...")
 
     with {:ok, cfg} <- check_device_signing_config(cfg),
-         {:ok, otp_root} <- MobDev.OtpDownloader.ensure_ios_device() do
+         {:ok, otp_root} <- MobDev.OtpDownloader.ensure_ios_device(),
+         {:ok, python_bundle} <- maybe_ensure_python_bundle() do
       script = generate_build_device_sh(cfg, otp_root)
       script_path = "ios/build_device.sh"
       File.write!(script_path, script)
       File.chmod!(script_path, 0o755)
 
-      env = build_device_env(cfg, otp_root)
+      env = build_device_env(cfg, otp_root, python_bundle)
 
       case System.cmd("bash", [script_path, udid],
              env: env,
@@ -793,7 +1326,7 @@ defmodule MobDev.NativeBuild do
     end
   end
 
-  defp build_device_env(cfg, otp_root) do
+  defp build_device_env(cfg, otp_root, python_bundle) do
     app_atom = Mix.Project.config()[:app]
     app_name = app_atom |> to_string() |> Macro.camelize()
     app_module = to_string(app_atom)
@@ -809,7 +1342,7 @@ defmodule MobDev.NativeBuild do
     # this default in its own env via MobDev.Release.
     slim_flag = if Process.get(:mob_slim, false), do: "1", else: "0"
 
-    [
+    base = [
       {"MOB_DIR", Path.expand(cfg[:mob_dir])},
       {"MOB_ELIXIR_LIB", Path.expand(elixir_lib)},
       {"MOB_IOS_DEVICE_OTP_ROOT", otp_root},
@@ -822,15 +1355,73 @@ defmodule MobDev.NativeBuild do
       {"MOB_APP_MODULE", app_module},
       {"MOB_SLIM", slim_flag}
     ]
+
+    base ++ python_apple_support_env(pythonx_in_project?(), python_bundle)
   end
 
-  defp generate_build_device_sh(_cfg, _otp_root) do
+  @doc """
+  Returns true when the user's project has a built `:pythonx` dependency.
+  Public for testing — callers see it via `build_device_env`.
+
+  Detection is via `_build/dev/lib/pythonx/` rather than scanning `mix.exs`
+  so users get the same behavior whether they `mix mob.enable python` and
+  rely on the dep being added, or vendor pythonx some other way.
+  """
+  @spec pythonx_in_project?(String.t()) :: boolean()
+  def pythonx_in_project?(project_dir \\ File.cwd!()) do
+    File.dir?(Path.join([project_dir, "_build", "dev", "lib", "pythonx"]))
+  end
+
+  @doc """
+  Builds the env list passed to `build_device.sh` when Pythonx is in the
+  project. Returns `[]` when the project doesn't depend on Pythonx — the
+  generated script's `if [ -d "_build/dev/lib/pythonx" ]` gate makes the
+  unset env var harmless in that case.
+
+  Public for testing.
+  """
+  @spec python_apple_support_env(boolean(), String.t() | nil) :: [{String.t(), String.t()}]
+  def python_apple_support_env(false, _bundle), do: []
+  def python_apple_support_env(true, nil), do: []
+
+  def python_apple_support_env(true, bundle) when is_binary(bundle),
+    do: [{"PYTHON_APPLE_SUPPORT", bundle}]
+
+  # Downloads the BeeWare Python-Apple-support bundle iff Pythonx is a dep.
+  # Skipped silently for projects without Pythonx — the generated build
+  # script's gate handles the absent-bundle case.
+  defp maybe_ensure_python_bundle do
+    if pythonx_in_project?() do
+      MobDev.PythonAppleSupport.ensure()
+    else
+      {:ok, nil}
+    end
+  end
+
+  @doc """
+  Returns the bash script that `mix mob.deploy --native --device` writes
+  to `ios/build_device.sh` and runs.
+
+  Public to enable shape-tests (per AGENTS.md convention) — the Pythonx,
+  exqlite, and signing blocks all matter and shouldn't regress silently.
+  Don't call this from production code; the build flow always pairs it
+  with `build_device_env/3`.
+  """
+  @spec generate_build_device_sh(keyword(), String.t()) :: String.t()
+  def generate_build_device_sh(_cfg, _otp_root) do
     ~S"""
     #!/bin/bash
     # ios/build_device.sh — Physical iOS device build (generated by mix mob.deploy --native).
     # All config comes from environment variables set by NativeBuild. Do not hardcode values here.
     set -e
     cd "$(dirname "$0")/.."
+
+    # Tell `mix compile` we're building for iOS so any `unless
+    # System.get_env("MOB_TARGET") == "ios" do …` compile-time gates in the
+    # user's config.exs short-circuit. The python feature uses this gate to
+    # skip Pythonx's desktop `:uv_init` (which can't run on device — no uv,
+    # no internet at compile time). Harmless for non-Python apps.
+    export MOB_TARGET=ios
 
     # ── Config from mob.exs (set by mix mob.deploy --native) ─────────────────────
     MOB_DIR="${MOB_DIR:?MOB_DIR not set}"
@@ -931,6 +1522,81 @@ defmodule MobDev.NativeBuild do
         rm -rf "$BUILD_DIR_TMP"
     else
         echo "=== exqlite not in project — skipping static NIF build ==="
+    fi
+
+    # ── Pythonx + bundled CPython (BeeWare Python-Apple-support) ────────────────
+    # Mirrors the exqlite block above. When `_build/dev/lib/pythonx` is present
+    # the project depends on Pythonx; we install the OTP lib, cross-compile the
+    # NIF as `libpythonx.so`, and bundle the matching Python.framework + stdlib
+    # + arch-specific lib-dynload into `<otp_root>/python/`. Per-dylib codesign
+    # happens later, before the final `.app` sign.
+    if [ -d "_build/dev/lib/pythonx" ]; then
+        echo "=== Installing pythonx as OTP library ==="
+        PYTHONX_VSN=$(grep '"pythonx"' mix.lock \
+            | grep -o '"[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"' | head -1 | tr -d '"')
+        [ -z "$PYTHONX_VSN" ] && PYTHONX_VSN=$(grep -o '{vsn,"[^"]*"}' \
+            _build/dev/lib/pythonx/ebin/pythonx.app | grep -o '"[^"]*"' | tr -d '"')
+        PYTHONX_LIB_DIR="$OTP_ROOT/lib/pythonx-${PYTHONX_VSN}"
+        rm -rf "$OTP_ROOT/lib/pythonx-"*
+        mkdir -p "$PYTHONX_LIB_DIR/ebin" "$PYTHONX_LIB_DIR/priv"
+        cp _build/dev/lib/pythonx/ebin/*.beam "$PYTHONX_LIB_DIR/ebin/"
+        cp _build/dev/lib/pythonx/ebin/pythonx.app "$PYTHONX_LIB_DIR/ebin/"
+        cp _build/dev/lib/pythonx/ebin/* "$BEAMS_DIR/"
+        # `fine` is Pythonx's NIF-helper companion; pythonx.cpp #includes it.
+        [ -d "_build/dev/lib/fine" ] && cp _build/dev/lib/fine/ebin/* "$BEAMS_DIR/"
+
+        : "${PYTHON_APPLE_SUPPORT:?pythonx in deps but PYTHON_APPLE_SUPPORT not set — re-run mix mob.deploy --native (which downloads the BeeWare bundle) instead of running this script directly}"
+        PYTHON_FRAMEWORK="$PYTHON_APPLE_SUPPORT/Python.xcframework/ios-arm64/Python.framework"
+        PYTHON_STDLIB="$PYTHON_APPLE_SUPPORT/Python.xcframework/lib/python3.13"
+        PYTHON_LIB_DYNLOAD="$PYTHON_APPLE_SUPPORT/Python.xcframework/ios-arm64/lib-arm64/python3.13/lib-dynload"
+
+        [ ! -d "$PYTHON_FRAMEWORK" ] && \
+            echo "ERROR: Python.framework missing at $PYTHON_FRAMEWORK" && exit 1
+        [ ! -d "$PYTHON_STDLIB" ] && \
+            echo "ERROR: Python stdlib missing at $PYTHON_STDLIB" && exit 1
+        [ ! -d "$PYTHON_LIB_DYNLOAD" ] && \
+            echo "ERROR: lib-dynload missing at $PYTHON_LIB_DYNLOAD" && exit 1
+
+        echo "=== Cross-compiling libpythonx.so for iOS device (iphoneos arm64) ==="
+        # Pythonx's design: -undefined dynamic_lookup so ERL_NIF_* + libpython
+        # symbols resolve at runtime against the loaded BEAM and Python framework.
+        # @rpath/libpythonx.so install_name lets the loader locate it relative
+        # to the bundled OTP runtime in <App>.app/otp/lib/pythonx-VSN/priv/.
+        PYTHONX_SRC="deps/pythonx/c_src"
+        FINE_INC="deps/fine/c_include"
+        xcrun -sdk iphoneos clang++ \
+            -arch arm64 \
+            -dynamiclib \
+            -undefined dynamic_lookup \
+            -fPIC -fvisibility=hidden -std=c++17 \
+            -isysroot "$SDKROOT" \
+            -miphoneos-version-min=17.0 \
+            -install_name "@rpath/libpythonx.so" \
+            -Os -ffunction-sections -fdata-sections \
+            -I "$OTP_ROOT/$ERTS_VSN/include" \
+            -I "$OTP_ROOT/$ERTS_VSN/include/internal" \
+            -I "$FINE_INC" \
+            -Wno-unused-parameter -Wno-comment \
+            "$PYTHONX_SRC/pythonx.cpp" \
+            "$PYTHONX_SRC/python.cpp" \
+            -o "$PYTHONX_LIB_DIR/priv/libpythonx.so" \
+            || { echo "ERROR: pythonx NIF cross-compile failed"; exit 1; }
+
+        echo "=== Bundling Python.framework + stdlib + lib-dynload (device arch) ==="
+        # PYTHONHOME contract: Python expects <home>/lib/python3.13/... at
+        # runtime. lib-dynload sits inside the stdlib dir; the .so files there
+        # are arch-specific (iphoneos arm64).
+        mkdir -p "$OTP_ROOT/python/lib"
+        chmod -R u+w "$OTP_ROOT/python" 2>/dev/null || true
+        rm -rf "$OTP_ROOT/python/Python.framework" "$OTP_ROOT/python/lib/python3.13"
+        cp -R "$PYTHON_FRAMEWORK"   "$OTP_ROOT/python/Python.framework"
+        cp -R "$PYTHON_STDLIB"      "$OTP_ROOT/python/lib/python3.13"
+        cp -R "$PYTHON_LIB_DYNLOAD" "$OTP_ROOT/python/lib/python3.13/lib-dynload"
+        echo "  framework:    $(ls -la "$OTP_ROOT/python/Python.framework/Python" | awk '{print $5, "bytes"}')"
+        echo "  stdlib:       $(du -sh "$OTP_ROOT/python/lib/python3.13" | awk '{print $1}')"
+        echo "  lib-dynload:  $(ls "$OTP_ROOT/python/lib/python3.13/lib-dynload" | wc -l) extensions"
+    else
+        echo "=== pythonx not in project — skipping CPython bundle ==="
     fi
 
     echo "=== Creating crypto shim ==="
@@ -1219,14 +1885,51 @@ defmodule MobDev.NativeBuild do
     $CC -fobjc-arc -fmodules $IFLAGS \
         -c ios/beam_main.m -o "$BUILD_DIR/beam_main.o"
 
-    # ── Stub for erl_errno_id_unknown (missing from libbeam.a in OTP 17.0) ───────
-    # The function was split into a separate compilation unit in OTP 17.0 but the
-    # pre-built tarball omits it. A weak definition here satisfies the linker and
-    # loses to the real symbol if a future tarball includes it again.
+    # ── Stub for erl_errno_id_unknown ────────────────────────────────────────────
+    # Missing from libbeam.a in OTP 17.0 (function was split into a separate
+    # compilation unit but the pre-built tarball omits it). A weak definition
+    # satisfies the linker and loses to the real symbol if a future tarball
+    # includes it again.
     cat > "$BUILD_DIR/erl_errno_id_compat.c" << 'COMPATEOF'
-    __attribute__((weak)) const char *erl_errno_id_unknown(int error) { return "unknown"; }
+    __attribute__((weak)) const char *erl_errno_id_unknown(int error) {
+        (void)error;
+        return "unknown";
+    }
     COMPATEOF
     $CC -c "$BUILD_DIR/erl_errno_id_compat.c" -o "$BUILD_DIR/erl_errno_id_compat.o"
+
+    # ── enif_* keep-alive: prevent -dead_strip from removing enif_* symbols ──────
+    # `dead_strip` on the final link drops every enif_* symbol that nothing
+    # in the main binary references. Dynamic NIFs loaded via dlopen at
+    # runtime (libpythonx.so via Pythonx, etc.) reference enif_* via the
+    # flat namespace — the linker doesn't see those references at link time,
+    # so dead_strip silently removes them. Result: dlopen fails at runtime
+    # with "symbol not found in flat namespace '_enif_is_pid'".
+    #
+    # `__attribute__((used))` only protects the listed symbol, NOT siblings
+    # in the same .o file — so referencing one enif_* doesn't transitively
+    # keep the others. We need a `used` attribute on each.
+    #
+    # Generate one void * reference per `T _enif_*` symbol exported by
+    # erl_nif.o inside libbeam.a. Re-runs idempotently because nm/awk
+    # always produces the same list.
+    echo "=== Generating enif_* keep-alive table ==="
+    NIF_O_TMP=$(mktemp -d)
+    $(xcrun -find ar) x "$OTP_ROOT/$ERTS_VSN/lib/libbeam.a" --output="$NIF_O_TMP" erl_nif.o 2>/dev/null \
+        || $(xcrun -find ar) x "$OTP_ROOT/$ERTS_VSN/lib/libbeam.a" erl_nif.o
+    [ ! -f erl_nif.o ] || mv erl_nif.o "$NIF_O_TMP/erl_nif.o"
+
+    {
+        echo "/* Auto-generated by mob_dev/native_build.ex — references every enif_*"
+        echo " * symbol in erl_nif.o so -dead_strip keeps them in the main binary."
+        echo " */"
+        xcrun nm -arch arm64 "$NIF_O_TMP/erl_nif.o" 2>/dev/null \
+            | awk '/ T _enif_/ { sym = substr($3, 2); printf "extern void %s(void); __attribute__((used)) static void *_keep_%s = (void *)&%s;\n", sym, sym, sym }'
+    } > "$BUILD_DIR/enif_keepalive.c"
+    rm -rf "$NIF_O_TMP"
+    KEEP_COUNT=$(grep -c '^extern void enif_' "$BUILD_DIR/enif_keepalive.c" || true)
+    echo "  $KEEP_COUNT enif_* symbols pinned"
+    $CC -c "$BUILD_DIR/enif_keepalive.c" -o "$BUILD_DIR/enif_keepalive.o"
 
     # ── Link ─────────────────────────────────────────────────────────────────────
     echo "=== Linking $APP_NAME binary ==="
@@ -1243,6 +1946,7 @@ defmodule MobDev.NativeBuild do
         "$BUILD_DIR/AppDelegate.o" \
         "$BUILD_DIR/beam_main.o" \
         "$BUILD_DIR/erl_errno_id_compat.o" \
+        "$BUILD_DIR/enif_keepalive.o" \
         $LIBS \
         "$SQLITE_STATIC_LIB" \
         -lz -lc++ -lpthread \
@@ -1284,6 +1988,10 @@ defmodule MobDev.NativeBuild do
     rsync -a --delete "$OTP_ROOT/lib/"      "$OTP_BUNDLE/lib/"
     rsync -a --delete "$OTP_ROOT/releases/" "$OTP_BUNDLE/releases/"
     rsync -a --delete "$OTP_ROOT/$APP_MODULE/" "$OTP_BUNDLE/$APP_MODULE/"
+    # Pythonx CPython bundle, copied alongside the OTP runtime so
+    # PythonxIosSpike.PythonPaths.detect/1 (or equivalent) finds it
+    # at <App>.app/otp/python/ via :code.root_dir/0.
+    [ -d "$OTP_ROOT/python" ] && rsync -a --delete "$OTP_ROOT/python/" "$OTP_BUNDLE/python/"
     for f in "$OTP_ROOT"/*.png "$OTP_ROOT"/*.jpg; do
         [ -f "$f" ] && cp "$f" "$OTP_BUNDLE/"
     done
@@ -1403,6 +2111,25 @@ defmodule MobDev.NativeBuild do
             printf '</dict>\n</plist>\n'
         } > "$ENTITLEMENTS_FILE"
     fi
+    # ── Codesign bundled Python dylibs (bottom-up: .so → framework → app) ──
+    # Apple's signing model is bottom-up: each Mach-O image inside the bundle
+    # must be signed with the same identity as the app, otherwise the iOS
+    # loader refuses to dlopen it on device. Skip when no Python bundle.
+    if [ -d "$OTP_BUNDLE/python" ]; then
+        echo "=== Codesigning bundled Python dylibs ==="
+        find "$OTP_BUNDLE/python/lib/python3.13/lib-dynload" -name "*.so" -print0 \
+            | xargs -0 -I {} codesign --force --sign "$SIGN_IDENTITY" --timestamp=none {}
+        echo "  signed $(find "$OTP_BUNDLE/python/lib/python3.13/lib-dynload" -name '*.so' | wc -l | tr -d ' ') lib-dynload extensions"
+
+        codesign --force --sign "$SIGN_IDENTITY" --timestamp=none \
+            "$OTP_BUNDLE/python/Python.framework/Python"
+        echo "  signed Python.framework/Python"
+
+        find "$OTP_BUNDLE/lib" -name 'libpythonx.so' -print0 \
+            | xargs -0 -I {} codesign --force --sign "$SIGN_IDENTITY" --timestamp=none {}
+        echo "  signed libpythonx.so"
+    fi
+
     codesign --force --sign "$SIGN_IDENTITY" \
         --entitlements "$ENTITLEMENTS_FILE" \
         --timestamp=none \

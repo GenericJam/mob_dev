@@ -77,11 +77,61 @@ defmodule Mix.Tasks.Mob.Enable do
 
   ### `notifications`
 
-  - iOS: runtime only — no plist key needed
-  - Android: adds `POST_NOTIFICATIONS` permission (API 33+)
+  - iOS: creates `ios/<app>.entitlements` with `aps-environment: development`.
+    After running, execute `mix mob.provision` so Xcode downloads a push-capable
+    provisioning profile. Then call `Mob.Permissions.request(socket, :notifications)`
+    and `Mob.Notify.register_push(socket)` at runtime to obtain a device token.
+  - Android: runtime only — `POST_NOTIFICATIONS` is requested at runtime, no
+    manifest key needed.
+
+  ### `python`
+
+  Enables embedded CPython via [Pythonx](https://hex.pm/packages/pythonx)
+  on iOS **and** Android.
+
+  - **iOS:** BeeWare's [`Python-Apple-support`](https://github.com/beeware/Python-Apple-support)
+    `Python.xcframework` is bundled by `mix mob.deploy --native`.
+  - **Android:** [Chaquopy](https://chaquo.com/chaquopy/)'s prebuilt CPython
+    is unpacked at first launch. `libpythonx.so` (the Pythonx NIF) is
+    cross-compiled with the Android NDK against a stub `libpython3.13.so`
+    so the BEAM dynamic loader is satisfied; the real lib resolves at
+    runtime via SONAME match.
+  - **Bare CPython only.** Bundles ship the interpreter, stdlib, and
+    standard C extensions (`_ssl`, `_ctypes`, `_hashlib`, …). Third-party
+    wheels (`cryptography`, `numpy`, `RNS`, …) are out of scope —
+    produce your own (BeeWare's [`mobile-forge`](https://github.com/beeware/mobile-forge)
+    on iOS, Chaquopy's wheel pipeline on Android) and drop them into
+    your project.
+
+  What it does:
+
+    - Adds `{:pythonx, "~> 0.4"}` to `mix.exs` deps.
+    - Generates `lib/<app>/python_paths.ex` — pure detection module that
+      locates the bundled framework at runtime (`:desktop` /
+      `{:ios, paths}` / `{:android, paths}` / `{:partial, missing}`).
+    - **No `:uv_init` config patch.** Pythonx ships an Application
+      that auto-runs uv at boot if `:uv_init` is in compile-time config,
+      and uv doesn't exist on device. Instead the on_start template
+      inlines `pyproject_toml` and calls `Pythonx.Uv.fetch/2 +
+      Pythonx.Uv.init/2` only on the `:desktop` branch. Same code path
+      `iex -S mix` would use, just opt-in.
+
+  Bundle size impact: ~70 MB on iOS, ~30 MB on Android (interpreter +
+  stdlib + arch-specific C extensions). Apply this only when you actually
+  want to call Python from BEAM — non-Python apps stay vanilla.
+
+  After running, your `Mob.App.on_start/0` should:
+
+    - call `Application.ensure_all_started(:pythonx)` (starts the
+      `Pythonx.Janitor`, required for `Pythonx.eval/3`);
+    - case-match `<App>.PythonPaths.detect/1` and call `Pythonx.Uv.fetch
+      + init` on `:desktop` (provisioning a uv-managed CPython on first
+      run) or `Pythonx.init/4` on `{:ios, _}` / `{:android, _}`.
+
+  See `guides/python_embedding.md` for the full template.
   """
 
-  @valid_features ~w(liveview camera photo_library file_sharing location notifications)
+  @valid_features ~w(liveview camera photo_library file_sharing location notifications python)
 
   @impl Mix.Task
   def run([]) do
@@ -159,16 +209,61 @@ defmodule Mix.Tasks.Mob.Enable do
     android_add_permission(project_dir, "android.permission.ACCESS_FINE_LOCATION")
   end
 
-  defp enable("notifications", _project_dir, _app_name) do
+  defp enable("notifications", project_dir, app_name) do
     android_noop(
       "notifications",
       "POST_NOTIFICATIONS is requested at runtime, no manifest key needed"
     )
 
-    ios_noop(
-      "notifications",
-      "iOS notification permission is requested at runtime, no plist key needed"
-    )
+    ios_create_push_entitlements(project_dir, app_name)
+  end
+
+  defp enable("python", project_dir, app_name) do
+    pythonx_inject_dep(project_dir)
+    pythonx_generate_paths_module(project_dir, app_name)
+    pythonx_check_native_templates(project_dir, app_name)
+
+    module = Macro.camelize(app_name)
+
+    Mix.shell().info("""
+
+      Next steps:
+        1. Run `mix deps.get` to fetch :pythonx
+        2. In your `Mob.App.on_start/0`, call:
+
+             {:ok, _} = Application.ensure_all_started(:pythonx)
+
+             case #{module}.PythonPaths.detect(to_string(:code.root_dir())) do
+               :desktop ->
+                 toml = \"\"\"
+                 [project]
+                 name = "#{app_name}"
+                 version = "0.1.0"
+                 requires-python = "==3.13.*"
+                 dependencies = []
+                 \"\"\"
+                 Pythonx.Uv.fetch(toml, false)
+                 Pythonx.Uv.init(toml, false)
+
+               {:ios, %{dl_path: dl, home_path: home}} ->
+                 Pythonx.init(dl, home, dl, sys_paths: [])
+
+               {:android, %{dl_path: dl, home_path: home}} ->
+                 Pythonx.init(dl, home, dl,
+                   sys_paths: [Path.join([home, "lib", "python3.13"])])
+
+               {:partial, missing} ->
+                 # log + bail out — bundle is incomplete
+                 nil
+             end
+
+           pyproject_toml is inlined so it's NOT in compile-time config —
+           Pythonx.Application would otherwise auto-run uv at app boot,
+           which fails on device.
+        3. `mix mob.deploy --native --device <udid>` to bundle CPython +
+           install on device. iOS downloads the BeeWare framework on first
+           run; Android pulls Chaquopy's prebuilt distribution.
+    """)
   end
 
   # ── LiveView: generate MobScreen ─────────────────────────────────────────
@@ -323,8 +418,34 @@ defmodule Mix.Tasks.Mob.Enable do
     end)
   end
 
-  defp ios_noop(feature, reason) do
-    Mix.shell().info("  * iOS #{feature}: #{reason}")
+  defp ios_create_push_entitlements(project_dir, app_name) do
+    ios_dir = Path.join(project_dir, "ios")
+    path = Path.join(ios_dir, "#{app_name}.entitlements")
+
+    if File.exists?(path) do
+      Mix.shell().info("  * skip #{path} (already exists)")
+    else
+      File.mkdir_p!(ios_dir)
+      File.write!(path, push_entitlements_plist())
+      Mix.shell().info([:green, "  * create ", :reset, path])
+
+      Mix.shell().info(
+        "    Run `mix mob.provision` to download a push-capable provisioning profile."
+      )
+    end
+  end
+
+  defp push_entitlements_plist do
+    """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+    <plist version="1.0">
+    <dict>
+        <key>aps-environment</key>
+        <string>development</string>
+    </dict>
+    </plist>
+    """
   end
 
   # ── Android manifest helpers ──────────────────────────────────────────────
@@ -455,6 +576,77 @@ defmodule Mix.Tasks.Mob.Enable do
 
   defp android_noop(feature, reason) do
     Mix.shell().info("  * Android #{feature}: #{reason}")
+  end
+
+  # ── Python feature: helpers ───────────────────────────────────────────────
+
+  defp pythonx_inject_dep(project_dir) do
+    path = Path.join(project_dir, "mix.exs")
+    content = File.read!(path)
+    patched = MobDev.Enable.inject_pythonx_dep(content)
+
+    cond do
+      patched == content and String.contains?(content, ":pythonx") ->
+        Mix.shell().info("  * skip mix.exs (:pythonx already in deps)")
+
+      patched == content ->
+        Mix.shell().info(
+          "  * skip mix.exs (no recognizable `defp deps do [` block — add {:pythonx, \"~> 0.4\"} manually)"
+        )
+
+      true ->
+        File.write!(path, patched)
+        Mix.shell().info([:green, "  * patch ", :reset, path, " (added :pythonx dep)"])
+    end
+  end
+
+  defp pythonx_generate_paths_module(project_dir, app_name) do
+    module_name = Macro.camelize(app_name)
+    dir = Path.join([project_dir, "lib", app_name])
+    path = Path.join(dir, "python_paths.ex")
+
+    if File.exists?(path) do
+      Mix.shell().info("  * skip #{path} (already exists)")
+    else
+      File.mkdir_p!(dir)
+      File.write!(path, MobDev.Enable.python_paths_module_template(module_name))
+      Mix.shell().info([:green, "  * create ", :reset, path])
+    end
+  end
+
+  # Existing projects generated before the Pythonx work was upstreamed
+  # don't have the build-time hooks the deploy expects. We can't safely
+  # auto-patch existing build.sh / CMakeLists / MainActivity (they're
+  # often hand-customized), so detect and surface a clear next step.
+  defp pythonx_check_native_templates(project_dir, app_name) do
+    findings = MobDev.Enable.detect_stale_pythonx_templates(project_dir, app_name)
+
+    case findings do
+      [] ->
+        Mix.shell().info("  * native templates look up to date")
+
+      stale ->
+        Mix.shell().info([
+          :yellow,
+          "\n  ! Native build templates are stale — Pythonx requires extra ",
+          "build steps that aren't present in your project:",
+          :reset
+        ])
+
+        Enum.each(stale, fn {file, marker} ->
+          Mix.shell().info("      - #{file} (missing: #{marker})")
+        end)
+
+        Mix.shell().info("""
+
+        Either generate a fresh project with `mix mob.new` and copy your
+        app code over, or copy the missing blocks from
+        ~/.mix/archives/mob_new-*/priv/templates/mob.new/. The reference
+        markers in each file (e.g. `=== Cross-compiling libpythonx.so`,
+        `extractPythonAssetsIfNeeded`, `enif_keepalive.c`) bracket the
+        regions that need to be added.
+        """)
+    end
   end
 
   # ── Helpers ───────────────────────────────────────────────────────────────

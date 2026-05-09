@@ -317,6 +317,148 @@ defmodule MobDev.EnableTest do
     end
   end
 
+  # ── inject_pythonx_dep/1 ──────────────────────────────────────────────────
+
+  describe "inject_pythonx_dep/1" do
+    test "adds {:pythonx, ...} to deps when missing" do
+      mix_exs = """
+      defp deps do
+        [
+          {:mob, "~> 0.5"}
+        ]
+      end
+      """
+
+      result = Enable.inject_pythonx_dep(mix_exs)
+      assert result =~ ":pythonx"
+      assert result =~ ~r/{:pythonx,\s*"~>/
+      # Original entry preserved
+      assert result =~ ":mob"
+    end
+
+    test "is idempotent — leaves content unchanged when :pythonx already present" do
+      mix_exs = """
+      defp deps do
+        [
+          {:mob, "~> 0.5"},
+          {:pythonx, "~> 0.4"}
+        ]
+      end
+      """
+
+      assert Enable.inject_pythonx_dep(mix_exs) == mix_exs
+    end
+
+    test "returns content unchanged when no defp deps block found" do
+      assert Enable.inject_pythonx_dep("# no deps here") == "# no deps here"
+    end
+  end
+
+  # ── default_pyproject_toml/1 ──────────────────────────────────────────────
+
+  describe "default_pyproject_toml/1" do
+    test "returns a TOML string with the app name as project name" do
+      result = Enable.default_pyproject_toml("my_app")
+      assert result =~ "[project]"
+      assert result =~ ~s|name = "my_app"|
+      assert result =~ ~s|requires-python = "==3.13.*"|
+      assert result =~ "dependencies = []"
+    end
+  end
+
+  # ── detect_stale_pythonx_templates/2 ──────────────────────────────────────
+
+  describe "detect_stale_pythonx_templates/2" do
+    setup do
+      dir =
+        Path.join(
+          System.tmp_dir!(),
+          "mob_enable_stale_test_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+      {:ok, dir: dir}
+    end
+
+    test "returns [] when no native files exist (nothing to be stale)", %{dir: dir} do
+      assert Enable.detect_stale_pythonx_templates(dir, "my_app") == []
+    end
+
+    test "flags an existing build.sh that lacks the libpythonx marker", %{dir: dir} do
+      File.mkdir_p!(Path.join(dir, "ios"))
+      File.write!(Path.join(dir, "ios/build.sh"), "#!/bin/sh\nxcodebuild ...\n")
+
+      stale = Enable.detect_stale_pythonx_templates(dir, "my_app")
+      assert {"ios/build.sh", "Cross-compiling libpythonx.so"} in stale
+    end
+
+    test "doesn't flag a build.sh that already has the marker", %{dir: dir} do
+      File.mkdir_p!(Path.join(dir, "ios"))
+
+      File.write!(
+        Path.join(dir, "ios/build.sh"),
+        "#!/bin/sh\necho '=== Cross-compiling libpythonx.so ==='\n"
+      )
+
+      stale = Enable.detect_stale_pythonx_templates(dir, "my_app")
+      refute Enum.any?(stale, fn {rel, _} -> rel == "ios/build.sh" end)
+    end
+
+    test "flags MainActivity.kt regardless of java package", %{dir: dir} do
+      pkg_dir = Path.join(dir, "android/app/src/main/java/com/something/odd/my_app")
+      File.mkdir_p!(pkg_dir)
+      File.write!(Path.join(pkg_dir, "MainActivity.kt"), "package com.something.odd.my_app\n")
+
+      stale = Enable.detect_stale_pythonx_templates(dir, "my_app")
+
+      assert Enum.any?(stale, fn {rel, marker} ->
+               String.ends_with?(rel, "MainActivity.kt") and
+                 marker == "extractPythonAssetsIfNeeded"
+             end)
+    end
+
+    test "flags CMakeLists.txt missing the enif_keepalive include", %{dir: dir} do
+      cmake_dir = Path.join(dir, "android/app/src/main/jni")
+      File.mkdir_p!(cmake_dir)
+      File.write!(Path.join(cmake_dir, "CMakeLists.txt"), "add_library(myapp SHARED foo.c)\n")
+
+      stale = Enable.detect_stale_pythonx_templates(dir, "my_app")
+
+      assert {Path.join(["android", "app", "src", "main", "jni", "CMakeLists.txt"]),
+              "enif_keepalive.c"} in stale
+    end
+  end
+
+  # ── python_paths_module_template/1 ────────────────────────────────────────
+
+  describe "python_paths_module_template/1" do
+    test "interpolates module name into the defmodule line" do
+      result = Enable.python_paths_module_template("MyApp")
+      assert result =~ "defmodule MyApp.PythonPaths do"
+    end
+
+    test "exposes detect/1, build_ios_paths/1, build_android_paths/0, missing/1" do
+      result = Enable.python_paths_module_template("MyApp")
+      assert result =~ "def detect("
+      assert result =~ "def build_ios_paths("
+      assert result =~ "def build_android_paths"
+      assert result =~ "def missing("
+    end
+
+    test "supports Android via MOB_PYTHON_HOME / MOB_PYTHON_DL env vars" do
+      result = Enable.python_paths_module_template("MyApp")
+      assert result =~ "MOB_PYTHON_HOME"
+      assert result =~ "MOB_PYTHON_DL"
+      assert result =~ "{:android, paths}"
+    end
+
+    test "uses python3.13 in stdlib path" do
+      result = Enable.python_paths_module_template("MyApp")
+      assert result =~ ~s|"python3.13"|
+    end
+  end
+
   # ── helpers ───────────────────────────────────────────────────────────────
 
   defp write_tmp_mix_exs(content) do
