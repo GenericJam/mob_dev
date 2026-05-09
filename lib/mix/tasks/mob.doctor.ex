@@ -87,6 +87,7 @@ defmodule Mix.Tasks.Mob.Doctor do
       check_epmd(),
       check_adb(),
       check_xcrun(),
+      check_zig(),
       if(has_android_project?(), do: check_android_build_tools(), else: []),
       if(has_ios_project?() and macos?(), do: check_ios_build_tools(), else: []),
       check_optional(
@@ -222,6 +223,25 @@ defmodule Mix.Tasks.Mob.Doctor do
 
       path ->
         {:ok, "adb", path, nil}
+    end
+  end
+
+  defp check_zig do
+    case System.find_executable("zig") do
+      nil ->
+        {:warn, "zig",
+         "not on PATH — required as the C cross-compile driver from Phase 1 of the build-system migration",
+         "Install zig 0.15.x:\n      macOS:          brew install zig\n      Linux/asdf:     asdf plugin add zig && asdf install zig 0.15.2\n      manual:         https://ziglang.org/download/"}
+
+      _ ->
+        case System.cmd("zig", ["version"], stderr_to_stdout: true) do
+          {out, 0} ->
+            version = String.trim(out)
+            {:ok, "zig", version, nil}
+
+          _ ->
+            {:warn, "zig", "found but `zig version` failed", nil}
+        end
     end
   end
 
