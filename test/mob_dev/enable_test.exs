@@ -357,7 +357,7 @@ defmodule MobDev.EnableTest do
   # ── inject_pythonx_uv_init_gate/2 ─────────────────────────────────────────
 
   describe "inject_pythonx_uv_init_gate/2" do
-    test "appends gated pythonx config when no existing pythonx config" do
+    test "appends ungated pythonx config when no existing pythonx config" do
       content = """
       import Config
 
@@ -365,26 +365,17 @@ defmodule MobDev.EnableTest do
       """
 
       result = Enable.inject_pythonx_uv_init_gate(content, "my_app")
-      assert result =~ "MOB_TARGET"
       assert result =~ "config :pythonx, :uv_init"
       assert result =~ ~s|name = "my_app"|
+      # No env-var gate — same value at compile time AND runtime so
+      # Pythonx's validate_compile_env check is satisfied unconditionally.
+      refute result =~ "MOB_TARGET"
+      refute result =~ "System.get_env"
       # Existing config preserved
       assert result =~ "config :mob, :something"
     end
 
-    test "is idempotent — content unchanged when MOB_TARGET gate already present" do
-      content = """
-      import Config
-
-      unless System.get_env("MOB_TARGET") == "ios" do
-        config :pythonx, :uv_init, pyproject_toml: "x"
-      end
-      """
-
-      assert Enable.inject_pythonx_uv_init_gate(content, "my_app") == content
-    end
-
-    test "leaves user's manual pythonx config alone when present without gate" do
+    test "leaves user's manual pythonx config alone when present" do
       content = """
       import Config
 

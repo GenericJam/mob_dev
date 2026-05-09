@@ -86,35 +86,48 @@ defmodule Mix.Tasks.Mob.Enable do
 
   ### `python`
 
-  Enables embedded CPython via [Pythonx](https://hex.pm/packages/pythonx).
+  Enables embedded CPython via [Pythonx](https://hex.pm/packages/pythonx)
+  on iOS **and** Android.
 
-  - **iOS only.** Android Python is intentionally out of scope; if your app
-    runs on Android too, you'll need a manual integration (Chaquopy or
-    python-for-android — both differ from BeeWare's iOS toolchain).
-  - **Bare CPython only.** The bundled `Python.xcframework` ships the
-    interpreter, the standard library, and standard arch-specific C
-    extensions (`_ssl`, `_ctypes`, `_hashlib`, …). Third-party wheels
-    (`cryptography`, `numpy`, `RNS`, …) are out of scope — produce your own
-    with [BeeWare's `mobile-forge`](https://github.com/beeware/mobile-forge)
-    and drop them into your project. Mob does not manage wheel installation.
+  - **iOS:** BeeWare's [`Python-Apple-support`](https://github.com/beeware/Python-Apple-support)
+    `Python.xcframework` is bundled by `mix mob.deploy --native`.
+  - **Android:** [Chaquopy](https://chaquo.com/chaquopy/)'s prebuilt CPython
+    is unpacked at first launch. `libpythonx.so` (the Pythonx NIF) is
+    cross-compiled with the Android NDK against a stub `libpython3.13.so`
+    so the BEAM dynamic loader is satisfied; the real lib resolves at
+    runtime via SONAME match.
+  - **Bare CPython only.** Bundles ship the interpreter, stdlib, and
+    standard C extensions (`_ssl`, `_ctypes`, `_hashlib`, …). Third-party
+    wheels (`cryptography`, `numpy`, `RNS`, …) are out of scope —
+    produce your own (BeeWare's [`mobile-forge`](https://github.com/beeware/mobile-forge)
+    on iOS, Chaquopy's wheel pipeline on Android) and drop them into
+    your project.
 
   What it does:
 
     - Adds `{:pythonx, "~> 0.4"}` to `mix.exs` deps.
     - Generates `lib/<app>/python_paths.ex` — pure detection module that
-      locates the bundled framework at runtime (`:desktop` / `{:ios, paths}` /
-      `{:partial, missing}`).
-    - Appends a `MOB_TARGET=ios`-gated `:pythonx, :uv_init` block to
-      `config/config.exs` so desktop development still uses uv-managed
-      CPython.
+      locates the bundled framework at runtime (`:desktop` /
+      `{:ios, paths}` / `{:android, paths}` / `{:partial, missing}`).
+    - Appends a `:pythonx, :uv_init` block to `config/config.exs`. The
+      same value is set at compile time AND runtime so Pythonx's
+      `validate_compile_env` check is always satisfied — no env-var gate.
+      uv only runs at boot when `Application.ensure_all_started(:pythonx)`
+      is called, which the on_start template only does on `:desktop`.
 
-  Bundle size impact: ~70 MB (CPython framework + stdlib + 68
-  arch-specific C extensions). Apply this only when you actually want
-  to call Python from BEAM — non-Python apps stay vanilla.
+  Bundle size impact: ~70 MB on iOS, ~30 MB on Android (interpreter +
+  stdlib + arch-specific C extensions). Apply this only when you actually
+  want to call Python from BEAM — non-Python apps stay vanilla.
 
-  After running, your `Mob.App.on_start/0` should ensure `:pythonx` is
-  started and feed `<App>.PythonPaths.detect/1` into `Pythonx.init/4` for
-  the iOS branch. See `guides/python_embedding.md` for the full template.
+  After running, your `Mob.App.on_start/0` should call
+  `<App>.PythonPaths.detect/1` and:
+
+    - on `:desktop`, call `Application.ensure_all_started(:pythonx)`
+      (the desktop venv is set up by uv);
+    - on `{:ios, paths}` / `{:android, paths}`, call `Pythonx.init/4`
+      directly with the bundled paths — uv is never invoked on device.
+
+  See `guides/python_embedding.md` for the full template.
   """
 
   @valid_features ~w(liveview camera photo_library file_sharing location notifications python)
@@ -205,32 +218,39 @@ defmodule Mix.Tasks.Mob.Enable do
   end
 
   defp enable("python", project_dir, app_name) do
-    android_noop(
-      "python",
-      "Android: Chaquopy distribution gets bundled by `mix mob.deploy --native`; " <>
-        "libpythonx.so NDK cross-compile + runtime asset extraction are still WIP. " <>
-        "iOS works end-to-end."
-    )
-
     pythonx_inject_dep(project_dir)
     pythonx_generate_paths_module(project_dir, app_name)
     pythonx_patch_config(project_dir, app_name)
+
+    module = Macro.camelize(app_name)
 
     Mix.shell().info("""
 
       Next steps:
         1. Run `mix deps.get` to fetch :pythonx
         2. In your `Mob.App.on_start/0`, call:
-             {:ok, _} = Application.ensure_all_started(:pythonx)
-             case #{Macro.camelize(app_name)}.PythonPaths.detect(to_string(:code.root_dir())) do
-               :desktop -> :ok  # Pythonx auto-init handles this
+             case #{module}.PythonPaths.detect(to_string(:code.root_dir())) do
+               :desktop ->
+                 # Desktop: uv handles venv setup at app start.
+                 {:ok, _} = Application.ensure_all_started(:pythonx)
+
                {:ios, %{dl_path: dl, home_path: home}} ->
+                 # On device, skip ensure_all_started/1 — Pythonx.UvInit
+                 # would try to run `uv` and fail. Pythonx.init/4 loads
+                 # the NIF directly against the bundled framework.
                  Pythonx.init(dl, home, dl, sys_paths: [])
+
+               {:android, %{dl_path: dl, home_path: home}} ->
+                 Pythonx.init(dl, home, dl,
+                   sys_paths: [Path.join([home, "lib", "python3.13"])])
+
                {:partial, missing} ->
                  # log + bail out — bundle is incomplete
                  nil
              end
-        3. `mix mob.deploy --native --device <udid>` (downloads BeeWare bundle on first run)
+        3. `mix mob.deploy --native --device <udid>` to bundle CPython +
+           install on device. iOS downloads the BeeWare framework on first
+           run; Android pulls Chaquopy's prebuilt distribution.
     """)
   end
 
@@ -597,13 +617,8 @@ defmodule Mix.Tasks.Mob.Enable do
     patched = MobDev.Enable.inject_pythonx_uv_init_gate(content, app_name)
 
     cond do
-      patched == content and String.contains?(content, "MOB_TARGET") ->
-        Mix.shell().info("  * skip #{path} (MOB_TARGET=ios gate already present)")
-
       patched == content ->
-        Mix.shell().info(
-          "  * skip #{path} (existing :pythonx config left untouched — wrap manually if needed)"
-        )
+        Mix.shell().info("  * skip #{path} (:pythonx config already present — leave it alone)")
 
       true ->
         File.write!(path, patched)
