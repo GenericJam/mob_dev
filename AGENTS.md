@@ -44,6 +44,13 @@ mix test --exclude integration # skip the device-dependent ones
   `diagnose_xcodebuild_failure/1` in `mob.provision`. Apple's verbatim text is
   preserved alongside our hint so the snippet stays google-able. Add new
   pattern matches there when you encounter a new Apple error string.
+- **APNs push token never arrives on iOS device** if the binary's codesigning
+  entitlements omit `aps-environment`. `generate_build_device_sh` auto-mirrors
+  the value from the embedded provisioning profile into the fallback entitlements.
+  If the profile was provisioned without push, no mirroring happens — either
+  re-provision with push enabled or create `ios/<AppName>.entitlements` with
+  `aps-environment: development`. Test the plist text via
+  `NativeBuild.fallback_entitlements_plist/3`.
 - **OTP tarball schema changes need bumping `valid_otp_dir?/2`** in
   `otp_downloader.ex` so existing caches auto-redownload. Don't bump the OTP
   hash — the schema check is the right knob.
@@ -59,7 +66,7 @@ narrowing functions). Don't make them private:
 - `Discovery.Android.parse_devices_output/1`
 - `Discovery.IOS.parse_simctl_json/1`, `parse_simctl_text/1`, `parse_runtime_version/1`
 - `OtpDownloader.valid_otp_dir?/2`, `ios_device_extras_present?/1`
-- `NativeBuild.narrow_platforms_for_device/2`, `ios_toolchain_available?/0`, `read_sdk_dir/1`
+- `NativeBuild.narrow_platforms_for_device/2`, `ios_toolchain_available?/0`, `read_sdk_dir/1`, `fallback_entitlements_plist/3`
 - `Emulators.parse_simctl_json/1`, `find_emulator_binary/1`
 - `Provision.diagnose_xcodebuild_failure/1`
 

@@ -315,6 +315,60 @@ defmodule MobDev.NativeBuildTest do
     end
   end
 
+  describe "fallback_entitlements_plist/3" do
+    test "contains application-identifier and team-identifier" do
+      xml = NativeBuild.fallback_entitlements_plist("TEAM1", "com.example.app")
+      assert xml =~ "<string>TEAM1.com.example.app</string>"
+      assert xml =~ "<string>TEAM1</string>"
+    end
+
+    test "contains get-task-allow" do
+      xml = NativeBuild.fallback_entitlements_plist("T", "com.x.y")
+      assert xml =~ "<key>get-task-allow</key>"
+      assert xml =~ "<true/>"
+    end
+
+    test "omits aps-environment when not given" do
+      xml = NativeBuild.fallback_entitlements_plist("T", "com.x.y")
+      refute xml =~ "aps-environment"
+    end
+
+    test "omits aps-environment when nil is explicit" do
+      xml = NativeBuild.fallback_entitlements_plist("T", "com.x.y", nil)
+      refute xml =~ "aps-environment"
+    end
+
+    test "includes aps-environment development when given" do
+      xml =
+        NativeBuild.fallback_entitlements_plist("Q89CW299G8", "com.mob.pushlab", "development")
+
+      assert xml =~ "<key>aps-environment</key>"
+      assert xml =~ "<string>development</string>"
+    end
+
+    test "includes aps-environment production when given" do
+      xml = NativeBuild.fallback_entitlements_plist("Q89CW299G8", "com.mob.pushlab", "production")
+      assert xml =~ "<key>aps-environment</key>"
+      assert xml =~ "<string>production</string>"
+    end
+
+    test "output is well-formed XML with a plist root" do
+      xml = NativeBuild.fallback_entitlements_plist("T", "com.x.y", "development")
+      assert xml =~ ~s(<?xml version="1.0" encoding="UTF-8"?>)
+      assert xml =~ "<plist version="
+      assert xml =~ "</plist>"
+      assert xml =~ "<dict>"
+      assert xml =~ "</dict>"
+    end
+
+    test "application-identifier key precedes aps-environment key" do
+      xml = NativeBuild.fallback_entitlements_plist("T", "com.x.y", "development")
+      app_id_pos = :binary.match(xml, "application-identifier") |> elem(0)
+      aps_pos = :binary.match(xml, "aps-environment") |> elem(0)
+      assert app_id_pos < aps_pos
+    end
+  end
+
   # Stub iOS lister: returns no devices so tests exercise the
   # format-only fallback without hitting `MobDev.Discovery.IOS.list_devices/0`.
   defp no_devices, do: fn -> [] end
