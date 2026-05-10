@@ -2079,34 +2079,24 @@ defmodule MobDev.NativeBuild do
     "
     fi
 
-    EPMD_FLAGS="-DHAVE_CONFIG_H -DEPMD_PORT_NO=4369 -Dmain=epmd_ios_main -DNO_DAEMON \
-        -I $EPMD_BUILD_SRC/erts/aarch64-apple-ios \
-        -I $EPMD_SRC \
-        -I $EPMD_BUILD_SRC/erts/include \
-        -I $EPMD_BUILD_SRC/erts/include/internal"
-    xcrun -sdk iphoneos clang -arch arm64 -miphoneos-version-min=17.0 \
-        $EPMD_FLAGS -c "$EPMD_SRC/epmd.c"     -o "$BUILD_DIR/epmd_main.o"
-    xcrun -sdk iphoneos clang -arch arm64 -miphoneos-version-min=17.0 \
-        $EPMD_FLAGS -c "$EPMD_SRC/epmd_srv.c" -o "$BUILD_DIR/epmd_srv.o"
-    xcrun -sdk iphoneos clang -arch arm64 -miphoneos-version-min=17.0 \
-        $EPMD_FLAGS -c "$EPMD_SRC/epmd_cli.c" -o "$BUILD_DIR/epmd_cli.o"
-
     # SQLITE_STATIC_LIB presence is signaled to build_device.zig via
     # -Dsqlite_static=true so it adds -DMOB_STATIC_SQLITE_NIF to the
-    # driver_tab compile.
+    # driver_tab compile. EPMD + erl_errno_id_compat both live in
+    # build_device.zig as of Phase 2 iter 12b — only their generated
+    # input files are still produced here.
 
     # ── Stub for erl_errno_id_unknown ────────────────────────────────────────────
     # Missing from libbeam.a in OTP 17.0 (function was split into a separate
     # compilation unit but the pre-built tarball omits it). A weak definition
     # satisfies the linker and loses to the real symbol if a future tarball
-    # includes it again.
+    # includes it again. build_device.zig compiles it via the -Derrno_compat
+    # path option below.
     cat > "$BUILD_DIR/erl_errno_id_compat.c" << 'COMPATEOF'
     __attribute__((weak)) const char *erl_errno_id_unknown(int error) {
         (void)error;
         return "unknown";
     }
     COMPATEOF
-    $CC -c "$BUILD_DIR/erl_errno_id_compat.c" -o "$BUILD_DIR/erl_errno_id_compat.o"
 
     # ── enif_* keep-alive: prevent -dead_strip from removing enif_* symbols ──────
     # `dead_strip` on the final link drops every enif_* symbol that nothing
@@ -2157,15 +2147,21 @@ defmodule MobDev.NativeBuild do
         -Denif_keepalive="$BUILD_DIR/enif_keepalive.c" \
         -Dproject_ios_dir="$(pwd)/ios" \
         -Dmodule_name="$APP_NAME" \
+        -Depmd_build_src="$EPMD_BUILD_SRC" \
+        -Derrno_compat="$BUILD_DIR/erl_errno_id_compat.c" \
         $SQLITE_STATIC_FLAG
-    cp ios/zig-out/driver_tab_ios.o   "$BUILD_DIR/driver_tab_ios.o"
-    cp ios/zig-out/enif_keepalive.o   "$BUILD_DIR/enif_keepalive.o"
-    cp ios/zig-out/MobNode.o          "$BUILD_DIR/MobNode.o"
-    cp ios/zig-out/mob_nif.o          "$BUILD_DIR/mob_nif.o"
-    cp ios/zig-out/mob_beam.o         "$BUILD_DIR/mob_beam.o"
-    cp ios/zig-out/AppDelegate.o      "$BUILD_DIR/AppDelegate.o"
-    cp ios/zig-out/beam_main.o        "$BUILD_DIR/beam_main.o"
-    cp ios/zig-out/swift_mob.o        "$BUILD_DIR/swift_mob.o"
+    cp ios/zig-out/driver_tab_ios.o      "$BUILD_DIR/driver_tab_ios.o"
+    cp ios/zig-out/enif_keepalive.o      "$BUILD_DIR/enif_keepalive.o"
+    cp ios/zig-out/MobNode.o             "$BUILD_DIR/MobNode.o"
+    cp ios/zig-out/mob_nif.o             "$BUILD_DIR/mob_nif.o"
+    cp ios/zig-out/mob_beam.o            "$BUILD_DIR/mob_beam.o"
+    cp ios/zig-out/AppDelegate.o         "$BUILD_DIR/AppDelegate.o"
+    cp ios/zig-out/beam_main.o           "$BUILD_DIR/beam_main.o"
+    cp ios/zig-out/swift_mob.o           "$BUILD_DIR/swift_mob.o"
+    cp ios/zig-out/epmd_main.o           "$BUILD_DIR/epmd_main.o"
+    cp ios/zig-out/epmd_srv.o            "$BUILD_DIR/epmd_srv.o"
+    cp ios/zig-out/epmd_cli.o            "$BUILD_DIR/epmd_cli.o"
+    cp ios/zig-out/erl_errno_id_compat.o "$BUILD_DIR/erl_errno_id_compat.o"
 
     # ── Link ─────────────────────────────────────────────────────────────────────
     echo "=== Linking $APP_NAME binary ==="
