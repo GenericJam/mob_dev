@@ -446,21 +446,10 @@ defmodule MobDev.NativeBuildTest do
       assert sh =~ ~s|"$OTP_ROOT/python/lib/python3.13"|
     end
 
-    test "rsyncs python/ into the .app's OTP bundle when present", %{sh: sh} do
-      assert sh =~ ~r/rsync.*"\$OTP_ROOT\/python\/"\s+"\$OTP_BUNDLE\/python\/"/
-    end
-
-    test "codesigns each lib-dynload .so before final app sign", %{sh: sh} do
-      assert sh =~ "Codesigning bundled Python dylibs"
-      assert sh =~ ~r/find\s+"\$OTP_BUNDLE\/python\/lib\/python3\.13\/lib-dynload".*\.so/
-      assert sh =~ ~s|codesign --force --sign "$SIGN_IDENTITY"|
-    end
-
-    test "codesigns Python.framework binary", %{sh: sh} do
-      assert sh =~ ~s|"$OTP_BUNDLE/python/Python.framework/Python"|
-    end
-
-    test "codesigns libpythonx.so", %{sh: sh} do
+    # rsync of python/ into the .app and codesign of lib-dynload + Python.framework
+    # binary moved out of build_device.sh into MobDev.NativeBuild (iter 12d).
+    # Only the cross-compiled libpythonx.so still flows through the script.
+    test "still references libpythonx.so cross-compile target", %{sh: sh} do
       assert sh =~ "libpythonx.so"
     end
 

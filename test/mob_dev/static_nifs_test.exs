@@ -236,7 +236,9 @@ defmodule MobDev.StaticNifsTest do
     test "user-added NIF appears in the table for the platforms its archs cover" do
       user = [%{module: :my_extra}]
       ios_out = StaticNifs.generate(:ios, StaticNifs.resolve(user)) |> IO.iodata_to_binary()
-      android_out = StaticNifs.generate(:android, StaticNifs.resolve(user)) |> IO.iodata_to_binary()
+
+      android_out =
+        StaticNifs.generate(:android, StaticNifs.resolve(user)) |> IO.iodata_to_binary()
 
       assert ios_out =~ "my_extra_nif_init"
       assert android_out =~ "my_extra_nif_init"
@@ -244,7 +246,9 @@ defmodule MobDev.StaticNifsTest do
 
     test "iOS-only user NIF does not appear in the Android source" do
       user = [%{module: :ios_thing, archs: [:ios], guard: "BUILDING_FOR_IOS"}]
-      android_out = StaticNifs.generate(:android, StaticNifs.resolve(user)) |> IO.iodata_to_binary()
+
+      android_out =
+        StaticNifs.generate(:android, StaticNifs.resolve(user)) |> IO.iodata_to_binary()
 
       refute android_out =~ "ios_thing_nif_init"
     end

@@ -77,7 +77,7 @@ defmodule MobDev.NativeBuild do
           physical_udid ->
             [build_ios_physical(cfg, physical_udid) | results]
 
-          File.exists?("ios/build.sh") ->
+          File.exists?("ios/build.zig") ->
             [build_ios(cfg, device_id) | results]
 
           true ->
@@ -166,12 +166,16 @@ defmodule MobDev.NativeBuild do
 
         IO.puts("  Compiling Android C objects via zig build (per-ABI)...")
 
-        Enum.reduce_while([{otp_arm64, "arm64-v8a"}, {otp_arm32, "armeabi-v7a"}], :ok, fn {otp_dir, abi}, _acc ->
-          case run_zig_android_objects(build_zig, abi, otp_dir, erts_vsn, mob_dir, driver_tab) do
-            :ok -> {:cont, :ok}
-            {:error, reason} -> {:halt, {:error, reason}}
+        Enum.reduce_while(
+          [{otp_arm64, "arm64-v8a"}, {otp_arm32, "armeabi-v7a"}],
+          :ok,
+          fn {otp_dir, abi}, _acc ->
+            case run_zig_android_objects(build_zig, abi, otp_dir, erts_vsn, mob_dir, driver_tab) do
+              :ok -> {:cont, :ok}
+              {:error, reason} -> {:halt, {:error, reason}}
+            end
           end
-        end)
+        )
     end
   end
 
@@ -1174,21 +1178,39 @@ defmodule MobDev.NativeBuild do
          {:ok, python_bundle} <- maybe_ensure_python_bundle() do
       IO.puts("  Building iOS simulator app...")
 
-      env =
-        [
-          {"MOB_DIR", Path.expand(cfg[:mob_dir])},
-          {"MOB_ELIXIR_LIB", Path.expand(cfg[:elixir_lib])},
-          {"MOB_IOS_OTP_ROOT", otp_root}
-        ] ++ python_apple_support_env(pythonx_in_project?(), python_bundle)
+      mob_dir = Path.expand(cfg[:mob_dir])
+      elixir_lib = Path.expand(cfg[:elixir_lib])
+      app_module = Mix.Project.config() |> Keyword.fetch!(:app) |> Atom.to_string()
+      display_name = ios_display_name()
+      erts_vsn = detect_erts_vsn(otp_root)
 
-      with {_, 0} <-
-             System.cmd("bash", ["ios/build.sh"],
-               env: env,
-               stderr_to_stdout: true,
-               into: IO.stream()
+      with {:ok, sdkroot} <- xcrun_sdk_path("iphonesimulator"),
+           :ok <- compile_elixir_for_ios(),
+           :ok <- copy_app_beams(otp_root, app_module),
+           :ok <- install_exqlite_otp_lib(otp_root),
+           :ok <- cross_compile_exqlite_nif_sim(otp_root, erts_vsn, sdkroot),
+           :ok <- maybe_setup_pythonx_sim(otp_root, erts_vsn, sdkroot, python_bundle, app_module),
+           :ok <- maybe_install_crypto_shim(otp_root, app_module),
+           :ok <- maybe_copy_ssl_beams(otp_root, app_module),
+           :ok <- maybe_build_phoenix_assets(otp_root, app_module),
+           :ok <- copy_priv_repo_assets(otp_root, app_module),
+           :ok <- copy_elixir_stdlib_to_otp(elixir_lib, otp_root),
+           :ok <- copy_eex_stdlib_to_app(elixir_lib, otp_root, app_module),
+           :ok <- sync_otp_runtime_sim(otp_root),
+           :ok <- copy_mob_logos_sim(mob_dir, otp_root),
+           :ok <- spot_check_app_beams(otp_root, app_module, display_name),
+           {:ok, build_dir} <- create_native_build_dir("ios_sim"),
+           :ok <- generate_enif_keepalive(otp_root, erts_vsn, build_dir),
+           :ok <-
+             zig_build_binary_ios_sim(
+               mob_dir,
+               otp_root,
+               erts_vsn,
+               sdkroot,
+               build_dir,
+               display_name
              ),
            {:ok, sim_id} <- pick_ios_sim(device_id),
-           display_name = ios_display_name(),
            binary_path = "ios/zig-out/#{display_name}",
            :ok <- check_path(binary_path, "iOS binary"),
            {:ok, app_path} <- bundle_ios_app(binary_path, display_name),
@@ -1196,11 +1218,647 @@ defmodule MobDev.NativeBuild do
         {:ok, "iOS"}
       else
         {:error, reason} -> {:error, "iOS", reason}
-        {_, exit_code} when is_integer(exit_code) ->
-          {:error, "iOS", "build.sh exited #{exit_code} — check output above"}
       end
     else
       {:error, reason} -> {:error, "iOS", reason}
+    end
+  end
+
+  # Phase 2 iter 13b: iOS sim build pipeline ported out of build.sh.
+  # Each helper mirrors a section of the prior shell script.
+
+  defp xcrun_sdk_path(sdk) do
+    case System.cmd("xcrun", ["-sdk", sdk, "--show-sdk-path"], stderr_to_stdout: true) do
+      {out, 0} -> {:ok, String.trim(out)}
+      {_, _} -> {:error, "xcrun -sdk #{sdk} --show-sdk-path failed — Xcode CLT installed?"}
+    end
+  end
+
+  defp compile_elixir_for_ios do
+    # Tells `mix compile` we're building for iOS so any `unless
+    # System.get_env("MOB_TARGET") == "ios" do …` compile-time gates short-circuit.
+    System.put_env("MOB_TARGET", "ios")
+    Mix.Task.run("compile")
+    :ok
+  end
+
+  defp copy_app_beams(otp_root, app_module) do
+    beams_dir = Path.join(otp_root, app_module)
+    File.mkdir_p!(beams_dir)
+    chmod_writable(beams_dir)
+
+    # Glob every compiled dep's ebin dir — covers vanilla (mob + ecto +
+    # ecto_sqlite3 + decimal + telemetry + jason + nimble_parsec) AND
+    # LiveView (Phoenix + Plug + Bandit + thousand_island + websock + etc.)
+    # without having to maintain a hardcoded dep list.
+    Path.wildcard("_build/dev/lib/*/ebin/*")
+    |> Enum.each(fn src ->
+      File.cp!(src, Path.join(beams_dir, Path.basename(src)))
+    end)
+
+    :ok
+  end
+
+  defp liveview_project? do
+    # Treat as LV iff the project has its own Phoenix asset pipeline
+    # (`assets/` at project root with package.json or tailwind config).
+    # Just having phoenix_live_view as a transitive dep (via mob) doesn't
+    # qualify — vanilla mob apps pull it in but have no `assets/` dir and
+    # no `mix assets.build` task. Without this guard, `Mix.Task.run("assets.build")`
+    # raises on vanilla projects.
+    File.exists?("assets/tailwind.config.js") or
+      File.exists?("assets/package.json") or
+      File.exists?("assets/css/app.css")
+  end
+
+  defp chmod_writable(dir) do
+    _ = System.cmd("chmod", ["-R", "u+w", dir], stderr_to_stdout: true)
+    :ok
+  end
+
+  defp install_exqlite_otp_lib(otp_root) do
+    case detect_dep_version("exqlite") do
+      nil ->
+        :ok
+
+      vsn ->
+        IO.puts("  === Installing exqlite as OTP library")
+        lib_dir = Path.join([otp_root, "lib", "exqlite-#{vsn}"])
+        # Remove any previous broken empty-version dir from older builds.
+        File.rm_rf!(Path.join(otp_root, "lib/exqlite-"))
+        File.mkdir_p!(Path.join(lib_dir, "ebin"))
+        File.mkdir_p!(Path.join(lib_dir, "priv"))
+
+        ebin = Path.join(["_build", "dev", "lib", "exqlite", "ebin"])
+
+        Path.wildcard("#{ebin}/*.beam")
+        |> Enum.each(&File.cp!(&1, Path.join([lib_dir, "ebin", Path.basename(&1)])))
+
+        File.cp!(Path.join(ebin, "exqlite.app"), Path.join([lib_dir, "ebin", "exqlite.app"]))
+        :ok
+    end
+  end
+
+  defp cross_compile_exqlite_nif_sim(otp_root, erts_vsn, sdkroot) do
+    if File.dir?("deps/exqlite/c_src") do
+      vsn = detect_dep_version("exqlite")
+      out_so = Path.join([otp_root, "lib/exqlite-#{vsn}/priv/sqlite3_nif.so"])
+      IO.puts("  === Cross-compiling sqlite3_nif.so for iOS simulator")
+
+      # The macOS-compiled NIF from `mix deps.compile` is incompatible with
+      # the iOS sim (wrong platform tag). Recompile against iphonesimulator
+      # SDK so dlopen succeeds inside the simulator process.
+      args = [
+        "-sdk",
+        "iphonesimulator",
+        "cc",
+        "-arch",
+        "arm64",
+        "-mios-simulator-version-min=17.0",
+        "-isysroot",
+        sdkroot,
+        "-Os",
+        "-ffunction-sections",
+        "-fdata-sections",
+        "-dynamiclib",
+        "-undefined",
+        "dynamic_lookup",
+        "-I",
+        "deps/exqlite/c_src",
+        "-I",
+        "#{otp_root}/#{erts_vsn}/include",
+        "-I",
+        "#{otp_root}/#{erts_vsn}/include/aarch64-apple-iossimulator",
+        "-DSQLITE_THREADSAFE=1",
+        "-Wno-#warnings",
+        "deps/exqlite/c_src/sqlite3_nif.c",
+        "deps/exqlite/c_src/sqlite3.c",
+        "-o",
+        out_so
+      ]
+
+      case System.cmd("xcrun", args, stderr_to_stdout: true, into: IO.stream()) do
+        {_, 0} -> :ok
+        {_, _} -> {:error, "exqlite NIF cross-compile failed for iOS sim"}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp maybe_setup_pythonx_sim(_otp_root, _erts_vsn, _sdkroot, nil, _app_module), do: :ok
+
+  defp maybe_setup_pythonx_sim(otp_root, erts_vsn, sdkroot, python_bundle, app_module) do
+    if File.dir?("_build/dev/lib/pythonx") do
+      vsn = detect_dep_version("pythonx")
+      lib_dir = Path.join([otp_root, "lib", "pythonx-#{vsn}"])
+      beams_dir = Path.join(otp_root, app_module)
+
+      IO.puts("  === Installing pythonx as OTP library")
+      # Wipe any previous version
+      Path.wildcard(Path.join(otp_root, "lib/pythonx-*")) |> Enum.each(&File.rm_rf!/1)
+      File.mkdir_p!(Path.join(lib_dir, "ebin"))
+      File.mkdir_p!(Path.join(lib_dir, "priv"))
+
+      ebin = "_build/dev/lib/pythonx/ebin"
+
+      Path.wildcard("#{ebin}/*.beam")
+      |> Enum.each(&File.cp!(&1, Path.join([lib_dir, "ebin", Path.basename(&1)])))
+
+      File.cp!(Path.join(ebin, "pythonx.app"), Path.join([lib_dir, "ebin", "pythonx.app"]))
+
+      Path.wildcard("#{ebin}/*")
+      |> Enum.each(&File.cp!(&1, Path.join(beams_dir, Path.basename(&1))))
+
+      if File.dir?("_build/dev/lib/fine") do
+        Path.wildcard("_build/dev/lib/fine/ebin/*")
+        |> Enum.each(&File.cp!(&1, Path.join(beams_dir, Path.basename(&1))))
+      end
+
+      python_framework =
+        Path.join([
+          python_bundle,
+          "Python.xcframework/ios-arm64_x86_64-simulator/Python.framework"
+        ])
+
+      python_stdlib = Path.join([python_bundle, "Python.xcframework/lib/python3.13"])
+
+      python_lib_dynload =
+        Path.join([
+          python_bundle,
+          "Python.xcframework/ios-arm64_x86_64-simulator/lib-arm64/python3.13/lib-dynload"
+        ])
+
+      cond do
+        not File.dir?(python_framework) ->
+          {:error, "Python.framework missing at #{python_framework}"}
+
+        not File.dir?(python_stdlib) ->
+          {:error, "Python stdlib missing at #{python_stdlib}"}
+
+        not File.dir?(python_lib_dynload) ->
+          {:error, "lib-dynload missing at #{python_lib_dynload}"}
+
+        true ->
+          IO.puts("  === Cross-compiling libpythonx.so for iOS simulator")
+
+          xcrun_args = [
+            "-sdk",
+            "iphonesimulator",
+            "clang++",
+            "-arch",
+            "arm64",
+            "-dynamiclib",
+            "-undefined",
+            "dynamic_lookup",
+            "-fPIC",
+            "-fvisibility=hidden",
+            "-std=c++17",
+            "-isysroot",
+            sdkroot,
+            "-mios-simulator-version-min=17.0",
+            "-install_name",
+            "@rpath/libpythonx.so",
+            "-Os",
+            "-ffunction-sections",
+            "-fdata-sections",
+            "-I",
+            "#{otp_root}/#{erts_vsn}/include",
+            "-I",
+            "#{otp_root}/#{erts_vsn}/include/aarch64-apple-iossimulator",
+            "-I",
+            "deps/fine/c_include",
+            "-Wno-unused-parameter",
+            "-Wno-comment",
+            "deps/pythonx/c_src/pythonx.cpp",
+            "deps/pythonx/c_src/python.cpp",
+            "-o",
+            Path.join(lib_dir, "priv/libpythonx.so")
+          ]
+
+          case System.cmd("xcrun", xcrun_args, stderr_to_stdout: true, into: IO.stream()) do
+            {_, 0} ->
+              IO.puts("  === Bundling Python.framework + stdlib + lib-dynload (sim slice)")
+              python_dir = Path.join(otp_root, "python")
+              File.mkdir_p!(Path.join(python_dir, "lib"))
+              chmod_writable(python_dir)
+
+              File.rm_rf!(Path.join(python_dir, "Python.framework"))
+              File.rm_rf!(Path.join(python_dir, "lib/python3.13"))
+
+              copy_dir!(python_framework, Path.join(python_dir, "Python.framework"))
+              copy_dir!(python_stdlib, Path.join(python_dir, "lib/python3.13"))
+              copy_dir!(python_lib_dynload, Path.join(python_dir, "lib/python3.13/lib-dynload"))
+              :ok
+
+            {_, _} ->
+              {:error, "pythonx NIF cross-compile failed"}
+          end
+      end
+    else
+      :ok
+    end
+  end
+
+  defp copy_dir!(src, dst) do
+    {_, 0} = System.cmd("cp", ["-R", src, dst], stderr_to_stdout: true)
+    :ok
+  end
+
+  defp detect_dep_version(name) do
+    # Try mix.lock first; fall back to .app file's vsn.
+    lock_match =
+      case File.read("mix.lock") do
+        {:ok, content} ->
+          Regex.run(~r/"#{name}"[^"]*"([0-9]+\.[0-9]+\.[0-9]+)"/, content)
+
+        _ ->
+          nil
+      end
+
+    case lock_match do
+      [_, vsn] ->
+        vsn
+
+      _ ->
+        app_file = "_build/dev/lib/#{name}/ebin/#{name}.app"
+
+        case File.read(app_file) do
+          {:ok, content} ->
+            case Regex.run(~r/\{vsn,\s*"([^"]+)"\}/, content) do
+              [_, vsn] -> vsn
+              _ -> nil
+            end
+
+          _ ->
+            nil
+        end
+    end
+  end
+
+  defp maybe_install_crypto_shim(otp_root, app_module) do
+    if liveview_project?() do
+      # The iOS OTP build does not include OpenSSL/crypto. Phoenix and
+      # plug_crypto declare :crypto as a required application; without a
+      # shim, application:ensure_started(:crypto) fails and the app won't
+      # boot. The shim implements the subset of crypto functions
+      # plug_crypto + Plug.CSRFProtection actually call in the loopback
+      # HTTP-only path: pbkdf2_hmac/5 (KeyGenerator), exor/2 (CSRF token
+      # masking), mac/3+/4 (HMAC-MD5 via erlang:md5/1), and start/2.
+      IO.puts("  === Creating crypto shim (LV)")
+
+      crypto_tmp =
+        Path.join(System.tmp_dir!(), "mob_crypto_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(crypto_tmp)
+      beams_dir = Path.join(otp_root, app_module)
+
+      try do
+        File.write!(Path.join(crypto_tmp, "crypto.erl"), crypto_shim_erl())
+
+        case System.cmd("erlc", ["-o", beams_dir, Path.join(crypto_tmp, "crypto.erl")],
+               stderr_to_stdout: true,
+               into: IO.stream()
+             ) do
+          {_, 0} ->
+            File.write!(Path.join(beams_dir, "crypto.app"), crypto_shim_app())
+            :ok
+
+          {_, _} ->
+            {:error, "crypto shim erlc failed"}
+        end
+      after
+        File.rm_rf!(crypto_tmp)
+      end
+    else
+      :ok
+    end
+  end
+
+  defp crypto_shim_erl do
+    """
+    -module(crypto).
+    -behaviour(application).
+    -export([start/2, stop/1, strong_rand_bytes/1, rand_bytes/1,
+             hash/2, mac/4, mac/3, supports/1, exor/2,
+             generate_key/2, compute_key/4, sign/4, verify/5,
+             pbkdf2_hmac/5]).
+    start(_Type, _Args) -> {ok, self()}.
+    stop(_State) -> ok.
+    strong_rand_bytes(N) -> rand:bytes(N).
+    rand_bytes(N) -> rand:bytes(N).
+    hash(_Type, Data) -> erlang:md5(iolist_to_binary(Data)).
+    supports(_Type) -> [].
+    generate_key(_Alg, _Params) -> {<<>>, <<>>}.
+    compute_key(_Alg, _OtherKey, _MyKey, _Params) -> <<>>.
+    sign(_Alg, _DigestType, _Msg, _Key) -> <<>>.
+    verify(_Alg, _DigestType, _Msg, _Signature, _Key) -> true.
+    exor(A, B) -> xor_bytes(iolist_to_binary(A), iolist_to_binary(B)).
+    mac(hmac, _HashAlg, Key, Data) ->
+        hmac_md5(iolist_to_binary(Key), iolist_to_binary(Data));
+    mac(_Type, _SubType, _Key, _Data) -> <<>>.
+    mac(_Type, _Key, _Data) -> <<>>.
+    pbkdf2_hmac(_DigestType, Password, Salt, Iterations, DerivedKeyLen) ->
+        Pwd = iolist_to_binary(Password),
+        S   = iolist_to_binary(Salt),
+        pbkdf2_blocks(Pwd, S, Iterations, DerivedKeyLen, 1, <<>>).
+    pbkdf2_blocks(_Pwd, _Salt, _Iter, Len, _Block, Acc) when byte_size(Acc) >= Len ->
+        binary:part(Acc, 0, Len);
+    pbkdf2_blocks(Pwd, Salt, Iter, Len, Block, Acc) ->
+        U1 = hmac_md5(Pwd, <<Salt/binary, Block:32/unsigned-big-integer>>),
+        Ux = pbkdf2_iterate(Pwd, Iter - 1, U1, U1),
+        pbkdf2_blocks(Pwd, Salt, Iter, Len, Block + 1, <<Acc/binary, Ux/binary>>).
+    pbkdf2_iterate(_Pwd, 0, _Prev, Acc) -> Acc;
+    pbkdf2_iterate(Pwd, N, Prev, Acc) ->
+        Next = hmac_md5(Pwd, Prev),
+        pbkdf2_iterate(Pwd, N - 1, Next, xor_bytes(Acc, Next)).
+    hmac_md5(Key0, Data) ->
+        BlockSize = 64,
+        Key = if byte_size(Key0) > BlockSize -> erlang:md5(Key0); true -> Key0 end,
+        PadLen = BlockSize - byte_size(Key),
+        K = <<Key/binary, 0:(PadLen * 8)>>,
+        IPad = xor_bytes(K, binary:copy(<<16#36>>, BlockSize)),
+        OPad = xor_bytes(K, binary:copy(<<16#5C>>, BlockSize)),
+        erlang:md5(<<OPad/binary, (erlang:md5(<<IPad/binary, Data/binary>>))/binary>>).
+    xor_bytes(A, B) -> xor_bytes(A, B, []).
+    xor_bytes(<<X, Ra/binary>>, <<Y, Rb/binary>>, Acc) ->
+        xor_bytes(Ra, Rb, [X bxor Y | Acc]);
+    xor_bytes(<<>>, <<>>, Acc) ->
+        list_to_binary(lists:reverse(Acc)).
+    """
+  end
+
+  defp crypto_shim_app do
+    ~S|{application,crypto,[{modules,[crypto]},{applications,[kernel,stdlib]},{description,"Crypto shim for iOS (HTTP-only; no OpenSSL)"},{registered,[]},{vsn,"5.6"},{mod,{crypto,[]}}]}.| <>
+      "\n"
+  end
+
+  defp maybe_copy_ssl_beams(otp_root, app_module) do
+    if liveview_project?() do
+      # thousand_island lists :ssl as a required app. Pure Erlang — host
+      # macOS .beam files run unchanged on iOS sim. We grab the latest
+      # available ssl-* dir from the host OTP install.
+      home = System.get_env("HOME") || ""
+      host_ssl_dirs = Path.wildcard(home <> "/.local/share/mise/installs/erlang/*/lib/ssl-*")
+      latest_ssl = host_ssl_dirs |> Enum.sort(:desc) |> List.first()
+
+      case latest_ssl do
+        nil ->
+          IO.puts("  === ssl beams not found in host OTP -- thousand_island may fail to start")
+          :ok
+
+        host_ssl ->
+          IO.puts("  === Copying ssl beams from host OTP")
+          beams_dir = Path.join(otp_root, app_module)
+          ebin = Path.join(host_ssl, "ebin")
+
+          if File.dir?(ebin) do
+            Path.wildcard("#{ebin}/*.beam")
+            |> Enum.each(&File.cp!(&1, Path.join(beams_dir, Path.basename(&1))))
+
+            ssl_app = Path.join(ebin, "ssl.app")
+            if File.exists?(ssl_app), do: File.cp!(ssl_app, Path.join(beams_dir, "ssl.app"))
+            IO.puts("  * ssl copied from #{host_ssl}")
+          end
+
+          :ok
+      end
+    else
+      :ok
+    end
+  end
+
+  defp maybe_build_phoenix_assets(otp_root, app_module) do
+    if liveview_project?() do
+      IO.puts("  === Building Phoenix static assets")
+      Mix.Task.run("assets.build")
+
+      beams_dir = Path.join(otp_root, app_module)
+      static_src = "priv/static"
+
+      if File.dir?(static_src) do
+        static_dst = Path.join(beams_dir, "priv/static")
+        File.mkdir_p!(static_dst)
+        copy_dir!(static_src <> "/.", static_dst)
+      end
+    end
+
+    :ok
+  end
+
+  defp copy_priv_repo_assets(otp_root, app_module) do
+    src = "priv/repo/migrations"
+
+    if File.dir?(src) do
+      IO.puts("  === Copying priv/repo assets")
+      dst = Path.join([otp_root, app_module, "priv/repo/migrations"])
+      File.mkdir_p!(dst)
+
+      Path.wildcard("#{src}/*.exs")
+      |> Enum.each(&File.cp!(&1, Path.join(dst, Path.basename(&1))))
+    end
+
+    :ok
+  end
+
+  defp copy_elixir_stdlib_to_otp(elixir_lib, otp_root) do
+    IO.puts("  === Copying Elixir stdlib")
+
+    for app <- ~w(elixir logger) do
+      dst = Path.join([otp_root, "lib", app, "ebin"])
+      File.mkdir_p!(dst)
+      chmod_writable(dst)
+
+      src_ebin = Path.join([elixir_lib, app, "ebin"])
+
+      if File.dir?(src_ebin) do
+        Path.wildcard("#{src_ebin}/*.beam")
+        |> Enum.each(&File.cp!(&1, Path.join(dst, Path.basename(&1))))
+
+        app_file = Path.join(src_ebin, "#{app}.app")
+
+        if File.exists?(app_file),
+          do: File.cp!(app_file, Path.join(dst, "#{app}.app"))
+      end
+    end
+
+    :ok
+  end
+
+  defp copy_eex_stdlib_to_app(elixir_lib, otp_root, app_module) do
+    # EEx is part of Elixir but mob_beam.m doesn't add it to the code path.
+    # Drop it into BEAMS_DIR (flat) so code:where_is_file("eex.app") resolves
+    # — Ecto's startup needs it.
+    IO.puts("  === Copying EEx stdlib")
+    dst = Path.join(otp_root, app_module)
+    File.mkdir_p!(dst)
+    src_ebin = Path.join([elixir_lib, "eex", "ebin"])
+
+    if File.dir?(src_ebin) do
+      Path.wildcard("#{src_ebin}/*.beam")
+      |> Enum.each(&File.cp!(&1, Path.join(dst, Path.basename(&1))))
+
+      app_file = Path.join(src_ebin, "eex.app")
+      if File.exists?(app_file), do: File.cp!(app_file, Path.join(dst, "eex.app"))
+    end
+
+    :ok
+  end
+
+  defp sync_otp_runtime_sim(otp_root) do
+    runtime_dir = System.get_env("MOB_SIM_RUNTIME_DIR") || Path.expand("~/.mob/runtime/ios-sim")
+    IO.puts("  === Syncing OTP runtime to #{runtime_dir}")
+    File.mkdir_p!(runtime_dir)
+    chmod_writable(runtime_dir)
+
+    # --no-perms is essential on Nix systems where ELIXIR_LIB lives in
+    # /nix/store at mode 444 — without it, BSD cp's preserved-mode would
+    # leave 444 .beam files in OTP_ROOT, which then carry over into
+    # RUNTIME_DIR and break the next deploy's overwrite.
+    {_, status} =
+      System.cmd("rsync", ["-a", "--delete", "--no-perms", "#{otp_root}/", "#{runtime_dir}/"],
+        stderr_to_stdout: true,
+        into: IO.stream()
+      )
+
+    chmod_writable(runtime_dir)
+    if status == 0, do: :ok, else: {:error, "rsync to #{runtime_dir} failed"}
+  end
+
+  defp copy_mob_logos_sim(mob_dir, otp_root) do
+    runtime_dir = System.get_env("MOB_SIM_RUNTIME_DIR") || Path.expand("~/.mob/runtime/ios-sim")
+    IO.puts("  === Copying Mob logos")
+
+    for variant <- ~w(dark light) do
+      src = Path.join(mob_dir, "assets/logo/logo_#{variant}.png")
+      dst = Path.join(runtime_dir, "mob_logo_#{variant}.png")
+      if File.exists?(src), do: File.cp!(src, dst)
+    end
+
+    _ = otp_root
+    :ok
+  end
+
+  defp spot_check_app_beams(otp_root, app_module, display_name) do
+    IO.puts("  === Spot-check")
+    beams_dir = Path.join(otp_root, app_module)
+
+    candidates = [
+      "Elixir.#{display_name}.App.beam",
+      "Elixir.#{display_name}.HomeScreen.beam"
+    ]
+
+    Enum.each(candidates, fn beam ->
+      path = Path.join(beams_dir, beam)
+      if File.exists?(path), do: IO.puts("  ✓ #{path}")
+    end)
+
+    :ok
+  end
+
+  defp create_native_build_dir(suffix) do
+    dir = Path.join(System.tmp_dir!(), "mob_#{suffix}_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    {:ok, dir}
+  end
+
+  defp generate_enif_keepalive(otp_root, erts_vsn, build_dir) do
+    # Pull every `T _enif_*` symbol out of erl_nif.o inside libbeam.a and
+    # generate a __attribute__((used)) reference for each. -dead_strip on
+    # the final link otherwise drops them, and runtime dlopen of dynamic
+    # NIFs (libpythonx.so etc.) fails with "symbol not found in flat
+    # namespace '_enif_is_pid'".
+    IO.puts("  === Generating enif_* keep-alive table")
+    libbeam = Path.join([otp_root, erts_vsn, "lib/libbeam.a"])
+    nif_o_dir = Path.join(System.tmp_dir!(), "mob_nifo_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(nif_o_dir)
+
+    try do
+      ar = ar_path()
+
+      # Try the GNU ar --output flag first, fall back to BSD ar (extracts to cwd).
+      _ =
+        case System.cmd(ar, ["x", libbeam, "--output=#{nif_o_dir}", "erl_nif.o"],
+               stderr_to_stdout: true
+             ) do
+          {_, 0} ->
+            :ok
+
+          _ ->
+            {_, 0} =
+              System.cmd(ar, ["x", libbeam, "erl_nif.o"], cd: nif_o_dir, stderr_to_stdout: true)
+
+            :ok
+        end
+
+      erl_nif_o = Path.join(nif_o_dir, "erl_nif.o")
+      if not File.exists?(erl_nif_o), do: throw({:error, "ar x failed to extract erl_nif.o"})
+
+      {nm_out, 0} =
+        System.cmd("xcrun", ["nm", "-arch", "arm64", erl_nif_o], stderr_to_stdout: true)
+
+      symbols =
+        nm_out
+        |> String.split("\n")
+        |> Enum.flat_map(fn line ->
+          case Regex.run(~r/ T _(enif_\w+)$/, line) do
+            [_, sym] -> [sym]
+            _ -> []
+          end
+        end)
+        |> Enum.uniq()
+
+      content =
+        [
+          "/* Auto-generated. References every enif_* in erl_nif.o so dead_strip keeps them. */\n"
+          | Enum.map(symbols, fn sym ->
+              "extern void #{sym}(void); __attribute__((used)) static void *_keep_#{sym} = (void *)&#{sym};\n"
+            end)
+        ]
+
+      File.write!(Path.join(build_dir, "enif_keepalive.c"), content)
+      IO.puts("  #{length(symbols)} enif_* symbols pinned")
+      :ok
+    after
+      File.rm_rf!(nif_o_dir)
+    end
+  end
+
+  defp ar_path do
+    case System.cmd("xcrun", ["-find", "ar"], stderr_to_stdout: true) do
+      {out, 0} -> String.trim(out)
+      _ -> "ar"
+    end
+  end
+
+  defp zig_build_binary_ios_sim(mob_dir, otp_root, erts_vsn, sdkroot, build_dir, display_name) do
+    driver_tab =
+      cond do
+        File.exists?("priv/generated/driver_tab_ios.c") ->
+          Path.expand("priv/generated/driver_tab_ios.c")
+
+        true ->
+          Path.join([mob_dir, "ios", "driver_tab_ios.c"])
+      end
+
+    args = [
+      "build",
+      "binary",
+      "--build-file",
+      "ios/build.zig",
+      "-Dmob_dir=#{mob_dir}",
+      "-Dotp_root=#{otp_root}",
+      "-Derts_vsn=#{erts_vsn}",
+      "-Dsdkroot=#{sdkroot}",
+      "-Ddriver_tab=#{driver_tab}",
+      "-Denif_keepalive=#{Path.join(build_dir, "enif_keepalive.c")}",
+      "-Dproject_ios_dir=#{Path.expand("ios")}",
+      "-Dmodule_name=#{display_name}"
+    ]
+
+    case System.cmd("zig", args, stderr_to_stdout: true, into: IO.stream()) do
+      {_, 0} -> :ok
+      {_, code} -> {:error, "zig build binary (iOS sim) exited #{code}"}
     end
   end
 
@@ -1225,8 +1883,7 @@ defmodule MobDev.NativeBuild do
           {:ok, udid}
         else
           _ ->
-            {:error,
-             "No booted simulator. Boot one in Simulator.app or pass `--device <UDID>`."}
+            {:error, "No booted simulator. Boot one in Simulator.app or pass `--device <UDID>`."}
         end
 
       _ ->
@@ -1268,7 +1925,8 @@ defmodule MobDev.NativeBuild do
   end
 
   defp compile_ios_icons(app_path) do
-    actool_plist = Path.join(System.tmp_dir!(), "mob_actool_#{System.unique_integer([:positive])}.plist")
+    actool_plist =
+      Path.join(System.tmp_dir!(), "mob_actool_#{System.unique_integer([:positive])}.plist")
 
     # actool can be flaky and is non-critical (the binary still runs without
     # icons compiled — just shows the system default). Mirror the build.sh
@@ -1294,11 +1952,15 @@ defmodule MobDev.NativeBuild do
          ) do
       {_, 0} ->
         _ =
-          System.cmd("/usr/libexec/PlistBuddy", [
-            "-c",
-            "Merge #{actool_plist}",
-            Path.join(app_path, "Info.plist")
-          ], stderr_to_stdout: true)
+          System.cmd(
+            "/usr/libexec/PlistBuddy",
+            [
+              "-c",
+              "Merge #{actool_plist}",
+              Path.join(app_path, "Info.plist")
+            ],
+            stderr_to_stdout: true
+          )
 
       _ ->
         :ok
@@ -1343,7 +2005,9 @@ defmodule MobDev.NativeBuild do
       File.write!(script_path, script)
       File.chmod!(script_path, 0o755)
 
-      build_dir = Path.join(System.tmp_dir!(), "mob_ios_device_#{System.unique_integer([:positive])}")
+      build_dir =
+        Path.join(System.tmp_dir!(), "mob_ios_device_#{System.unique_integer([:positive])}")
+
       File.mkdir_p!(build_dir)
 
       env = [{"MOB_BUILD_DIR", build_dir} | build_device_env(cfg, otp_root, python_bundle)]
@@ -1364,7 +2028,9 @@ defmodule MobDev.NativeBuild do
            :ok <- devicectl_install(udid, app_path) do
         {:ok, "iOS (device)"}
       else
-        {:error, reason} -> {:error, "iOS", reason}
+        {:error, reason} ->
+          {:error, "iOS", reason}
+
         {_, exit_code} when is_integer(exit_code) ->
           {:error, "iOS", "build_device.sh exited #{exit_code} — check output above"}
       end
@@ -1422,7 +2088,8 @@ defmodule MobDev.NativeBuild do
   end
 
   defp compile_ios_device_icons(app_path) do
-    actool_plist = Path.join(System.tmp_dir!(), "mob_actool_#{System.unique_integer([:positive])}.plist")
+    actool_plist =
+      Path.join(System.tmp_dir!(), "mob_actool_#{System.unique_integer([:positive])}.plist")
 
     case System.cmd(
            "xcrun",
@@ -1444,11 +2111,15 @@ defmodule MobDev.NativeBuild do
          ) do
       {_, 0} ->
         _ =
-          System.cmd("/usr/libexec/PlistBuddy", [
-            "-c",
-            "Merge #{actool_plist}",
-            Path.join(app_path, "Info.plist")
-          ], stderr_to_stdout: true)
+          System.cmd(
+            "/usr/libexec/PlistBuddy",
+            [
+              "-c",
+              "Merge #{actool_plist}",
+              Path.join(app_path, "Info.plist")
+            ],
+            stderr_to_stdout: true
+          )
 
       _ ->
         :ok
@@ -1467,6 +2138,7 @@ defmodule MobDev.NativeBuild do
     rsync_dir!(Path.join(otp_root, app_module) <> "/", Path.join(otp_bundle, app_module) <> "/")
 
     python_src = Path.join(otp_root, "python")
+
     if File.dir?(python_src),
       do: rsync_dir!(python_src <> "/", Path.join(otp_bundle, "python") <> "/")
 
@@ -1607,7 +2279,9 @@ defmodule MobDev.NativeBuild do
 
   defp embed_provisioning_profile(app_path, profile_uuid) do
     candidates = [
-      Path.expand("~/Library/Developer/Xcode/UserData/Provisioning Profiles/#{profile_uuid}.mobileprovision"),
+      Path.expand(
+        "~/Library/Developer/Xcode/UserData/Provisioning Profiles/#{profile_uuid}.mobileprovision"
+      ),
       Path.expand("~/Library/MobileDevice/Provisioning Profiles/#{profile_uuid}.mobileprovision")
     ]
 
@@ -1633,6 +2307,7 @@ defmodule MobDev.NativeBuild do
     entitlements = resolve_or_generate_entitlements(app_path, build_dir, team_id, bundle_id)
 
     otp_bundle = Path.join(app_path, "otp")
+
     if File.dir?(Path.join(otp_bundle, "python")),
       do: codesign_python_dylibs(otp_bundle, sign_identity)
 
@@ -1692,7 +2367,8 @@ defmodule MobDev.NativeBuild do
     # `security cms -D -i <profile>` decodes the CMS-wrapped XML plist;
     # we route it through a temp file because PlistBuddy doesn't read
     # stdin reliably and System.cmd doesn't pipe.
-    tmp_plist = Path.join(System.tmp_dir!(), "mob_aps_#{System.unique_integer([:positive])}.plist")
+    tmp_plist =
+      Path.join(System.tmp_dir!(), "mob_aps_#{System.unique_integer([:positive])}.plist")
 
     try do
       case System.cmd("security", ["cms", "-D", "-i", profile_path, "-o", tmp_plist],
@@ -1734,6 +2410,7 @@ defmodule MobDev.NativeBuild do
     IO.puts("  signed #{length(so_files)} lib-dynload extensions")
 
     framework = Path.join([otp_bundle, "python", "Python.framework", "Python"])
+
     if File.exists?(framework) do
       {_, 0} =
         System.cmd(
