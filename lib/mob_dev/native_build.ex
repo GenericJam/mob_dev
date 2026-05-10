@@ -187,13 +187,30 @@ defmodule MobDev.NativeBuild do
       "-Dotp_dir=#{otp_dir}",
       "-Derts_vsn=#{erts_vsn}",
       "-Dmob_dir=#{mob_dir}",
-      "-Ddriver_tab=#{driver_tab}"
+      "-Ddriver_tab=#{driver_tab}",
+      "-Dproject_jni_dir=#{Path.expand("android/app/src/main/jni")}",
+      "-Dndk_sysroot=#{ndk_sysroot()}"
     ]
 
     case System.cmd("zig", args, stderr_to_stdout: true, into: IO.stream()) do
       {_, 0} -> :ok
       {_, code} -> {:error, "zig build for #{abi} exited #{code}"}
     end
+  end
+
+  defp ndk_sysroot do
+    # NDK ships only one prebuilt — darwin-x86_64 even on Apple Silicon
+    # (Apple's Rosetta 2 covers it). On Linux it'd be linux-x86_64.
+    host =
+      case :os.type() do
+        {:unix, :darwin} -> "darwin-x86_64"
+        {:unix, :linux} -> "linux-x86_64"
+        other -> raise "unsupported host for NDK: #{inspect(other)}"
+      end
+
+    sdk_root = System.get_env("ANDROID_HOME") || Path.expand("~/Library/Android/sdk")
+    ndk_version = MobDev.NdkVersion.effective()
+    Path.join([sdk_root, "ndk", ndk_version, "toolchains", "llvm", "prebuilt", host, "sysroot"])
   end
 
   defp resolve_driver_tab_android(mob_dir) do
