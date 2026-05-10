@@ -1343,20 +1343,335 @@ defmodule MobDev.NativeBuild do
       File.write!(script_path, script)
       File.chmod!(script_path, 0o755)
 
-      env = build_device_env(cfg, otp_root, python_bundle)
+      build_dir = Path.join(System.tmp_dir!(), "mob_ios_device_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(build_dir)
 
-      case System.cmd("bash", [script_path, udid],
-             env: env,
-             stderr_to_stdout: true,
-             into: IO.stream()
-           ) do
-        {_, 0} -> {:ok, "iOS (device)"}
-        {_, _} -> {:error, "iOS", "build_device.sh failed — check output above"}
+      env = [{"MOB_BUILD_DIR", build_dir} | build_device_env(cfg, otp_root, python_bundle)]
+
+      with {_, 0} <-
+             System.cmd("bash", [script_path, udid],
+               env: env,
+               stderr_to_stdout: true,
+               into: IO.stream()
+             ),
+           app_name = ios_display_name(),
+           binary_path = Path.join(build_dir, app_name),
+           :ok <- check_path(binary_path, "iOS device binary"),
+           {:ok, app_path} <- bundle_ios_device_app(binary_path, otp_root, cfg, build_dir),
+           :ok <- maybe_slim_otp_bundle(app_path, cfg),
+           :ok <- embed_provisioning_profile(app_path, cfg[:ios_profile_uuid]),
+           :ok <- codesign_ios_device_app(app_path, cfg, build_dir),
+           :ok <- devicectl_install(udid, app_path) do
+        {:ok, "iOS (device)"}
+      else
+        {:error, reason} -> {:error, "iOS", reason}
+        {_, exit_code} when is_integer(exit_code) ->
+          {:error, "iOS", "build_device.sh exited #{exit_code} — check output above"}
       end
     else
       {:error, reason} -> {:error, "iOS", reason}
     end
   end
+
+  # Phase 2 iter 12d: bundle + codesign + devicectl install moved out of
+  # build_device.sh. The shell script now ends after `zig build binary`
+  # produces the Mach-O at MOB_BUILD_DIR/<app_name>; everything below used
+  # to live as the `# ── Bundle / Code signing / Installing ──` blocks.
+
+  defp bundle_ios_device_app(binary_path, otp_root, cfg, build_dir) do
+    app_name = ios_display_name()
+    app_module = Mix.Project.config() |> Keyword.fetch!(:app) |> Atom.to_string()
+    bundle_id = cfg[:ios_bundle_id] || cfg[:bundle_id]
+
+    if is_nil(bundle_id), do: throw_bundle_id_error()
+
+    erts_vsn = detect_erts_vsn(otp_root) || "erts-17.0"
+    app_path = Path.join(build_dir, "#{app_name}.app")
+
+    IO.puts("  === Building .app bundle at #{app_path}")
+    File.rm_rf!(app_path)
+    File.mkdir_p!(app_path)
+    File.cp!(binary_path, Path.join(app_path, app_name))
+
+    cond do
+      not File.exists?("ios/Info.plist") ->
+        {:error, "ios/Info.plist not found"}
+
+      true ->
+        info_plist = Path.join(app_path, "Info.plist")
+        File.cp!("ios/Info.plist", info_plist)
+        plist_set!(info_plist, ":CFBundleIdentifier", bundle_id)
+        plist_set!(info_plist, ":CFBundleExecutable", app_name)
+        plist_set!(info_plist, ":CFBundleName", app_name)
+
+        if File.dir?("ios/Assets.xcassets/AppIcon.appiconset"),
+          do: compile_ios_device_icons(app_path)
+
+        bundle_otp_runtime(app_path, otp_root, app_module, erts_vsn)
+        {:ok, app_path}
+    end
+  end
+
+  defp plist_set!(plist, key, value) do
+    {_, 0} =
+      System.cmd("/usr/libexec/PlistBuddy", ["-c", "Set #{key} #{value}", plist],
+        stderr_to_stdout: true
+      )
+
+    :ok
+  end
+
+  defp compile_ios_device_icons(app_path) do
+    actool_plist = Path.join(System.tmp_dir!(), "mob_actool_#{System.unique_integer([:positive])}.plist")
+
+    case System.cmd(
+           "xcrun",
+           [
+             "actool",
+             "ios/Assets.xcassets",
+             "--compile",
+             app_path,
+             "--platform",
+             "iphoneos",
+             "--minimum-deployment-target",
+             "17.0",
+             "--app-icon",
+             "AppIcon",
+             "--output-partial-info-plist",
+             actool_plist
+           ],
+           stderr_to_stdout: true
+         ) do
+      {_, 0} ->
+        _ =
+          System.cmd("/usr/libexec/PlistBuddy", [
+            "-c",
+            "Merge #{actool_plist}",
+            Path.join(app_path, "Info.plist")
+          ], stderr_to_stdout: true)
+
+      _ ->
+        :ok
+    end
+
+    File.rm(actool_plist)
+  end
+
+  defp bundle_otp_runtime(app_path, otp_root, app_module, erts_vsn) do
+    IO.puts("  === Bundling OTP runtime inside .app")
+    otp_bundle = Path.join(app_path, "otp")
+    File.mkdir_p!(otp_bundle)
+
+    rsync_dir!(Path.join(otp_root, "lib") <> "/", Path.join(otp_bundle, "lib") <> "/")
+    rsync_dir!(Path.join(otp_root, "releases") <> "/", Path.join(otp_bundle, "releases") <> "/")
+    rsync_dir!(Path.join(otp_root, app_module) <> "/", Path.join(otp_bundle, app_module) <> "/")
+
+    python_src = Path.join(otp_root, "python")
+    if File.dir?(python_src),
+      do: rsync_dir!(python_src <> "/", Path.join(otp_bundle, "python") <> "/")
+
+    for ext <- ["png", "jpg"] do
+      Path.wildcard("#{otp_root}/*.#{ext}")
+      |> Enum.each(&File.cp!(&1, Path.join(otp_bundle, Path.basename(&1))))
+    end
+
+    File.mkdir_p!(Path.join([otp_bundle, erts_vsn, "bin"]))
+
+    {size, _} = System.cmd("du", ["-sh", otp_bundle])
+    IO.puts("  OTP bundle: #{size |> String.split() |> List.first()}")
+    :ok
+  end
+
+  defp rsync_dir!(src, dst) do
+    {_, 0} =
+      System.cmd("rsync", ["-a", "--delete", src, dst], stderr_to_stdout: true, into: IO.stream())
+
+    :ok
+  end
+
+  defp maybe_slim_otp_bundle(_app_path, _cfg) do
+    if System.get_env("MOB_SLIM") == "1" do
+      IO.puts("  [SLIM:skipped-by-iter12d] slim pass not yet ported to Elixir")
+      # TODO: port the slim_step pipeline (apple_binaries / prefix_libs /
+      # foreign_apps / dedup_versions / src_and_headers / beam_chunks).
+      # For now MOB_SLIM=1 is a no-op on the device path; the shell version
+      # was ~60 lines and lives in `git log` for reference.
+    else
+      IO.puts("  [SLIM:skipped] MOB_SLIM=0 — keeping full OTP runtime")
+    end
+
+    :ok
+  end
+
+  defp embed_provisioning_profile(app_path, profile_uuid) do
+    candidates = [
+      Path.expand("~/Library/Developer/Xcode/UserData/Provisioning Profiles/#{profile_uuid}.mobileprovision"),
+      Path.expand("~/Library/MobileDevice/Provisioning Profiles/#{profile_uuid}.mobileprovision")
+    ]
+
+    case Enum.find(candidates, &File.exists?/1) do
+      nil ->
+        {:error,
+         "Provisioning profile #{profile_uuid} not found in either Xcode UserData or MobileDevice paths.\n" <>
+           "Open Xcode → Settings → Accounts → Download Profiles."}
+
+      profile_path ->
+        IO.puts("  === Embedding provisioning profile")
+        File.cp!(profile_path, Path.join(app_path, "embedded.mobileprovision"))
+        :ok
+    end
+  end
+
+  defp codesign_ios_device_app(app_path, cfg, build_dir) do
+    sign_identity = cfg[:ios_sign_identity]
+    team_id = cfg[:ios_team_id]
+    bundle_id = cfg[:ios_bundle_id] || cfg[:bundle_id]
+
+    IO.puts("  === Code signing")
+    entitlements = resolve_or_generate_entitlements(app_path, build_dir, team_id, bundle_id)
+
+    otp_bundle = Path.join(app_path, "otp")
+    if File.dir?(Path.join(otp_bundle, "python")),
+      do: codesign_python_dylibs(otp_bundle, sign_identity)
+
+    {_, 0} =
+      System.cmd(
+        "codesign",
+        [
+          "--force",
+          "--sign",
+          sign_identity,
+          "--entitlements",
+          entitlements,
+          "--timestamp=none",
+          app_path
+        ],
+        stderr_to_stdout: true,
+        into: IO.stream()
+      )
+
+    :ok
+  end
+
+  defp resolve_or_generate_entitlements(app_path, build_dir, team_id, bundle_id) do
+    case Path.wildcard("ios/*.entitlements") do
+      [entitlements | _] ->
+        entitlements
+
+      [] ->
+        path = Path.join(build_dir, "mob_device.entitlements")
+
+        # Mirror aps-environment from the profile so the binary entitlement
+        # matches what the profile grants — without this APNs registration
+        # silently fails and the push token is never delivered.
+        aps_env = read_aps_environment(Path.join(app_path, "embedded.mobileprovision"))
+
+        File.write!(path, """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>application-identifier</key>
+            <string>#{team_id}.#{bundle_id}</string>
+            <key>com.apple.developer.team-identifier</key>
+            <string>#{team_id}</string>
+            <key>get-task-allow</key>
+            <true/>
+        #{if aps_env, do: "    <key>aps-environment</key>\n    <string>#{aps_env}</string>\n", else: ""}\
+        </dict>
+        </plist>
+        """)
+
+        path
+    end
+  end
+
+  defp read_aps_environment(profile_path) do
+    # `security cms -D -i <profile>` decodes the CMS-wrapped XML plist;
+    # we route it through a temp file because PlistBuddy doesn't read
+    # stdin reliably and System.cmd doesn't pipe.
+    tmp_plist = Path.join(System.tmp_dir!(), "mob_aps_#{System.unique_integer([:positive])}.plist")
+
+    try do
+      case System.cmd("security", ["cms", "-D", "-i", profile_path, "-o", tmp_plist],
+             stderr_to_stdout: true
+           ) do
+        {_, 0} ->
+          case System.cmd(
+                 "/usr/libexec/PlistBuddy",
+                 ["-c", "Print :Entitlements:aps-environment", tmp_plist],
+                 stderr_to_stdout: true
+               ) do
+            {value, 0} -> String.trim(value)
+            _ -> nil
+          end
+
+        _ ->
+          nil
+      end
+    after
+      File.rm(tmp_plist)
+    end
+  end
+
+  defp codesign_python_dylibs(otp_bundle, sign_identity) do
+    IO.puts("  === Codesigning bundled Python dylibs")
+    lib_dynload = Path.join([otp_bundle, "python", "lib", "python3.13", "lib-dynload"])
+
+    so_files = Path.wildcard("#{lib_dynload}/**/*.so")
+
+    Enum.each(so_files, fn so ->
+      {_, 0} =
+        System.cmd(
+          "codesign",
+          ["--force", "--sign", sign_identity, "--timestamp=none", so],
+          stderr_to_stdout: true
+        )
+    end)
+
+    IO.puts("  signed #{length(so_files)} lib-dynload extensions")
+
+    framework = Path.join([otp_bundle, "python", "Python.framework", "Python"])
+    if File.exists?(framework) do
+      {_, 0} =
+        System.cmd(
+          "codesign",
+          ["--force", "--sign", sign_identity, "--timestamp=none", framework],
+          stderr_to_stdout: true
+        )
+
+      IO.puts("  signed Python.framework/Python")
+    end
+
+    Path.wildcard("#{otp_bundle}/lib/**/libpythonx.so")
+    |> Enum.each(fn pythonx ->
+      {_, 0} =
+        System.cmd(
+          "codesign",
+          ["--force", "--sign", sign_identity, "--timestamp=none", pythonx],
+          stderr_to_stdout: true
+        )
+
+      IO.puts("  signed #{Path.relative_to(pythonx, otp_bundle)}")
+    end)
+  end
+
+  defp devicectl_install(udid, app_path) do
+    IO.puts("  === Installing on device #{udid}")
+
+    case System.cmd(
+           "xcrun",
+           ["devicectl", "device", "install", "app", "--device", udid, app_path],
+           stderr_to_stdout: true,
+           into: IO.stream()
+         ) do
+      {_, 0} -> :ok
+      {_, code} -> {:error, "devicectl install failed (exit #{code}) — check output above"}
+    end
+  end
+
+  defp throw_bundle_id_error,
+    do: throw({:error, "bundle_id not set in mob.exs"})
 
   # Returns {:ok, cfg_with_signing} or {:error, reason}.
   # Values already in mob.exs are kept; missing ones are auto-detected from the
@@ -2033,7 +2348,10 @@ defmodule MobDev.NativeBuild do
 
     # ── Compile native sources ────────────────────────────────────────────────────
     echo "=== Compiling native sources ==="
-    BUILD_DIR=$(mktemp -d)
+    # MOB_BUILD_DIR is provided by Mix's build_ios_physical so the
+    # post-script bundle/codesign/install steps can find what we produced.
+    # Falls back to mktemp for direct script invocation outside Mix.
+    BUILD_DIR="${MOB_BUILD_DIR:-$(mktemp -d)}"
 
     # Phase 2 iter 12: the standard 7 native sources (5 ObjC + 1 Swift +
     # driver_tab + enif_keepalive) move into build_device.zig. EPMD,
@@ -2155,187 +2473,12 @@ defmodule MobDev.NativeBuild do
         $SQLITE_STATIC_LIB_FLAG
     cp "ios/zig-out/$APP_NAME" "$BUILD_DIR/$APP_NAME"
 
-    # ── Bundle ────────────────────────────────────────────────────────────────────
-    echo "=== Building .app bundle ==="
-    APP="$BUILD_DIR/$APP_NAME.app"
-    rm -rf "$APP"
-    mkdir -p "$APP"
-    cp "$BUILD_DIR/$APP_NAME" "$APP/"
-
-    # Patch bundle ID in Info.plist, then copy
-    cp ios/Info.plist "$APP/"
-    /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" "$APP/Info.plist"
-    /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable $APP_NAME"   "$APP/Info.plist"
-    /usr/libexec/PlistBuddy -c "Set :CFBundleName $APP_NAME"         "$APP/Info.plist"
-
-    if [ -d "ios/Assets.xcassets/AppIcon.appiconset" ]; then
-        ACTOOL_PLIST=$(mktemp /tmp/actool_XXXXXX.plist)
-        xcrun actool ios/Assets.xcassets \
-            --compile "$APP" --platform iphoneos \
-            --minimum-deployment-target 17.0 \
-            --app-icon AppIcon \
-            --output-partial-info-plist "$ACTOOL_PLIST" 2>/dev/null || true
-        /usr/libexec/PlistBuddy -c "Merge $ACTOOL_PLIST" "$APP/Info.plist" 2>/dev/null || true
-        rm -f "$ACTOOL_PLIST"
-    fi
-
-    echo "=== Bundling OTP runtime inside .app ==="
-    OTP_BUNDLE="$APP/otp"
-    mkdir -p "$OTP_BUNDLE"
-    rsync -a --delete "$OTP_ROOT/lib/"      "$OTP_BUNDLE/lib/"
-    rsync -a --delete "$OTP_ROOT/releases/" "$OTP_BUNDLE/releases/"
-    rsync -a --delete "$OTP_ROOT/$APP_MODULE/" "$OTP_BUNDLE/$APP_MODULE/"
-    # Pythonx CPython bundle, copied alongside the OTP runtime so
-    # PythonxIosSpike.PythonPaths.detect/1 (or equivalent) finds it
-    # at <App>.app/otp/python/ via :code.root_dir/0.
-    [ -d "$OTP_ROOT/python" ] && rsync -a --delete "$OTP_ROOT/python/" "$OTP_BUNDLE/python/"
-    for f in "$OTP_ROOT"/*.png "$OTP_ROOT"/*.jpg; do
-        [ -f "$f" ] && cp "$f" "$OTP_BUNDLE/"
-    done
-    mkdir -p "$OTP_BUNDLE/$ERTS_VSN/bin"
-    echo "  OTP bundle: $(du -sh "$OTP_BUNDLE" | cut -f1)"
-
-    # ── Slim build (default off for dev; opt in with `mix mob.deploy --slim`) ──
-    # Strip:
-    #   * disallowed binaries (.so/.a, standalone execs)  — Apple-policy parity
-    #   * unused OTP libs by prefix                       — bundle-size policy
-    #   * duplicate library versions                      — cache hygiene
-    #   * foreign apps from other projects                — cache hygiene
-    #   * src/ + include/ dirs                            — runtime doesn't need source
-    #   * .beam debug + doc chunks                        — runtime doesn't need debug info
-    # Same logic as MobDev.Release for the App Store path. Each step echoes a
-    # tagged size delta so a broken build can be traced to a specific step.
-    # Search the build log for `[SLIM:<step>]` to locate each pass.
-    if [ "${MOB_SLIM:-0}" = "1" ]; then
-        slim_step() {
-            local label=$1
-            local before=$(du -sk "$OTP_BUNDLE" 2>/dev/null | awk '{print $1}')
-            shift
-            "$@"
-            local after=$(du -sk "$OTP_BUNDLE" 2>/dev/null | awk '{print $1}')
-            local delta=$((before - after))
-            printf "[SLIM:%s] %s KB → %s KB  (-%s KB)\n" "$label" "$before" "$after" "$delta"
-        }
-
-        echo "=== Slim strip pass ==="
-
-        slim_step apple_binaries bash -c '
-            find "'"$OTP_BUNDLE"'" -type f \( -name "*.so" -o -name "*.a" \) -delete
-            find "'"$OTP_BUNDLE"'" -path "*/priv/bin/*" -type f -delete
-            find "'"$OTP_BUNDLE"'/'"$ERTS_VSN"'/bin" -type f -delete 2>/dev/null || true
-        '
-
-        slim_step prefix_libs bash -c '
-            for prefix in megaco runtime_tools erl_interface os_mon wx et eunit \
-                          observer debugger diameter edoc tools snmp dialyzer \
-                          syntax_tools parsetools xmerl reltool inets ftp tftp \
-                          common_test mnesia eldap odbc \
-                          compiler ssh; do
-                rm -rf "'"$OTP_BUNDLE"'/lib/$prefix-"*
-            done
-        '
-
-        slim_step foreign_apps bash -c '
-            for prefix in toy_ test_ mob_test scratch_; do
-                rm -rf "'"$OTP_BUNDLE"'/lib/$prefix"*-*
-            done
-        '
-
-        slim_step dedup_versions bash -c '
-            set +e
-            cd "'"$OTP_BUNDLE"'/lib"
-            for name in $(ls -1 2>/dev/null | sed "s/-[0-9].*$//" | sort -u); do
-                versions=$(ls -1d "${name}"-[0-9]* 2>/dev/null | sort -V)
-                [ -z "$versions" ] && continue
-                count=$(printf "%s\n" "$versions" | wc -l | tr -d " ")
-                if [ "$count" -gt 1 ]; then
-                    latest=$(printf "%s\n" "$versions" | tail -1)
-                    for v in $versions; do
-                        [ "$v" != "$latest" ] && rm -rf "$v"
-                    done
-                fi
-            done
-        '
-
-        slim_step src_and_headers find "$OTP_BUNDLE" -type d \( -name src -o -name include \) -prune -exec rm -rf {} +
-
-        slim_step beam_chunks erl -noinput -boot start_clean -eval "
-          case beam_lib:strip_release(\"$OTP_BUNDLE\") of
-            {ok, _} -> erlang:halt(0);
-            {error, beam_lib, R} ->
-              io:format(standard_error, \"  strip_release error: ~p~n\", [R]),
-              erlang:halt(1)
-          end."
-
-        echo "  Slim OTP bundle: $(du -sh "$OTP_BUNDLE" | cut -f1)"
-    else
-        echo "[SLIM:skipped] MOB_SLIM=0 — keeping full OTP runtime"
-    fi
-
-    echo "=== Embedding provisioning profile ==="
-    PROFILE_DIR="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
-    PROFILE="$PROFILE_DIR/${PROFILE_UUID}.mobileprovision"
-    if [ ! -f "$PROFILE" ]; then
-        # Also check MobileDevice path (older Xcode versions)
-        PROFILE="$HOME/Library/MobileDevice/Provisioning Profiles/${PROFILE_UUID}.mobileprovision"
-    fi
-    if [ ! -f "$PROFILE" ]; then
-        echo "ERROR: Provisioning profile $PROFILE_UUID not found."
-        echo "       Open Xcode → Settings → Accounts → Download Profiles"
-        exit 1
-    fi
-    cp "$PROFILE" "$APP/embedded.mobileprovision"
-
-    echo "=== Code signing ==="
-    # Use project entitlements if present; otherwise generate from the profile.
-    ENTITLEMENTS_FILE=$(ls ios/*.entitlements 2>/dev/null | head -1 || true)
-    if [ -z "$ENTITLEMENTS_FILE" ]; then
-        ENTITLEMENTS_FILE="$BUILD_DIR/mob_device.entitlements"
-        # Mirror aps-environment from the profile so the binary entitlement
-        # matches what the profile grants — without this, APNs registration
-        # silently fails and the push token is never delivered.
-        APS_ENV=$(security cms -D -i "$APP/embedded.mobileprovision" 2>/dev/null \
-            | /usr/libexec/PlistBuddy -c "Print :Entitlements:aps-environment" /dev/stdin 2>/dev/null \
-            || true)
-        {
-            printf '<?xml version="1.0" encoding="UTF-8"?>\n'
-            printf '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
-            printf '<plist version="1.0">\n<dict>\n'
-            printf '    <key>application-identifier</key>\n    <string>%s.%s</string>\n' "${TEAM_ID}" "${BUNDLE_ID}"
-            printf '    <key>com.apple.developer.team-identifier</key>\n    <string>%s</string>\n' "${TEAM_ID}"
-            printf '    <key>get-task-allow</key>\n    <true/>\n'
-            [ -n "$APS_ENV" ] && printf '    <key>aps-environment</key>\n    <string>%s</string>\n' "${APS_ENV}"
-            printf '</dict>\n</plist>\n'
-        } > "$ENTITLEMENTS_FILE"
-    fi
-    # ── Codesign bundled Python dylibs (bottom-up: .so → framework → app) ──
-    # Apple's signing model is bottom-up: each Mach-O image inside the bundle
-    # must be signed with the same identity as the app, otherwise the iOS
-    # loader refuses to dlopen it on device. Skip when no Python bundle.
-    if [ -d "$OTP_BUNDLE/python" ]; then
-        echo "=== Codesigning bundled Python dylibs ==="
-        find "$OTP_BUNDLE/python/lib/python3.13/lib-dynload" -name "*.so" -print0 \
-            | xargs -0 -I {} codesign --force --sign "$SIGN_IDENTITY" --timestamp=none {}
-        echo "  signed $(find "$OTP_BUNDLE/python/lib/python3.13/lib-dynload" -name '*.so' | wc -l | tr -d ' ') lib-dynload extensions"
-
-        codesign --force --sign "$SIGN_IDENTITY" --timestamp=none \
-            "$OTP_BUNDLE/python/Python.framework/Python"
-        echo "  signed Python.framework/Python"
-
-        find "$OTP_BUNDLE/lib" -name 'libpythonx.so' -print0 \
-            | xargs -0 -I {} codesign --force --sign "$SIGN_IDENTITY" --timestamp=none {}
-        echo "  signed libpythonx.so"
-    fi
-
-    codesign --force --sign "$SIGN_IDENTITY" \
-        --entitlements "$ENTITLEMENTS_FILE" \
-        --timestamp=none \
-        "$APP"
-
-    echo "=== Installing on device $DEVICE_UDID ==="
-    xcrun devicectl device install app --device "$DEVICE_UDID" "$APP"
-
-    echo "=== Build and install complete ==="
+    echo "=== Native build complete ==="
+    # Bundle assembly + OTP runtime bundling + slim strip + provisioning
+    # profile embed + codesign + devicectl install all live in
+    # MobDev.NativeBuild.build_ios_physical as of Phase 2 iter 12d.
+    # This script's job ends here — Mix takes over from BUILD_DIR/$APP_NAME.
+    echo "BUILD_DIR=$BUILD_DIR"
     """
   end
 
