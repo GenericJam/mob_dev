@@ -182,7 +182,7 @@ defmodule Mix.Tasks.Mob.Install do
 
   # Project layout detection — same predicates the doctor uses.
   defp has_android_project?, do: File.dir?(Path.join(File.cwd!(), "android"))
-  defp has_ios_project?, do: File.exists?(Path.join(File.cwd!(), "ios/build.sh"))
+  defp has_ios_project?, do: File.exists?(Path.join(File.cwd!(), "ios/build.zig"))
 
   # ── Path configuration ───────────────────────────────────────────────────────
 
