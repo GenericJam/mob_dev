@@ -197,7 +197,8 @@ defmodule MobDev.NativeBuild do
       "-Dproject_jni_dir=#{project_jni_dir}",
       "-Dndk_sysroot=#{ndk_sysroot()}",
       "-Dapp_name=#{app_name}",
-      "-Dproject_root=#{project_root}"
+      "-Dproject_root=#{project_root}",
+      "-Dexqlite_src=#{Path.join(project_root, "deps/exqlite/c_src")}"
     ]
 
     case System.cmd("zig", args, stderr_to_stdout: true, into: IO.stream()) do
