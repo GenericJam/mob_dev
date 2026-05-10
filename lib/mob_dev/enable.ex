@@ -304,9 +304,10 @@ defmodule MobDev.Enable do
   @spec detect_stale_pythonx_templates(Path.t(), String.t()) ::
           [{String.t(), String.t()}]
   def detect_stale_pythonx_templates(project_dir, _app_name) do
+    # Phase 2 iter 13b/c: ios/build.sh + ios/build_device.sh both eliminated;
+    # their Pythonx blocks moved into MobDev.NativeBuild. Only the Android
+    # CMakeLists.txt + MainActivity checks remain meaningful.
     fixed = [
-      {Path.join(["ios", "build.sh"]), "Cross-compiling libpythonx.so"},
-      {Path.join(["ios", "build_device.sh"]), "Cross-compiling libpythonx.so"},
       {Path.join(["android", "app", "src", "main", "jni", "CMakeLists.txt"]), "enif_keepalive.c"}
     ]
 
