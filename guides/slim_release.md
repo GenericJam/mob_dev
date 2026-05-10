@@ -386,8 +386,9 @@ The pattern is:
    `MobDev.OtpAudit` reports — most strip ideas come from finding
    something unreachable that nobody noticed.
 2. Add the step to `MobDev.Release.release_device_sh/0` (release
-   path) AND `MobDev.NativeBuild.generate_build_device_sh/2` (dev
-   path), wrapped in `slim_step <tag> ...`.
+   path) AND `MobDev.NativeBuild.maybe_slim_otp_bundle/2` (dev
+   path — Phase 2 iter 13a moved the dev slim pipeline into Mix),
+   wrapped in `slim_step <tag> ...`.
 3. Add a string-shape test in `test/mob_dev/release_script_test.exs`
    under the "MOB_SLIM gating and per-step traceability" describe
    block — every tag in the strip set should appear in the

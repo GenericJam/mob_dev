@@ -211,12 +211,10 @@ during `mix mob.deploy --native`. It dlopens
 |---|---|
 | Download + cache BeeWare bundle | `MobDev.PythonAppleSupport.ensure/0` |
 | Detect Pythonx in user's project | `MobDev.NativeBuild.pythonx_in_project?/1` |
-| Generate `ios/build_device.sh` (with Pythonx blocks) | `MobDev.NativeBuild.generate_build_device_sh/2` |
-| Cross-compile `libpythonx.so` | `xcrun -sdk iphoneos clang++` (in script) |
-| Generate `enif_keepalive.c` (174 enif_* refs) | `MobDev.NativeBuild.generate_ios_enif_keepalive/2` |
-| Bundle framework + stdlib + lib-dynload | `cp -R` into `<otp_root>/python/` (in script) |
-| Codesign every dylib bottom-up | `codesign` per `.so` + framework binary (in script) |
-| Sign the `.app` | final `codesign` (in script) |
+| Install pythonx as OTP lib + cross-compile `libpythonx.so` | `MobDev.NativeBuild.maybe_setup_pythonx_device/5` (Mix-driven, calls `xcrun -sdk iphoneos clang++` directly) |
+| Generate `enif_keepalive.c` (174 enif_* refs) | `MobDev.NativeBuild.generate_enif_keepalive/3` |
+| Bundle framework + stdlib + lib-dynload into `<otp_root>/python/` | inside `maybe_setup_pythonx_device/5` |
+| Codesign every dylib bottom-up | `MobDev.NativeBuild.codesign_ios_device_app/3` (`codesign` per `.so` + framework binary, then `.app`) |
 
 ### Android
 
