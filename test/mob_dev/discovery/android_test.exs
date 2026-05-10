@@ -142,6 +142,7 @@ defmodule MobDev.Discovery.AndroidTest do
       # which is identical for every running emulator.
       assert Android.device_node_suffix("emulator-5554") == "emulator_5554"
       assert Android.device_node_suffix("emulator-5556") == "emulator_5556"
+
       refute Android.device_node_suffix("emulator-5554") ==
                Android.device_node_suffix("emulator-5556")
     end
