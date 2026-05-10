@@ -400,63 +400,10 @@ defmodule MobDev.NativeBuildTest do
     end
   end
 
-  describe "generate_build_device_sh/2 — pythonx bundling block" do
-    setup do
-      cfg = [
-        bundle_id: "com.example.test",
-        ios_team_id: "ABC123",
-        ios_sign_identity: "Apple Development: t@e (X)",
-        ios_profile_uuid: "uuid",
-        mob_dir: "/tmp/mob",
-        elixir_lib: "/tmp/elixir/lib"
-      ]
-
-      {:ok, sh: NativeBuild.generate_build_device_sh(cfg, "/tmp/otp")}
-    end
-
-    test "exports MOB_TARGET=ios so user code can branch on platform at compile",
-         %{sh: sh} do
-      # The python feature no longer requires this for compile-env
-      # correctness — the same `:uv_init` config lands at compile and
-      # runtime. The export is kept so user code (and any legacy gated
-      # configs) can still introspect the build target if needed.
-      assert sh =~ "export MOB_TARGET=ios"
-    end
-
-    test "gates Pythonx work behind _build/dev/lib/pythonx detection", %{sh: sh} do
-      assert sh =~ ~s|if [ -d "_build/dev/lib/pythonx" ]|
-    end
-
-    test "installs pythonx as OTP library (mirrors exqlite pattern)", %{sh: sh} do
-      assert sh =~ "Installing pythonx as OTP library"
-      assert sh =~ ~s|PYTHONX_LIB_DIR="$OTP_ROOT/lib/pythonx-${PYTHONX_VSN}"|
-    end
-
-    test "cross-compiles libpythonx.so for iphoneos arm64", %{sh: sh} do
-      assert sh =~ "Cross-compiling libpythonx.so"
-      assert sh =~ "xcrun -sdk iphoneos clang++"
-      assert sh =~ "-miphoneos-version-min=17.0"
-      assert sh =~ "-undefined dynamic_lookup"
-    end
-
-    test "bundles Python.framework + stdlib + lib-dynload (device arch)", %{sh: sh} do
-      assert sh =~ "ios-arm64/Python.framework"
-      assert sh =~ "ios-arm64/lib-arm64/python3.13/lib-dynload"
-      assert sh =~ ~s|"$OTP_ROOT/python/Python.framework"|
-      assert sh =~ ~s|"$OTP_ROOT/python/lib/python3.13"|
-    end
-
-    # rsync of python/ into the .app and codesign of lib-dynload + Python.framework
-    # binary moved out of build_device.sh into MobDev.NativeBuild (iter 12d).
-    # Only the cross-compiled libpythonx.so still flows through the script.
-    test "still references libpythonx.so cross-compile target", %{sh: sh} do
-      assert sh =~ "libpythonx.so"
-    end
-
-    test "errors clearly when PYTHON_APPLE_SUPPORT unset but pythonx present", %{sh: sh} do
-      assert sh =~ "PYTHON_APPLE_SUPPORT"
-      # Either explicit error or :? expansion
-      assert sh =~ ~r/PYTHON_APPLE_SUPPORT.*not set|PYTHON_APPLE_SUPPORT:\?/
-    end
-  end
+  # build_device.sh script generation removed in Phase 2 iter 13c — iOS
+  # device build glue (mix compile, BEAM copies, NIF cross-compile, Pythonx
+  # framework, EPMD patch, enif_keepalive, build_device.zig invocation) all
+  # flow through MobDev.NativeBuild helpers now. The Pythonx detection
+  # (`pythonx_in_project?/1` + `python_apple_support_env/2`) is still public
+  # and tested in the surrounding describe block.
 end

@@ -385,25 +385,9 @@ defmodule MobDev.EnableTest do
       assert Enable.detect_stale_pythonx_templates(dir, "my_app") == []
     end
 
-    test "flags an existing build.sh that lacks the libpythonx marker", %{dir: dir} do
-      File.mkdir_p!(Path.join(dir, "ios"))
-      File.write!(Path.join(dir, "ios/build.sh"), "#!/bin/sh\nxcodebuild ...\n")
-
-      stale = Enable.detect_stale_pythonx_templates(dir, "my_app")
-      assert {"ios/build.sh", "Cross-compiling libpythonx.so"} in stale
-    end
-
-    test "doesn't flag a build.sh that already has the marker", %{dir: dir} do
-      File.mkdir_p!(Path.join(dir, "ios"))
-
-      File.write!(
-        Path.join(dir, "ios/build.sh"),
-        "#!/bin/sh\necho '=== Cross-compiling libpythonx.so ==='\n"
-      )
-
-      stale = Enable.detect_stale_pythonx_templates(dir, "my_app")
-      refute Enum.any?(stale, fn {rel, _} -> rel == "ios/build.sh" end)
-    end
+    # Phase 2 iter 13b/c removed both ios/build.sh + ios/build_device.sh —
+    # their Pythonx blocks live in MobDev.NativeBuild now, so there's no
+    # template to detect staleness against.
 
     test "flags MainActivity.kt regardless of java package", %{dir: dir} do
       pkg_dir = Path.join(dir, "android/app/src/main/java/com/something/odd/my_app")

@@ -39,9 +39,9 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
 
   ## Recommended workflow (Mob projects)
 
-  Mob projects use `ios/build_device.sh` rather than a full Xcode project,
-  which means the bench task's `xcodebuild` path doesn't apply. Use this
-  two-step pattern instead:
+  Mob projects use `ios/build.zig` (driven by Mix's NativeBuild pipeline)
+  rather than a full Xcode project, which means the bench task's
+  `xcodebuild` path doesn't apply. Use this two-step pattern instead:
 
       # 1. Push BEAM flags via mob.deploy (no native rebuild — ~5 sec).
       mix mob.deploy --beam-flags "" --ios               # tuned (Nerves)
@@ -749,14 +749,15 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
         {:project, proj}
 
       _ ->
-        # Mob projects use ios/build.sh (simulator only) rather than an Xcode project.
-        # Physical device builds require xcodebuild, which needs a .xcodeproj or .xcworkspace.
-        build_sh = Path.join(ios_dir, "build.sh")
+        # Mob projects use ios/build.zig (mob's Mix-driven build) rather than an
+        # Xcode project. Physical device battery benchmarks require xcodebuild,
+        # which needs a .xcodeproj or .xcworkspace.
+        build_zig = Path.join(ios_dir, "build.zig")
 
-        if File.exists?(build_sh) do
+        if File.exists?(build_zig) do
           Mix.raise("""
-          This project uses ios/build.sh (mob's build system), which targets the \
-          iOS simulator only. Physical device builds require an Xcode project file.
+          This project uses ios/build.zig (mob's build system), driven by Mix. \
+          Physical device battery benchmarks require an Xcode project file.
 
           To run the battery benchmark:
             1. Open the project in Xcode, select a physical device, and run once.

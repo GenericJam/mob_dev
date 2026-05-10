@@ -439,13 +439,13 @@ defmodule Mix.Tasks.Mob.Doctor do
       check_required(
         "python3",
         :fail,
-        "required by ios/build.sh to detect the booted simulator",
+        "required by NativeBuild's iOS pipeline (EPMD source patching for in-process startup)",
         "python3 is included with macOS Xcode command-line tools:\n      xcode-select --install"
       ),
       check_required(
         "rsync",
         :fail,
-        "required by ios/build.sh to sync the OTP runtime to ~/.mob/runtime/ios-sim",
+        "required by NativeBuild's iOS pipeline to sync the OTP runtime to ~/.mob/runtime/ios-sim",
         "rsync is included with macOS — if missing:\n      brew install rsync"
       )
     ]
@@ -853,7 +853,7 @@ defmodule Mix.Tasks.Mob.Doctor do
   # ── Helpers ──────────────────────────────────────────────────────────────────
 
   defp has_android_project?, do: File.dir?("android")
-  defp has_ios_project?, do: File.exists?("ios/build.sh")
+  defp has_ios_project?, do: File.exists?("ios/build.zig")
   defp macos?, do: match?({:unix, :darwin}, :os.type())
 
   defp ansi(:cyan), do: IO.ANSI.cyan()
