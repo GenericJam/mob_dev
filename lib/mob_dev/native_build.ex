@@ -1489,18 +1489,120 @@ defmodule MobDev.NativeBuild do
     :ok
   end
 
-  defp maybe_slim_otp_bundle(_app_path, _cfg) do
+  defp maybe_slim_otp_bundle(app_path, _cfg) do
     if System.get_env("MOB_SLIM") == "1" do
-      IO.puts("  [SLIM:skipped-by-iter12d] slim pass not yet ported to Elixir")
-      # TODO: port the slim_step pipeline (apple_binaries / prefix_libs /
-      # foreign_apps / dedup_versions / src_and_headers / beam_chunks).
-      # For now MOB_SLIM=1 is a no-op on the device path; the shell version
-      # was ~60 lines and lives in `git log` for reference.
+      otp_bundle = Path.join(app_path, "otp")
+      erts_vsn = detect_erts_vsn(otp_bundle) || ""
+      IO.puts("  === Slim strip pass")
+
+      slim_step("apple_binaries", otp_bundle, fn ->
+        # Apple-policy parity: no .so/.a in the bundle, no standalone executables.
+        Path.wildcard("#{otp_bundle}/**/*.so") |> Enum.each(&File.rm!/1)
+        Path.wildcard("#{otp_bundle}/**/*.a") |> Enum.each(&File.rm!/1)
+
+        Path.wildcard("#{otp_bundle}/**/priv/bin/*")
+        |> Enum.each(fn p -> if File.regular?(p), do: File.rm!(p) end)
+
+        if erts_vsn != "" do
+          erts_bin = Path.join([otp_bundle, erts_vsn, "bin"])
+
+          if File.dir?(erts_bin) do
+            File.ls!(erts_bin)
+            |> Enum.map(&Path.join(erts_bin, &1))
+            |> Enum.each(fn p -> if File.regular?(p), do: File.rm!(p) end)
+          end
+        end
+      end)
+
+      slim_step("prefix_libs", otp_bundle, fn ->
+        # OTP libs we don't need at runtime on a mobile device.
+        prefixes = ~w(
+          megaco runtime_tools erl_interface os_mon wx et eunit
+          observer debugger diameter edoc tools snmp dialyzer
+          syntax_tools parsetools xmerl reltool inets ftp tftp
+          common_test mnesia eldap odbc
+          compiler ssh
+        )
+
+        for prefix <- prefixes do
+          Path.wildcard("#{otp_bundle}/lib/#{prefix}-*") |> Enum.each(&File.rm_rf!/1)
+        end
+      end)
+
+      slim_step("foreign_apps", otp_bundle, fn ->
+        # Cache hygiene — apps from other projects that snuck into the OTP cache.
+        for prefix <- ~w(toy_ test_ mob_test scratch_) do
+          Path.wildcard("#{otp_bundle}/lib/#{prefix}*-*") |> Enum.each(&File.rm_rf!/1)
+        end
+      end)
+
+      slim_step("dedup_versions", otp_bundle, fn ->
+        # Multiple installed versions of the same app — keep the latest.
+        lib_dir = Path.join(otp_bundle, "lib")
+
+        if File.dir?(lib_dir) do
+          File.ls!(lib_dir)
+          |> Enum.map(&Path.join(lib_dir, &1))
+          |> Enum.filter(&File.dir?/1)
+          |> Enum.group_by(fn dir ->
+            dir |> Path.basename() |> String.replace(~r/-[\d.]+$/, "")
+          end)
+          |> Enum.each(fn {_name, dirs} ->
+            if length(dirs) > 1 do
+              latest = Enum.max_by(dirs, &Path.basename/1)
+              dirs |> Enum.reject(&(&1 == latest)) |> Enum.each(&File.rm_rf!/1)
+            end
+          end)
+        end
+      end)
+
+      slim_step("src_and_headers", otp_bundle, fn ->
+        # Runtime doesn't need source code or .h headers.
+        for name <- ~w(src include) do
+          Path.wildcard("#{otp_bundle}/**/#{name}")
+          |> Enum.filter(&File.dir?/1)
+          |> Enum.each(&File.rm_rf!/1)
+        end
+      end)
+
+      slim_step("beam_chunks", otp_bundle, fn ->
+        # `:beam_lib.strip_release/1` drops Debug/Doc chunks from .beam files
+        # in lib/<app>/ebin/ — analog to the C-side -ffunction-sections +
+        # -dead_strip. Same behaviour as MobDev.Release uses for App Store builds.
+        case :beam_lib.strip_release(String.to_charlist(otp_bundle)) do
+          {:ok, _} ->
+            :ok
+
+          {:error, :beam_lib, reason} ->
+            IO.warn("strip_release error: #{inspect(reason)}")
+        end
+      end)
+
+      {size, _} = System.cmd("du", ["-sh", otp_bundle])
+      IO.puts("  Slim OTP bundle: #{size |> String.split() |> List.first()}")
     else
       IO.puts("  [SLIM:skipped] MOB_SLIM=0 — keeping full OTP runtime")
     end
 
     :ok
+  end
+
+  defp slim_step(label, otp_bundle, fun) do
+    before = bundle_size_kb(otp_bundle)
+    fun.()
+    after_size = bundle_size_kb(otp_bundle)
+    delta = before - after_size
+    IO.puts("  [SLIM:#{label}] #{before} KB → #{after_size} KB  (-#{delta} KB)")
+  end
+
+  defp bundle_size_kb(dir) do
+    case System.cmd("du", ["-sk", dir], stderr_to_stdout: true) do
+      {out, 0} ->
+        out |> String.split() |> List.first() |> String.to_integer()
+
+      _ ->
+        0
+    end
   end
 
   defp embed_provisioning_profile(app_path, profile_uuid) do
