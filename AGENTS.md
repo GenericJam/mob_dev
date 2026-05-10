@@ -45,12 +45,12 @@ mix test --exclude integration # skip the device-dependent ones
   preserved alongside our hint so the snippet stays google-able. Add new
   pattern matches there when you encounter a new Apple error string.
 - **APNs push token never arrives on iOS device** if the binary's codesigning
-  entitlements omit `aps-environment`. `generate_build_device_sh` auto-mirrors
-  the value from the embedded provisioning profile into the fallback entitlements.
-  If the profile was provisioned without push, no mirroring happens — either
-  re-provision with push enabled or create `ios/<AppName>.entitlements` with
-  `aps-environment: development`. Test the plist text via
-  `NativeBuild.fallback_entitlements_plist/3`.
+  entitlements omit `aps-environment`. `NativeBuild.codesign_ios_device_app/3`
+  auto-mirrors the value from the embedded provisioning profile into the
+  fallback entitlements. If the profile was provisioned without push, no
+  mirroring happens — either re-provision with push enabled or create
+  `ios/<AppName>.entitlements` with `aps-environment: development`. Test the
+  plist text via `NativeBuild.fallback_entitlements_plist/3`.
 - **OTP tarball schema changes need bumping `valid_otp_dir?/2`** in
   `otp_downloader.ex` so existing caches auto-redownload. Don't bump the OTP
   hash — the schema check is the right knob.
@@ -68,7 +68,7 @@ narrowing functions). Don't make them private:
 - `OtpDownloader.valid_otp_dir?/2`, `ios_device_extras_present?/1`
 - `PythonAppleSupport.valid_dir?/1`
 - `NativeBuild.narrow_platforms_for_device/2`, `ios_toolchain_available?/0`, `read_sdk_dir/1`, `fallback_entitlements_plist/3`
-- `NativeBuild.pythonx_in_project?/1`, `python_apple_support_env/2`, `generate_build_device_sh/2`
+- `NativeBuild.pythonx_in_project?/1`, `python_apple_support_env/2`
 - `Enable.inject_pythonx_dep/1`, `inject_pythonx_uv_init_gate/2`, `python_paths_module_template/1`
 - `Emulators.parse_simctl_json/1`, `find_emulator_binary/1`
 - `Provision.diagnose_xcodebuild_failure/1`
