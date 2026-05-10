@@ -113,6 +113,7 @@ defmodule MobDev.NativeBuild do
     IO.puts("  Building Android APK...")
     bundle_id = cfg[:bundle_id] || MobDev.Config.bundle_id()
     apk = "android/app/build/outputs/apk/debug/app-debug.apk"
+    mob_dir = Path.expand(cfg[:mob_dir])
 
     with {:ok, otp_arm64} <- MobDev.OtpDownloader.ensure_android("arm64-v8a"),
          {:ok, otp_arm32} <- MobDev.OtpDownloader.ensure_android("armeabi-v7a"),
@@ -120,6 +121,7 @@ defmodule MobDev.NativeBuild do
          :ok <- ensure_jni_libs(otp_arm64, "arm64-v8a"),
          :ok <- ensure_jni_libs(otp_arm32, "armeabi-v7a"),
          :ok <- ensure_python_android_libs(python_android_bundle),
+         :ok <- zig_build_android_objects(mob_dir, otp_arm64, otp_arm32),
          :ok <- gradle_assemble(),
          :ok <- adb_install_all(apk, bundle_id, device_id),
          :ok <-
@@ -135,6 +137,89 @@ defmodule MobDev.NativeBuild do
       {:error, reason} -> {:error, "Android", reason}
     end
   end
+
+  # Phase 2 iter 8: invoke build.zig per-ABI before Gradle. Produces
+  # android/app/build/zig-out/<abi>/driver_tab_android.o which CMakeLists.txt
+  # picks up via its `if(EXISTS ${ZIG_DRIVER_TAB_O})` check; the per-ABI
+  # path is what CMake's ${ANDROID_ABI} variable resolves to.
+  #
+  # Skips silently if the project has no jni/build.zig (older projects from
+  # before this iter still work via CMake compiling driver_tab_android.c
+  # directly through the Phase 0 fallback).
+  defp zig_build_android_objects(mob_dir, otp_arm64, otp_arm32) do
+    build_zig = "android/app/src/main/jni/build.zig"
+
+    cond do
+      not File.exists?(build_zig) ->
+        :ok
+
+      not zig_available?() ->
+        IO.puts(
+          "  #{IO.ANSI.yellow()}zig not on PATH — skipping build.zig step (CMake will compile sources directly)#{IO.ANSI.reset()}"
+        )
+
+        :ok
+
+      true ->
+        driver_tab = resolve_driver_tab_android(mob_dir)
+        erts_vsn = detect_erts_vsn(otp_arm64) || "erts-17.0"
+
+        IO.puts("  Compiling Android C objects via zig build (per-ABI)...")
+
+        Enum.reduce_while([{otp_arm64, "arm64-v8a"}, {otp_arm32, "armeabi-v7a"}], :ok, fn {otp_dir, abi}, _acc ->
+          case run_zig_android_objects(build_zig, abi, otp_dir, erts_vsn, mob_dir, driver_tab) do
+            :ok -> {:cont, :ok}
+            {:error, reason} -> {:halt, {:error, reason}}
+          end
+        end)
+    end
+  end
+
+  defp run_zig_android_objects(build_zig, abi, otp_dir, erts_vsn, mob_dir, driver_tab) do
+    args = [
+      "build",
+      "c-objects",
+      "--build-file",
+      build_zig,
+      "--prefix",
+      "android/app/build/zig-out",
+      "-Dabi=#{abi}",
+      "-Dotp_dir=#{otp_dir}",
+      "-Derts_vsn=#{erts_vsn}",
+      "-Dmob_dir=#{mob_dir}",
+      "-Ddriver_tab=#{driver_tab}"
+    ]
+
+    case System.cmd("zig", args, stderr_to_stdout: true, into: IO.stream()) do
+      {_, 0} -> :ok
+      {_, code} -> {:error, "zig build for #{abi} exited #{code}"}
+    end
+  end
+
+  defp resolve_driver_tab_android(mob_dir) do
+    cond do
+      File.exists?("priv/generated/driver_tab_android.c") ->
+        Path.expand("priv/generated/driver_tab_android.c")
+
+      true ->
+        Path.join([mob_dir, "android", "jni", "driver_tab_android.c"])
+    end
+  end
+
+  defp detect_erts_vsn(otp_dir) do
+    case File.ls(otp_dir) do
+      {:ok, entries} ->
+        entries
+        |> Enum.filter(&String.starts_with?(&1, "erts-"))
+        |> Enum.sort(:desc)
+        |> List.first()
+
+      _ ->
+        nil
+    end
+  end
+
+  defp zig_available?, do: not is_nil(System.find_executable("zig"))
 
   # Downloads Chaquopy's CPython distribution iff Pythonx is a dep.
   # Returns `{:ok, nil}` for projects without Pythonx so the rest of the
