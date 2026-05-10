@@ -275,20 +275,54 @@ defmodule MobDev.Discovery.Android do
   """
   @spec device_node_suffix(String.t()) :: String.t()
   def device_node_suffix(adb_id) when is_binary(adb_id) do
-    case System.cmd("adb", ["-s", adb_id, "shell", "getprop", "ro.serialno"],
-           stderr_to_stdout: true
-         ) do
-      {output, 0} ->
-        hardware_serial = String.trim(output)
+    # Android emulators all hardcode `ro.serialno` to the same placeholder
+    # (`EMULATOR36X5X10X0` on AOSP image, similar on others). Trusting that
+    # serial would put every running emulator under the same node-name
+    # suffix and they'd collide on the host EPMD with `eaddrinuse`. The
+    # adb identifier (e.g. `emulator-5554` vs `emulator-5556`) IS unique
+    # per running emulator, so prefer that for emulator targets. The
+    # short-circuit on `emulator-` adb ids skips the unnecessary
+    # adb-shell call too.
+    if emulator_adb_id?(adb_id) do
+      node_suffix_for(adb_id)
+    else
+      case System.cmd("adb", ["-s", adb_id, "shell", "getprop", "ro.serialno"],
+             stderr_to_stdout: true
+           ) do
+        {output, 0} ->
+          hardware_serial = String.trim(output)
 
-        if hardware_serial == "",
-          do: node_suffix_for(adb_id),
-          else: node_suffix_for(hardware_serial)
+          cond do
+            hardware_serial == "" ->
+              node_suffix_for(adb_id)
 
-      _ ->
-        node_suffix_for(adb_id)
+            emulator_serial?(hardware_serial) ->
+              # Some emulator launchers report the placeholder serial even
+              # when the adb id wasn't `emulator-NNNN` (e.g. genymotion via
+              # network-adb). Defensive: also fall back to adb_id here.
+              node_suffix_for(adb_id)
+
+            true ->
+              node_suffix_for(hardware_serial)
+          end
+
+        _ ->
+          node_suffix_for(adb_id)
+      end
     end
   end
+
+  # The adb identifier the Android emulator registers as. Genymotion etc.
+  # use IP-based adb ids that don't match this prefix, so they fall through
+  # to the serial check.
+  @spec emulator_adb_id?(String.t()) :: boolean()
+  def emulator_adb_id?(adb_id), do: String.starts_with?(adb_id, "emulator-")
+
+  # The placeholder hardware serial Android emulator images burn in. AOSP
+  # uses `EMULATOR36X5X10X0`; the prefix match accommodates other vendor
+  # variants without churning the regex on each new emulator image.
+  @spec emulator_serial?(String.t()) :: boolean()
+  def emulator_serial?(serial), do: String.starts_with?(serial, "EMULATOR")
 
   defp run_adb(args) do
     cmd = Enum.join(["adb" | args], " ")

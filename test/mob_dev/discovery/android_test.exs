@@ -132,6 +132,57 @@ defmodule MobDev.Discovery.AndroidTest do
     end
   end
 
+  describe "device_node_suffix/1" do
+    test "emulator adb id short-circuits without adb-shell call" do
+      # If the function tried to shell out to adb in the test env it would
+      # either time out or fail; the short-circuit keeps it pure for any
+      # adb id beginning with `emulator-`. Two separate emulators map to
+      # two distinct suffixes — fixing the EPMD `eaddrinuse` collision
+      # we hit with the AOSP placeholder serial `EMULATOR36X5X10X0`,
+      # which is identical for every running emulator.
+      assert Android.device_node_suffix("emulator-5554") == "emulator_5554"
+      assert Android.device_node_suffix("emulator-5556") == "emulator_5556"
+      refute Android.device_node_suffix("emulator-5554") ==
+               Android.device_node_suffix("emulator-5556")
+    end
+  end
+
+  # ── emulator detection ──────────────────────────────────────────────────────
+
+  describe "emulator_adb_id?/1" do
+    test "matches the canonical emulator-NNNN adb id" do
+      assert Android.emulator_adb_id?("emulator-5554")
+      assert Android.emulator_adb_id?("emulator-5556")
+    end
+
+    test "does not match physical USB serials" do
+      refute Android.emulator_adb_id?("ZY22CRLMWK")
+      refute Android.emulator_adb_id?("00008110-001E1C3A34F8401E")
+    end
+
+    test "does not match WiFi-adb identifiers" do
+      refute Android.emulator_adb_id?("10.0.0.82:5555")
+    end
+  end
+
+  describe "emulator_serial?/1" do
+    test "matches the AOSP emulator placeholder serial" do
+      assert Android.emulator_serial?("EMULATOR36X5X10X0")
+    end
+
+    test "matches other EMULATOR-prefixed vendor variants" do
+      # Defensive — different system images may report different
+      # post-prefix values, but they all start with EMULATOR.
+      assert Android.emulator_serial?("EMULATOR12345")
+      assert Android.emulator_serial?("EMULATORabc")
+    end
+
+    test "does not match real hardware serials" do
+      refute Android.emulator_serial?("ZY22CRLMWK")
+      refute Android.emulator_serial?("RZ8N8090ABC")
+    end
+  end
+
   # ── integration: list_devices/0 ──────────────────────────────────────────────
 
   @tag :integration

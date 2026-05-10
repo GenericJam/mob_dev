@@ -38,8 +38,18 @@ defmodule MobDev.Tunnel do
   def setup(%Device{platform: :android, serial: serial} = device, index) do
     dist_port = @base_dist_port + index
 
+    # Forward host:dist_port -> device:dist_port (1:1) rather than
+    # the older host:dist_port -> device:9100. The device's BEAM picks
+    # up `MOB_DIST_PORT` from the launch intent extra (set by
+    # `Discovery.Android.restart_app/4`) and listens on `dist_port`
+    # inside the emulator/device — so EPMD broadcasts that same port.
+    # When a Mac IEx asks EPMD for a node, it gets back `dist_port`
+    # and connects to `localhost:dist_port`, which adb-forwards to the
+    # right device's BEAM. With 1:N forwarding (every device's forward
+    # pointing at device-side 9100), only the index-0 device was
+    # reachable; non-zero indices got silent EPMD/forward mismatches.
     with :ok <- reverse(serial, @epmd_port, @epmd_port),
-         :ok <- forward(serial, dist_port, @base_dist_port) do
+         :ok <- forward(serial, dist_port, dist_port) do
       {:ok, %{device | dist_port: dist_port, status: :tunneled}}
     end
   end
