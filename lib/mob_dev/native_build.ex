@@ -176,9 +176,15 @@ defmodule MobDev.NativeBuild do
   end
 
   defp run_zig_android_objects(build_zig, abi, otp_dir, erts_vsn, mob_dir, driver_tab) do
+    app_name = Mix.Project.config() |> Keyword.fetch!(:app) |> Atom.to_string()
+    project_root = Path.expand(".")
+    project_jni_dir = Path.join(project_root, "android/app/src/main/jni")
+    jni_libs_abi = Path.join([project_root, "android/app/src/main/jniLibs", abi])
+    File.mkdir_p!(jni_libs_abi)
+
     args = [
       "build",
-      "c-objects",
+      "native-lib",
       "--build-file",
       build_zig,
       "--prefix",
@@ -188,8 +194,10 @@ defmodule MobDev.NativeBuild do
       "-Derts_vsn=#{erts_vsn}",
       "-Dmob_dir=#{mob_dir}",
       "-Ddriver_tab=#{driver_tab}",
-      "-Dproject_jni_dir=#{Path.expand("android/app/src/main/jni")}",
-      "-Dndk_sysroot=#{ndk_sysroot()}"
+      "-Dproject_jni_dir=#{project_jni_dir}",
+      "-Dndk_sysroot=#{ndk_sysroot()}",
+      "-Dapp_name=#{app_name}",
+      "-Dproject_root=#{project_root}"
     ]
 
     case System.cmd("zig", args, stderr_to_stdout: true, into: IO.stream()) do
