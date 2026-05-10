@@ -2034,31 +2034,13 @@ defmodule MobDev.NativeBuild do
     # ── Compile native sources ────────────────────────────────────────────────────
     echo "=== Compiling native sources ==="
     BUILD_DIR=$(mktemp -d)
-    SWIFT_BRIDGING="$MOB_DIR/ios/MobDemo-Bridging-Header.h"
 
-    $CC -fobjc-arc -fmodules $IFLAGS \
-        -c "$MOB_DIR/ios/MobNode.m" -o "$BUILD_DIR/MobNode.o"
-
-    xcrun -sdk iphoneos swiftc \
-        -target arm64-apple-ios17.0 \
-        -module-name "$APP_NAME" \
-        -emit-objc-header -emit-objc-header-path "$BUILD_DIR/MobApp-Swift.h" \
-        -import-objc-header "$SWIFT_BRIDGING" \
-        -I "$MOB_DIR/ios" \
-        -parse-as-library -wmo \
-        "$MOB_DIR/ios/MobViewModel.swift" \
-        "$MOB_DIR/ios/MobRootView.swift" \
-        -c -o "$BUILD_DIR/swift_mob.o"
-
-    $CC -fobjc-arc -fmodules $IFLAGS \
-        -I "$BUILD_DIR" -DSTATIC_ERLANG_NIF \
-        -c "$MOB_DIR/ios/mob_nif.m" -o "$BUILD_DIR/mob_nif.o"
-
-    $CC -fobjc-arc -fmodules $IFLAGS \
-        -DMOB_BUNDLE_OTP \
-        -DERTS_VSN=\"$ERTS_VSN\" \
-        -DOTP_RELEASE=\"$OTP_RELEASE\" \
-        -c "$MOB_DIR/ios/mob_beam.m" -o "$BUILD_DIR/mob_beam.o"
+    # Phase 2 iter 12: the standard 7 native sources (5 ObjC + 1 Swift +
+    # driver_tab + enif_keepalive) move into build_device.zig. EPMD,
+    # erl_errno_id_compat stub, and the link still happen in this script
+    # for now — they migrate in iter 12b/c. The zig build invocation is
+    # below, after EPMD compile and enif_keepalive.c generation so all
+    # the inputs to the build.zig graph exist when it runs.
 
     echo "=== Compiling in-process EPMD ==="
     # `-DNO_DAEMON` strips EPMD's `run_daemon()` (which calls fork()) from the
@@ -2109,17 +2091,9 @@ defmodule MobDev.NativeBuild do
     xcrun -sdk iphoneos clang -arch arm64 -miphoneos-version-min=17.0 \
         $EPMD_FLAGS -c "$EPMD_SRC/epmd_cli.c" -o "$BUILD_DIR/epmd_cli.o"
 
-    SQLITE_FLAG=""
-    [ -n "$SQLITE_STATIC_LIB" ] && SQLITE_FLAG="-DMOB_STATIC_SQLITE_NIF"
-    $CC $IFLAGS $SQLITE_FLAG \
-        -c "$MOB_DIR/ios/driver_tab_ios.c" -o "$BUILD_DIR/driver_tab_ios.o"
-
-    $CC -fobjc-arc -fmodules $IFLAGS \
-        -I "$BUILD_DIR" \
-        -c ios/AppDelegate.m -o "$BUILD_DIR/AppDelegate.o"
-
-    $CC -fobjc-arc -fmodules $IFLAGS \
-        -c ios/beam_main.m -o "$BUILD_DIR/beam_main.o"
+    # SQLITE_STATIC_LIB presence is signaled to build_device.zig via
+    # -Dsqlite_static=true so it adds -DMOB_STATIC_SQLITE_NIF to the
+    # driver_tab compile.
 
     # ── Stub for erl_errno_id_unknown ────────────────────────────────────────────
     # Missing from libbeam.a in OTP 17.0 (function was split into a separate
@@ -2165,7 +2139,33 @@ defmodule MobDev.NativeBuild do
     rm -rf "$NIF_O_TMP"
     KEEP_COUNT=$(grep -c '^extern void enif_' "$BUILD_DIR/enif_keepalive.c" || true)
     echo "  $KEEP_COUNT enif_* symbols pinned"
-    $CC -c "$BUILD_DIR/enif_keepalive.c" -o "$BUILD_DIR/enif_keepalive.o"
+
+    # Phase 2 iter 12: invoke build_device.zig now that all its inputs
+    # exist (driver_tab_ios.c per-app, enif_keepalive.c just generated,
+    # MobApp-Swift.h is emitted by the swift step inside build.zig).
+    SQLITE_STATIC_FLAG=""
+    [ -n "$SQLITE_STATIC_LIB" ] && SQLITE_STATIC_FLAG="-Dsqlite_static=true"
+    DRIVER_TAB_IOS="$(pwd)/priv/generated/driver_tab_ios.c"
+    [ ! -f "$DRIVER_TAB_IOS" ] && DRIVER_TAB_IOS="$MOB_DIR/ios/driver_tab_ios.c"
+    zig build objects --build-file ios/build_device.zig \
+        -Dmob_dir="$MOB_DIR" \
+        -Dotp_root="$OTP_ROOT" \
+        -Derts_vsn="$ERTS_VSN" \
+        -Dotp_release="$OTP_RELEASE" \
+        -Dsdkroot="$SDKROOT" \
+        -Ddriver_tab="$DRIVER_TAB_IOS" \
+        -Denif_keepalive="$BUILD_DIR/enif_keepalive.c" \
+        -Dproject_ios_dir="$(pwd)/ios" \
+        -Dmodule_name="$APP_NAME" \
+        $SQLITE_STATIC_FLAG
+    cp ios/zig-out/driver_tab_ios.o   "$BUILD_DIR/driver_tab_ios.o"
+    cp ios/zig-out/enif_keepalive.o   "$BUILD_DIR/enif_keepalive.o"
+    cp ios/zig-out/MobNode.o          "$BUILD_DIR/MobNode.o"
+    cp ios/zig-out/mob_nif.o          "$BUILD_DIR/mob_nif.o"
+    cp ios/zig-out/mob_beam.o         "$BUILD_DIR/mob_beam.o"
+    cp ios/zig-out/AppDelegate.o      "$BUILD_DIR/AppDelegate.o"
+    cp ios/zig-out/beam_main.o        "$BUILD_DIR/beam_main.o"
+    cp ios/zig-out/swift_mob.o        "$BUILD_DIR/swift_mob.o"
 
     # ── Link ─────────────────────────────────────────────────────────────────────
     echo "=== Linking $APP_NAME binary ==="
