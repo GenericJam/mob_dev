@@ -2137,7 +2137,9 @@ defmodule MobDev.NativeBuild do
     [ -n "$SQLITE_STATIC_LIB" ] && SQLITE_STATIC_FLAG="-Dsqlite_static=true"
     DRIVER_TAB_IOS="$(pwd)/priv/generated/driver_tab_ios.c"
     [ ! -f "$DRIVER_TAB_IOS" ] && DRIVER_TAB_IOS="$MOB_DIR/ios/driver_tab_ios.c"
-    zig build objects --build-file ios/build_device.zig \
+    SQLITE_STATIC_LIB_FLAG=""
+    [ -n "$SQLITE_STATIC_LIB" ] && SQLITE_STATIC_LIB_FLAG="-Dsqlite_static_lib=$SQLITE_STATIC_LIB"
+    zig build binary --build-file ios/build_device.zig \
         -Dmob_dir="$MOB_DIR" \
         -Dotp_root="$OTP_ROOT" \
         -Derts_vsn="$ERTS_VSN" \
@@ -2149,46 +2151,9 @@ defmodule MobDev.NativeBuild do
         -Dmodule_name="$APP_NAME" \
         -Depmd_build_src="$EPMD_BUILD_SRC" \
         -Derrno_compat="$BUILD_DIR/erl_errno_id_compat.c" \
-        $SQLITE_STATIC_FLAG
-    cp ios/zig-out/driver_tab_ios.o      "$BUILD_DIR/driver_tab_ios.o"
-    cp ios/zig-out/enif_keepalive.o      "$BUILD_DIR/enif_keepalive.o"
-    cp ios/zig-out/MobNode.o             "$BUILD_DIR/MobNode.o"
-    cp ios/zig-out/mob_nif.o             "$BUILD_DIR/mob_nif.o"
-    cp ios/zig-out/mob_beam.o            "$BUILD_DIR/mob_beam.o"
-    cp ios/zig-out/AppDelegate.o         "$BUILD_DIR/AppDelegate.o"
-    cp ios/zig-out/beam_main.o           "$BUILD_DIR/beam_main.o"
-    cp ios/zig-out/swift_mob.o           "$BUILD_DIR/swift_mob.o"
-    cp ios/zig-out/epmd_main.o           "$BUILD_DIR/epmd_main.o"
-    cp ios/zig-out/epmd_srv.o            "$BUILD_DIR/epmd_srv.o"
-    cp ios/zig-out/epmd_cli.o            "$BUILD_DIR/epmd_cli.o"
-    cp ios/zig-out/erl_errno_id_compat.o "$BUILD_DIR/erl_errno_id_compat.o"
-
-    # ── Link ─────────────────────────────────────────────────────────────────────
-    echo "=== Linking $APP_NAME binary ==="
-    xcrun -sdk iphoneos swiftc \
-        -target arm64-apple-ios17.0 \
-        "$BUILD_DIR/driver_tab_ios.o" \
-        "$BUILD_DIR/MobNode.o" \
-        "$BUILD_DIR/swift_mob.o" \
-        "$BUILD_DIR/mob_nif.o" \
-        "$BUILD_DIR/mob_beam.o" \
-        "$BUILD_DIR/epmd_main.o" \
-        "$BUILD_DIR/epmd_srv.o" \
-        "$BUILD_DIR/epmd_cli.o" \
-        "$BUILD_DIR/AppDelegate.o" \
-        "$BUILD_DIR/beam_main.o" \
-        "$BUILD_DIR/erl_errno_id_compat.o" \
-        "$BUILD_DIR/enif_keepalive.o" \
-        $LIBS \
-        "$SQLITE_STATIC_LIB" \
-        -lz -lc++ -lpthread \
-        -Xlinker -dead_strip \
-        -Xlinker -framework -Xlinker UIKit \
-        -Xlinker -framework -Xlinker Foundation \
-        -Xlinker -framework -Xlinker CoreGraphics \
-        -Xlinker -framework -Xlinker QuartzCore \
-        -Xlinker -framework -Xlinker SwiftUI \
-        -o "$BUILD_DIR/$APP_NAME"
+        $SQLITE_STATIC_FLAG \
+        $SQLITE_STATIC_LIB_FLAG
+    cp "ios/zig-out/$APP_NAME" "$BUILD_DIR/$APP_NAME"
 
     # ── Bundle ────────────────────────────────────────────────────────────────────
     echo "=== Building .app bundle ==="
