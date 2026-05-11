@@ -167,7 +167,15 @@ defmodule Mix.Tasks.Mob.Enable do
         Igniter.add_issue(igniter, "No mix.exs found. Run mix mob.enable from your project root.")
 
       true ->
-        app_name = read_app_name(File.cwd!())
+        # Read app name from Igniter's view of mix.exs (which respects
+        # `test_project(files: %{"mix.exs" => ...})` virtualization).
+        # Falls back to the on-disk read when the igniter doesn't have a
+        # mix.exs source yet (real invocation outside a test harness).
+        app_name =
+          case Igniter.Project.Application.app_name(igniter) do
+            nil -> read_app_name(File.cwd!())
+            atom -> Atom.to_string(atom)
+          end
 
         Enum.reduce(features, igniter, fn feature, acc ->
           dispatch(acc, feature, app_name)
