@@ -18,37 +18,61 @@ defmodule Mix.Tasks.Mob.RegenDriverTabTest do
     %{tmp: tmp}
   end
 
-  describe "default run" do
-    test "generates both driver_tab files" do
+  describe "default run (Zig, as of Phase 6a iter 4)" do
+    test "generates both .zig driver_tab files" do
       capture_run([])
 
-      paths = RegenDriverTab.target_paths()
+      paths = RegenDriverTab.target_paths(:zig)
       assert File.exists?(paths.ios)
       assert File.exists?(paths.android)
+      # The .c paths are NOT written by default.
+      c_paths = RegenDriverTab.target_paths(:c)
+      refute File.exists?(c_paths.ios)
+      refute File.exists?(c_paths.android)
     end
 
     test "generated files contain mob_nif_init for both platforms" do
       capture_run([])
-      paths = RegenDriverTab.target_paths()
+      paths = RegenDriverTab.target_paths(:zig)
 
       assert File.read!(paths.ios) =~ "mob_nif_nif_init"
       assert File.read!(paths.android) =~ "mob_nif_nif_init"
     end
 
-    test "iOS output gates sqlite3_nif under MOB_STATIC_SQLITE_NIF" do
+    test "iOS output gates sqlite3_nif via comptime sqlite_static (no #ifdef)" do
       capture_run([])
-      ios_src = File.read!(RegenDriverTab.target_paths().ios)
+      ios_src = File.read!(RegenDriverTab.target_paths(:zig).ios)
 
-      assert ios_src =~ "#ifdef MOB_STATIC_SQLITE_NIF"
+      # Zig path uses comptime gating, not C preprocessor.
+      refute ios_src =~ "#ifdef MOB_STATIC_SQLITE_NIF"
+      assert ios_src =~ "sqlite_static"
       assert ios_src =~ "sqlite3_nif_nif_init"
     end
 
     test "Android output omits sqlite3_nif" do
       capture_run([])
-      android_src = File.read!(RegenDriverTab.target_paths().android)
+      android_src = File.read!(RegenDriverTab.target_paths(:zig).android)
 
       refute android_src =~ "sqlite3_nif"
-      refute android_src =~ "MOB_STATIC_SQLITE_NIF"
+      refute android_src =~ "sqlite_static"
+    end
+  end
+
+  describe "--format c (opt-out for hand-editable C)" do
+    test "writes .c paths instead of .zig when requested" do
+      capture_run(["--format", "c"])
+      c = RegenDriverTab.target_paths(:c)
+      zig = RegenDriverTab.target_paths(:zig)
+      assert File.exists?(c.ios)
+      assert File.exists?(c.android)
+      refute File.exists?(zig.ios)
+      refute File.exists?(zig.android)
+    end
+
+    test "C output uses #ifdef MOB_STATIC_SQLITE_NIF (legacy behavior)" do
+      capture_run(["--format", "c"])
+      ios_src = File.read!(RegenDriverTab.target_paths(:c).ios)
+      assert ios_src =~ "#ifdef MOB_STATIC_SQLITE_NIF"
     end
   end
 
@@ -57,7 +81,7 @@ defmodule Mix.Tasks.Mob.RegenDriverTabTest do
       Application.put_env(:mob_dev, :static_nifs, [%{module: :foo_native}])
 
       capture_run([])
-      paths = RegenDriverTab.target_paths()
+      paths = RegenDriverTab.target_paths(:zig)
 
       assert File.read!(paths.ios) =~ "foo_native_nif_init"
       assert File.read!(paths.android) =~ "foo_native_nif_init"
@@ -81,7 +105,7 @@ defmodule Mix.Tasks.Mob.RegenDriverTabTest do
 
     test "raises with a list of drifted paths" do
       capture_run([])
-      paths = RegenDriverTab.target_paths()
+      paths = RegenDriverTab.target_paths(:zig)
       File.write!(paths.ios, "// tampered\n")
 
       assert_raise Mix.Error, ~r/driver_tab drift detected/, fn ->
@@ -93,7 +117,7 @@ defmodule Mix.Tasks.Mob.RegenDriverTabTest do
   describe "deterministic output" do
     test "two regen runs against the same manifest produce identical bytes" do
       capture_run([])
-      paths = RegenDriverTab.target_paths()
+      paths = RegenDriverTab.target_paths(:zig)
       first_ios = File.read!(paths.ios)
       first_android = File.read!(paths.android)
 

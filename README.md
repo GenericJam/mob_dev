@@ -37,7 +37,7 @@ end
 | `mix mob.push` | Hot-push only changed modules (no restart) |
 | `mix mob.enable <feature>...` | Wire up an optional Mob feature — platform-manifest entries, Elixir stubs, dep injections ([see below](#mix-mobenable-feature)) |
 | `mix mob.add_nif <name>` | Scaffold a statically-linked NIF — Elixir stub + `mob.exs` `:static_nifs` append + optional native skeleton ([see below](#mix-mobadd_nif-name)) |
-| `mix mob.regen_driver_tab` | Regenerate `priv/generated/driver_tab_{ios,android}.c` from `mob.exs`'s `:static_nifs` (composed automatically into `mob.add_nif`) |
+| `mix mob.regen_driver_tab` | Regenerate `priv/generated/driver_tab_{ios,android}.zig` from `mob.exs`'s `:static_nifs` (default; pass `--format c` for the hand-editable C variant; composed automatically into `mob.add_nif`) |
 | `mix mob.server` | Start the dev dashboard at `localhost:4040` |
 | `mix mob.icon` | Regenerate app icons |
 | `mix mob.routes` | Validate navigation destinations across the codebase |
@@ -132,7 +132,7 @@ Scaffolds a statically-linked NIF in one command. Picks up the
 [StaticNifs](`MobDev.StaticNifs`) schema, drops native + Elixir
 templates appropriate to the chosen backend, appends the entry to
 `mob.exs`, and re-runs `mix mob.regen_driver_tab` so
-`priv/generated/driver_tab_{ios,android}.c` reflects the new entry —
+`priv/generated/driver_tab_{ios,android}.zig` reflects the new entry —
 all visible as a single Igniter diff before commit.
 
 ```bash
