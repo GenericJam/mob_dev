@@ -1,5 +1,5 @@
 defmodule Mix.Tasks.Mob.Enable do
-  use Mix.Task
+  use Igniter.Mix.Task
 
   @shortdoc "Enable optional Mob features in this project"
 
@@ -133,137 +133,96 @@ defmodule Mix.Tasks.Mob.Enable do
 
   @valid_features ~w(liveview camera photo_library file_sharing location notifications python)
 
-  @impl Mix.Task
-  def run([]) do
-    Mix.shell().error("Usage: mix mob.enable FEATURE [FEATURE ...]")
-    Mix.shell().info("Valid features: #{Enum.join(@valid_features, ", ")}")
-    Mix.raise("No features specified")
+  @impl Igniter.Mix.Task
+  def info(_argv, _composing_task) do
+    %Igniter.Mix.Task.Info{
+      group: :mob,
+      schema: [],
+      # mob.enable takes a variable list of feature names; we parse those
+      # from `igniter.args.argv` ourselves rather than declaring a single
+      # positional binding.
+      positional: []
+    }
   end
 
-  def run(argv) do
-    {_opts, features, _} = OptionParser.parse(argv, strict: [])
-
-    project_dir = File.cwd!()
-
-    unless File.exists?(Path.join(project_dir, "mix.exs")) do
-      Mix.raise("No mix.exs found. Run mix mob.enable from your project root.")
-    end
-
+  @impl Igniter.Mix.Task
+  def igniter(igniter) do
+    features = parse_features(igniter.args.argv)
     unknown = features -- @valid_features
 
-    if unknown != [] do
-      Mix.raise(
-        "Unknown feature(s): #{Enum.join(unknown, ", ")}. " <>
-          "Valid: #{Enum.join(@valid_features, ", ")}"
-      )
+    cond do
+      features == [] ->
+        Igniter.add_issue(
+          igniter,
+          "Usage: mix mob.enable FEATURE [FEATURE ...]\nValid features: #{Enum.join(@valid_features, ", ")}"
+        )
+
+      unknown != [] ->
+        Igniter.add_issue(
+          igniter,
+          "Unknown feature(s): #{Enum.join(unknown, ", ")}. Valid: #{Enum.join(@valid_features, ", ")}"
+        )
+
+      not File.exists?("mix.exs") ->
+        Igniter.add_issue(igniter, "No mix.exs found. Run mix mob.enable from your project root.")
+
+      true ->
+        app_name = read_app_name(File.cwd!())
+
+        Enum.reduce(features, igniter, fn feature, acc ->
+          dispatch(acc, feature, app_name)
+        end)
     end
-
-    app_name = read_app_name(project_dir)
-
-    Enum.each(features, fn feature ->
-      Mix.shell().info([:cyan, "\nEnabling #{feature}...", :reset])
-      enable(feature, project_dir, app_name)
-    end)
-
-    Mix.shell().info([:green, "\nDone.", :reset])
   end
 
-  # ── Feature handlers ──────────────────────────────────────────────────────
+  # ── Feature dispatch (Phase 4 iter 1: all features routed through Igniter) ──
 
-  defp enable("liveview", project_dir, app_name) do
-    generate_mob_screen(project_dir, app_name)
-    inject_mob_hook(project_dir)
-    inject_mob_bridge_element(project_dir, app_name)
-    update_mob_exs(project_dir)
-    android_add_liveview_network_config(project_dir)
+  alias MobDev.Enable.Igniter, as: EI
+
+  defp dispatch(igniter, "camera", app_name), do: EI.enable_camera(igniter, app_name)
+
+  defp dispatch(igniter, "photo_library", app_name),
+    do: EI.enable_photo_library(igniter, app_name)
+
+  defp dispatch(igniter, "location", app_name), do: EI.enable_location(igniter, app_name)
+  defp dispatch(igniter, "file_sharing", app_name), do: EI.enable_file_sharing(igniter, app_name)
+
+  defp dispatch(igniter, "notifications", app_name),
+    do: EI.enable_notifications(igniter, app_name)
+
+  defp dispatch(igniter, "liveview", app_name), do: EI.enable_liveview(igniter, app_name)
+
+  defp dispatch(igniter, "python", app_name) do
+    igniter
+    |> EI.enable_python(app_name)
+    |> Igniter.add_notice(python_next_steps(app_name))
   end
 
-  defp enable("camera", project_dir, _app_name) do
-    ios_add_plist_key(project_dir, "NSCameraUsageDescription", "This app uses the camera.")
-    android_add_permission(project_dir, "android.permission.CAMERA")
+  defp parse_features(argv) do
+    {_opts, features, _} = OptionParser.parse(argv, strict: [yes: :boolean])
+    features
   end
 
-  defp enable("photo_library", project_dir, _app_name) do
-    ios_add_plist_key(
-      project_dir,
-      "NSPhotoLibraryAddUsageDescription",
-      "This app saves photos to your library."
-    )
-
-    android_noop("photo_library", "no manifest change needed on API 29+")
-  end
-
-  defp enable("file_sharing", project_dir, _app_name) do
-    ios_add_plist_key(project_dir, "UIFileSharingEnabled", "true", type: :bool)
-    ios_add_plist_key(project_dir, "LSSupportsOpeningDocumentsInPlace", "true", type: :bool)
-    android_add_file_provider(project_dir)
-  end
-
-  defp enable("location", project_dir, _app_name) do
-    ios_add_plist_key(
-      project_dir,
-      "NSLocationWhenInUseUsageDescription",
-      "This app uses your location."
-    )
-
-    android_add_permission(project_dir, "android.permission.ACCESS_FINE_LOCATION")
-  end
-
-  defp enable("notifications", project_dir, app_name) do
-    android_noop(
-      "notifications",
-      "POST_NOTIFICATIONS is requested at runtime, no manifest key needed"
-    )
-
-    ios_create_push_entitlements(project_dir, app_name)
-  end
-
-  defp enable("python", project_dir, app_name) do
-    pythonx_inject_dep(project_dir)
-    pythonx_generate_paths_module(project_dir, app_name)
-    pythonx_check_native_templates(project_dir, app_name)
-
+  defp python_next_steps(app_name) do
     module = Macro.camelize(app_name)
 
-    Mix.shell().info("""
-
-      Next steps:
-        1. Run `mix deps.get` to fetch :pythonx
-        2. In your `Mob.App.on_start/0`, call:
-
-             {:ok, _} = Application.ensure_all_started(:pythonx)
-
-             case #{module}.PythonPaths.detect(to_string(:code.root_dir())) do
-               :desktop ->
-                 toml = \"\"\"
-                 [project]
-                 name = "#{app_name}"
-                 version = "0.1.0"
-                 requires-python = "==3.13.*"
-                 dependencies = []
-                 \"\"\"
-                 Pythonx.Uv.fetch(toml, false)
-                 Pythonx.Uv.init(toml, false)
-
-               {:ios, %{dl_path: dl, home_path: home}} ->
-                 Pythonx.init(dl, home, dl, sys_paths: [])
-
-               {:android, %{dl_path: dl, home_path: home}} ->
-                 Pythonx.init(dl, home, dl,
-                   sys_paths: [Path.join([home, "lib", "python3.13"])])
-
-               {:partial, missing} ->
-                 # log + bail out — bundle is incomplete
-                 nil
-             end
-
-           pyproject_toml is inlined so it's NOT in compile-time config —
-           Pythonx.Application would otherwise auto-run uv at app boot,
-           which fails on device.
-        3. `mix mob.deploy --native --device <udid>` to bundle CPython +
-           install on device. iOS downloads the BeeWare framework on first
-           run; Android pulls Chaquopy's prebuilt distribution.
-    """)
+    """
+    Next steps for python:
+      1. Run `mix deps.get` to fetch :pythonx
+      2. In your `Mob.App.on_start/0`:
+           {:ok, _} = Application.ensure_all_started(:pythonx)
+           case #{module}.PythonPaths.detect(to_string(:code.root_dir())) do
+             :desktop                               -> Pythonx.Uv.fetch(toml, false); Pythonx.Uv.init(toml, false)
+             {:ios, %{dl_path: dl, home_path: home}}     -> Pythonx.init(dl, home, dl, sys_paths: [])
+             {:android, %{dl_path: dl, home_path: home}} -> Pythonx.init(dl, home, dl, sys_paths: [Path.join([home, "lib", "python3.13"])])
+             {:partial, missing}                    -> # log + bail out
+           end
+         pyproject_toml stays inline so Pythonx.Application doesn't auto-run uv
+         on device (where uv doesn't exist).
+      3. `mix mob.deploy --native --device <udid>` to bundle CPython +
+         install on device. iOS downloads the BeeWare framework on first
+         run; Android pulls Chaquopy's prebuilt distribution.
+    """
   end
 
   # ── LiveView: generate MobScreen ─────────────────────────────────────────
