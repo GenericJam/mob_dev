@@ -3,19 +3,34 @@ defmodule Mix.Tasks.Mob.RegenDriverTab do
 
   alias MobDev.StaticNifs
 
-  @shortdoc "Regenerate priv/generated/driver_tab_*.c from :static_nifs"
+  @shortdoc "Regenerate priv/generated/driver_tab_*.zig from :static_nifs"
 
   @moduledoc """
   Regenerates the per-app static-NIF table source files in
-  `priv/generated/driver_tab_ios.c` and `priv/generated/driver_tab_android.c`.
+  `priv/generated/driver_tab_ios.zig` and `priv/generated/driver_tab_android.zig`.
 
   These files are linked **before** `libbeam.a` so they override BEAM's empty
   built-in `erts_static_nif_tab[]`. Without them, `load_nif/2` falls back to
   `dlopen`, which is broken on iOS (App Store rejects bundled `.dylibs`) and
   on Android (RTLD_LOCAL hides parent's `enif_*` symbols from children).
 
-      mix mob.regen_driver_tab           # regenerate both platforms
-      mix mob.regen_driver_tab --check   # verify on-disk matches manifest, exit non-zero on drift
+      mix mob.regen_driver_tab              # regenerate both platforms (default: Zig)
+      mix mob.regen_driver_tab --format c   # emit driver_tab_*.c instead (hand-editable C)
+      mix mob.regen_driver_tab --check      # verify on-disk matches manifest, exit non-zero on drift
+
+  ## Format
+
+  Zig is the default as of Phase 6a iter 4 — it uses comptime gates
+  instead of `#ifdef` for guarded NIFs (e.g. iOS `sqlite3_nif`
+  device-only), and Zig's `export` keyword produces the same C-ABI
+  symbols libbeam.a expects. `--format c` is still supported for
+  anyone who wants a hand-editable C dispatch table. Both formats
+  produce equivalent behavior at link time.
+
+  C NIF authors are unaffected by the default: their `c_src/<name>.c`
+  files compile via the usual path, and the Zig dispatch table calls
+  their `<name>_nif_init()` function through standard C ABI (`extern
+  fn <name>_nif_init() callconv(.c)`).
 
   ## Where the NIF list comes from
 
@@ -70,12 +85,16 @@ defmodule Mix.Tasks.Mob.RegenDriverTab do
     end
   end
 
-  defp parse_format(nil), do: :c
-  defp parse_format("c"), do: :c
+  # Default is :zig as of Phase 6a iter 4. Pass `--format c` to opt out
+  # (e.g. if you want a hand-editable .c dispatch table). Both formats
+  # produce equivalent behavior at link time; the .zig version uses
+  # comptime gates instead of `#ifdef` for guarded NIFs.
+  defp parse_format(nil), do: :zig
   defp parse_format("zig"), do: :zig
+  defp parse_format("c"), do: :c
 
   defp parse_format(other) do
-    Mix.raise("Unknown --format #{inspect(other)}. Supported: c, zig.")
+    Mix.raise("Unknown --format #{inspect(other)}. Supported: zig (default), c.")
   end
 
   @doc false

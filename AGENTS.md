@@ -60,7 +60,7 @@ mix test --exclude integration # skip the device-dependent ones
 - **`mob.add_nif` is the entry point for new NIFs.** Don't add `:static_nifs`
   entries by hand to `mob.exs` — the task already does the AST-aware append,
   generates the Elixir stub via Igniter, and re-runs `mob.regen_driver_tab`
-  so `priv/generated/driver_tab_*.c` stays in sync. `--type` of `c`,
+  so `priv/generated/driver_tab_*.zig` stays in sync. `--type` of `c`,
   `zigler`, `rustler` also drops the right native skeleton; `elixir-only`
   (default) leaves the C/Zig/Rust to you. The stubs for zigler/rustler
   carry an explicit static-link warning — those backends produce dlopen'd
