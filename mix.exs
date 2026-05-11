@@ -9,6 +9,7 @@ defmodule MobDev.MixProject do
       description: "Development tooling for the Mob mobile framework",
       source_url: "https://github.com/genericjam/mob_dev",
       compilers: compilers(Mix.env()) ++ Mix.compilers(),
+      elixirc_paths: elixirc_paths(Mix.env()),
       deps: deps(),
       package: package(),
       docs: docs(),
@@ -48,6 +49,11 @@ defmodule MobDev.MixProject do
 
   defp compilers(_), do: []
 
+  # Include test/support/ in test compile so Mox definitions etc. are
+  # available without manually requiring them.
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_), do: ["lib"]
+
   def application do
     [extra_applications: [:logger]]
   end
@@ -72,6 +78,10 @@ defmodule MobDev.MixProject do
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:jump_credo_checks, "~> 0.1.0", only: [:dev, :test], runtime: false},
+      # Mox — behaviour-based mocks for the MobDev.Release.* test suite.
+      # Lets us test "given inputs, clang is invoked with these args"
+      # without actually running clang.
+      {:mox, "~> 1.2", only: :test},
       {:erlfmt, "~> 1.8", only: :dev, runtime: false},
       # Dev-only dead-code detector. Wires in via the `:unused` compiler
       # tracer; ignore list maintained inline below since this codebase has
