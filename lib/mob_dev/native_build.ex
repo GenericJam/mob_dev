@@ -755,25 +755,35 @@ defmodule MobDev.NativeBuild do
   end
 
   # Drops project-supplied Python packages from `priv/python_wheels/`
-  # into the APK's `assets/python/.../site-packages/`.
+  # into the per-platform site-packages directory under `python_root`.
+  #
+  # `python_root` is the platform's Python install root:
+  #   * Android: `android/app/src/main/assets/python` (APK assets dir)
+  #   * iOS:     `<otp_root>/python` (under the .app bundle)
+  #
+  # Both layouts share the `lib/python3.13/site-packages` suffix, so a
+  # single helper works for all three callers (`copy_python_assets/1` for
+  # Android, `maybe_setup_pythonx_sim/5` + `maybe_setup_pythonx_device/5`
+  # for iOS).
   #
   # Each subdirectory of `priv/python_wheels/` is treated as an
   # already-extracted wheel — copy the directory contents directly into
   # site-packages. Wheel-extraction is the project's job (the wheel
   # format is package-specific and per-platform), but landing the
-  # extracted layout into the APK is a generic step worth owning here
-  # so every Mob+Pythonx project doesn't reimplement asset placement.
+  # extracted layout into the per-platform bundle is a generic step
+  # worth owning here so every Mob+Pythonx project doesn't reimplement
+  # asset placement.
   #
   # Layout convention: `priv/python_wheels/<wheel-name>/` contains the
   # wheel's unzipped contents. A typical `cryptography-X.Y/` directory
   # holds `cryptography/`, `cryptography-X.Y.dist-info/`, and any
-  # `*.cpython-313-android_*.so` files. Everything inside gets copied
-  # verbatim — site-packages discovery handles the rest.
-  defp copy_project_python_wheels(assets_root) do
+  # platform-specific `.so` / `.dylib` files. Everything inside gets
+  # copied verbatim — site-packages discovery handles the rest.
+  defp copy_project_python_wheels(python_root) do
     wheels_dir = Path.join("priv", "python_wheels")
 
     if File.dir?(wheels_dir) do
-      site_packages = Path.join([assets_root, "lib", "python3.13", "site-packages"])
+      site_packages = Path.join([python_root, "lib", "python3.13", "site-packages"])
       File.mkdir_p!(site_packages)
 
       wheels_dir
@@ -1460,6 +1470,14 @@ defmodule MobDev.NativeBuild do
               copy_dir!(python_framework, Path.join(python_dir, "Python.framework"))
               copy_dir!(python_stdlib, Path.join(python_dir, "lib/python3.13"))
               copy_dir!(python_lib_dynload, Path.join(python_dir, "lib/python3.13/lib-dynload"))
+              # Project-supplied wheels into site-packages (matches Android's
+              # ensure_python_android_libs path). Without this, projects that
+              # bundle e.g. rns / lxmf in priv/python_wheels/ boot the
+              # simulator, hit `import RNS`, and hang on the launch spinner.
+              # The iOS *device* path (maybe_setup_pythonx_device) gets the
+              # same call below — see nif_future.md item #4 for the original
+              # bug report.
+              copy_project_python_wheels(python_dir)
               :ok
 
             {_, _} ->
@@ -2078,6 +2096,12 @@ defmodule MobDev.NativeBuild do
             cp_r!(framework, Path.join(python_dst, "Python.framework"))
             cp_r!(stdlib, Path.join(python_dst, "lib/python3.13"))
             cp_r!(lib_dynload, Path.join(python_dst, "lib/python3.13/lib-dynload"))
+            # Project-supplied wheels into site-packages — mirrors Android's
+            # ensure_python_android_libs path and the sim path above. Without
+            # this, real-device Python apps boot and hang on `import RNS`
+            # because `priv/python_wheels/` never landed in the .app bundle.
+            # See nif_future.md item #4.
+            copy_project_python_wheels(python_dst)
             :ok
           else
             _ -> {:error, "pythonx NIF cross-compile failed"}
