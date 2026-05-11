@@ -85,16 +85,36 @@ defmodule Mix.Tasks.Mob.RegenDriverTab do
     end
   end
 
-  # Default is :zig as of Phase 6a iter 4. Pass `--format c` to opt out
-  # (e.g. if you want a hand-editable .c dispatch table). Both formats
-  # produce equivalent behavior at link time; the .zig version uses
-  # comptime gates instead of `#ifdef` for guarded NIFs.
-  defp parse_format(nil), do: :zig
+  # Default is :zig as of Phase 6a iter 4 — for projects whose
+  # `ios/build.zig` was generated with the addZigObject helper (mob_new
+  # post-iter-2). Older projects without that helper fall back to :c
+  # because their build.zig's addCObject → addCSourceFile path can't
+  # compile a .zig source (Zig 0.17-dev rejects the conflicting
+  # -Mroot=./ + positional .zig combination). Pass `--format c`/`--format zig`
+  # explicitly to override the auto-detect.
+  defp parse_format(nil), do: detect_default_format()
   defp parse_format("zig"), do: :zig
   defp parse_format("c"), do: :c
 
   defp parse_format(other) do
-    Mix.raise("Unknown --format #{inspect(other)}. Supported: zig (default), c.")
+    Mix.raise("Unknown --format #{inspect(other)}. Supported: zig, c.")
+  end
+
+  defp detect_default_format do
+    case File.read("ios/build.zig") do
+      {:ok, content} ->
+        if String.contains?(content, "addZigObject") do
+          :zig
+        else
+          :c
+        end
+
+      _ ->
+        # No project-side build.zig (rare — e.g. running from a fresh
+        # template directory). Default to Zig; if there's no build
+        # pipeline yet the file is harmless until one's added.
+        :zig
+    end
   end
 
   @doc false
