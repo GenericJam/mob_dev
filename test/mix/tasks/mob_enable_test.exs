@@ -90,6 +90,52 @@ defmodule Mix.Tasks.Mob.EnableTest do
     end
   end
 
+  describe "python feature" do
+    test "adds :pythonx dep via Igniter (AST-aware) — iter 2" do
+      igniter =
+        test_project()
+        |> Igniter.compose_task("mob.enable", ["python"])
+
+      mix_exs = Rewrite.Source.get(Rewrite.source!(igniter.rewrite, "mix.exs"), :content)
+      # The dep was added via `Igniter.Project.Deps.add_dep` (parses
+      # the deps/0 AST and appends), not regex.
+      assert mix_exs =~ ":pythonx"
+    end
+
+    test "generates lib/<app>/python_paths.ex as an Elixir module" do
+      igniter =
+        test_project()
+        |> Igniter.compose_task("mob.enable", ["python"])
+
+      file = Rewrite.source!(igniter.rewrite, "lib/test/python_paths.ex")
+      content = Rewrite.Source.get(file, :content)
+      assert content =~ "defmodule Test.PythonPaths"
+    end
+
+    test "is idempotent — re-adding doesn't duplicate the :pythonx dep" do
+      mix_exs = """
+      defmodule Test.MixProject do
+        use Mix.Project
+
+        def project, do: [app: :test, deps: deps()]
+
+        defp deps do
+          [
+            {:pythonx, "~> 0.4"}
+          ]
+        end
+      end
+      """
+
+      igniter =
+        test_project(files: %{"mix.exs" => mix_exs})
+        |> Igniter.compose_task("mob.enable", ["python"])
+
+      patched = Rewrite.Source.get(Rewrite.source!(igniter.rewrite, "mix.exs"), :content)
+      assert patched |> String.split(":pythonx") |> length() == 2
+    end
+  end
+
   describe "missing platform dirs" do
     test "no ios/ → adds a notice instead of failing" do
       igniter =
