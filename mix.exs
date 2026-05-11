@@ -64,6 +64,11 @@ defmodule MobDev.MixProject do
       {:bandit, "~> 1.0"},
       {:phoenix_pubsub, "~> 2.0"},
       {:plug_crypto, "~> 2.0"},
+      # Igniter — AST-aware code generation. Used by `mix mob.add_nif` and
+      # (planned) the LV generator to manipulate user mix.exs / mob.exs /
+      # generated modules without regex-patching Elixir source. Phase 3 of
+      # the build-system migration.
+      {:igniter, "~> 0.8"},
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:jump_credo_checks, "~> 0.1.0", only: [:dev, :test], runtime: false},
