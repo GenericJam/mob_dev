@@ -35,6 +35,8 @@ end
 | `mix mob.watch_stop` | Stop a running `mix mob.watch` |
 | `mix mob.devices` | List connected devices and their status |
 | `mix mob.push` | Hot-push only changed modules (no restart) |
+| `mix mob.add_nif <name>` | Scaffold a statically-linked NIF — Elixir stub + `mob.exs` `:static_nifs` append + optional native skeleton ([see below](#mix-mobadd_nif-name)) |
+| `mix mob.regen_driver_tab` | Regenerate `priv/generated/driver_tab_{ios,android}.c` from `mob.exs`'s `:static_nifs` (composed automatically into `mob.add_nif`) |
 | `mix mob.server` | Start the dev dashboard at `localhost:4040` |
 | `mix mob.icon` | Regenerate app icons |
 | `mix mob.routes` | Validate navigation destinations across the codebase |
@@ -88,6 +90,50 @@ Pushing 14 BEAM file(s) to 2 device(s)...
 If dist is not reachable (first deploy, app not running), it falls back to `adb push` + restart. Mixed deploys work — one device can hot-push while another restarts.
 
 **Requirements:** The app must call `Mob.Dist.ensure_started/1` at startup, and the cookie must match the one in `mob.exs` (default `:mob_secret`).
+
+## `mix mob.add_nif <name>`
+
+Scaffolds a statically-linked NIF in one command. Picks up the
+[StaticNifs](`MobDev.StaticNifs`) schema, drops native + Elixir
+templates appropriate to the chosen backend, appends the entry to
+`mob.exs`, and re-runs `mix mob.regen_driver_tab` so
+`priv/generated/driver_tab_{ios,android}.c` reflects the new entry —
+all visible as a single Igniter diff before commit.
+
+```bash
+mix mob.add_nif audio_engine                        # default --type elixir-only (you write the C)
+mix mob.add_nif audio_engine --type c               # also drops c_src/audio_engine.c
+mix mob.add_nif audio_engine --type zigler          # use Zig (~Z sigil) — adds :zigler dep
+mix mob.add_nif audio_engine --type rustler         # use Rust — adds :rustler dep + native/audio_engine/ Cargo crate
+mix mob.add_nif audio_engine --module MyApp.Audio   # custom Elixir module name
+```
+
+Always created:
+
+- `lib/<app>/nifs/<name>.ex` (or `<your-module>.ex`) — Elixir stub. Each
+  function returns `:erlang.nif_error(:nif_not_loaded)` so a missing
+  native side errors loudly instead of silently returning a stub value.
+- `mob.exs` — `:static_nifs` list under `config :mob_dev,` gains
+  `%{module: :<name>, archs: [:all]}`. Idempotent — re-running with the
+  same name leaves the list intact.
+
+Conditional, per `--type`:
+
+| `--type`     | Extra files                                         | Hex deps added |
+|--------------|-----------------------------------------------------|----------------|
+| `elixir-only` (default) | none — you write the C and wire it yourself  | none |
+| `c`          | `c_src/<name>.c` (skeleton with `ERL_NIF_INIT`)    | none |
+| `zigler`     | none (Zig source lives inline in the stub via `~Z`) | `:zigler ~> 0.15` |
+| `rustler`    | `native/<name>/{Cargo.toml,src/lib.rs,.gitignore}`  | `:rustler ~> 0.32` |
+
+**⚠️  Static-link gotcha for zigler / rustler.** Both libraries' default
+flow produces a dynamically-loaded `.so` library. That's incompatible
+with Mob's static-link requirement (iOS App Store rejects bundled
+`.dylib`s; Android `RTLD_LOCAL` hides parent symbols from children).
+For host-dev (`mix phx.server`, sim) the default works out-of-the-box;
+for on-device shipping, you'll need to wire the Zigler/Rustler
+artifact into `ios/build.zig` + `android/jni/` manually. The generated
+stubs include warning callouts in their `@moduledoc`.
 
 ## Navigation validation (`mix mob.routes`)
 
