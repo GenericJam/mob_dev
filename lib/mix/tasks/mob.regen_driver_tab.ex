@@ -43,27 +43,39 @@ defmodule Mix.Tasks.Mob.RegenDriverTab do
   manifest and the on-disk files. CI can do the same.
   """
 
-  @ios_path "priv/generated/driver_tab_ios.c"
-  @android_path "priv/generated/driver_tab_android.c"
+  @ios_c_path "priv/generated/driver_tab_ios.c"
+  @android_c_path "priv/generated/driver_tab_android.c"
+  @ios_zig_path "priv/generated/driver_tab_ios.zig"
+  @android_zig_path "priv/generated/driver_tab_android.zig"
 
   @impl Mix.Task
   def run(args) do
-    {opts, _, _} = OptionParser.parse(args, strict: [check: :boolean])
+    {opts, _, _} = OptionParser.parse(args, strict: [check: :boolean, format: :string])
     nifs = resolved_nifs()
+    format = parse_format(opts[:format])
 
     case validate_all(nifs) do
       :ok -> :ok
       {:error, msg} -> Mix.raise(":static_nifs invalid — #{msg}")
     end
 
-    ios_src = StaticNifs.generate(:ios, nifs) |> IO.iodata_to_binary()
-    android_src = StaticNifs.generate(:android, nifs) |> IO.iodata_to_binary()
+    ios_src = StaticNifs.generate(:ios, nifs, format: format) |> IO.iodata_to_binary()
+    android_src = StaticNifs.generate(:android, nifs, format: format) |> IO.iodata_to_binary()
+    paths = target_paths(format)
 
     if opts[:check] do
-      check_mode(ios_src, android_src)
+      check_mode(ios_src, android_src, paths)
     else
-      write_mode(ios_src, android_src)
+      write_mode(ios_src, android_src, paths)
     end
+  end
+
+  defp parse_format(nil), do: :c
+  defp parse_format("c"), do: :c
+  defp parse_format("zig"), do: :zig
+
+  defp parse_format(other) do
+    Mix.raise("Unknown --format #{inspect(other)}. Supported: c, zig.")
   end
 
   @doc false
@@ -83,7 +95,12 @@ defmodule Mix.Tasks.Mob.RegenDriverTab do
 
   @doc false
   @spec target_paths() :: %{ios: String.t(), android: String.t()}
-  def target_paths, do: %{ios: @ios_path, android: @android_path}
+  def target_paths, do: target_paths(:c)
+
+  @doc false
+  @spec target_paths(:c | :zig) :: %{ios: String.t(), android: String.t()}
+  def target_paths(:c), do: %{ios: @ios_c_path, android: @android_c_path}
+  def target_paths(:zig), do: %{ios: @ios_zig_path, android: @android_zig_path}
 
   defp validate_all(nifs) do
     Enum.reduce_while(nifs, :ok, fn entry, :ok ->
@@ -94,12 +111,12 @@ defmodule Mix.Tasks.Mob.RegenDriverTab do
     end)
   end
 
-  defp write_mode(ios_src, android_src) do
-    File.mkdir_p!(Path.dirname(@ios_path))
-    File.mkdir_p!(Path.dirname(@android_path))
+  defp write_mode(ios_src, android_src, %{ios: ios_path, android: android_path}) do
+    File.mkdir_p!(Path.dirname(ios_path))
+    File.mkdir_p!(Path.dirname(android_path))
 
-    write_if_changed(@ios_path, ios_src)
-    write_if_changed(@android_path, android_src)
+    write_if_changed(ios_path, ios_src)
+    write_if_changed(android_path, android_src)
   end
 
   defp write_if_changed(path, new_content) do
@@ -113,9 +130,9 @@ defmodule Mix.Tasks.Mob.RegenDriverTab do
     end
   end
 
-  defp check_mode(ios_src, android_src) do
+  defp check_mode(ios_src, android_src, %{ios: ios_path, android: android_path}) do
     drifts =
-      [{@ios_path, ios_src}, {@android_path, android_src}]
+      [{ios_path, ios_src}, {android_path, android_src}]
       |> Enum.filter(fn {path, expected} ->
         File.read(path) != {:ok, expected}
       end)
