@@ -69,7 +69,15 @@ defmodule Mix.Tasks.Mob.RegenDriverTab do
   @doc false
   @spec resolved_nifs() :: [StaticNifs.nif_entry()]
   def resolved_nifs do
-    user = Application.get_env(:mob_dev, :static_nifs, [])
+    # mob.exs isn't auto-imported by Mix.Config — every other task that
+    # reads from it goes through Config.Reader.read! directly. Match that
+    # pattern here. Application.get_env stays as a secondary source so
+    # MIX_CONFIG=... or programmatic Application.put_env still wins for
+    # tests that want to bypass the file.
+    user =
+      MobDev.Config.load_mob_config()
+      |> Keyword.get(:static_nifs, Application.get_env(:mob_dev, :static_nifs, []))
+
     StaticNifs.resolve(user)
   end
 
