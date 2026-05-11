@@ -6,7 +6,6 @@ defmodule MobDev.Release.OpenSSLTest do
   import Mox
 
   alias MobDev.Release.{OpenSSL, Errors}
-  alias MobDev.Release.OpenSSL.Target
 
   # The Mox built in test/support/release/shell_mock.ex is automatically
   # verified per test — any expected call that wasn't made fails the test.
