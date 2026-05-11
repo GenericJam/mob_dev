@@ -229,9 +229,18 @@ defmodule MobDev.NativeBuild do
   end
 
   defp resolve_driver_tab_android(mob_dir) do
+    # Prefer .zig (Phase 6a) > generated .c > mob's reference .zig > .c.
+    # The build.zig auto-detects extension via `addZigObject` vs
+    # `addCObject`, so either extension flows through correctly.
     cond do
+      File.exists?("priv/generated/driver_tab_android.zig") ->
+        Path.expand("priv/generated/driver_tab_android.zig")
+
       File.exists?("priv/generated/driver_tab_android.c") ->
         Path.expand("priv/generated/driver_tab_android.c")
+
+      File.exists?(Path.join([mob_dir, "android", "jni", "driver_tab_android.zig"])) ->
+        Path.join([mob_dir, "android", "jni", "driver_tab_android.zig"])
 
       true ->
         Path.join([mob_dir, "android", "jni", "driver_tab_android.c"])
@@ -1836,8 +1845,14 @@ defmodule MobDev.NativeBuild do
   defp zig_build_binary_ios_sim(mob_dir, otp_root, erts_vsn, sdkroot, build_dir, display_name) do
     driver_tab =
       cond do
+        File.exists?("priv/generated/driver_tab_ios.zig") ->
+          Path.expand("priv/generated/driver_tab_ios.zig")
+
         File.exists?("priv/generated/driver_tab_ios.c") ->
           Path.expand("priv/generated/driver_tab_ios.c")
+
+        File.exists?(Path.join([mob_dir, "ios", "driver_tab_ios.zig"])) ->
+          Path.join([mob_dir, "ios", "driver_tab_ios.zig"])
 
         true ->
           Path.join([mob_dir, "ios", "driver_tab_ios.c"])
@@ -2325,8 +2340,14 @@ defmodule MobDev.NativeBuild do
        ) do
     driver_tab =
       cond do
+        File.exists?("priv/generated/driver_tab_ios.zig") ->
+          Path.expand("priv/generated/driver_tab_ios.zig")
+
         File.exists?("priv/generated/driver_tab_ios.c") ->
           Path.expand("priv/generated/driver_tab_ios.c")
+
+        File.exists?(Path.join([mob_dir, "ios", "driver_tab_ios.zig"])) ->
+          Path.join([mob_dir, "ios", "driver_tab_ios.zig"])
 
         true ->
           Path.join([mob_dir, "ios", "driver_tab_ios.c"])
