@@ -211,16 +211,25 @@ defmodule MobDev.Connector do
     # Total wall time = max(individual connect times), not sum.
     tasks =
       Enum.map(devices, fn device ->
-        {device, Task.async(fn -> wait_for_node(device.node, cookie, @connect_timeout) end)}
+        candidates = node_candidates(device)
+
+        {device, Task.async(fn -> wait_for_any_node(candidates, cookie, @connect_timeout) end)}
       end)
 
     Enum.reduce(tasks, {[], []}, fn {device, task}, {ok, fail} ->
       IO.write("  #{device.node} ...")
 
       case Task.await(task, @connect_timeout + 2_000) do
-        :ok ->
-          IO.puts("  #{color(:green)}✓#{color(:reset)}")
-          {ok ++ [%{device | status: :connected}], fail}
+        {:ok, connected_node} ->
+          if connected_node == device.node do
+            IO.puts("  #{color(:green)}✓#{color(:reset)}")
+            {ok ++ [%{device | status: :connected}], fail}
+          else
+            # Fallback name responded — surface it so the user knows what to
+            # use with `mix mob.connect --no-iex` and friends.
+            IO.puts("  #{color(:green)}✓#{color(:reset)} (registered as #{connected_node})")
+            {ok ++ [%{device | status: :connected, node: connected_node}], fail}
+          end
 
         {:error, reason} ->
           IO.puts("  #{color(:red)}✗#{color(:reset)}")
@@ -229,23 +238,66 @@ defmodule MobDev.Connector do
     end)
   end
 
-  defp wait_for_node(node, _cookie, timeout) when timeout <= 0 do
-    {:error, "timed out waiting for #{node}"}
+  # iOS sim — issues.md #14: mob_beam.m derives the node name from
+  # SIMULATOR_UDID at startup, but in some launch contexts that env var isn't
+  # set and the BEAM falls back to the suffix-less form. Probe both names so
+  # `mix mob.connect` works regardless of which was actually registered.
+  # Other platforms (physical iOS over LAN, Android over adb tunnel) always
+  # use a single deterministic name; the candidate list is just `[device.node]`.
+  defp node_candidates(%Device{platform: :ios, type: :simulator, node: node} = device) do
+    fallback = ios_sim_fallback_node(device)
+
+    if fallback && fallback != node do
+      [node, fallback]
+    else
+      [node]
+    end
   end
 
-  defp wait_for_node(node, cookie, timeout) do
+  defp node_candidates(%Device{node: node}), do: [node]
+
+  defp ios_sim_fallback_node(%Device{node: node}) do
+    case Atom.to_string(node) |> String.split("@", parts: 2) do
+      [name, host] ->
+        # Strip the `_<8-char>` suffix that Device.node_name appends for
+        # simulators — yields the suffix-less `<app>_ios@<host>` form.
+        case Regex.run(~r/^(.+_ios)_[0-9a-f]{1,8}$/, name) do
+          [_, base] -> :"#{base}@#{host}"
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp wait_for_any_node(candidates, _cookie, timeout) when timeout <= 0 do
+    {:error, "timed out waiting for any of #{inspect(candidates)}"}
+  end
+
+  defp wait_for_any_node(candidates, cookie, timeout) do
+    case try_connect_each(candidates, cookie) do
+      {:ok, _} = ok ->
+        ok
+
+      :none ->
+        :timer.sleep(@connect_interval)
+        wait_for_any_node(candidates, cookie, timeout - @connect_interval)
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp try_connect_each([], _cookie), do: :none
+
+  defp try_connect_each([node | rest], cookie) do
     Node.set_cookie(node, cookie)
 
     case Node.connect(node) do
-      true ->
-        :ok
-
-      false ->
-        :timer.sleep(@connect_interval)
-        wait_for_node(node, cookie, timeout - @connect_interval)
-
-      :ignored ->
-        {:error, "local node not alive (distribution not started)"}
+      true -> {:ok, node}
+      false -> try_connect_each(rest, cookie)
+      :ignored -> {:error, "local node not alive (distribution not started)"}
     end
   end
 
