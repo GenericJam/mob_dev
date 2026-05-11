@@ -11,22 +11,22 @@ defmodule MobDev.Enable.Igniter do
 
   Per-feature state:
 
-  | Feature        | Igniter-routed (iter 1) | AST-aware (later iter) |
-  |----------------|-------------------------|------------------------|
-  | camera         | yes                     | (no Elixir to AST)     |
-  | photo_library  | yes                     | (no Elixir to AST)     |
-  | location       | yes                     | (no Elixir to AST)     |
-  | file_sharing   | yes                     | (no Elixir to AST)     |
-  | notifications  | yes                     | (no Elixir to AST)     |
-  | liveview       | yes                     | iter 4 — Elixir AST    |
-  | python         | yes                     | iter 5 — Elixir AST    |
+  | Feature        | Igniter-routed (iter 1) | Elixir AST-aware  |
+  |----------------|-------------------------|-------------------|
+  | camera         | yes                     | (no Elixir surface) |
+  | photo_library  | yes                     | (no Elixir surface) |
+  | location       | yes                     | (no Elixir surface) |
+  | file_sharing   | yes                     | (no Elixir surface) |
+  | notifications  | yes                     | (no Elixir surface) |
+  | liveview       | yes                     | mob_screen.ex via `create_module` (iter 1) |
+  | python         | yes                     | dep via `add_dep` (iter 2); paths module via `create_module` (iter 1) |
 
-  iter 1 wraps every feature in Igniter so the diff preview + atomic
-  apply flow applies uniformly. The "AST-aware" column tracks the
-  follow-up work for features that touch Elixir source: liveview's
-  `lib/<app>/mob_screen.ex` generation + `assets/js/app.js` /
-  `root.html.heex` patches still go through Sourceror text replace
-  today; python's dep injection + paths module generation likewise.
+  iter 1 wrapped every feature in Igniter so the diff preview + atomic
+  apply flow applies uniformly. iter 2 swapped python's mix.exs
+  dep-injection from `MobDev.Enable.inject_pythonx_dep` (regex) to
+  `Igniter.Project.Deps.add_dep` (AST). The remaining text-level
+  patches (assets/js/app.js, root.html.heex) are non-Elixir source
+  and stay text-level — AST tooling for those isn't a win.
 
   All handlers are called with the project root as cwd (Igniter expects
   paths relative to cwd). The `app_name` arg is the project's :app
@@ -211,7 +211,9 @@ defmodule MobDev.Enable.Igniter do
               String.replace(
                 content,
                 "</application>",
-                file_provider_xml() <> "\n    </application>", global: false)
+                file_provider_xml() <> "\n    </application>",
+                global: false
+              )
 
             Rewrite.Source.update(source, :content, patched)
           end
@@ -407,20 +409,13 @@ defmodule MobDev.Enable.Igniter do
   # ── python: helpers ───────────────────────────────────────────────────────
 
   defp inject_pythonx_dep(igniter) do
-    path = "mix.exs"
-
-    igniter
-    |> Igniter.include_existing_file(path)
-    |> Igniter.update_file(path, fn source ->
-      content = Rewrite.Source.get(source, :content)
-      patched = Enable.inject_pythonx_dep(content)
-
-      if patched == content do
-        source
-      else
-        Rewrite.Source.update(source, :content, patched)
-      end
-    end)
+    # AST-aware (Phase 4 iter 2) — `Igniter.Project.Deps.add_dep` parses
+    # the project's mix.exs, locates the `defp deps do [...]` list, and
+    # appends the dep tuple in-place. Idempotent: a duplicate
+    # `{:pythonx, ...}` is detected and skipped. Replaces the previous
+    # regex sweep in `MobDev.Enable.inject_pythonx_dep/1` which had to
+    # guess at indentation + trailing comma shape.
+    Igniter.Project.Deps.add_dep(igniter, {:pythonx, "~> 0.4"})
   end
 
   defp create_python_paths_module(igniter, app_name) do
