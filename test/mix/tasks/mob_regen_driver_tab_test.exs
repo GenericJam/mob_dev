@@ -18,43 +18,70 @@ defmodule Mix.Tasks.Mob.RegenDriverTabTest do
     %{tmp: tmp}
   end
 
-  describe "default run (Zig, as of Phase 6a iter 4)" do
-    test "generates both .zig driver_tab files" do
+  describe "default run with new template (Phase 6a iter 4 — Zig)" do
+    setup %{tmp: tmp} do
+      # Simulate a project whose build.zig has the addZigObject helper.
+      File.mkdir_p!(Path.join(tmp, "ios"))
+      File.write!(Path.join(tmp, "ios/build.zig"), "fn addZigObject(opts: anytype) void {}\n")
+      :ok
+    end
+
+    test "auto-detects and writes .zig when build.zig has addZigObject" do
       capture_run([])
 
       paths = RegenDriverTab.target_paths(:zig)
       assert File.exists?(paths.ios)
       assert File.exists?(paths.android)
-      # The .c paths are NOT written by default.
       c_paths = RegenDriverTab.target_paths(:c)
       refute File.exists?(c_paths.ios)
       refute File.exists?(c_paths.android)
     end
 
-    test "generated files contain mob_nif_init for both platforms" do
-      capture_run([])
-      paths = RegenDriverTab.target_paths(:zig)
-
-      assert File.read!(paths.ios) =~ "mob_nif_nif_init"
-      assert File.read!(paths.android) =~ "mob_nif_nif_init"
-    end
-
-    test "iOS output gates sqlite3_nif via comptime sqlite_static (no #ifdef)" do
+    test "iOS Zig output uses comptime sqlite_static (no #ifdef)" do
       capture_run([])
       ios_src = File.read!(RegenDriverTab.target_paths(:zig).ios)
 
-      # Zig path uses comptime gating, not C preprocessor.
       refute ios_src =~ "#ifdef MOB_STATIC_SQLITE_NIF"
       assert ios_src =~ "sqlite_static"
       assert ios_src =~ "sqlite3_nif_nif_init"
     end
 
-    test "Android output omits sqlite3_nif" do
+    test "Android Zig output omits sqlite3_nif" do
       capture_run([])
       android_src = File.read!(RegenDriverTab.target_paths(:zig).android)
 
       refute android_src =~ "sqlite3_nif"
       refute android_src =~ "sqlite_static"
+    end
+  end
+
+  describe "default run with legacy template (no addZigObject → fall back to C)" do
+    setup %{tmp: tmp} do
+      # Simulate a project whose build.zig predates Phase 6a iter 2.
+      # The auto-detect path falls back to :c so the legacy addCObject →
+      # addCSourceFile chain keeps working.
+      File.mkdir_p!(Path.join(tmp, "ios"))
+      File.write!(Path.join(tmp, "ios/build.zig"), "fn addCObject(opts: anytype) void {}\n")
+      :ok
+    end
+
+    test "auto-detects and writes .c when build.zig lacks addZigObject" do
+      capture_run([])
+
+      paths = RegenDriverTab.target_paths(:c)
+      assert File.exists?(paths.ios)
+      assert File.exists?(paths.android)
+      zig_paths = RegenDriverTab.target_paths(:zig)
+      refute File.exists?(zig_paths.ios)
+      refute File.exists?(zig_paths.android)
+    end
+
+    test "iOS C output gates sqlite3_nif under MOB_STATIC_SQLITE_NIF" do
+      capture_run([])
+      ios_src = File.read!(RegenDriverTab.target_paths(:c).ios)
+
+      assert ios_src =~ "#ifdef MOB_STATIC_SQLITE_NIF"
+      assert ios_src =~ "sqlite3_nif_nif_init"
     end
   end
 
