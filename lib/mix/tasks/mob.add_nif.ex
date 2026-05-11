@@ -24,12 +24,9 @@ defmodule Mix.Tasks.Mob.AddNif do
       your build (Android CMakeLists.txt or iOS build.zig) by adding the
       file to the static archive that links into `libbeam.a`.
 
-  After the run, regenerate the driver_tab to pick up the new entry:
-
-      mix mob.regen_driver_tab
-
-  (this is a notice the task prints — Phase 0 plans to wire regen into
-  `mix compile` so manual invocation goes away.)
+  `mix mob.regen_driver_tab` is composed into the same Igniter run, so
+  `priv/generated/driver_tab_{ios,android}.c` updates appear in the same
+  diff as the stub and `mob.exs` edit. One command, everything wired.
 
   ## Why a static NIF and not a `dlopen`'d `.so`
 
@@ -74,7 +71,12 @@ defmodule Mix.Tasks.Mob.AddNif do
       |> add_elixir_stub(module, name)
       |> add_static_nif_entry(name)
       |> maybe_add_c_skeleton(name, options[:type])
-      |> Igniter.add_notice(after_notice(name))
+      # Run regen automatically after Igniter commits — keeps the user-facing
+      # flow to a single command (`mix mob.add_nif foo`) instead of "add the
+      # NIF, then remember to run regen". `add_task` queues the task to run
+      # AFTER all Igniter file writes are applied, so the just-modified
+      # mob.exs is on disk by the time regen reads it.
+      |> Igniter.add_task("mob.regen_driver_tab")
     else
       {:error, msg} -> Igniter.add_issue(igniter, msg)
     end
@@ -270,20 +272,6 @@ defmodule Mix.Tasks.Mob.AddNif do
      * driver_tab declares + dispatches it correctly. The 4th arg ("schema
      * version") is unused for static NIFs — pass 0. */
     ERL_NIF_INIT(#{name}, nif_funcs, NULL, NULL, NULL, NULL)
-    """
-  end
-
-  # ── Post-run notice ───────────────────────────────────────────────────────
-
-  defp after_notice(name) do
-    """
-    Added NIF `:#{name}`. Next step:
-
-      mix mob.regen_driver_tab
-
-    This regenerates priv/generated/driver_tab_{ios,android}.c so the new
-    entry appears in the static NIF table. Skipping this step means
-    `load_nif/2` will fall back to dlopen at runtime and fail.
     """
   end
 end
