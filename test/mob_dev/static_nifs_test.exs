@@ -253,4 +253,87 @@ defmodule MobDev.StaticNifsTest do
       refute android_out =~ "ios_thing_nif_init"
     end
   end
+
+  # ── Phase 6a: Zig output ──────────────────────────────────────────────────
+
+  describe "generate/3 with format: :zig" do
+    test "iOS Zig output uses extern struct + comptime sentinel" do
+      out =
+        StaticNifs.generate(:ios, StaticNifs.default_nifs(), format: :zig)
+        |> IO.iodata_to_binary()
+
+      assert out =~ "const ErtsStaticNif = extern struct"
+      assert out =~ "const ErtsStaticDriver = extern struct"
+      assert out =~ "export var driver_tab"
+      assert out =~ "export var erts_static_nif_tab"
+      assert out =~ "export fn erts_init_static_drivers"
+    end
+
+    test "iOS Zig output gates sqlite3_nif with comptime sqlite_static" do
+      # The default set has sqlite3_nif declared as ios_device-only with
+      # a guard. Zig output should comptime-gate via sqlite_static, not
+      # a #ifdef.
+      out =
+        StaticNifs.generate(:ios, StaticNifs.default_nifs(), format: :zig)
+        |> IO.iodata_to_binary()
+
+      assert out =~ "sqlite_static"
+      assert out =~ "build_options"
+      assert out =~ "extern fn sqlite3_nif_nif_init"
+      refute out =~ "#ifdef"
+    end
+
+    test "Android Zig output has no comptime guards — all NIFs unconditional" do
+      out =
+        StaticNifs.generate(:android, StaticNifs.default_nifs(), format: :zig)
+        |> IO.iodata_to_binary()
+
+      # No sqlite_static comptime const on Android — sqlite is iOS-device-only
+      # in the defaults. The Android table is a single straight array.
+      refute out =~ "sqlite_static"
+      refute out =~ "build_options"
+      assert out =~ "export var erts_static_nif_tab = [_]ErtsStaticNif{"
+    end
+
+    test "produces parseable Zig source (round-trip via zig ast-check)" do
+      for platform <- [:ios, :android] do
+        out =
+          StaticNifs.generate(platform, StaticNifs.default_nifs(), format: :zig)
+          |> IO.iodata_to_binary()
+
+        path = "/tmp/zig_ast_check_#{platform}.zig"
+        File.write!(path, out)
+
+        case System.cmd("zig", ["ast-check", path], stderr_to_stdout: true) do
+          {_out, 0} ->
+            :ok
+
+          {bad_out, _} ->
+            flunk("generated #{platform} Zig source fails ast-check:\n#{bad_out}")
+        end
+      end
+    end
+
+    test "user-added NIF appears in the Zig table" do
+      user = [%{module: :my_extra}]
+
+      out =
+        StaticNifs.generate(:android, StaticNifs.resolve(user), format: :zig)
+        |> IO.iodata_to_binary()
+
+      assert out =~ "extern fn my_extra_nif_init"
+      assert out =~ ".nif_init = my_extra_nif_init"
+    end
+
+    test "format: :c default produces C source (backward compat)" do
+      c_out = StaticNifs.generate(:ios, StaticNifs.default_nifs()) |> IO.iodata_to_binary()
+
+      c_out2 =
+        StaticNifs.generate(:ios, StaticNifs.default_nifs(), format: :c) |> IO.iodata_to_binary()
+
+      assert c_out == c_out2
+      assert c_out =~ "ErtsStaticNif erts_static_nif_tab"
+      refute c_out =~ "export var erts_static_nif_tab"
+    end
+  end
 end
