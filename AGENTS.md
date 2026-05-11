@@ -76,6 +76,28 @@ mix test --exclude integration # skip the device-dependent ones
   reads `:static_nifs`, use `MobDev.Config.load_mob_config()` to stay
   consistent — using `Application.get_env(:mob_dev, :static_nifs, [])`
   silently misses the user's entries.
+- **`mob.enable` is now Igniter-driven (Phase 4).** Per-feature
+  handlers live in `MobDev.Enable.Igniter` and return
+  `igniter -> igniter`. When adding a new feature: add a clause to
+  the `@valid_features` list in `mob.enable.ex`, a `dispatch/3`
+  clause, and an `enable_<name>/2` function in
+  `MobDev.Enable.Igniter`. Use `Igniter.update_file` for text-level
+  patches (plist, AndroidManifest, JS, HEEX) and AST-aware helpers
+  (`Igniter.Project.Module.create_module`, `Project.Deps.add_dep`,
+  `Project.Config.modify_config_code`) for Elixir source. Always
+  emit `Igniter.add_notice` when a platform dir is missing — silent
+  skips were a recurring user-confusion source in the legacy task.
+- **File discovery in `Enable.Igniter` is Igniter-aware.** Helpers
+  like `find_ios_plist/1` and `find_android_manifest/1` check disk
+  first then fall back to `Rewrite.paths(igniter.rewrite)` /
+  `Igniter.exists?/2`, so `Igniter.test_project(files: %{...})` in
+  tests works without writing to disk. Don't bypass this with raw
+  `File.exists?/1` — `mix mob.enable` tests will pass on disk but
+  break Igniter test virtualization.
+- **`mix mob.enable` reads app name via `Igniter.Project.Application.app_name/1`**,
+  NOT `File.cwd!() <> "/mix.exs"`. Under `test_project`, disk reads
+  see mob_dev's own mix.exs (wrong app). Falls back to the legacy
+  on-disk read only when Igniter has no mix.exs source.
 
 ## Public-but-undocumented seams
 

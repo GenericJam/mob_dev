@@ -35,6 +35,7 @@ end
 | `mix mob.watch_stop` | Stop a running `mix mob.watch` |
 | `mix mob.devices` | List connected devices and their status |
 | `mix mob.push` | Hot-push only changed modules (no restart) |
+| `mix mob.enable <feature>...` | Wire up an optional Mob feature — platform-manifest entries, Elixir stubs, dep injections ([see below](#mix-mobenable-feature)) |
 | `mix mob.add_nif <name>` | Scaffold a statically-linked NIF — Elixir stub + `mob.exs` `:static_nifs` append + optional native skeleton ([see below](#mix-mobadd_nif-name)) |
 | `mix mob.regen_driver_tab` | Regenerate `priv/generated/driver_tab_{ios,android}.c` from `mob.exs`'s `:static_nifs` (composed automatically into `mob.add_nif`) |
 | `mix mob.server` | Start the dev dashboard at `localhost:4040` |
@@ -90,6 +91,40 @@ Pushing 14 BEAM file(s) to 2 device(s)...
 If dist is not reachable (first deploy, app not running), it falls back to `adb push` + restart. Mixed deploys work — one device can hot-push while another restarts.
 
 **Requirements:** The app must call `Mob.Dist.ensure_started/1` at startup, and the cookie must match the one in `mob.exs` (default `:mob_secret`).
+
+## `mix mob.enable <feature>`
+
+Wires up an optional Mob feature in one command — platform-manifest
+entries, Elixir stubs, and dep injections, all rolled into a single
+Igniter diff that's shown before any file is touched. Multiple
+features in one invocation are fine; the diff covers all of them.
+
+```bash
+mix mob.enable camera                                 # iOS Info.plist + Android <uses-permission>
+mix mob.enable camera photo_library                   # multiple features in one diff
+mix mob.enable file_sharing                           # iOS plist keys + Android FileProvider XML
+mix mob.enable location                               # iOS plist + Android ACCESS_FINE_LOCATION
+mix mob.enable notifications                          # creates ios/<app>.entitlements with aps-environment
+mix mob.enable liveview                               # generates lib/<app>/mob_screen.ex + assets + mob.exs
+mix mob.enable python                                 # adds :pythonx dep + generates <App>.PythonPaths
+```
+
+Per-feature surface:
+
+| Feature        | iOS                                              | Android                                                  | Elixir                                          |
+|----------------|--------------------------------------------------|----------------------------------------------------------|-------------------------------------------------|
+| `camera`       | `NSCameraUsageDescription` in Info.plist         | `<uses-permission android.permission.CAMERA>`            | —                                               |
+| `photo_library`| `NSPhotoLibraryAddUsageDescription` in Info.plist| (none — API 29+ runtime-only)                            | —                                               |
+| `location`     | `NSLocationWhenInUseUsageDescription`            | `ACCESS_FINE_LOCATION` permission                        | —                                               |
+| `file_sharing` | `UIFileSharingEnabled` + `LSSupports…` plist keys| `<provider FileProvider>` + `res/xml/file_provider_paths.xml` | —                                          |
+| `notifications`| Creates `ios/<app>.entitlements` with `aps-environment` | (runtime-only — request `POST_NOTIFICATIONS`)     | (none)                                          |
+| `liveview`     | (none)                                           | `networkSecurityConfig` allowing loopback                | Generates `<App>.MobScreen`; injects `MobHook` into `assets/js/app.js` + bridge element into `root.html.heex`; sets `:liveview_port` in `mob.exs` |
+| `python`       | (handled by `mob.deploy --native`)               | (handled by `mob.deploy --native`)                       | Adds `{:pythonx, "~> 0.4"}` to mix.exs via AST; generates `<App>.PythonPaths` |
+
+Idempotent — re-running with already-applied features is a no-op.
+Diff preview surfaces every change before commit; missing platform
+dirs (`ios/`, `android/`, `assets/`) become notices instead of
+silent skips.
 
 ## `mix mob.add_nif <name>`
 
