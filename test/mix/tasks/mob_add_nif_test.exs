@@ -160,6 +160,53 @@ defmodule Mix.Tasks.Mob.AddNifTest do
     end
   end
 
+  describe "--type zigler" do
+    test "stub uses `use Zig` macro instead of @on_load + load_nif" do
+      igniter = add_nif("audio_engine", ["--type", "zigler"])
+      file = Rewrite.source!(igniter.rewrite, "lib/test/nifs/audio_engine.ex")
+      content = Rewrite.Source.get(file, :content)
+      assert content =~ "use Zig, otp_app: :test"
+      refute content =~ "@on_load"
+      refute content =~ ":erlang.load_nif"
+    end
+
+    test "stub embeds an example pub fn in a ~Z sigil" do
+      igniter = add_nif("audio_engine", ["--type", "zigler"])
+      file = Rewrite.source!(igniter.rewrite, "lib/test/nifs/audio_engine.ex")
+      content = Rewrite.Source.get(file, :content)
+      assert content =~ "~Z\""
+      assert content =~ "pub fn add_one"
+    end
+
+    test "moduledoc warns about Mob's static-link incompatibility" do
+      igniter = add_nif("audio_engine", ["--type", "zigler"])
+      file = Rewrite.source!(igniter.rewrite, "lib/test/nifs/audio_engine.ex")
+      content = Rewrite.Source.get(file, :content)
+      # Surface the gotcha so users don't ship a dlopen'd .so by accident.
+      assert content =~ "Static linking"
+    end
+
+    test "adds :zigler to mix.exs deps" do
+      igniter = add_nif("audio_engine", ["--type", "zigler"])
+      file = Rewrite.source!(igniter.rewrite, "mix.exs")
+      content = Rewrite.Source.get(file, :content)
+      assert content =~ ":zigler"
+    end
+
+    test "does NOT create c_src/<name>.c (zigler manages its own native side)" do
+      "audio_engine"
+      |> add_nif(["--type", "zigler"])
+      |> refute_creates("c_src/audio_engine.c")
+    end
+
+    test "still appends to mob.exs :static_nifs" do
+      igniter = add_nif("audio_engine", ["--type", "zigler"])
+      file = Rewrite.source!(igniter.rewrite, "mob.exs")
+      content = Rewrite.Source.get(file, :content)
+      assert content =~ "module: :audio_engine"
+    end
+  end
+
   describe "regen composition" do
     test "queues mob.regen_driver_tab to run after Igniter applies its changes" do
       "audio_engine"
