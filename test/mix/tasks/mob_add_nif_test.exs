@@ -160,11 +160,11 @@ defmodule Mix.Tasks.Mob.AddNifTest do
     end
   end
 
-  describe "post-run notice" do
-    test "tells the user to run mix mob.regen_driver_tab" do
+  describe "regen composition" do
+    test "queues mob.regen_driver_tab to run after Igniter applies its changes" do
       "audio_engine"
       |> add_nif()
-      |> assert_has_notice(&(&1 =~ "mix mob.regen_driver_tab"))
+      |> assert_has_task("mob.regen_driver_tab", [])
     end
   end
 
