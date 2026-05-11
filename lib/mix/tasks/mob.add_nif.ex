@@ -4,6 +4,7 @@ defmodule Mix.Tasks.Mob.AddNif do
 
       mix mob.add_nif <name>                   # default: --type elixir-only
       mix mob.add_nif <name> --type c          # also drops c_src/<name>.c skeleton
+      mix mob.add_nif <name> --type zigler     # Zigler-backed (inline ~Z)
       mix mob.add_nif <name> --module MyApp.Nifs.Audio   # custom Elixir module name
 
   Three things change after a successful run:
@@ -67,10 +68,13 @@ defmodule Mix.Tasks.Mob.AddNif do
          :ok <- validate_type(options[:type]) do
       module = resolve_module(igniter, name, options[:module])
 
+      type = options[:type]
+
       igniter
-      |> add_elixir_stub(module, name)
+      |> add_elixir_stub(module, name, type)
       |> add_static_nif_entry(name)
-      |> maybe_add_c_skeleton(name, options[:type])
+      |> maybe_add_c_skeleton(name, type)
+      |> maybe_add_zigler_dep(type)
       # Run regen automatically after Igniter commits — keeps the user-facing
       # flow to a single command (`mix mob.add_nif foo`) instead of "add the
       # NIF, then remember to run regen". `add_task` queues the task to run
@@ -99,12 +103,12 @@ defmodule Mix.Tasks.Mob.AddNif do
     end
   end
 
-  defp validate_type(type) when type in ["elixir-only", "c"], do: :ok
+  defp validate_type(type) when type in ["elixir-only", "c", "zigler"], do: :ok
 
   defp validate_type(other) do
     {:error,
-     "Unknown --type #{inspect(other)}. Supported: elixir-only, c. " <>
-       "(zigler/rustler land in later iters.)"}
+     "Unknown --type #{inspect(other)}. Supported: elixir-only, c, zigler. " <>
+       "(rustler lands in a later iter.)"}
   end
 
   # ── Module name resolution ────────────────────────────────────────────────
@@ -122,7 +126,7 @@ defmodule Mix.Tasks.Mob.AddNif do
 
   # ── Elixir stub ───────────────────────────────────────────────────────────
 
-  defp add_elixir_stub(igniter, module, name) do
+  defp add_elixir_stub(igniter, module, name, type) do
     {exists?, igniter} = Igniter.Project.Module.module_exists(igniter, module)
 
     if exists? do
@@ -130,11 +134,44 @@ defmodule Mix.Tasks.Mob.AddNif do
       # added their own functions to the stub we don't want to clobber them.
       igniter
     else
-      Igniter.Project.Module.create_module(igniter, module, stub_body(module, name))
+      Igniter.Project.Module.create_module(igniter, module, stub_body(module, name, type))
     end
   end
 
-  defp stub_body(module, name) do
+  defp stub_body(module, name, "zigler") do
+    app = module |> Module.split() |> List.first() |> Macro.underscore()
+
+    """
+    @moduledoc \"\"\"
+    Statically-linked NIF stub for `:#{name}` (zigler-backed).
+
+    The Zig source is inlined via `~Z` below. Zigler compiles it through
+    its build pipeline and exposes each `pub fn` as a NIF function on this
+    module. Replace the example `add_one/1` with your real surface.
+
+    > **⚠️  Static linking note.** Zigler's default flow produces a
+    > dynamically-loaded `.so` library, which is incompatible with Mob's
+    > static-link requirement (iOS App Store rejects bundled `.dylib`s;
+    > Android `RTLD_LOCAL` hides parent symbols from children). To make
+    > this work on-device you'll need to wire the Zigler-compiled archive
+    > into your `ios/build.zig` + `android/jni/` pipeline manually. The
+    > host-dev path (`mix phx.server`, sim) works out of the box.
+    \"\"\"
+
+    use Zig, otp_app: :#{app}
+
+    ~Z\"\"\"
+    /// Example NIF — replace with your real Zig surface.
+    pub fn add_one(input: i64) i64 {
+        return input + 1;
+    }
+    \"\"\"
+    """
+    |> indent_for_module()
+    |> wrap_module(module)
+  end
+
+  defp stub_body(module, name, _type) do
     """
     @moduledoc \"\"\"
     Statically-linked NIF stub for `:#{name}`.
@@ -238,6 +275,14 @@ defmodule Mix.Tasks.Mob.AddNif do
   end
 
   defp maybe_add_c_skeleton(igniter, _name, _other), do: igniter
+
+  # ── Optional Hex dep (zigler/rustler) ─────────────────────────────────────
+
+  defp maybe_add_zigler_dep(igniter, "zigler") do
+    Igniter.Project.Deps.add_dep(igniter, {:zigler, "~> 0.15"})
+  end
+
+  defp maybe_add_zigler_dep(igniter, _other), do: igniter
 
   defp c_skeleton(name) do
     """
