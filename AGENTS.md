@@ -57,6 +57,25 @@ mix test --exclude integration # skip the device-dependent ones
 - **The release scripts assume `~/code/otp` exists** with the right cross-compile
   output. The patches in `scripts/release/patches/` are applied automatically
   by `xcompile_ios_device.sh`, idempotently — re-running is safe.
+- **`mob.add_nif` is the entry point for new NIFs.** Don't add `:static_nifs`
+  entries by hand to `mob.exs` — the task already does the AST-aware append,
+  generates the Elixir stub via Igniter, and re-runs `mob.regen_driver_tab`
+  so `priv/generated/driver_tab_*.c` stays in sync. `--type` of `c`,
+  `zigler`, `rustler` also drops the right native skeleton; `elixir-only`
+  (default) leaves the C/Zig/Rust to you. The stubs for zigler/rustler
+  carry an explicit static-link warning — those backends produce dlopen'd
+  `.so` by default, which is wrong for Mob's iOS App Store /
+  Android-RTLD_LOCAL constraints. The host-dev path works; on-device
+  shipping needs the user to wire the archive into ios/build.zig +
+  android/jni/ themselves. Reach for `--type c` if static linking matters
+  more than the source language.
+- **`mob.regen_driver_tab` reads `:static_nifs` from `mob.exs`** via
+  `Config.Reader`, NOT from `Application.get_env`. mob.exs is not
+  auto-imported into Mix application env (this matches every other
+  mob_dev task that consumes mob.exs values). If you add a new task that
+  reads `:static_nifs`, use `MobDev.Config.load_mob_config()` to stay
+  consistent — using `Application.get_env(:mob_dev, :static_nifs, [])`
+  silently misses the user's entries.
 
 ## Public-but-undocumented seams
 
