@@ -3255,15 +3255,33 @@ defmodule MobDev.NativeBuild do
 
   defp auto_detect_physical_ios do
     if System.find_executable("xcrun") do
+      all = MobDev.Discovery.IOS.list_devices()
+
       physical =
-        MobDev.Discovery.IOS.list_devices()
-        |> Enum.filter(&(&1.type == :physical and &1.status in [:connected, :discovered]))
+        Enum.filter(all, &(&1.type == :physical and &1.status in [:connected, :discovered]))
 
       case physical do
         [device] ->
           IO.puts(
             "  #{IO.ANSI.cyan()}Auto-detected physical device: #{device.name || device.serial}#{IO.ANSI.reset()}"
           )
+
+          # If a sim is also booted, surface it so the user knows the
+          # alternative without having to memorize `mix mob.devices`.
+          # iter 13d note: this was the discoverability gap from
+          # issues.md #5 — the iPhone-vs-sim choice was silent.
+          booted_sims =
+            Enum.filter(all, &(&1.type == :simulator and &1.status == :booted))
+
+          case booted_sims do
+            [sim | _] ->
+              IO.puts(
+                "  #{IO.ANSI.cyan()}  (booted simulator also available — pass `--device #{MobDev.Device.short_id(sim.serial)}` to target #{sim.name} instead)#{IO.ANSI.reset()}"
+              )
+
+            [] ->
+              :ok
+          end
 
           device.serial
 
