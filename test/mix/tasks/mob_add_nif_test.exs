@@ -44,7 +44,7 @@ defmodule Mix.Tasks.Mob.AddNifTest do
   describe "type validation" do
     test "rejects unknown --type values" do
       "audio_engine"
-      |> add_nif(["--type", "rustler"])
+      |> add_nif(["--type", "haskell"])
       |> assert_has_issue(&(&1 =~ "Unknown --type"))
     end
 
@@ -204,6 +204,66 @@ defmodule Mix.Tasks.Mob.AddNifTest do
       file = Rewrite.source!(igniter.rewrite, "mob.exs")
       content = Rewrite.Source.get(file, :content)
       assert content =~ "module: :audio_engine"
+    end
+  end
+
+  describe "--type rustler" do
+    test "stub uses `use Rustler` with otp_app + crate" do
+      igniter = add_nif("audio_engine", ["--type", "rustler"])
+      file = Rewrite.source!(igniter.rewrite, "lib/test/nifs/audio_engine.ex")
+      content = Rewrite.Source.get(file, :content)
+      assert content =~ "use Rustler, otp_app: :test, crate: \"audio_engine\""
+    end
+
+    test "stub keeps :erlang.nif_error fallback so missing native errors loudly" do
+      igniter = add_nif("audio_engine", ["--type", "rustler"])
+      file = Rewrite.source!(igniter.rewrite, "lib/test/nifs/audio_engine.ex")
+      content = Rewrite.Source.get(file, :content)
+      assert content =~ ":erlang.nif_error(:nif_not_loaded)"
+    end
+
+    test "moduledoc warns about Mob's static-link incompatibility" do
+      igniter = add_nif("audio_engine", ["--type", "rustler"])
+      file = Rewrite.source!(igniter.rewrite, "lib/test/nifs/audio_engine.ex")
+      content = Rewrite.Source.get(file, :content)
+      assert content =~ "Static linking"
+    end
+
+    test "adds :rustler to mix.exs deps" do
+      igniter = add_nif("audio_engine", ["--type", "rustler"])
+      file = Rewrite.source!(igniter.rewrite, "mix.exs")
+      content = Rewrite.Source.get(file, :content)
+      assert content =~ ":rustler"
+    end
+
+    test "creates native/<name>/Cargo.toml with the right [package] name" do
+      igniter = add_nif("audio_engine", ["--type", "rustler"])
+      file = Rewrite.source!(igniter.rewrite, "native/audio_engine/Cargo.toml")
+      content = Rewrite.Source.get(file, :content)
+      assert content =~ ~s|name = "audio_engine"|
+      assert content =~ "rustler"
+    end
+
+    test "creates native/<name>/src/lib.rs with rustler::init! pointing at the Elixir module" do
+      igniter = add_nif("audio_engine", ["--type", "rustler"])
+      file = Rewrite.source!(igniter.rewrite, "native/audio_engine/src/lib.rs")
+      content = Rewrite.Source.get(file, :content)
+      assert content =~ "#[rustler::nif]"
+      assert content =~ "fn add_one"
+      assert content =~ ~s|rustler::init!("Elixir.Test.Nifs.AudioEngine"|
+    end
+
+    test "creates native/<name>/.gitignore with /target" do
+      igniter = add_nif("audio_engine", ["--type", "rustler"])
+      file = Rewrite.source!(igniter.rewrite, "native/audio_engine/.gitignore")
+      content = Rewrite.Source.get(file, :content)
+      assert content =~ "/target"
+    end
+
+    test "does NOT create c_src/<name>.c (Rustler manages its own native side via Cargo)" do
+      "audio_engine"
+      |> add_nif(["--type", "rustler"])
+      |> refute_creates("c_src/audio_engine.c")
     end
   end
 

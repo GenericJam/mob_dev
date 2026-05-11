@@ -5,6 +5,7 @@ defmodule Mix.Tasks.Mob.AddNif do
       mix mob.add_nif <name>                   # default: --type elixir-only
       mix mob.add_nif <name> --type c          # also drops c_src/<name>.c skeleton
       mix mob.add_nif <name> --type zigler     # Zigler-backed (inline ~Z)
+      mix mob.add_nif <name> --type rustler    # Rustler-backed (Cargo crate at native/<name>/)
       mix mob.add_nif <name> --module MyApp.Nifs.Audio   # custom Elixir module name
 
   Three things change after a successful run:
@@ -75,6 +76,7 @@ defmodule Mix.Tasks.Mob.AddNif do
       |> add_static_nif_entry(name)
       |> maybe_add_c_skeleton(name, type)
       |> maybe_add_zigler_dep(type)
+      |> maybe_add_rustler(name, type)
       # Run regen automatically after Igniter commits — keeps the user-facing
       # flow to a single command (`mix mob.add_nif foo`) instead of "add the
       # NIF, then remember to run regen". `add_task` queues the task to run
@@ -103,12 +105,10 @@ defmodule Mix.Tasks.Mob.AddNif do
     end
   end
 
-  defp validate_type(type) when type in ["elixir-only", "c", "zigler"], do: :ok
+  defp validate_type(type) when type in ["elixir-only", "c", "zigler", "rustler"], do: :ok
 
   defp validate_type(other) do
-    {:error,
-     "Unknown --type #{inspect(other)}. Supported: elixir-only, c, zigler. " <>
-       "(rustler lands in a later iter.)"}
+    {:error, "Unknown --type #{inspect(other)}. Supported: elixir-only, c, zigler, rustler."}
   end
 
   # ── Module name resolution ────────────────────────────────────────────────
@@ -136,6 +136,40 @@ defmodule Mix.Tasks.Mob.AddNif do
     else
       Igniter.Project.Module.create_module(igniter, module, stub_body(module, name, type))
     end
+  end
+
+  defp stub_body(module, name, "rustler") do
+    app = module |> Module.split() |> List.first() |> Macro.underscore()
+
+    """
+    @moduledoc \"\"\"
+    Statically-linked NIF stub for `:#{name}` (rustler-backed).
+
+    The Rust source lives at `native/#{name}/src/lib.rs`. Rustler
+    invokes Cargo to build it into a NIF library at compile time and
+    binds each `#[rustler::nif]`-annotated function as a function on
+    this module. Replace the example `add_one/1` with your real surface.
+
+    > **⚠️  Static linking note.** Rustler's default flow produces a
+    > dynamically-loaded `.so` library, which is incompatible with Mob's
+    > static-link requirement (iOS App Store rejects bundled `.dylib`s;
+    > Android `RTLD_LOCAL` hides parent symbols from children). To make
+    > this work on-device you'll need to build the Rust crate as a
+    > `staticlib` and wire the resulting archive into `ios/build.zig`
+    > + `android/jni/` manually. The host-dev path (`mix phx.server`,
+    > sim) works out of the box.
+    \"\"\"
+
+    use Rustler, otp_app: :#{app}, crate: "#{name}"
+
+    # Function stubs. Rustler replaces these at load time with the
+    # bindings generated from `native/#{name}/src/lib.rs`. Until then,
+    # the `:erlang.nif_error/1` body raises clearly instead of silently
+    # returning the stub value.
+    def add_one(_input), do: :erlang.nif_error(:nif_not_loaded)
+    """
+    |> indent_for_module()
+    |> wrap_module(module)
   end
 
   defp stub_body(module, name, "zigler") do
@@ -283,6 +317,71 @@ defmodule Mix.Tasks.Mob.AddNif do
   end
 
   defp maybe_add_zigler_dep(igniter, _other), do: igniter
+
+  # ── Rustler: dep + Cargo project skeleton ─────────────────────────────────
+
+  defp maybe_add_rustler(igniter, name, "rustler") do
+    module = resolve_module(igniter, name, igniter.args.options[:module])
+
+    igniter
+    |> Igniter.Project.Deps.add_dep({:rustler, "~> 0.32"})
+    |> create_file_if_missing("native/#{name}/Cargo.toml", cargo_toml(name))
+    |> create_file_if_missing("native/#{name}/src/lib.rs", rust_lib_rs(name, module))
+    |> create_file_if_missing("native/#{name}/.gitignore", "/target\n")
+  end
+
+  defp maybe_add_rustler(igniter, _name, _other), do: igniter
+
+  defp create_file_if_missing(igniter, path, content) do
+    if File.exists?(path) do
+      # Re-run idempotency: don't overwrite hand-edited Cargo manifests
+      # or Rust sources.
+      igniter
+    else
+      Igniter.create_new_file(igniter, path, content)
+    end
+  end
+
+  defp cargo_toml(name) do
+    """
+    [package]
+    name = "#{name}"
+    version = "0.1.0"
+    edition = "2021"
+
+    [lib]
+    name = "#{name}"
+    # `cdylib` is Rustler's default — produces a `.so`/`.dylib` for dlopen.
+    # For Mob's static-link path, change to `crate-type = ["staticlib"]`
+    # and wire the resulting `lib<name>.a` into ios/build.zig + android
+    # CMakeLists. The default below keeps the host-dev `mix phx.server`
+    # path working out-of-the-box; switch when you're ready to ship.
+    crate-type = ["cdylib"]
+
+    [dependencies]
+    rustler = "0.32"
+    """
+  end
+
+  defp rust_lib_rs(name, module) do
+    """
+    // native/#{name}/src/lib.rs — Rustler-backed NIF for `:#{name}`.
+    //
+    // Each #[rustler::nif] function becomes a NIF callable from the
+    // matching Elixir stub function. The `init!` macro at the bottom
+    // registers them with the BEAM at module load time.
+    //
+    // See https://hexdocs.pm/rustler for the full type-mapping table
+    // and codegen details.
+
+    #[rustler::nif]
+    fn add_one(input: i64) -> i64 {
+        input + 1
+    }
+
+    rustler::init!("#{module}", [add_one]);
+    """
+  end
 
   defp c_skeleton(name) do
     """
