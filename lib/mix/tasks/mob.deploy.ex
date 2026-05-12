@@ -37,8 +37,17 @@ defmodule Mix.Tasks.Mob.Deploy do
                                     config :mob_dev,
                                       slim: [
                                         drop_libs: ["my_unused_dep"],
-                                        keep_libs: ["mnesia"]
+                                        keep_libs: ["mnesia"],
+                                        audit: true,                       # opt in
+                                        trace_json: "priv/mob_trace.json"  # optional
                                       ]
+
+                                With `audit: true`, the slim pass runs
+                                `MobDev.OtpAudit` against the bundle and
+                                expands the strip set with foreign apps
+                                + (when `trace_json` is given) the
+                                trace-augmented strip set. Trace JSON
+                                comes from `mix mob.trace_otp --json`.
 
   ## BEAM scheduler tuning
 
