@@ -58,8 +58,10 @@ defmodule Mix.Tasks.Mob.Uninstall do
     * **iOS simulator** — `xcrun simctl uninstall <udid> <bundle>`,
       followed by a probe through `simctl listapps` to distinguish
       actual uninstall from "wasn't installed in the first place".
-    * **iOS physical device** — not implemented (use Xcode's "Delete
-      App" menu, or run `devicectl device uninstall app` manually).
+    * **iOS physical device** — `xcrun devicectl device uninstall app
+      --device <udid> <bundle>`. `ContainerLookupErrorDomain` in
+      output → not installed (skipped). Requires the device to be
+      paired and trusted via Xcode.
   """
   use Mix.Task
 
