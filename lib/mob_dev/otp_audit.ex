@@ -73,13 +73,17 @@ defmodule MobDev.OtpAudit do
   # Apps that ship with OTP. Used by the foreign-app classifier — anything
   # in the bundle whose name is in this set is assumed legitimate. Sourced
   # from `lib/` in a stock OTP 28 release; update when OTP adds or removes
-  # apps. `erts` is intentionally absent (it's a sibling of lib/, not a lib).
+  # apps. `erts` is here too: in a stock OTP install it lives one level
+  # above lib/, but mob's iOS bundle layout copies it into lib/ alongside
+  # the apps, so the audit's `Path.wildcard("<root>/lib/*")` discovers it
+  # like a normal lib and we have to allow-list it explicitly. Without
+  # this the BEAM runtime gets classified as foreign cache cruft.
   @otp_shipped_libs ~w(
     asn1 common_test compiler crypto debugger dialyzer diameter edoc
-    eldap erl_docgen erl_interface et eunit ftp inets jinterface kernel
-    megaco mnesia observer odbc os_mon parsetools public_key reltool
-    runtime_tools sasl snmp ssh ssl stdlib syntax_tools tftp tools wx
-    xmerl
+    eldap erl_docgen erl_interface erts et eunit ftp inets jinterface
+    kernel megaco mnesia observer odbc os_mon parsetools public_key
+    reltool runtime_tools sasl snmp ssh ssl stdlib syntax_tools tftp
+    tools wx xmerl
   )
 
   # Apps that ship with Elixir under the same lib/ tree as OTP libs after
