@@ -407,6 +407,38 @@ defmodule MobDev.NativeBuildTest do
   # (`pythonx_in_project?/1` + `python_apple_support_env/2`) is still public
   # and tested in the surrounding describe block.
 
+  describe "install_exqlite_decision/2" do
+    setup do
+      tmp =
+        Path.join(System.tmp_dir!(), "mob_exqlite_decision_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(tmp)
+      on_exit(fn -> File.rm_rf!(tmp) end)
+      {:ok, tmp: tmp}
+    end
+
+    test "no version → :noop (project doesn't depend on exqlite)", %{tmp: tmp} do
+      assert NativeBuild.install_exqlite_decision(nil, tmp) == :noop
+    end
+
+    test "version locked + .app present → {:install, vsn}", %{tmp: tmp} do
+      File.write!(Path.join(tmp, "exqlite.app"), "{application, exqlite, []}.")
+
+      assert NativeBuild.install_exqlite_decision("0.36.0", tmp) == {:install, "0.36.0"}
+    end
+
+    test "version locked but .app missing → :stale (stale mix.lock guard)", %{tmp: tmp} do
+      # Regression for pigeon's iOS-device deploy: mix.lock had exqlite
+      # left over from a long-removed ecto_sqlite3 dep, but
+      # _build/dev/lib/exqlite/ebin was never populated. The old code
+      # crashed in File.cp!; the new code returns :stale and the
+      # caller skips cleanly.
+      refute File.exists?(Path.join(tmp, "exqlite.app"))
+
+      assert NativeBuild.install_exqlite_decision("0.36.0", tmp) == :stale
+    end
+  end
+
   describe "wheel_has_native_extension?/1" do
     setup do
       tmp = Path.join(System.tmp_dir!(), "mob_wheel_native_#{System.unique_integer([:positive])}")
