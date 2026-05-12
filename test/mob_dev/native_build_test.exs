@@ -586,4 +586,85 @@ defmodule MobDev.NativeBuildTest do
     File.write!(Path.join(pkg, "__init__.py"), "")
     File.write!(Path.join(pkg, "_ext.so"), <<0xCA, 0xFE, 0xBA, 0xBE>>)
   end
+
+  # ── resolve_booted_udid/2 ───────────────────────────────────────────────
+  #
+  # Regression: `mix mob.deploy --native --device defd4bdc` failed at
+  # `xcrun simctl install defd4bdc <app>` with `Invalid device:
+  # defd4bdc` because the prefix was passed straight through to simctl,
+  # which only accepts full UDIDs. The lookup now resolves any
+  # case-insensitive prefix against the booted-sim list.
+
+  describe "resolve_booted_udid/2" do
+    # Shape matches `xcrun simctl list devices booted -j` output's
+    # top-level "devices" map (string keys = runtime IDs, value =
+    # list of sim dicts).
+    defp by_runtime do
+      %{
+        "com.apple.CoreSimulator.SimRuntime.iOS-26-4" => [
+          %{
+            "udid" => "8A4250E9-B675-49CA-B143-A6C6D89B22AB",
+            "name" => "iPhone 17 Pro",
+            "state" => "Booted",
+            "isAvailable" => true
+          },
+          %{
+            "udid" => "DEFD4BDC-CA42-4CD2-93A1-62BE425E7A78",
+            "name" => "iPhone 11 Pro Max",
+            "state" => "Booted",
+            "isAvailable" => true
+          }
+        ]
+      }
+    end
+
+    test "nil device_id → first booted sim" do
+      assert NativeBuild.resolve_booted_udid(by_runtime(), nil) ==
+               "8A4250E9-B675-49CA-B143-A6C6D89B22AB"
+    end
+
+    test "8-char lowercase prefix matches the full UDID (user's repro)" do
+      assert NativeBuild.resolve_booted_udid(by_runtime(), "defd4bdc") ==
+               "DEFD4BDC-CA42-4CD2-93A1-62BE425E7A78"
+    end
+
+    test "8-char uppercase prefix also matches (case-insensitive)" do
+      assert NativeBuild.resolve_booted_udid(by_runtime(), "DEFD4BDC") ==
+               "DEFD4BDC-CA42-4CD2-93A1-62BE425E7A78"
+    end
+
+    test "full UDID passes through unchanged" do
+      full = "DEFD4BDC-CA42-4CD2-93A1-62BE425E7A78"
+      assert NativeBuild.resolve_booted_udid(by_runtime(), full) == full
+    end
+
+    test "no match → nil" do
+      assert NativeBuild.resolve_booted_udid(by_runtime(), "12345678") == nil
+    end
+
+    test "empty booted list + nil device_id → nil" do
+      assert NativeBuild.resolve_booted_udid(%{}, nil) == nil
+    end
+
+    test "empty booted list + given device_id → nil" do
+      assert NativeBuild.resolve_booted_udid(%{}, "defd4bdc") == nil
+    end
+
+    test "shutdown sims are filtered out even if their UDID prefix matches" do
+      # Defensive: simctl's `booted` filter already excludes shutdown
+      # sims, but pin our own filter in case the caller passes a
+      # broader listing.
+      runtime = %{
+        "iOS" => [
+          %{
+            "udid" => "DEFD4BDC-CA42-4CD2-93A1-62BE425E7A78",
+            "name" => "iPhone 11 Pro Max",
+            "state" => "Shutdown"
+          }
+        ]
+      }
+
+      assert NativeBuild.resolve_booted_udid(runtime, "defd4bdc") == nil
+    end
+  end
 end
