@@ -117,6 +117,61 @@ narrowing functions). Don't make them private:
 If you make any of these private, every downstream test breaks loudly — but
 you'll lose the ability to evolve the parsers safely.
 
+## Destructive-task conventions
+
+Apply consistently to every Mix task that mutates device state
+(`mix mob.uninstall` today; `mix mob.deploy --all-devices`,
+`mix mob.connect`, future ones).
+
+**Emulator vs physical safety pattern (from `mix mob.uninstall`):**
+
+- `--all-devices` sweeps **emulators and simulators only**. NEVER
+  physical devices. Phones are someone's personal property and have
+  real-data blast radius; emulators are throwaway dev fixtures.
+- `--all-physical` is the opt-in for sweeping physical devices.
+  Composes with `--all-devices` for "literally everything."
+- `--device <id>` is the explicit-id escape hatch — the user typed
+  the id, that's consent; bypasses the type filter regardless of
+  whether the device is emulator or physical.
+- **Auto-detect** (no flags, exactly one device connected) only
+  fires for a non-physical device. A solo phone connected with no
+  flags → error with a hint pointing at `--all-physical` or
+  `--device`.
+
+The predicate to route on is `MobDev.Device.physical?/1`. The
+selection logic lives in `MobDev.Uninstaller.select_devices/3`
+(public for testing); same shape should appear in any new task
+needing the same fan-out behavior. Pin the headline guarantee in
+each task's tests — "personal iPhone + dev emulators + `--all-devices`
+must leave the iPhone alone."
+
+**TODO:** apply this pattern to `mix mob.deploy` (today's `--all-devices`
+deploy can push BEAMs to a personal phone). When that fan-out exists
+or grows, factor `select_devices/3` plus the flag plumbing into a
+shared `MobDev.TaskTargets` (or similar) module so the rules don't
+drift between tasks.
+
+## Naming gotcha: `mix mob.install` vs `mix mob.uninstall`
+
+These look like inverses but aren't. Future agents touching either
+should know:
+
+- **`mix mob.install`** — first-run **project setup**. Downloads the
+  OTP runtime, generates icons, writes `mob.exs`. Per-project, runs
+  once. Doesn't touch any device.
+- **`mix mob.uninstall`** — per-**device** app removal. Sweeps
+  connected devices and removes installed `.app` / `.apk` bundles.
+  Doesn't undo `mix mob.install`'s project setup.
+
+A user reading the task list will plausibly type `mix mob.uninstall`
+expecting it to undo `mix mob.install`. If we ever want true
+symmetry, the device-cleanup task wants a clearer name (e.g.
+`mob.app.uninstall` or `mob.devices.clear`) and `mob.uninstall`
+could become the project-cleanup inverse of `mob.install`. Until we
+make that call, the help text in both task @moduledoc blocks
+should call out the scope difference explicitly. Don't quietly
+rename — users have muscle memory by now.
+
 ## Keep this file up to date
 
 When you change repo conventions, add a public seam, or hit a new gotcha —
