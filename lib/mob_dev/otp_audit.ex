@@ -43,9 +43,11 @@ defmodule MobDev.OtpAudit do
           path: String.t(),
           modules_total: non_neg_integer(),
           modules_reachable: non_neg_integer(),
+          modules_traced: non_neg_integer() | nil,
           kb_total: non_neg_integer(),
           kb_reachable: non_neg_integer(),
           unreachable_modules: [module_atom()],
+          untraced_modules: [module_atom()] | nil,
           is_app_under_test?: boolean()
         }
 
@@ -56,6 +58,7 @@ defmodule MobDev.OtpAudit do
           duplicates: %{lib_name() => [String.t()]},
           foreign_apps: [String.t()],
           strippable_libs: [lib_name()],
+          trace_strippable_libs: [lib_name()] | nil,
           total_kb: non_neg_integer(),
           reachable_kb: non_neg_integer(),
           strippable_kb: non_neg_integer()
@@ -107,11 +110,29 @@ defmodule MobDev.OtpAudit do
       When omitted, the classifier falls back to a narrow name-pattern
       heuristic (`test_`, `toy_`, `mob_test`, `scratch_`) — sufficient
       for tests, less accurate in real bundles.
+
+    * `:trace_input` — a `MapSet` (or list) of `module()` atoms that
+      were observed at runtime during a trace window. Comes from
+      `MobDev.OtpTrace.capture/1` (local synthetic harness) or
+      `Mob.Diag.mfa_trace/1` (remote device trace). When given, the
+      report grows two fields per lib (`modules_traced`,
+      `untraced_modules`) and one top-level field
+      (`trace_strippable_libs`) listing libs whose modules were
+      ALL absent from the trace — i.e., empirically never called.
+
+      Static reachability misses dynamic dispatch (`apply/3`,
+      `:erlang.load_nif`, runtime config). Trace data catches
+      everything that actually ran. The intersection `strippable_libs
+      ∩ trace_strippable_libs` is the high-confidence strip set;
+      `trace_strippable_libs \\ strippable_libs` is the "static graph
+      reaches it but nothing actually called it" set that lets you
+      strip partly-used libs like megaco / snmp / diameter.
   """
   @spec audit(String.t(), keyword()) :: report()
   def audit(otp_root, opts \\ []) do
     app_name = Keyword.get(opts, :app_name)
     project_deps = Keyword.get(opts, :project_deps)
+    trace_input = normalize_trace_input(Keyword.get(opts, :trace_input))
     libs = discover_libs(otp_root)
     {duplicates, libs} = collapse_duplicates(libs)
     {foreign_apps, libs} = split_foreign_apps(libs, app_name, project_deps)
@@ -121,8 +142,15 @@ defmodule MobDev.OtpAudit do
     seed_modules = compute_seed_modules(libs, app_name)
     reachable = bfs(seed_modules, imports)
 
-    lib_reports = build_lib_reports(libs, reachable, module_to_lib)
+    lib_reports = build_lib_reports(libs, reachable, trace_input, module_to_lib)
     strippable = Enum.filter(lib_reports, &(&1.modules_reachable == 0)) |> Enum.map(& &1.name)
+
+    trace_strippable =
+      if trace_input do
+        lib_reports
+        |> Enum.filter(&(&1.modules_total > 0 and &1.modules_traced == 0))
+        |> Enum.map(& &1.name)
+      end
 
     %{
       otp_root: otp_root,
@@ -131,6 +159,7 @@ defmodule MobDev.OtpAudit do
       duplicates: duplicates,
       foreign_apps: foreign_apps,
       strippable_libs: strippable,
+      trace_strippable_libs: trace_strippable,
       total_kb: Enum.sum(Enum.map(lib_reports, & &1.kb_total)),
       reachable_kb: Enum.sum(Enum.map(lib_reports, & &1.kb_reachable)),
       strippable_kb:
@@ -139,6 +168,19 @@ defmodule MobDev.OtpAudit do
         |> Enum.sum_by(& &1.kb_total)
     }
   end
+
+  # Accept either nil, a MapSet, a list of atoms, or an `OtpTrace.result`
+  # / `Mob.Diag.mfa_trace` map (which carries `:modules` of MapSet shape).
+  # Returns a MapSet or nil.
+  defp normalize_trace_input(nil), do: nil
+
+  defp normalize_trace_input(%MapSet{} = ms), do: ms
+
+  defp normalize_trace_input(%{modules: %MapSet{} = ms}), do: ms
+
+  defp normalize_trace_input(%{modules: list}) when is_list(list), do: MapSet.new(list)
+
+  defp normalize_trace_input(list) when is_list(list), do: MapSet.new(list)
 
   # ── Discovery ─────────────────────────────────────────────────────────
 
@@ -356,10 +398,20 @@ defmodule MobDev.OtpAudit do
 
   # ── Reporting ─────────────────────────────────────────────────────────
 
-  defp build_lib_reports(libs, reachable, _module_to_lib) do
+  defp build_lib_reports(libs, reachable, trace_input, _module_to_lib) do
     Enum.map(libs, fn lib ->
       modules = modules_in(lib) |> MapSet.new()
       reach = MapSet.intersection(modules, reachable)
+
+      {traced_count, untraced} =
+        case trace_input do
+          nil ->
+            {nil, nil}
+
+          ms ->
+            traced = MapSet.intersection(modules, ms)
+            {MapSet.size(traced), MapSet.difference(modules, ms) |> Enum.sort()}
+        end
 
       %{
         name: lib.name,
@@ -367,9 +419,11 @@ defmodule MobDev.OtpAudit do
         path: lib.path,
         modules_total: MapSet.size(modules),
         modules_reachable: MapSet.size(reach),
+        modules_traced: traced_count,
         kb_total: dir_size_kb(lib.path),
         kb_reachable: beam_size_kb(lib.beams, reach),
         unreachable_modules: MapSet.difference(modules, reach) |> Enum.sort(),
+        untraced_modules: untraced,
         is_app_under_test?: false
       }
     end)

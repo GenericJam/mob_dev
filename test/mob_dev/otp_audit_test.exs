@@ -336,4 +336,142 @@ defmodule MobDev.OtpAuditTest do
       assert scratch in report.foreign_apps
     end
   end
+
+  # `:trace_input` adds empirical reachability — modules actually called
+  # at runtime during a trace window. Crucially, the trace can prove a
+  # statically-reachable lib is never called (the megaco/snmp case from
+  # the pigeon baseline) — that's the trace-only signal that unlocks
+  # stripping libs the static graph alone can't strip.
+  describe "audit/2 — :trace_input" do
+    test "without :trace_input, trace_strippable_libs is nil and lib reports have nil trace fields",
+         %{root: root} do
+      make_lib(root, "kernel", "9.2", modules: ["kernel"])
+      make_lib(root, "stdlib", "5.2", modules: ["lists"])
+
+      report = OtpAudit.audit(root)
+
+      assert report.trace_strippable_libs == nil
+
+      Enum.each(report.libs, fn lib ->
+        assert lib.modules_traced == nil
+        assert lib.untraced_modules == nil
+      end)
+    end
+
+    test "with empty trace, every lib's modules become untraced", %{root: root} do
+      make_lib(root, "kernel", "9.2", modules: ["kernel"])
+      make_lib(root, "stdlib", "5.2", modules: ["lists"])
+      make_lib(root, "megaco", "4.9", modules: ["megaco", "megaco_app"])
+
+      report = OtpAudit.audit(root, trace_input: MapSet.new([]))
+
+      assert "kernel" in report.trace_strippable_libs
+      assert "stdlib" in report.trace_strippable_libs
+      assert "megaco" in report.trace_strippable_libs
+    end
+
+    test "trace catches a lib that's statically reachable but never called", %{root: root} do
+      # Simulates the megaco case from the pigeon baseline: 1/65
+      # statically reachable but 0 actually called.
+      make_lib(root, "kernel", "9.2", modules: ["kernel"])
+      make_lib(root, "stdlib", "5.2", modules: ["lists"])
+      # megaco is "statically reachable" because we'll mark it called
+      # — except we won't include it in the trace.
+      make_lib(root, "megaco", "4.9", modules: ["megaco", "megaco_app"])
+
+      # Trace records kernel + stdlib + Elixir runtime, NO megaco.
+      trace = MapSet.new([:kernel, :lists, :erlang])
+
+      report = OtpAudit.audit(root, trace_input: trace)
+
+      assert "megaco" in report.trace_strippable_libs
+    end
+
+    test "trace excludes libs whose modules ARE called", %{root: root} do
+      make_lib(root, "kernel", "9.2", modules: ["kernel"])
+      make_lib(root, "stdlib", "5.2", modules: ["lists"])
+      make_lib(root, "compiler", "10.0", modules: ["compile", "beam_z"])
+
+      # compiler.compile is in the trace → compiler not trace-strippable.
+      trace = MapSet.new([:kernel, :lists, :compile])
+
+      report = OtpAudit.audit(root, trace_input: trace)
+
+      refute "compiler" in report.trace_strippable_libs
+    end
+
+    test "per-lib modules_traced + untraced_modules reflect trace membership", %{root: root} do
+      make_lib(root, "kernel", "9.2", modules: ["kernel"])
+      make_lib(root, "stdlib", "5.2", modules: ["lists"])
+      make_lib(root, "compiler", "10.0", modules: ["compile", "beam_z", "v3_core"])
+
+      trace = MapSet.new([:kernel, :lists, :compile])
+
+      report = OtpAudit.audit(root, trace_input: trace)
+
+      compiler = Enum.find(report.libs, &(&1.name == "compiler"))
+      assert compiler.modules_traced == 1
+      assert compiler.untraced_modules == [:beam_z, :v3_core]
+    end
+
+    test "accepts a list as :trace_input (auto-converts to MapSet)", %{root: root} do
+      make_lib(root, "kernel", "9.2", modules: ["kernel"])
+      make_lib(root, "stdlib", "5.2", modules: ["lists"])
+      make_lib(root, "megaco", "4.9", modules: ["megaco"])
+
+      report = OtpAudit.audit(root, trace_input: [:kernel, :lists])
+
+      assert "megaco" in report.trace_strippable_libs
+    end
+
+    test "accepts an OtpTrace.result-shaped map (uses :modules field)", %{root: root} do
+      make_lib(root, "kernel", "9.2", modules: ["kernel"])
+      make_lib(root, "stdlib", "5.2", modules: ["lists"])
+      make_lib(root, "megaco", "4.9", modules: ["megaco"])
+
+      # Shape matches MobDev.OtpTrace.capture/1's return.
+      trace_result = %{
+        mfas: MapSet.new([{:kernel, :is_alive, 0}]),
+        modules: MapSet.new([:kernel, :lists]),
+        elapsed_us: 1234
+      }
+
+      report = OtpAudit.audit(root, trace_input: trace_result)
+
+      assert "megaco" in report.trace_strippable_libs
+    end
+
+    test "accepts a remote-trace-shaped map (modules is a list, not MapSet)", %{root: root} do
+      # `mix mob.trace_otp --remote` returns `modules` as a list. JSON
+      # round-trip also flattens MapSets to lists. The normalizer
+      # should handle both.
+      make_lib(root, "kernel", "9.2", modules: ["kernel"])
+      make_lib(root, "stdlib", "5.2", modules: ["lists"])
+      make_lib(root, "megaco", "4.9", modules: ["megaco"])
+
+      remote_shape = %{
+        modules: [:kernel, :lists],
+        module_count: 2,
+        mfa_count: 0,
+        mfas: []
+      }
+
+      report = OtpAudit.audit(root, trace_input: remote_shape)
+
+      assert "megaco" in report.trace_strippable_libs
+    end
+
+    test "an empty lib (modules_total == 0) is NOT trace-strippable", %{root: root} do
+      # Defensive: a placeholder lib with no .beams should not appear
+      # in trace_strippable_libs (otherwise the user gets noise from
+      # cache-cruft empty dirs).
+      make_lib(root, "kernel", "9.2", modules: ["kernel"])
+      make_lib(root, "stdlib", "5.2", modules: ["lists"])
+      make_lib(root, "empty_placeholder", "0.1.0", modules: [])
+
+      report = OtpAudit.audit(root, trace_input: [:kernel, :lists])
+
+      refute "empty_placeholder" in report.trace_strippable_libs
+    end
+  end
 end
