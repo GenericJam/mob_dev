@@ -101,6 +101,57 @@ defmodule Mix.Tasks.Mob.UninstallTest do
     end
   end
 
+  # ── should_skip_prompt?/2 ───────────────────────────────────────────────
+
+  describe "should_skip_prompt?/2" do
+    defp plan_one_one, do: [{android("emu"), ["com.x"]}]
+    defp plan_one_many, do: [{android("emu"), ["com.x", "com.y"]}]
+    defp plan_many_one, do: [{android("a"), ["com.x"]}, {android("b"), ["com.x"]}]
+    defp plan_many_many, do: [{android("a"), ["com.x", "com.y"]}, {android("b"), ["com.z"]}]
+
+    test "single device + single bundle → skip prompt (low blast radius)" do
+      assert Uninstall.should_skip_prompt?(plan_one_one(), [])
+    end
+
+    test "single device + multiple bundles → confirm" do
+      refute Uninstall.should_skip_prompt?(plan_one_many(), [])
+    end
+
+    test "multiple devices + single bundle → confirm" do
+      refute Uninstall.should_skip_prompt?(plan_many_one(), [])
+    end
+
+    test "multiple devices + multiple bundles → confirm" do
+      refute Uninstall.should_skip_prompt?(plan_many_many(), [])
+    end
+
+    test "--yes overrides confirm for multi-target" do
+      assert Uninstall.should_skip_prompt?(plan_many_many(), yes: true)
+    end
+
+    test "REGRESSION: opts[:yes] absent (nil) does NOT raise BadBooleanError" do
+      # The original implementation did `opts[:yes] or single_target?`
+      # which crashed under Elixir 1.20's stricter type checker because
+      # `opts[:yes]` is nil (not false) when --yes isn't passed.
+      # Real user repro:
+      #
+      #   mix mob.uninstall --all-devices
+      #   ** (BadBooleanError) expected a boolean on left-side of "or",
+      #      got: nil
+      #
+      # Pin the boolean coercion so the bug can't reappear.
+      assert is_boolean(Uninstall.should_skip_prompt?(plan_many_many(), []))
+
+      # The specific user invocation: --all-devices, no --yes. No
+      # crash; falls through to "needs confirmation" — false.
+      refute Uninstall.should_skip_prompt?(plan_many_many(), all_devices: true)
+    end
+
+    test "opts[:yes] = false (explicit) is equivalent to absent" do
+      refute Uninstall.should_skip_prompt?(plan_many_many(), yes: false)
+    end
+  end
+
   # ── --help / -h ─────────────────────────────────────────────────────────
 
   describe "--help integration" do
