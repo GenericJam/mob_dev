@@ -39,13 +39,48 @@ defmodule MobDev.OtpAudit.Slim do
   same shape `MobDev.OtpAudit`'s report uses, so users can copy
   basenames directly out of `mix mob.audit_otp` output.
 
-  ## What this does NOT do (yet)
+  ## Audit-driven expansion + the always-keep guardrail
 
-  Audit-driven auto-expansion of the strip set is a follow-up. The
-  static audit can't see NIF dispatch (`:erlang.load_nif`) and would
-  classify `exqlite` and friends as strippable. Auto-union is
-  blocked on tighter foreign-app detection and the trace-driven
-  confidence work in `MobDev.OtpTrace`.
+  When the caller passes `:audit_input` (typically via mob.exs
+  `slim: [audit: true, trace_json: "..."]`), the strip set grows
+  by:
+
+    * `audit.foreign_app_names` (allow-list-validated cache cruft)
+    * `strippable_libs ∩ trace_strippable_libs` (both signals agree)
+    * `trace_strippable_libs \\ strippable_libs` (trace-only — libs
+      the static graph reaches but the trace says are never called)
+
+  The last category is the powerful one and the dangerous one. A
+  60-second trace window can easily miss libs that ARE used but
+  only at boot (`sasl`) or only in code paths the user didn't
+  drive during the window (`crypto`, `public_key`, `asn1`, `ssl`
+  when no TLS happens). Auto-stripping those would break apps.
+
+  The `always_keep_libs/0` set is the safety guardrail: those libs
+  are NEVER added to the strip set by audit-driven expansion, no
+  matter what the trace says. The hardcoded baseline still strips
+  what it strips, and `:drop_libs` still works as the user-explicit
+  escape hatch — but the trace can't accidentally take down crypto
+  or sasl.
+
+  Override patterns from `mob.exs`:
+
+      config :mob_dev,
+        slim: [
+          # Force-keep — user override beats everything else.
+          # Use this if audit-driven strip is taking out a lib you
+          # actually need at runtime.
+          keep_libs: ["some_lib"],
+
+          # Force-strip — user override beats the audit. Use this
+          # to expand beyond what the trace alone would mark.
+          drop_libs: ["my_unused_dep"]
+        ]
+
+  Precedence (in order from least to most authoritative): hardcoded
+  baseline → audit-derived expansion (minus always_keep_libs) →
+  `:drop_libs` → `:keep_libs`. The user's `:keep_libs` is always
+  the last word.
   """
 
   @hardcoded_prefixes ~w(
@@ -54,6 +89,24 @@ defmodule MobDev.OtpAudit.Slim do
     syntax_tools parsetools xmerl reltool inets ftp tftp
     common_test mnesia eldap odbc
     compiler ssh
+  )
+
+  # Libs that the audit-driven expansion is forbidden from
+  # adding to the strip set, even when both static and trace
+  # agree the lib is unused. Rationale: a finite-duration trace
+  # can miss code paths that boot the BEAM (sasl), respond to
+  # rare events (crypto/ssl/asn1/public_key in TLS handshakes),
+  # or load lazily (logger handlers). Better to ship a slightly
+  # fatter bundle than to ship one that crashes at startup.
+  #
+  # The user's `:drop_libs` can override this if they're sure
+  # (drop_libs is added AFTER the audit expansion in the merge).
+  # That's the intentional escape hatch — opinionated default
+  # with a user-explicit override.
+  @always_keep_libs ~w(
+    kernel stdlib erts elixir logger
+    sasl
+    crypto public_key asn1 ssl
   )
 
   @foreign_app_prefixes ~w(toy_ test_ mob_test scratch_)
@@ -78,30 +131,46 @@ defmodule MobDev.OtpAudit.Slim do
   def hardcoded_prefixes, do: @hardcoded_prefixes
 
   @doc """
-  Compute the final strip set: `hardcoded_prefixes ∪ drop_libs \\ keep_libs`.
-  Returns a sorted, deduplicated list.
+  Libs that audit-driven expansion is forbidden from auto-stripping.
+  Source of truth for the safety guardrail — see moduledoc.
+  Users can still force-strip these via `:drop_libs` in `mob.exs`.
+  """
+  @spec always_keep_libs() :: [String.t()]
+  def always_keep_libs, do: @always_keep_libs
 
-  Recognized opts:
-    * `:keep_libs` — `[String.t()]`, force-keep (subtracts from set)
-    * `:drop_libs` — `[String.t()]`, force-drop (adds to set)
+  @doc """
+  Compute the final strip set. Returns a sorted, deduplicated list.
+
+  ## Composition (low to high precedence)
+
+    1. `hardcoded_prefixes/0` — baseline.
+    2. `:audit_input` expansion (when given), minus `always_keep_libs/0`
+       (the safety guardrail).
+    3. `:drop_libs` — user-explicit force-strip.
+    4. `:keep_libs` — user-explicit force-keep. Wins over everything.
+
+  ## Recognized opts
+
+    * `:keep_libs` — `[String.t()]`, force-keep (subtracts from set).
+      Highest precedence — overrides every other source.
+    * `:drop_libs` — `[String.t()]`, force-strip (adds to set).
+      Higher precedence than the guardrail: a user can `:drop_libs`
+      a lib that's in `always_keep_libs/0` if they really mean it.
     * `:audit_input` — `MobDev.OtpAudit.report/0` to expand the strip
-      set with audit-derived libs. The expansion is conservative:
-        - `report.foreign_app_names` always unions in. With
-          `:project_deps` allow-listing in OtpAudit, foreign_apps is a
-          reliable signal — anything classified here was not a
-          legitimate dep of the project.
-        - When the audit was run with `:trace_input`, the intersection
-          `strippable_libs ∩ trace_strippable_libs` unions in (both
-          signals agree → high confidence) AND
-          `trace_strippable_libs \\ strippable_libs` unions in (trace
-          says never-called even though the static graph reaches it —
-          this is the megaco/snmp/diameter unblocking signal).
-        - Note: `strippable_libs` alone is NOT unioned. Without trace,
-          a lib's modules being statically unreachable could just mean
-          the static graph can't see `:erlang.load_nif` dispatch.
-          `exqlite` is the canonical example — would be a false
-          positive and break the build.
-      `:keep_libs` still wins over everything (caller's last word).
+      set with audit-derived libs:
+        - `report.foreign_app_names` always unions in (allow-list-
+          validated by OtpAudit's `:project_deps`).
+        - When the audit was run with `:trace_input`:
+          - `strippable_libs ∩ trace_strippable_libs` unions in
+            (both signals agree → high confidence).
+          - `trace_strippable_libs \\ strippable_libs` unions in
+            (trace-only — the megaco/snmp/diameter unblocking signal).
+        - `strippable_libs` alone is NOT unioned without trace
+          (NIF dispatch like `exqlite` is statically invisible).
+        - The expansion is then filtered through
+          `always_keep_libs/0` so trace lies (e.g. trace window
+          missed sasl boot or crypto's lazy TLS calls) can't break
+          production.
   """
   @spec compute_strip_set(keyword()) :: [String.t()]
   def compute_strip_set(opts \\ []) do
@@ -111,8 +180,8 @@ defmodule MobDev.OtpAudit.Slim do
 
     @hardcoded_prefixes
     |> MapSet.new()
-    |> MapSet.union(drop)
     |> MapSet.union(audit_expansion)
+    |> MapSet.union(drop)
     |> MapSet.difference(keep)
     |> Enum.sort()
   end
@@ -125,25 +194,35 @@ defmodule MobDev.OtpAudit.Slim do
     foreign = MapSet.new(audit_input.foreign_app_names || [])
     static = MapSet.new(audit_input.strippable_libs || [])
 
-    case audit_input.trace_strippable_libs do
-      nil ->
-        # No trace data — only the (allow-list-validated) foreign apps
-        # are safe to add. Static-only `strippable_libs` is risky
-        # without trace (NIF dispatch invisible to the import graph).
-        foreign
+    expansion =
+      case audit_input.trace_strippable_libs do
+        nil ->
+          # No trace data — only the (allow-list-validated) foreign apps
+          # are safe to add. Static-only `strippable_libs` is risky
+          # without trace (NIF dispatch invisible to the import graph).
+          foreign
 
-      trace ->
-        trace_set = MapSet.new(trace)
-        # Both signals agree the lib is dead → safest.
-        confirmed = MapSet.intersection(static, trace_set)
-        # Trace says never called even though static reaches it → the
-        # high-value signal that unlocks megaco / snmp / etc.
-        trace_only = MapSet.difference(trace_set, static)
+        trace ->
+          trace_set = MapSet.new(trace)
+          # Both signals agree the lib is dead → safest.
+          confirmed = MapSet.intersection(static, trace_set)
+          # Trace says never called even though static reaches it → the
+          # high-value signal that unlocks megaco / snmp / etc.
+          trace_only = MapSet.difference(trace_set, static)
 
-        foreign
-        |> MapSet.union(confirmed)
-        |> MapSet.union(trace_only)
-    end
+          foreign
+          |> MapSet.union(confirmed)
+          |> MapSet.union(trace_only)
+      end
+
+    # Safety guardrail: a finite trace window can miss boot-time or
+    # event-driven calls (sasl boots before tracing starts; crypto/ssl/
+    # public_key/asn1 only fire during TLS or signing). Auto-stripping
+    # any of those because the trace didn't see them would crash apps.
+    # The user can still force-strip via `:drop_libs` — but the default
+    # behaviour is opinionated: protect production from a too-narrow
+    # trace.
+    MapSet.difference(expansion, MapSet.new(@always_keep_libs))
   end
 
   @doc """
