@@ -102,4 +102,100 @@ defmodule MobDev.DeployerTest do
       :code.del_path(String.to_charlist(dir))
     end
   end
+
+  # ── categorize_results/1 ────────────────────────────────────────────────
+
+  describe "categorize_results/1" do
+    # Use minimal Device structs (just the fields the function reads, plus
+    # the ones the production code threads through for display).
+    defp device(name), do: %MobDev.Device{name: name, serial: name, platform: :android}
+
+    test "buckets :ok results as deployed" do
+      a = device("a")
+      b = device("b")
+
+      assert {[^a, ^b], [], []} = Deployer.categorize_results([{:ok, a}, {:ok, b}])
+    end
+
+    test "buckets :error results as failed" do
+      a = device("a")
+
+      assert {[], [^a], []} = Deployer.categorize_results([{:error, a}])
+    end
+
+    test "buckets :skipped results as skipped" do
+      a = device("a")
+
+      assert {[], [], [^a]} = Deployer.categorize_results([{:skipped, a}])
+    end
+
+    test "skipped does NOT leak into failed (regression pin)" do
+      # The original behaviour returned `:error` for app-not-installed,
+      # so the count of "failed" devices included multi-platform sweep
+      # skips. categorize_results pins the three-way split.
+      deployed = device("deployed")
+      stale = device("stale_lock_skipped")
+      busted = device("real_failure")
+
+      assert {[^deployed], [^busted], [^stale]} =
+               Deployer.categorize_results([
+                 {:ok, deployed},
+                 {:skipped, stale},
+                 {:error, busted}
+               ])
+    end
+
+    test "empty input returns three empty lists" do
+      assert {[], [], []} = Deployer.categorize_results([])
+    end
+
+    test "mixed real-world shape — iOS deploy + 5 Android skips" do
+      iphone = device("iPhone")
+      androids = for i <- 1..5, do: device("emulator-#{i}")
+
+      results = [{:ok, iphone} | Enum.map(androids, &{:skipped, &1})]
+
+      {deployed, failed, skipped} = Deployer.categorize_results(results)
+      assert deployed == [iphone]
+      assert failed == []
+      assert length(skipped) == 5
+    end
+  end
+
+  # ── android_package_installed?/2 ────────────────────────────────────────
+
+  describe "android_package_installed?/2" do
+    test "true when pm output contains the package line" do
+      pm_out = "package:com.example.test_migration\n"
+      assert Deployer.android_package_installed?(pm_out, "com.example.test_migration")
+    end
+
+    test "false when pm output is empty (no matching package)" do
+      # Adb's `pm list packages <pkg>` returns empty output when there's
+      # no match — NOT a 'package:' line with empty body.
+      refute Deployer.android_package_installed?("", "com.example.test_migration")
+    end
+
+    test "false when pm output lists a DIFFERENT package" do
+      pm_out = "package:com.example.different_app\n"
+      refute Deployer.android_package_installed?(pm_out, "com.example.test_migration")
+    end
+
+    test "true when pm output has the target package among others" do
+      pm_out = """
+      package:com.example.test_migration
+      package:com.example.different_app
+      """
+
+      assert Deployer.android_package_installed?(pm_out, "com.example.test_migration")
+    end
+
+    test "false on partial match without 'package:' prefix" do
+      # Defensive: substring match must require the 'package:' prefix so
+      # output like "com.example.test_migration is your app" doesn't
+      # falsely register as installed.
+      pm_out = "com.example.test_migration unrelated text\n"
+      refute Deployer.android_package_installed?(pm_out, "com.example.test_migration")
+    end
+  end
 end
