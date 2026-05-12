@@ -39,13 +39,25 @@ defmodule Mix.Tasks.Mob.Deploy do
                                         drop_libs: ["my_unused_dep"],
                                         keep_libs: ["mnesia"],
                                         audit: true,                       # opt in
-                                        trace_json: "priv/mob_trace.json"  # optional
+                                        # Single capture (a starting point):
+                                        trace_json: "priv/mob_trace.json",
+                                        # OR multiple captures unioned —
+                                        # much safer for production
+                                        # stripping. A lib is trace-
+                                        # strippable only if NONE of the
+                                        # captures observed any of its
+                                        # modules.
+                                        trace_jsons: [
+                                          "priv/boot.json",
+                                          "priv/ui.json",
+                                          "priv/auth.json"
+                                        ]
                                       ]
 
                                 With `audit: true`, the slim pass runs
                                 `MobDev.OtpAudit` against the bundle and
                                 expands the strip set with foreign apps
-                                + (when `trace_json` is given) the
+                                + (when a trace is supplied) the
                                 trace-augmented strip set. Trace JSON
                                 comes from `mix mob.trace_otp --json`.
 
