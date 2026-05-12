@@ -2903,36 +2903,26 @@ defmodule MobDev.NativeBuild do
   #
   # The mob.exs surface is conservative — default off — because the audit
   # walks every `.beam` in the bundle (seconds added per build). Users
-  # opt in once they've captured a trace and want to expand the strip set:
+  # opt in once they've captured trace(s) and want to expand the strip set:
   #
   #     config :mob_dev,
   #       slim: [audit: true, trace_json: "priv/mob_trace.json"]
+  #
+  # For production stripping, multi-trace union is strongly recommended —
+  # a single 60s capture only sees one slice of the app:
+  #
+  #     config :mob_dev,
+  #       slim: [
+  #         audit: true,
+  #         trace_jsons: ["priv/boot.json", "priv/ui.json", "priv/auth.json"]
+  #       ]
+  #
+  # The union picks "ever called" across all captures: a lib is
+  # trace-strippable only if NONE of the traces saw any of its modules.
   defp maybe_run_audit(otp_bundle, slim_opts) do
     if Keyword.get(slim_opts, :audit, false) do
-      trace_input =
-        case Keyword.get(slim_opts, :trace_json) do
-          nil ->
-            nil
-
-          path ->
-            case File.read(path) do
-              {:ok, body} ->
-                body
-                |> Jason.decode!()
-                |> Map.get("modules", [])
-                |> Enum.map(&String.to_atom/1)
-                |> MapSet.new()
-
-              {:error, reason} ->
-                IO.warn(
-                  "[SLIM:audit] could not read trace_json #{path}: " <>
-                    "#{inspect(reason)} — proceeding without trace data"
-                )
-
-                nil
-            end
-        end
-
+      trace_paths = trace_paths_from_opts(slim_opts)
+      trace_input = union_trace_jsons(trace_paths)
       project_deps = infer_project_deps()
 
       app_name =
@@ -2941,9 +2931,16 @@ defmodule MobDev.NativeBuild do
           _ -> Mix.Project.config()[:app]
         end
 
+      trace_desc =
+        case {trace_input, length(trace_paths)} do
+          {nil, _} -> "none"
+          {ms, 1} -> "#{MapSet.size(ms)} modules from 1 capture"
+          {ms, n} -> "#{MapSet.size(ms)} unique modules across #{n} captures"
+        end
+
       IO.puts(
-        "  [SLIM:audit] running OtpAudit (project_deps=#{length(project_deps || [])}, " <>
-          "trace=#{if trace_input, do: MapSet.size(trace_input), else: "none"})"
+        "  [SLIM:audit] running OtpAudit " <>
+          "(project_deps=#{length(project_deps || [])}, trace=#{trace_desc})"
       )
 
       MobDev.OtpAudit.audit(otp_bundle,
@@ -2952,6 +2949,31 @@ defmodule MobDev.NativeBuild do
         trace_input: trace_input
       )
     end
+  end
+
+  # mob.exs accepts both shapes for back-compat:
+  #   slim: [trace_json: "single.json"]
+  #   slim: [trace_jsons: ["one.json", "two.json"]]
+  # If both are given, the singular is appended to the plural list.
+  defp trace_paths_from_opts(slim_opts) do
+    paths = Keyword.get(slim_opts, :trace_jsons, [])
+
+    case Keyword.get(slim_opts, :trace_json) do
+      nil -> paths
+      single -> paths ++ [single]
+    end
+  end
+
+  # In the slim build path a failed read should warn but not raise:
+  # the build keeps going (no trace expansion) so the user still gets
+  # a slim build, just with fewer libs stripped than they configured.
+  defp union_trace_jsons(paths) do
+    MobDev.OtpAudit.union_trace_jsons(paths, fn path, reason ->
+      IO.warn(
+        "[SLIM:audit] could not read trace_json #{path}: " <>
+          "#{inspect(reason)} — skipping that trace"
+      )
+    end)
   end
 
   defp infer_project_deps do
