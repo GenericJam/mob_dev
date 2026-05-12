@@ -15,9 +15,10 @@ defmodule Mix.Tasks.Mob.AuditOtp do
 
   ## Usage
 
-      mix mob.audit_otp                         # audit the most recent release tree
-      mix mob.audit_otp --root path/to/otp      # audit a specific tree
-      mix mob.audit_otp --json                  # machine-readable output
+      mix mob.audit_otp                                  # audit the most recent release tree
+      mix mob.audit_otp --root path/to/otp               # audit a specific tree
+      mix mob.audit_otp --json                           # machine-readable output
+      mix mob.audit_otp --trace-json path/to/trace.json  # cross-reference against trace data
 
   ## Where the audit reads from
 
@@ -40,23 +41,38 @@ defmodule Mix.Tasks.Mob.AuditOtp do
   @impl Mix.Task
   def run(args) do
     {opts, _, _} =
-      OptionParser.parse(args, strict: [root: :string, json: :boolean, app: :string])
+      OptionParser.parse(args,
+        strict: [
+          root: :string,
+          json: :boolean,
+          app: :string,
+          trace_json: :string
+        ]
+      )
 
     root = resolve_root(opts[:root])
     app_name = opts[:app] || infer_app_name()
     project_deps = infer_project_deps()
+    trace_input = load_trace_json(opts[:trace_json])
 
     Mix.shell().info("Auditing OTP tree: #{root}")
     if app_name, do: Mix.shell().info("App entry point: #{app_name}")
 
     if project_deps,
-      do: Mix.shell().info("Project deps (allow-listed): #{length(project_deps)} apps\n"),
-      else: Mix.shell().info("")
+      do: Mix.shell().info("Project deps (allow-listed): #{length(project_deps)} apps"),
+      else: :ok
+
+    if trace_input,
+      do: Mix.shell().info("Trace input: #{MapSet.size(trace_input)} modules observed"),
+      else: :ok
+
+    Mix.shell().info("")
 
     report =
       OtpAudit.audit(root,
         app_name: app_name && String.to_atom(to_string(app_name)),
-        project_deps: project_deps
+        project_deps: project_deps,
+        trace_input: trace_input
       )
 
     if opts[:json] do
@@ -116,6 +132,25 @@ defmodule Mix.Tasks.Mob.AuditOtp do
     end
   end
 
+  # Reads a JSON trace file written by `mix mob.trace_otp --json`. The
+  # file shape carries `modules` as a list of strings — convert to atoms
+  # so it lines up with what the .beam basenames decode to.
+  defp load_trace_json(nil), do: nil
+
+  defp load_trace_json(path) do
+    case File.read(path) do
+      {:ok, body} ->
+        body
+        |> Jason.decode!()
+        |> Map.get("modules", [])
+        |> Enum.map(&String.to_atom/1)
+        |> MapSet.new()
+
+      {:error, reason} ->
+        Mix.raise("Could not read --trace-json #{path}: #{inspect(reason)}")
+    end
+  end
+
   defp print_report(r) do
     h1 = IO.ANSI.bright()
     dim = IO.ANSI.faint()
@@ -153,6 +188,47 @@ defmodule Mix.Tasks.Mob.AuditOtp do
       for name <- r.strippable_libs do
         lib = Enum.find(r.libs, &(&1.name == name))
         Mix.shell().info("  #{red}#{name}#{reset}  #{format_kb(lib.kb_total)}")
+      end
+    end
+
+    if r.trace_strippable_libs do
+      Mix.shell().info("\n#{h1}=== Trace-strippable (no traced modules) ==={reset}")
+      Mix.shell().info("(libs whose modules never appeared in the trace — strong strip signal)")
+
+      static = MapSet.new(r.strippable_libs)
+      trace_set = MapSet.new(r.trace_strippable_libs)
+
+      both = MapSet.intersection(static, trace_set) |> Enum.sort()
+      trace_only = MapSet.difference(trace_set, static) |> Enum.sort()
+
+      cond do
+        r.trace_strippable_libs == [] ->
+          Mix.shell().info("  #{dim}none — every lib had at least one module called#{reset}")
+
+        true ->
+          if both != [] do
+            Mix.shell().info("\n  #{dim}both static + trace (high confidence):#{reset}")
+
+            for name <- both do
+              lib = Enum.find(r.libs, &(&1.name == name))
+              Mix.shell().info("    #{red}#{name}#{reset}  #{format_kb(lib.kb_total)}")
+            end
+          end
+
+          if trace_only != [] do
+            Mix.shell().info(
+              "\n  #{dim}trace-only (static graph reaches them; trace says never called):#{reset}"
+            )
+
+            for name <- trace_only do
+              lib = Enum.find(r.libs, &(&1.name == name))
+
+              Mix.shell().info(
+                "    #{yellow}#{name}#{reset}  #{format_kb(lib.kb_total)}  " <>
+                  "(#{lib.modules_reachable}/#{lib.modules_total} statically reachable)"
+              )
+            end
+          end
       end
     end
 
