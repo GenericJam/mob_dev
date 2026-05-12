@@ -1467,8 +1467,21 @@ defmodule MobDev.NativeBuild do
     rsync_dir!(Path.join(otp_root, app_module) <> "/", Path.join(otp_bundle, app_module) <> "/")
 
     python_src = Path.join(otp_root, "python")
-    if File.dir?(python_src),
-      do: rsync_dir!(python_src <> "/", Path.join(otp_bundle, "python") <> "/")
+
+    if File.dir?(python_src) do
+      rsync_dir!(python_src <> "/", Path.join(otp_bundle, "python") <> "/")
+      # Mirrors the Android `copy_project_python_wheels/1` call in
+      # `copy_python_assets/1`. iOS device builds nuke and rebuild
+      # `<otp_root>/python/lib/python3.13/` on every run (see
+      # `ios/build_device.sh` PYTHON_STDLIB block), so staging wheels
+      # into the OTP cache wouldn't survive. Doing the copy here, after
+      # the rsync into the .app bundle, lands them where Python's
+      # site-packages discovery will find them at runtime.
+      copy_ios_safe_project_python_wheels(
+        Path.join(otp_bundle, "python"),
+        Path.join("priv", "python_wheels")
+      )
+    end
 
     for ext <- ["png", "jpg"] do
       Path.wildcard("#{otp_root}/*.#{ext}")
@@ -1487,6 +1500,68 @@ defmodule MobDev.NativeBuild do
       System.cmd("rsync", ["-a", "--delete", src, dst], stderr_to_stdout: true, into: IO.stream())
 
     :ok
+  end
+
+  @doc """
+  iOS-flavoured counterpart to `copy_project_python_wheels/1`. Same
+  `priv/python_wheels/` convention, same site-packages destination,
+  but skips wheels that contain any `.so` extension. Today's wheel
+  set ships Android-built binaries (Chaquopy-compatible) under names
+  like `_cffi_backend.so` and `_rust.so` — no "android" in the
+  filename — so a name-based heuristic misses them. Until the wheels
+  directory holds platform-tagged subdirs (or an iOS-specific source),
+  treating "has any .so" as "Android-only, skip on iOS" matches the
+  current reality: pure-Python wheels (rns, lxmf, pyserial, pycparser)
+  are the only iOS-safe ones. RNS falls back to its internal crypto
+  provider when `cryptography` isn't importable, so this is enough
+  to bring the Reticulum stack up on iOS device builds.
+
+  Public for testing — see `MobDev.NativeBuildTest`.
+  """
+  @doc false
+  @spec copy_ios_safe_project_python_wheels(String.t(), String.t()) :: :ok
+  def copy_ios_safe_project_python_wheels(python_root, wheels_dir) do
+    if File.dir?(wheels_dir) do
+      site_packages = Path.join([python_root, "lib", "python3.13", "site-packages"])
+      File.mkdir_p!(site_packages)
+
+      wheels_dir
+      |> File.ls!()
+      |> Enum.each(fn entry ->
+        src = Path.join(wheels_dir, entry)
+
+        cond do
+          not File.dir?(src) ->
+            :skip
+
+          wheel_has_native_extension?(src) ->
+            IO.puts("  [ios-wheels] skipped wheel with native extensions (assumed non-iOS): #{entry}")
+
+          true ->
+            IO.puts("  [ios-wheels] copied #{entry}")
+            System.cmd("cp", ["-R", src <> "/.", site_packages])
+        end
+      end)
+    end
+
+    :ok
+  end
+
+  @doc """
+  True if `wheel_dir` contains at least one `.so` file at any depth.
+
+  Used by `copy_ios_safe_project_python_wheels/2` to detect Android-only
+  wheels — see that function's docstring for the heuristic.
+
+  Public for testing.
+  """
+  @doc false
+  @spec wheel_has_native_extension?(String.t()) :: boolean()
+  def wheel_has_native_extension?(wheel_dir) do
+    case Path.wildcard(Path.join([wheel_dir, "**", "*.so"])) do
+      [] -> false
+      _ -> true
+    end
   end
 
   defp maybe_slim_otp_bundle(app_path, _cfg) do
