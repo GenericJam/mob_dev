@@ -228,40 +228,99 @@ any `.so` (cffi, cryptography ship Android-only binaries). 10
 tests pinning the filter behaviour came along. Unrelated to the
 audit work but landed in the same session.
 
+### 2026-05-12 — First real device trace + safety guardrail
+
+Captured a 60-second trace against pigeon running on iPhone 17 Pro
+simulator (`pigeon_ios_8a4250e9@127.0.0.1`), saved at
+`/tmp/pigeon_trace.json`. 60s of UI driving → 133 modules / 1287
+MFAs touched.
+
+Feeding that trace through `OtpAudit.audit/2 + Slim.compute_strip_set/1`
+surfaced a real safety issue: the trace correctly flagged megaco,
+snmp, compiler, diameter, mnesia, inets, etc. as never-called
+(~36 MB of safe new strip targets) — but ALSO flagged crypto, sasl,
+public_key, asn1 as never-called, which would crash any non-trivial
+app the moment it tried TLS or completed OTP boot.
+
+Those four are essential-but-rarely-called from the trace's
+perspective: sasl runs at boot before tracing opens; crypto/ssl/
+public_key/asn1 fire on TLS handshakes the UI driving didn't
+exercise.
+
+**Fix landed:** `Slim.@always_keep_libs` hardcoded guardrail
+(`kernel stdlib erts elixir logger sasl crypto public_key asn1 ssl`).
+`audit_expansion/1` subtracts this set after building the expansion
+union. The guardrail's scope is strictly the audit-driven expansion;
+the hardcoded baseline doesn't touch any always-keep lib by design.
+
+**User escape hatches preserved:**
+- `:keep_libs` — wins over everything, last word.
+- `:drop_libs` — adds to the strip set after the guardrail filters,
+  so a user who knows their app has zero TLS / no boot-time sasl
+  ref can force-strip a guarded lib with eyes open.
+
+Verified on real pigeon data: of 16 trace-only strippable
+candidates, 12 land in the strip set (~36 MB savings), 4
+(public_key, crypto, asn1, sasl) are kept by the guardrail.
+
 ### What's next
 
-With audit + trace wired, the remaining lean_release work is:
+1. **Per-module stripping inside partly-used libs.** Real prize
+   still un-claimed: the audit shows libs like ssl (2/78 reachable),
+   public_key (18/41 — partly used), compiler (33/59) where most
+   modules are dead at runtime but the lib has at least one
+   reachable module. Stripping at lib granularity keeps the dead
+   modules. Per-module stripping needs:
+   - Multiple traces averaged (one window misses too much)
+   - `.app` file rewriting — drop stripped modules from the
+     `{modules, [...]}` list or the application controller will
+     try to load them at boot
+   - Backup safety from `mix mob.verify_strip` (already exists —
+     eager-loads every shipped .beam)
 
-1. ~~**Make `MobDev.OtpAudit.Slim` consume the trace-augmented strip
-   set.**~~ Done 2026-05-11. `Slim.compute_strip_set/1` accepts
-   `:audit_input`; `mob.exs` `slim: [audit: true, trace_json: "..."]`
-   opts the build into auditing during slim. Pre-req remains: a real
-   device-side trace JSON to actually unlock the megaco/snmp/etc.
-   expansion. Until a trace is captured, the audit expansion only adds
-   the (allow-list-validated) foreign_app_names.
-
-2. **Per-module stripping inside partly-used libs.** Now genuinely
-   blocked on (a) a representative device trace and (b) `.app` file
-   rewriting (`{application, _, [{modules, ...}]}` has to lose the
-   stripped modules or the application controller will try to load
-   them at boot). Higher risk than full-lib stripping. Right next
-   step after a trace is captured.
+2. **Capture multi-mode traces.** A single 60s trace exercises
+   only one slice. To trust trace-only stripping in production,
+   the audit should accept multiple trace JSONs and union them —
+   "this lib was never called across ALL captured sessions."
+   Concrete: `slim: [audit: true, trace_jsons: ["boot.json",
+   "ui.json", "auth.json"]]`.
 
 3. **`mix_unused` evaluation** — still orthogonal, still anytime.
 
-4. **Capture a baseline device trace.** Concrete user action that
-   unlocks the rest:
+### How to use trace-augmented slim today
 
-       cd ~/code/<mob_app>
-       mix mob.connect --no-iex          # in one terminal
-       mix mob.trace_otp --remote <node>@127.0.0.1 \
-         --duration 60000 \
-         --json /tmp/mob_trace.json      # in another, drive the app meanwhile
+```bash
+cd ~/code/<mob_app>
+mix mob.connect --no-iex          # discover node, set up tunnels
+mix mob.trace_otp \
+  --remote <node>@127.0.0.1 \
+  --duration 60000 \
+  --json /tmp/mob_trace.json      # drive the app during the window
+```
 
-   Then add to `mob.exs`:
+Then in `mob.exs`:
 
-       config :mob_dev,
-         slim: [audit: true, trace_json: "/tmp/mob_trace.json"]
+```elixir
+config :mob_dev,
+  slim: [
+    audit: true,
+    trace_json: "/tmp/mob_trace.json",
+    # Optional: force-keep if the trace's coverage is incomplete:
+    keep_libs: ["specific_lib_you_need"],
+    # Optional: force-strip a guarded lib if you're sure:
+    drop_libs: ["crypto"]  # only do this if you have ZERO TLS
+  ]
+```
 
-   And `mix mob.deploy --native --slim` will print the audit-driven
-   expansion in the build log.
+Inspect via `mix mob.audit_otp --trace-json /tmp/mob_trace.json` to
+preview the audit + trace classification before letting Slim strip.
+
+### Known caveats
+
+- Pigeon's iOS device build (physical iPhone) currently fails on
+  `MobDev.NativeBuild.install_exqlite_otp_lib/1` because pigeon
+  doesn't depend on exqlite (only `mix mob.new`-generated projects
+  do). The slim work above used the simulator deploy, which doesn't
+  hit that path. Filed as future work — guard `install_exqlite_otp_lib`
+  with `File.exists?` so non-exqlite projects can deploy to physical
+  iOS too.
