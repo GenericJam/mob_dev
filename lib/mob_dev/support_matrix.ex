@@ -53,10 +53,15 @@ defmodule MobDev.SupportMatrix do
           optional(:reason) => String.t()
         }
 
-  @typedoc "Full requirement spec for a feature."
+  @typedoc """
+  Full requirement spec for a feature. No feature currently models
+  `:unsupported` (a feature outright incompatible with a platform) —
+  if one needs to, add `| :unsupported` to the platform value type
+  here AND re-add the matching case clause in `check_against/2`.
+  """
   @type feature_req :: %{
-          required(:android) => platform_req() | :unsupported,
-          required(:ios) => platform_req() | :unsupported
+          required(:android) => platform_req(),
+          required(:ios) => platform_req()
         }
 
   @typedoc "An incompatibility found by check_device/2."
@@ -205,15 +210,6 @@ defmodule MobDev.SupportMatrix do
 
       reqs ->
         case Map.get(reqs, platform) do
-          :unsupported ->
-            [
-              %{
-                device: device,
-                feature: feature,
-                reason: "#{feature} is not supported on #{platform}"
-              }
-            ]
-
           %{} = req ->
             check_platform(feature, device, req)
 
