@@ -2546,17 +2546,21 @@ defmodule MobDev.NativeBuild do
     |> Macro.camelize()
   end
 
-  defp pick_ios_sim(device_id) when is_binary(device_id), do: {:ok, device_id}
-
-  defp pick_ios_sim(nil) do
+  # The user-facing `--device` accepts any case-insensitive prefix of
+  # a booted simulator's UDID (e.g. `defd4bdc` for
+  # `DEFD4BDC-CA42-4CD2-93A1-62BE425E7A78`). Previously the prefix got
+  # passed straight to `xcrun simctl install` which only accepts full
+  # UDIDs and refused with `Invalid device: <prefix>`. Resolve to a
+  # full UDID via `simctl list devices booted` first.
+  defp pick_ios_sim(device_id) do
     case System.cmd("xcrun", ~w(simctl list devices booted -j), stderr_to_stdout: true) do
       {json, 0} ->
         with {:ok, %{"devices" => by_runtime}} <- Jason.decode(json),
-             udid when is_binary(udid) <- find_booted_udid(by_runtime) do
+             udid when is_binary(udid) <- resolve_booted_udid(by_runtime, device_id) do
           {:ok, udid}
         else
           _ ->
-            {:error, "No booted simulator. Boot one in Simulator.app or pass `--device <UDID>`."}
+            {:error, sim_lookup_error_message(device_id)}
         end
 
       _ ->
@@ -2564,15 +2568,45 @@ defmodule MobDev.NativeBuild do
     end
   end
 
-  defp find_booted_udid(by_runtime) do
-    by_runtime
-    |> Map.values()
-    |> List.flatten()
-    |> Enum.find_value(fn
-      %{"state" => "Booted", "udid" => udid} -> udid
-      _ -> nil
-    end)
+  @doc """
+  Given the JSON-decoded `xcrun simctl list devices booted -j` result
+  and an optional `device_id` (full UDID or any case-insensitive
+  prefix of one), return the matching booted simulator's full UDID
+  or nil.
+
+  When `device_id` is nil → first booted sim wins.
+  When `device_id` is a string → case-insensitive prefix match
+  against booted UDIDs. A full UDID matches itself; an 8-char
+  prefix matches the corresponding device. Public for testing —
+  JSON shape is the contract.
+  """
+  @spec resolve_booted_udid(map(), String.t() | nil) :: String.t() | nil
+  def resolve_booted_udid(by_runtime, device_id) do
+    booted_udids =
+      by_runtime
+      |> Map.values()
+      |> List.flatten()
+      |> Enum.filter(&match?(%{"state" => "Booted"}, &1))
+      |> Enum.map(& &1["udid"])
+
+    case device_id do
+      nil ->
+        List.first(booted_udids)
+
+      id when is_binary(id) ->
+        needle = String.downcase(id)
+        Enum.find(booted_udids, fn udid -> String.starts_with?(String.downcase(udid), needle) end)
+    end
   end
+
+  defp sim_lookup_error_message(nil),
+    do: "No booted simulator. Boot one in Simulator.app or pass `--device <UDID>`."
+
+  defp sim_lookup_error_message(id),
+    do:
+      "No booted simulator matched `--device #{id}`. " <>
+        "Pass a full UDID or a case-insensitive prefix that matches " <>
+        "exactly one booted sim. Run `mix mob.devices` to see what's available."
 
   defp bundle_ios_app(binary_path, display_name) do
     build_dir =
