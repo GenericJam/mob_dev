@@ -263,29 +263,61 @@ Verified on real pigeon data: of 16 trace-only strippable
 candidates, 12 land in the strip set (~36 MB savings), 4
 (public_key, crypto, asn1, sasl) are kept by the guardrail.
 
+### 2026-05-12 (cont'd) — Multi-trace union + exqlite stale-lock guard
+
+Two more cleanups landed before pausing for device-driving:
+
+**Multi-trace union (`union_trace_jsons/2`):** `MobDev.OtpAudit`
+gained a public helper that reads N trace JSONs and returns a
+unioned MapSet. Caller supplies an `on_read_error/2` callback so
+`mix mob.audit_otp` (CLI) can `Mix.raise` on a typo while the slim
+build path (`NativeBuild.maybe_run_audit`) just warns and skips
+that trace.
+
+`mix mob.audit_otp` now accepts `--trace-json` repeated
+(OptionParser `:keep`). `mob.exs` accepts `slim: [trace_jsons:
+["a.json", "b.json"]]` in addition to the single `:trace_json`
+(both shapes coexist for back-compat).
+
+Defensive: all-reads-fail returns nil rather than empty set
+(would have let the audit-driven expansion strip every partly-used
+lib). Pin'd in tests.
+
+**Exqlite stale-lock guard:** `install_exqlite_otp_lib` now uses
+`install_exqlite_decision/2` (public for tests) that returns
+`:noop | :stale | {:install, vsn}`. Surfaced by pigeon's
+iOS-device deploy: mix.lock had an exqlite entry left over from
+a long-removed `ecto_sqlite3` dep, but `_build/dev/lib/exqlite`
+was empty. Old code crashed in `File.cp!`; new code logs
+"`[exqlite] stale mix.lock entry — skipping`" and proceeds.
+
 ### What's next
 
-1. **Per-module stripping inside partly-used libs.** Real prize
-   still un-claimed: the audit shows libs like ssl (2/78 reachable),
-   public_key (18/41 — partly used), compiler (33/59) where most
-   modules are dead at runtime but the lib has at least one
-   reachable module. Stripping at lib granularity keeps the dead
-   modules. Per-module stripping needs:
-   - Multiple traces averaged (one window misses too much)
+1. ~~**Capture multi-mode traces.**~~ Done 2026-05-12. Capture as
+   many windows as you like, point `trace_jsons:` at all of them.
+   The audit unions them automatically.
+
+2. **Per-module stripping inside partly-used libs.** Still the
+   biggest un-claimed prize (~52 MB of dead modules inside libs
+   the static graph keeps alive). Now needs only:
+   - Comprehensive multi-trace coverage (multi-trace exists; you
+     just need to capture boot + UI + auth + idle + every screen
+     and feed them all)
    - `.app` file rewriting — drop stripped modules from the
      `{modules, [...]}` list or the application controller will
      try to load them at boot
    - Backup safety from `mix mob.verify_strip` (already exists —
-     eager-loads every shipped .beam)
-
-2. **Capture multi-mode traces.** A single 60s trace exercises
-   only one slice. To trust trace-only stripping in production,
-   the audit should accept multiple trace JSONs and union them —
-   "this lib was never called across ALL captured sessions."
-   Concrete: `slim: [audit: true, trace_jsons: ["boot.json",
-   "ui.json", "auth.json"]]`.
+     eager-loads every shipped `.beam`)
+   Material regression risk — defer until the multi-trace flow
+   has driven a few apps end-to-end.
 
 3. **`mix_unused` evaluation** — still orthogonal, still anytime.
+
+4. **Drive the flow.** The bonus territory is done; what's left is
+   exercise. Capture multiple traces against real apps, set
+   `slim: [audit: true, trace_jsons: [...]]`, deploy, watch for
+   crashes / unexpected strips. Bugs surfaced this way are the
+   next round of work.
 
 ### How to use trace-augmented slim today
 
