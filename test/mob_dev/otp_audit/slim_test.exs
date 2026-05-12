@@ -211,6 +211,105 @@ defmodule MobDev.OtpAudit.SlimTest do
     end
   end
 
+  # ── always_keep_libs guardrail ─────────────────────────────────────────
+
+  describe "compute_strip_set/1 — always_keep_libs guardrail" do
+    test "audit-driven expansion is filtered through always_keep_libs" do
+      # crypto, sasl, public_key et al. are in always_keep_libs.
+      # Trace-only would say they're strippable (a 60s trace misses
+      # boot-time sasl, missed TLS during the window, etc.) — the
+      # guardrail must intercept that.
+      audit = %{
+        foreign_app_names: [],
+        strippable_libs: [],
+        trace_strippable_libs: [
+          "crypto",
+          "sasl",
+          "public_key",
+          "asn1",
+          "ssl",
+          "kernel",
+          "stdlib",
+          "elixir",
+          "logger",
+          "megaco"
+        ]
+      }
+
+      set = Slim.compute_strip_set(audit_input: audit)
+
+      for lib <- Slim.always_keep_libs() do
+        refute lib in set, "always_keep_libs lib #{inspect(lib)} leaked into strip set"
+      end
+
+      # megaco is NOT in always_keep_libs → trace-only signal still
+      # carries it through to the strip set.
+      assert "megaco" in set
+    end
+
+    test "always_keep_libs/0 covers the canonical boot-critical set" do
+      keep = Slim.always_keep_libs()
+      # Pin these — losing any would break apps in subtle ways the
+      # trace can't catch.
+      for lib <- ~w(kernel stdlib elixir logger sasl crypto public_key asn1 ssl) do
+        assert lib in keep, "expected #{lib} in always_keep_libs"
+      end
+    end
+
+    test ":drop_libs CAN force-strip an always-keep lib (user-explicit escape hatch)" do
+      # If the user knows their app has zero TLS and is willing to
+      # take responsibility, they can override the guardrail.
+      audit = %{
+        foreign_app_names: [],
+        strippable_libs: [],
+        trace_strippable_libs: ["crypto"]
+      }
+
+      # Without drop_libs the guardrail keeps crypto.
+      set_default = Slim.compute_strip_set(audit_input: audit)
+      refute "crypto" in set_default
+
+      # With drop_libs the user wins.
+      set_explicit = Slim.compute_strip_set(audit_input: audit, drop_libs: ["crypto"])
+      assert "crypto" in set_explicit
+    end
+
+    test ":keep_libs over :drop_libs over guardrail — full precedence test" do
+      audit = %{
+        foreign_app_names: [],
+        strippable_libs: [],
+        trace_strippable_libs: ["crypto"]
+      }
+
+      # drop_libs adds crypto, but keep_libs subtracts it.
+      set =
+        Slim.compute_strip_set(
+          audit_input: audit,
+          drop_libs: ["crypto"],
+          keep_libs: ["crypto"]
+        )
+
+      refute "crypto" in set, "keep_libs is the user's last word — wins over drop_libs"
+    end
+
+    test "guardrail only applies to audit-driven expansion, not hardcoded baseline" do
+      # The hardcoded baseline doesn't include any always_keep lib —
+      # crypto, sasl etc. aren't in @hardcoded_prefixes. Pin that
+      # invariant.
+      set = Slim.compute_strip_set([])
+
+      for lib <- Slim.always_keep_libs() do
+        refute lib in set, "always_keep_libs lib #{inspect(lib)} should never be in baseline"
+      end
+    end
+
+    test "nil audit_input — guardrail has no effect" do
+      # Without :audit_input there's no expansion to guard against.
+      set = Slim.compute_strip_set(audit_input: nil)
+      assert "megaco" in set
+    end
+  end
+
   describe "slim_bundle/2 — :audit_input threading" do
     test "audit-derived foreign apps are stripped on top of the baseline", %{root: root} do
       make_lib(root, "kernel", "11.0", real_beam: true)
