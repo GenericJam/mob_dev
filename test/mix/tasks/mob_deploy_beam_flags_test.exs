@@ -104,4 +104,104 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
       assert updated =~ ~s(beam_flags: "-S 2:2 -A 4")
     end
   end
+
+  # ── format_summary/4 — deploy report rendering ────────────────────────────────
+  #
+  # Pin the report shape against regressions. Original bug: devices
+  # without the app installed were tallied as "Failed on N device(s)"
+  # in red. The fix introduced a separate "Skipped on N device(s)"
+  # bucket; these tests assert that the three categories render
+  # distinctly, that skipped never bleeds into failed (or vice-versa),
+  # and that the empty-everything case still emits the right hint.
+
+  describe "format_summary/4" do
+    defp device(name, error \\ nil),
+      do: %MobDev.Device{name: name, serial: name, platform: :android, error: error}
+
+    defp strip_ansi(line), do: String.replace(line, ~r/\e\[[0-9;]*m/, "")
+
+    test "all three buckets empty → 'No devices found' hint" do
+      lines = Deploy.format_summary([], [], [])
+
+      joined = lines |> Enum.map(&strip_ansi/1) |> Enum.join("\n")
+      assert joined =~ "No devices found."
+      assert joined =~ "mix mob.devices"
+      refute joined =~ "Deployed"
+      refute joined =~ "Skipped"
+      refute joined =~ "Failed"
+    end
+
+    test "only deployed → green deployed header + restart hint when :restart true" do
+      lines = Deploy.format_summary([device("iPhone")], [], [], restart: true)
+
+      joined = lines |> Enum.map(&strip_ansi/1) |> Enum.join("\n")
+      assert joined =~ "Deployed to 1 device(s)"
+      assert joined =~ "Apps restarted"
+      assert joined =~ "mix mob.connect"
+      refute joined =~ "Skipped"
+      refute joined =~ "Failed"
+    end
+
+    test "only deployed with :restart false → nl(MyModule) hint" do
+      lines = Deploy.format_summary([device("iPhone")], [], [], restart: false)
+      joined = lines |> Enum.map(&strip_ansi/1) |> Enum.join("\n")
+
+      assert joined =~ "BEAMs pushed"
+      assert joined =~ "nl(MyModule)"
+      refute joined =~ "Apps restarted"
+    end
+
+    test "only skipped → yellow informational, NOT counted as failed" do
+      # Regression: this case used to print "Failed on 1 device(s)" in red.
+      skip = device("emulator-5554", "com.example not installed on emulator-5554")
+      lines = Deploy.format_summary([], [], [skip])
+
+      joined = lines |> Enum.map(&strip_ansi/1) |> Enum.join("\n")
+      assert joined =~ "Skipped on 1 device(s)"
+      assert joined =~ "app not installed"
+      assert joined =~ "build for that platform with --android / --ios"
+      refute joined =~ "Failed on", "skipped must NOT trigger the Failed header"
+    end
+
+    test "only failed → red Failed header with x markers per device" do
+      lines = Deploy.format_summary([], [device("buggy", "push timed out")], [])
+
+      joined = lines |> Enum.map(&strip_ansi/1) |> Enum.join("\n")
+      assert joined =~ "Failed on 1 device(s)"
+      assert joined =~ "✗ buggy: push timed out"
+      refute joined =~ "Skipped"
+    end
+
+    test "mixed: deployed + skipped + failed all render in distinct blocks" do
+      ok = device("iPhone")
+      skip = device("emulator-5554", "not installed")
+      fail = device("emulator-5556", "adb push failed: broken pipe")
+
+      lines = Deploy.format_summary([ok], [fail], [skip])
+      joined = lines |> Enum.map(&strip_ansi/1) |> Enum.join("\n")
+
+      assert joined =~ "Deployed to 1 device(s)"
+      assert joined =~ "Skipped on 1 device(s)"
+      assert joined =~ "Failed on 1 device(s)"
+      assert joined =~ "✗ emulator-5556"
+      # Skipped row uses the — marker, not ✗ — pin that distinction.
+      assert joined =~ "— emulator-5554: not installed"
+    end
+
+    test "5-androids-skipped scenario from the original bug report" do
+      # The flow that surfaced this: `mix mob.deploy --native` auto-
+      # detected iPhone, built iOS only, swept BEAM push to all
+      # connected devices. Five Androids didn't have the app and
+      # showed up as failures.
+      iphone = device("iPhone")
+      androids = for i <- 1..5, do: device("emulator-#{i}", "not installed (ABI mismatch)")
+
+      lines = Deploy.format_summary([iphone], [], androids)
+      joined = lines |> Enum.map(&strip_ansi/1) |> Enum.join("\n")
+
+      assert joined =~ "Deployed to 1 device(s)"
+      assert joined =~ "Skipped on 5 device(s)"
+      refute joined =~ "Failed", "Bug fix: 5 not-installed devices must NOT count as failed"
+    end
+  end
 end

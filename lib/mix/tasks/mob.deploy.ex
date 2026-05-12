@@ -219,45 +219,77 @@ defmodule Mix.Tasks.Mob.Deploy do
         beam_flags: beam_flags
       )
 
-    if deployed == [] and failed == [] and skipped == [] do
-      IO.puts("#{IO.ANSI.yellow()}No devices found.#{IO.ANSI.reset()}")
-      IO.puts("Try: mix mob.devices   to diagnose connection issues")
-    else
-      if deployed != [] do
-        IO.puts("\n#{IO.ANSI.green()}Deployed to #{length(deployed)} device(s)#{IO.ANSI.reset()}")
+    Enum.each(format_summary(deployed, failed, skipped, restart: restart), &IO.puts/1)
+  end
 
-        if restart do
-          IO.puts(
-            "Apps restarted. Run #{IO.ANSI.cyan()}mix mob.connect#{IO.ANSI.reset()} to open IEx."
-          )
-        else
-          IO.puts(
-            "BEAMs pushed. In IEx: #{IO.ANSI.cyan()}nl(MyModule)#{IO.ANSI.reset()} to hot-load."
-          )
-        end
-      end
+  @doc """
+  Build the per-deploy summary lines from the three device buckets.
 
-      if skipped != [] do
-        IO.puts(
-          "\n#{IO.ANSI.yellow()}Skipped on #{length(skipped)} device(s) — app not installed " <>
-            "(build for that platform with --android / --ios if intended)#{IO.ANSI.reset()}"
-        )
+  Returns an iolist of strings (one per line) that the task prints
+  verbatim. Public so the report shape can be pinned against fixture
+  device lists — keeps "Failed on N" from regressing back into
+  counting skipped-because-not-installed devices.
 
-        Enum.each(skipped, fn d ->
-          IO.puts(
-            "  #{IO.ANSI.faint()}— #{d.name || d.serial}: #{d.error}#{IO.ANSI.reset()}"
-          )
-        end)
-      end
+  Opts:
+    * `:restart` — boolean; controls the post-deploy IEx hint line
+  """
+  @spec format_summary([Device.t()], [Device.t()], [Device.t()], keyword()) :: [String.t()]
+  def format_summary(deployed, failed, skipped, opts \\ []) do
+    restart? = Keyword.get(opts, :restart, true)
 
-      if failed != [] do
-        IO.puts("\n#{IO.ANSI.red()}Failed on #{length(failed)} device(s)#{IO.ANSI.reset()}")
+    cond do
+      deployed == [] and failed == [] and skipped == [] ->
+        [
+          "#{IO.ANSI.yellow()}No devices found.#{IO.ANSI.reset()}",
+          "Try: mix mob.devices   to diagnose connection issues"
+        ]
 
-        Enum.each(failed, fn d ->
-          IO.puts("  ✗ #{d.name || d.serial}: #{d.error}")
-        end)
-      end
+      true ->
+        []
+        |> append_deployed_block(deployed, restart?)
+        |> append_skipped_block(skipped)
+        |> append_failed_block(failed)
     end
+  end
+
+  defp append_deployed_block(acc, [], _restart?), do: acc
+
+  defp append_deployed_block(acc, deployed, restart?) do
+    follow_up =
+      if restart? do
+        "Apps restarted. Run #{IO.ANSI.cyan()}mix mob.connect#{IO.ANSI.reset()} to open IEx."
+      else
+        "BEAMs pushed. In IEx: #{IO.ANSI.cyan()}nl(MyModule)#{IO.ANSI.reset()} to hot-load."
+      end
+
+    acc ++
+      [
+        "\n#{IO.ANSI.green()}Deployed to #{length(deployed)} device(s)#{IO.ANSI.reset()}",
+        follow_up
+      ]
+  end
+
+  defp append_skipped_block(acc, []), do: acc
+
+  defp append_skipped_block(acc, skipped) do
+    header =
+      "\n#{IO.ANSI.yellow()}Skipped on #{length(skipped)} device(s) — app not installed " <>
+        "(build for that platform with --android / --ios if intended)#{IO.ANSI.reset()}"
+
+    rows =
+      Enum.map(skipped, fn d ->
+        "  #{IO.ANSI.faint()}— #{d.name || d.serial}: #{d.error}#{IO.ANSI.reset()}"
+      end)
+
+    acc ++ [header | rows]
+  end
+
+  defp append_failed_block(acc, []), do: acc
+
+  defp append_failed_block(acc, failed) do
+    header = "\n#{IO.ANSI.red()}Failed on #{length(failed)} device(s)#{IO.ANSI.reset()}"
+    rows = Enum.map(failed, fn d -> "  ✗ #{d.name || d.serial}: #{d.error}" end)
+    acc ++ [header | rows]
   end
 
   defp resolve_platforms(opts) do

@@ -135,7 +135,10 @@ defmodule MobDev.Deployer do
 
             {:skipped, reason} ->
               # Yellow dash, not a red x — this device wasn't a target.
-              IO.puts(" #{color(:yellow)}—#{color(:reset)} #{color(:faint)}#{reason}#{color(:reset)}")
+              IO.puts(
+                " #{color(:yellow)}—#{color(:reset)} #{color(:faint)}#{reason}#{color(:reset)}"
+              )
+
               {:skipped, %{device | status: :skipped, error: reason}}
 
             {:error, reason} ->
@@ -145,11 +148,46 @@ defmodule MobDev.Deployer do
           end
         end)
 
-      deployed = for {:ok, d} <- results, do: d
-      failed = for {:error, d} <- results, do: d
-      skipped = for {:skipped, d} <- results, do: d
-      {deployed, failed, skipped}
+      categorize_results(results)
     end
+  end
+
+  @doc """
+  Bucket a per-device results list into `{deployed, failed, skipped}`.
+
+  Three outcomes:
+
+    * `:ok` — push succeeded → `deployed`
+    * `:skipped` — device wasn't a target (e.g. app not installed,
+      typical when only one platform was built) → `skipped`
+    * `:error` — push attempted and failed for a real reason → `failed`
+
+  Public so the categorization invariant (skipped never crosses into
+  failed; an unknown outcome isn't silently dropped) can be tested
+  independent of the hardware-dependent push pipeline.
+  """
+  @spec categorize_results([{:ok | :skipped | :error, Device.t()}]) ::
+          {[Device.t()], [Device.t()], [Device.t()]}
+  def categorize_results(results) do
+    deployed = for {:ok, d} <- results, do: d
+    failed = for {:error, d} <- results, do: d
+    skipped = for {:skipped, d} <- results, do: d
+    {deployed, failed, skipped}
+  end
+
+  @doc """
+  True when the `adb shell pm list packages <pkg>` output indicates
+  `<pkg>` is installed on the device.
+
+  The check is a substring match for `package:<pkg>` because adb's
+  output is one `package:<name>` line per matching package — empty
+  output means "no match" (not "package called empty").
+
+  Public so the rule can be regression-tested without an emulator.
+  """
+  @spec android_package_installed?(String.t(), String.t()) :: boolean()
+  def android_package_installed?(pm_output, package_name) when is_binary(pm_output) do
+    String.contains?(pm_output, "package:#{package_name}")
   end
 
   # ── Device filtering ─────────────────────────────────────────────────────────
@@ -185,7 +223,7 @@ defmodule MobDev.Deployer do
         stderr_to_stdout: true
       )
 
-    if not String.contains?(pm_out, "package:#{pkg}") do
+    if not android_package_installed?(pm_out, pkg) do
       # NOT a failure — this device isn't a deploy target for this app.
       # Returning `:skipped` lets the top-level report distinguish
       # "device didn't have the app installed" (a normal multi-device
