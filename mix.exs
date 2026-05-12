@@ -64,6 +64,12 @@ defmodule MobDev.MixProject do
       {:jason, "~> 1.4"},
       {:mix_audit, "~> 2.1", runtime: false},
       {:avatarz, "~> 0.2", optional: true},
+      # Pulls in sweet_xml ~> 0.7 transitively (via vix). sweet_xml
+      # surfaces a 1.20-rc.4 type-checker warning at lib/sweet_xml.ex:246
+      # (`%SweetXpath{xpath | ...}` without a preceding pattern match
+      # against `%SweetXpath{}`). Cosmetic, in their code, doesn't
+      # affect runtime. Remove this note when sweet_xml ships a fix
+      # OR when image stops depending on it.
       {:image, "~> 0.54", optional: true},
       # Dev server
       {:phoenix_live_view, "~> 1.0"},
@@ -87,6 +93,15 @@ defmodule MobDev.MixProject do
       # tracer; ignore list maintained inline below since this codebase has
       # legitimate dynamic dispatch (NIF on_load stubs, GenServer
       # callbacks, behaviour implementations).
+      #
+      # Known Elixir 1.20-rc.4 warnings from this dep (cosmetic, dev-only):
+      #   - lib/mix_unused/filter.ex:61 — `_.._ inside match is deprecated`
+      #     (range without explicit step, deprecated in 1.20).
+      #   - 0.4.1 uses :re.import/1 which was removed in OTP 28 (see the
+      #     compilers/1 gate below — we skip the :unused tracer on OTP
+      #     ≥ 28 to dodge that runtime crash).
+      # When mix_unused ships a release covering both, bump this version
+      # and remove the compilers/1 OTP gate.
       {:mix_unused, "~> 0.4", only: :dev, runtime: false}
     ]
   end
