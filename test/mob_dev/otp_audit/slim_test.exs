@@ -99,6 +99,140 @@ defmodule MobDev.OtpAudit.SlimTest do
     end
   end
 
+  # ── compute_strip_set/1 with :audit_input ──────────────────────────────
+
+  describe "compute_strip_set/1 — :audit_input expansion" do
+    test "foreign_app_names from the audit always join the strip set" do
+      audit = %{
+        foreign_app_names: ["pigeon", "push_notify"],
+        strippable_libs: [],
+        trace_strippable_libs: nil
+      }
+
+      set = Slim.compute_strip_set(audit_input: audit)
+
+      assert "pigeon" in set
+      assert "push_notify" in set
+      # Baseline preserved.
+      assert "megaco" in set
+    end
+
+    test "without trace, strippable_libs alone does NOT expand the set (NIF false-pos risk)" do
+      # exqlite-shape: statically unreachable because static graph
+      # can't see :erlang.load_nif, but actually needed at runtime.
+      # Without trace, we must NOT strip it.
+      audit = %{
+        foreign_app_names: [],
+        strippable_libs: ["exqlite"],
+        trace_strippable_libs: nil
+      }
+
+      set = Slim.compute_strip_set(audit_input: audit)
+
+      refute "exqlite" in set
+    end
+
+    test "with trace, strippable ∩ trace_strippable joins (high-confidence)" do
+      audit = %{
+        foreign_app_names: [],
+        # exqlite statically unreachable, but trace confirms it IS called
+        # — so the intersection excludes it. xmerl unreachable AND not
+        # in trace → confirmed.
+        strippable_libs: ["xmerl", "exqlite"],
+        trace_strippable_libs: ["xmerl", "edoc"]
+      }
+
+      set = Slim.compute_strip_set(audit_input: audit)
+
+      assert "xmerl" in set
+      refute "exqlite" in set, "trace catches the NIF false-positive — exqlite not stripped"
+    end
+
+    test "with trace, trace-only strippable (not in static) joins too" do
+      # megaco-shape: 1/65 statically reachable (in static_libs view it
+      # is NOT in strippable_libs), trace says 0 modules called → trace
+      # alone proves it strippable. This is the unblocking signal.
+      audit = %{
+        foreign_app_names: [],
+        # megaco is NOT statically strippable (some modules reachable).
+        strippable_libs: ["xmerl"],
+        # But the trace says megaco is never actually called.
+        trace_strippable_libs: ["megaco", "xmerl"]
+      }
+
+      set = Slim.compute_strip_set(audit_input: audit)
+
+      assert "megaco" in set
+      assert "xmerl" in set
+    end
+
+    test ":keep_libs still wins over audit-driven expansion" do
+      audit = %{
+        foreign_app_names: ["pigeon"],
+        strippable_libs: ["megaco"],
+        trace_strippable_libs: ["megaco", "pigeon"]
+      }
+
+      set = Slim.compute_strip_set(audit_input: audit, keep_libs: ["pigeon", "megaco"])
+
+      refute "pigeon" in set
+      refute "megaco" in set
+    end
+
+    test ":drop_libs combines with audit expansion" do
+      audit = %{
+        foreign_app_names: ["pigeon"],
+        strippable_libs: [],
+        trace_strippable_libs: nil
+      }
+
+      set = Slim.compute_strip_set(audit_input: audit, drop_libs: ["another_dep"])
+
+      assert "pigeon" in set
+      assert "another_dep" in set
+    end
+
+    test "nil audit_input is a no-op (default behaviour)" do
+      set = Slim.compute_strip_set(audit_input: nil)
+      assert set == Slim.compute_strip_set([])
+    end
+
+    test "audit_input with no trace-strippable, only foreign — exactly foreign added" do
+      audit = %{
+        foreign_app_names: ["one_off"],
+        strippable_libs: ["unused_otp_lib"],
+        trace_strippable_libs: nil
+      }
+
+      set = Slim.compute_strip_set(audit_input: audit)
+
+      assert "one_off" in set
+      refute "unused_otp_lib" in set
+    end
+  end
+
+  describe "slim_bundle/2 — :audit_input threading" do
+    test "audit-derived foreign apps are stripped on top of the baseline", %{root: root} do
+      make_lib(root, "kernel", "11.0", real_beam: true)
+      make_lib(root, "megaco", "4.9", real_beam: true)
+      pigeon = Path.join(root, "lib/pigeon-0.1.0")
+      make_lib(root, "pigeon", "0.1.0", real_beam: true)
+
+      audit = %{
+        foreign_app_names: ["pigeon"],
+        strippable_libs: [],
+        trace_strippable_libs: nil
+      }
+
+      assert {:ok, result} = Slim.slim_bundle(root, audit_input: audit)
+
+      refute File.dir?(pigeon)
+      refute File.dir?(Path.join(root, "lib/megaco-4.9"))
+      assert File.dir?(Path.join(root, "lib/kernel-11.0"))
+      assert "pigeon" in result.strip_set
+    end
+  end
+
   describe "hardcoded_prefixes/0" do
     test "is stable across calls" do
       assert Slim.hardcoded_prefixes() == Slim.hardcoded_prefixes()
