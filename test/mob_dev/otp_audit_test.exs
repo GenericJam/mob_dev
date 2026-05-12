@@ -324,6 +324,23 @@ defmodule MobDev.OtpAuditTest do
       refute Enum.any?(report.foreign_apps, &String.contains?(&1, "pigeon-"))
     end
 
+    test "erts-<vsn> is NEVER foreign — it's the BEAM runtime", %{root: root} do
+      # Regression: mob's iOS bundle puts erts under lib/ alongside the
+      # apps. Without explicit allow-listing the classifier sees it as
+      # "not OTP-shipped, not Elixir-shipped, not the app, not in deps"
+      # and quarantines the runtime as cache cruft. Reproduced from a
+      # test_migration audit run that surfaced erts in foreign_apps.
+      make_lib(root, "kernel", "9.2", modules: ["kernel"])
+      make_lib(root, "stdlib", "5.2", modules: ["lists"])
+      erts = make_lib(root, "erts", "17.0", modules: ["erlang"])
+
+      report = OtpAudit.audit(root, app_name: :my_app, project_deps: [:my_app])
+
+      assert report.foreign_apps == []
+      refute erts in report.foreign_apps
+      assert Enum.any?(report.libs, &(&1.name == "erts"))
+    end
+
     test "scratch_ prefix is added to the legacy heuristic", %{root: root} do
       # `scratch_` prefix appears in the Slim foreign_apps strip pass,
       # so the audit heuristic should match it too for consistency.
