@@ -66,22 +66,55 @@ defmodule MobDev.OtpAudit do
   # them dynamically) so we seed them as always-reachable.
   @runtime_seed_libs ~w(kernel stdlib elixir logger sasl)
 
+  # Apps that ship with OTP. Used by the foreign-app classifier — anything
+  # in the bundle whose name is in this set is assumed legitimate. Sourced
+  # from `lib/` in a stock OTP 28 release; update when OTP adds or removes
+  # apps. `erts` is intentionally absent (it's a sibling of lib/, not a lib).
+  @otp_shipped_libs ~w(
+    asn1 common_test compiler crypto debugger dialyzer diameter edoc
+    eldap erl_docgen erl_interface et eunit ftp inets jinterface kernel
+    megaco mnesia observer odbc os_mon parsetools public_key reltool
+    runtime_tools sasl snmp ssh ssl stdlib syntax_tools tftp tools wx
+    xmerl
+  )
+
+  # Apps that ship with Elixir under the same lib/ tree as OTP libs after
+  # mob bundles. Same purpose as @otp_shipped_libs — keep these out of
+  # the foreign-app set.
+  @elixir_shipped_libs ~w(elixir eex ex_unit iex logger mix)
+
   @doc """
   Run the audit. `otp_root` is the directory containing `lib/` and `erts-*/`
   (typically the runtime tree extracted into the app bundle, or the cache
   the release packaging copies from).
 
-  `:app_name` (option) — the application's atom name (e.g. `:air_cart_max`).
-  Used to seed reachability from the app's modules. If omitted, every lib
-  with no `mod` callback is treated as a potential entry point (broader,
-  finds less to strip).
+  ## Options
+
+    * `:app_name` — the application's atom name (e.g. `:air_cart_max`).
+      Used to seed reachability from the app's modules. If omitted, every
+      lib with no `mod` callback is treated as a potential entry point
+      (broader, finds less to strip).
+
+    * `:project_deps` — list of atoms naming the project's deps (the
+      transitive closure, as Mix sees them). When given, the foreign-app
+      classifier uses it as the authoritative set of "non-OTP libs that
+      are supposed to be in this bundle." Anything in the bundle whose
+      name isn't OTP-shipped, Elixir-shipped, the app under test, or in
+      `:project_deps` is classified as foreign and quarantined into
+      `report.foreign_apps`. The `mix mob.audit_otp` task auto-detects
+      this from the current `Mix.Project`.
+
+      When omitted, the classifier falls back to a narrow name-pattern
+      heuristic (`test_`, `toy_`, `mob_test`, `scratch_`) — sufficient
+      for tests, less accurate in real bundles.
   """
   @spec audit(String.t(), keyword()) :: report()
   def audit(otp_root, opts \\ []) do
     app_name = Keyword.get(opts, :app_name)
+    project_deps = Keyword.get(opts, :project_deps)
     libs = discover_libs(otp_root)
     {duplicates, libs} = collapse_duplicates(libs)
-    {foreign_apps, libs} = split_foreign_apps(libs, app_name)
+    {foreign_apps, libs} = split_foreign_apps(libs, app_name, project_deps)
     module_to_lib = build_module_index(libs)
     imports = build_import_graph(libs)
 
@@ -193,24 +226,51 @@ defmodule MobDev.OtpAudit do
   # current app is foreign (leaked from another project's release tree
   # via a shared cache, almost always). Report separately so the user
   # can clean their cache.
-  defp split_foreign_apps(libs, app_name) do
+  defp split_foreign_apps(libs, app_name, project_deps) do
     app_str = if app_name, do: to_string(app_name), else: nil
+    classifier = foreign_classifier(app_str, project_deps)
 
-    {foreign, kept} =
-      Enum.split_with(libs, fn lib ->
-        is_nil(lib.app_callback) and lib.name != app_str and lib.version != nil and
-          looks_like_user_app?(lib.name)
-      end)
+    {foreign, kept} = Enum.split_with(libs, classifier)
 
     {Enum.map(foreign, & &1.path), kept}
   end
 
-  # Heuristic: real OTP libs are kernel/stdlib/etc. — no number suffix in
-  # the source name, and they ship with the OTP distribution. User apps
-  # are typically named differently; we err on the side of caution and
-  # only flag libs we explicitly recognize as test-app-shaped.
-  defp looks_like_user_app?(name) do
+  # When the caller supplies `:project_deps`, use the strict classifier:
+  # foreign = NOT shipped with OTP/Elixir AND NOT the app under test AND
+  # NOT in the project's dep closure. This is the production path (driven
+  # by `mix mob.audit_otp` reading `Mix.Project.deps_apps/0`) and catches
+  # any leftover from a shared OTP cache, no matter what the lib is named.
+  #
+  # When `:project_deps` is nil (default, tests and ad-hoc CLI use), fall
+  # back to the historical name-pattern heuristic. It's narrower but
+  # backward-compatible — tests built against the old behaviour keep
+  # working.
+  defp foreign_classifier(app_str, nil) do
+    fn lib ->
+      is_nil(lib.app_callback) and lib.name != app_str and not is_nil(lib.version) and
+        name_pattern_user_app?(lib.name)
+    end
+  end
+
+  defp foreign_classifier(app_str, project_deps) when is_list(project_deps) do
+    allow_list =
+      project_deps
+      |> Enum.map(&to_string/1)
+      |> MapSet.new()
+      |> MapSet.union(MapSet.new(@otp_shipped_libs))
+      |> MapSet.union(MapSet.new(@elixir_shipped_libs))
+      |> then(fn s -> if app_str, do: MapSet.put(s, app_str), else: s end)
+
+    fn lib ->
+      not is_nil(lib.version) and not MapSet.member?(allow_list, lib.name)
+    end
+  end
+
+  # Narrow legacy heuristic — kept for backwards compat with tests and
+  # CLI use that doesn't have a Mix.Project context to provide deps.
+  defp name_pattern_user_app?(name) do
     String.starts_with?(name, "test_") or String.starts_with?(name, "toy_") or
+      String.starts_with?(name, "scratch_") or
       name in ~w(mob_test air_cart_max_test)
   end
 
