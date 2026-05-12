@@ -182,3 +182,67 @@ cached iOS device tree):**
 That last row is the prize per-module stripping would unlock, but
 it's also the riskiest: it requires confident "this module is never
 called" answers that only trace data provides.
+
+### 2026-05-11 (cont'd) — Audit improvements: foreign-app allow-list + trace input
+
+Two related improvements landed in close succession after the Slim
+extraction.
+
+**Foreign-app allow-list (`:project_deps`):** `OtpAudit.audit/2`
+now accepts a list of atoms naming the project's runtime deps. Any
+lib in the bundle that isn't OTP-shipped, isn't Elixir-shipped,
+isn't the app under test, and isn't in `:project_deps` is classified
+as foreign and lands in `report.foreign_apps` (out of
+`report.strippable_libs`). `mix mob.audit_otp` auto-derives
+`:project_deps` from `_build/dev/lib/` — Mix's view of what's
+installed. The legacy name-pattern heuristic
+(`test_/toy_/mob_test/scratch_`) is preserved when `:project_deps`
+is omitted, for backwards compat. This catches the pigeon /
+push_notify / phase2q_lv / etc. false-negative cluster the baseline
+audit surfaced.
+
+**Trace input (`:trace_input`):** `OtpAudit.audit/2` accepts a
+runtime-traced module set (MapSet, list, OtpTrace.result, or
+remote-trace shape — normalizer handles all four) and exposes
+`report.trace_strippable_libs` — libs whose modules are entirely
+absent from the trace. Each lib_report grows `:modules_traced` and
+`:untraced_modules`. The intersection `strippable_libs ∩
+trace_strippable_libs` is the high-confidence strip set; the
+trace-only difference is the "static graph reaches it but trace
+says never called" set that unlocks megaco / snmp / diameter /
+compiler / etc.
+
+`mix mob.audit_otp --trace-json path/to/trace.json` reads a JSON
+file written by `mix mob.trace_otp --json` and feeds it through.
+The CLI report now shows a "Trace-strippable" section split into
+"both static + trace" (high confidence) and "trace-only" (unlocked
+by trace), with statically-reachable module counts on the
+trace-only entries so the user can see how aggressive each strip
+would be.
+
+**Mob_new wheel-filter cherry-pick (parallel work):** between the
+two audit steps, a `.so`-filter for iOS wheels was cherry-picked
+from a parallel pigeon-side branch into `NativeBuild`:
+`copy_ios_safe_project_python_wheels/2` skips wheels containing
+any `.so` (cffi, cryptography ship Android-only binaries). 10
+tests pinning the filter behaviour came along. Unrelated to the
+audit work but landed in the same session.
+
+### What's next
+
+With audit + trace wired, the remaining lean_release work is:
+
+1. **Make `MobDev.OtpAudit.Slim` consume the trace-augmented strip
+   set.** Today it only knows the hardcoded baseline + mob.exs
+   overrides. Wiring `OtpAudit.audit(..., trace_input: ...)`'s
+   `strippable_libs ∩ trace_strippable_libs` into the strip
+   computation closes the audit→strip loop. Pre-req: a representative
+   trace captured against a real running app on device (drive the app
+   through the major screens, save with `mix mob.trace_otp --remote
+   ... --json`).
+2. **Per-module stripping inside partly-used libs.** Once a confident
+   "this module never ran" signal exists per lib, the 52 MB of dead
+   modules inside megaco/snmp/diameter can leave the bundle. Higher
+   risk than full-lib stripping (intra-lib calls may not appear in
+   the import graph). Needs the trace coverage from step 1 first.
+3. **`mix_unused` evaluation** — still orthogonal, still anytime.
