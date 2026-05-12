@@ -800,6 +800,68 @@ defmodule MobDev.NativeBuild do
     :ok
   end
 
+  @doc """
+  iOS-flavoured counterpart to `copy_project_python_wheels/1`. Same
+  `priv/python_wheels/` convention, same site-packages destination,
+  but skips any wheel directory containing a `.so` file at any depth.
+
+  Today's wheel set ships Android-built binaries (Chaquopy-compatible)
+  under names like `_cffi_backend.so` and `_rust.so` — no `"android"`
+  in the filename — so a name-based heuristic misses them. Until the
+  wheels directory holds platform-tagged subdirs (or an iOS-specific
+  source), treating "has any `.so`" as "Android-only, skip on iOS"
+  matches the current reality: pure-Python wheels (rns, lxmf,
+  pyserial, pycparser) are the only iOS-safe ones. RNS falls back to
+  its internal crypto provider when `cryptography` isn't importable,
+  so this is enough to bring the Reticulum stack up on iOS device
+  builds.
+
+  Public so the iOS-specific filter can be tested independently of
+  the rest of the bundle pipeline.
+  """
+  @spec copy_ios_safe_project_python_wheels(String.t(), String.t()) :: :ok
+  def copy_ios_safe_project_python_wheels(python_root, wheels_dir) do
+    if File.dir?(wheels_dir) do
+      site_packages = Path.join([python_root, "lib", "python3.13", "site-packages"])
+      File.mkdir_p!(site_packages)
+
+      wheels_dir
+      |> File.ls!()
+      |> Enum.each(fn entry ->
+        src = Path.join(wheels_dir, entry)
+
+        cond do
+          not File.dir?(src) ->
+            :skip
+
+          wheel_has_native_extension?(src) ->
+            IO.puts(
+              "  [ios-wheels] skipped wheel with native extensions (assumed non-iOS): #{entry}"
+            )
+
+          true ->
+            IO.puts("  [ios-wheels] copied #{entry}")
+            System.cmd("cp", ["-R", src <> "/.", site_packages])
+        end
+      end)
+    end
+
+    :ok
+  end
+
+  @doc """
+  True if `wheel_dir` contains at least one `.so` file at any depth.
+  Used by `copy_ios_safe_project_python_wheels/2` to detect
+  Android-only wheels.
+  """
+  @spec wheel_has_native_extension?(String.t()) :: boolean()
+  def wheel_has_native_extension?(wheel_dir) do
+    case Path.wildcard(Path.join([wheel_dir, "**", "*.so"])) do
+      [] -> false
+      _ -> true
+    end
+  end
+
   # Copies ERTS helper executables into jniLibs as lib*.so so Android grants
   # them the apk_data_file SELinux label (required for execve).
   defp ensure_jni_libs(otp_dir, abi) do
@@ -1476,8 +1538,14 @@ defmodule MobDev.NativeBuild do
               # simulator, hit `import RNS`, and hang on the launch spinner.
               # The iOS *device* path (maybe_setup_pythonx_device) gets the
               # same call below — see nif_future.md item #4 for the original
-              # bug report.
-              copy_project_python_wheels(python_dir)
+              # bug report. The ios-safe variant filters wheels that
+              # contain Android-only `.so` extensions (cffi, cryptography
+              # etc.) which would otherwise crash iOS Python at import.
+              copy_ios_safe_project_python_wheels(
+                python_dir,
+                Path.join("priv", "python_wheels")
+              )
+
               :ok
 
             {_, _} ->
@@ -2100,8 +2168,13 @@ defmodule MobDev.NativeBuild do
             # ensure_python_android_libs path and the sim path above. Without
             # this, real-device Python apps boot and hang on `import RNS`
             # because `priv/python_wheels/` never landed in the .app bundle.
-            # See nif_future.md item #4.
-            copy_project_python_wheels(python_dst)
+            # See nif_future.md item #4. The ios-safe variant filters
+            # wheels with Android-only `.so` extensions.
+            copy_ios_safe_project_python_wheels(
+              python_dst,
+              Path.join("priv", "python_wheels")
+            )
+
             :ok
           else
             _ -> {:error, "pythonx NIF cross-compile failed"}
