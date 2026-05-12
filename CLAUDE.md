@@ -48,6 +48,44 @@ mix test              # run all tests
 mix test --watch      # (with mix_test_watch dep, if added)
 ```
 
+**Tests are not just for runtime code.** Every Mix task and every build
+tool in this repo gets the same treatment as application code:
+
+- Argument parsing, flag handling, `--help` output
+- Output formatting (preview, summary, error messages)
+- Decision logic (which device, which build target, which strip set)
+- External-tool output classification (adb, simctl, devicectl, gh, xcrun)
+
+The goal is to **find bugs in CI before users hit them.** Real failure
+modes encountered this session that were caught (or should have been
+caught) by tests:
+
+- `mix mob.uninstall --all-devices` crashing on `nil and bool` because
+  the test suite only covered `--help` and `format_summary/4`, not the
+  decision path. Backfilled `should_skip_prompt?/2` as a pure helper.
+- `mix mob.deploy --device defd4bdc` passing the prefix straight to
+  `xcrun simctl install` which only accepts full UDIDs. Now
+  `NativeBuild.resolve_booted_udid/2` is pure-and-tested.
+- The "Failed on 5 device(s)" mis-tally when skipped-not-installed
+  was bucketed as failed. Caught only by manual driving until
+  `format_summary/4` and `categorize_results/1` got extracted.
+
+**Pattern to apply:**
+
+1. Identify the pure decision/transform inside a Mix task or
+   build-tool function.
+2. Extract it to a `def` (not `defp`) — `@doc false` if it's
+   for-testing-only, or fully documented if useful to callers.
+3. Test the matrix: happy path, every error branch, edge cases
+   surfaced by real-world output (paste actual `adb` /
+   `xcrun` / `gh` output into fixtures rather than guessing format).
+4. The Mix task and external-tool I/O wrappers stay thin and
+   unstubbed; the testable kernel is what you assert on.
+
+If something in mob_dev isn't tested today, that's a bug-discovery
+opportunity in waiting — list it as a follow-up rather than letting
+the next user find it.
+
 ## Pre-commit checklist
 
 Before committing changes, run **all** in this order:
