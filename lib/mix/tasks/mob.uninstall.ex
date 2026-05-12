@@ -11,11 +11,13 @@ defmodule Mix.Tasks.Mob.Uninstall do
   ## Usage
 
       mix mob.uninstall                                    # this app, one device
-      mix mob.uninstall --all-devices                      # this app, every device
+      mix mob.uninstall --all-devices                      # this app, all emulators/sims (NOT phones)
+      mix mob.uninstall --all-physical                     # this app, every physical device
+      mix mob.uninstall --all-devices --all-physical       # literally everything
       mix mob.uninstall --device emulator-5554             # this app, one named device
       mix mob.uninstall --device foo --device bar          # this app, several
       mix mob.uninstall --all-apps                         # one device, every mob app
-      mix mob.uninstall --all-devices --all-apps           # nuke everything
+      mix mob.uninstall --all-devices --all-apps           # every mob app on every emulator/sim
       mix mob.uninstall --bundle-id com.x.y                # override the project's bundle_id
       mix mob.uninstall --bundle-prefix com.acme           # override the prefix for --all-apps
       mix mob.uninstall --yes                              # skip the confirmation prompt
@@ -25,9 +27,17 @@ defmodule Mix.Tasks.Mob.Uninstall do
   ## Options
 
     * `--device <id>` — Target a specific device by serial or name.
-      Repeat for multiple devices: `--device a --device b`.
-    * `--all-devices` — Target every connected device. Distinct from
-      `--all-apps`; the two compose.
+      Repeat for multiple devices: `--device a --device b`. Works
+      for any device type — `--device` is the explicit override
+      that bypasses the emulator/physical filter.
+    * `--all-devices` — Target every connected **emulator or
+      simulator**. Physical devices are NEVER swept by this flag —
+      that requires `--all-physical` or `--device <id>` explicitly.
+      Rationale: emulators are disposable; physical devices are
+      someone's personal phone, with potential to do real damage.
+    * `--all-physical` — Target every connected physical device
+      (iPhones over USB/Wi-Fi, Android devices via adb). Opt-in.
+      Composes with `--all-devices` to mean "literally everything."
     * `--bundle-id <id>` — Uninstall this specific bundle id instead of
       auto-detecting the project's.
     * `--all-apps` — Match every installed package whose id starts with
@@ -45,10 +55,11 @@ defmodule Mix.Tasks.Mob.Uninstall do
   When you pass no flags:
 
     * 0 devices connected → exit with "no devices found"
-    * 1 device connected → auto-target it
-    * >1 devices connected → exit with an instruction to pass
-      `--device` or `--all-devices`. Never silently fans out without
-      consent.
+    * 1 emulator/sim connected → auto-target it (physical devices
+      are never the auto-target — they require explicit selection)
+    * >1 devices or only physical devices → exit with an
+      instruction to pass `--device`, `--all-devices`, or
+      `--all-physical`. Never silently fans out without consent.
 
   ## Per-platform mechanics
 
@@ -70,6 +81,7 @@ defmodule Mix.Tasks.Mob.Uninstall do
   @switches [
     device: [:string, :keep],
     all_devices: :boolean,
+    all_physical: :boolean,
     bundle_id: :string,
     all_apps: :boolean,
     bundle_prefix: :string,
@@ -101,6 +113,7 @@ defmodule Mix.Tasks.Mob.Uninstall do
     uninstaller_opts = [
       device_ids: device_ids,
       all_devices: Keyword.get(opts, :all_devices, false),
+      all_physical: Keyword.get(opts, :all_physical, false),
       bundle_id: opts[:bundle_id],
       all_apps: Keyword.get(opts, :all_apps, false),
       bundle_prefix: opts[:bundle_prefix],
@@ -119,10 +132,12 @@ defmodule Mix.Tasks.Mob.Uninstall do
 
         exit({:shutdown, 1})
 
-      {:error, :ambiguous_devices, %{detected: n}} ->
+      {:error, :ambiguous_devices, ctx} ->
         Mix.shell().error(
-          "Multiple devices connected (#{n}) — pass --device <id> (repeatable) " <>
-            "or --all-devices to specify which."
+          "Multiple devices connected (#{ctx.detected} total, " <>
+            "#{ctx.non_physical} emulator/sim, #{ctx.physical} physical) — " <>
+            "pass --device <id> (repeatable), --all-devices to sweep " <>
+            "emulators/sims, or --all-physical to sweep phones."
         )
 
         exit({:shutdown, 1})
@@ -131,6 +146,22 @@ defmodule Mix.Tasks.Mob.Uninstall do
         Mix.shell().error(
           "No matching devices for --device #{inspect(ids)}. " <>
             "Run `mix mob.devices` to see available IDs."
+        )
+
+        exit({:shutdown, 1})
+
+      {:error, :no_dev_devices, %{hint: hint}} ->
+        # --all-devices wanted emulators/sims; user only has physical
+        # devices connected. Print the rich hint from Uninstaller so
+        # the user knows the safe-by-default behaviour.
+        Mix.shell().error(hint)
+        exit({:shutdown, 1})
+
+      {:error, :no_physical_devices, _} ->
+        Mix.shell().error(
+          "--all-physical was passed, but no physical devices are connected. " <>
+            "Plug in / pair an iPhone or Android device, or pass --all-devices " <>
+            "to target emulators/sims instead."
         )
 
         exit({:shutdown, 1})
