@@ -406,4 +406,152 @@ defmodule MobDev.NativeBuildTest do
   # flow through MobDev.NativeBuild helpers now. The Pythonx detection
   # (`pythonx_in_project?/1` + `python_apple_support_env/2`) is still public
   # and tested in the surrounding describe block.
+
+  describe "wheel_has_native_extension?/1" do
+    setup do
+      tmp = Path.join(System.tmp_dir!(), "mob_wheel_native_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      on_exit(fn -> File.rm_rf!(tmp) end)
+      {:ok, tmp: tmp}
+    end
+
+    test "returns false for a pure-Python wheel directory", %{tmp: tmp} do
+      wheel = Path.join(tmp, "purepy")
+      File.mkdir_p!(Path.join(wheel, "pkg"))
+      File.write!(Path.join([wheel, "pkg", "__init__.py"]), "")
+      File.write!(Path.join([wheel, "pkg", "thing.py"]), "x = 1\n")
+
+      refute NativeBuild.wheel_has_native_extension?(wheel)
+    end
+
+    test "returns true for a wheel containing a top-level .so", %{tmp: tmp} do
+      wheel = Path.join(tmp, "cffi")
+      File.mkdir_p!(wheel)
+      File.write!(Path.join(wheel, "_cffi_backend.so"), <<0>>)
+
+      assert NativeBuild.wheel_has_native_extension?(wheel)
+    end
+
+    test "returns true for a .so nested several directories deep", %{tmp: tmp} do
+      wheel = Path.join(tmp, "cryptography")
+      File.mkdir_p!(Path.join([wheel, "cryptography", "hazmat", "bindings"]))
+      File.write!(Path.join([wheel, "cryptography", "hazmat", "bindings", "_rust.so"]), <<0>>)
+
+      assert NativeBuild.wheel_has_native_extension?(wheel)
+    end
+
+    test "returns false for an empty wheel directory", %{tmp: tmp} do
+      wheel = Path.join(tmp, "empty")
+      File.mkdir_p!(wheel)
+
+      refute NativeBuild.wheel_has_native_extension?(wheel)
+    end
+  end
+
+  describe "copy_ios_safe_project_python_wheels/2" do
+    setup do
+      tmp = Path.join(System.tmp_dir!(), "mob_wheel_copy_#{System.unique_integer([:positive])}")
+      wheels_dir = Path.join(tmp, "wheels")
+      python_root = Path.join(tmp, "python")
+      File.mkdir_p!(wheels_dir)
+      on_exit(fn -> File.rm_rf!(tmp) end)
+      {:ok, tmp: tmp, wheels_dir: wheels_dir, python_root: python_root}
+    end
+
+    test "copies pure-Python wheels into site-packages", %{
+      wheels_dir: wheels_dir,
+      python_root: python_root
+    } do
+      seed_pure_wheel(wheels_dir, "rns")
+      seed_pure_wheel(wheels_dir, "lxmf")
+
+      assert :ok = NativeBuild.copy_ios_safe_project_python_wheels(python_root, wheels_dir)
+
+      site_packages = Path.join([python_root, "lib", "python3.13", "site-packages"])
+      assert File.dir?(Path.join(site_packages, "rns"))
+      assert File.dir?(Path.join(site_packages, "lxmf"))
+      assert File.read!(Path.join([site_packages, "rns", "marker.txt"])) == "from rns\n"
+    end
+
+    test "skips wheels containing native .so extensions", %{
+      wheels_dir: wheels_dir,
+      python_root: python_root
+    } do
+      seed_pure_wheel(wheels_dir, "rns")
+      seed_native_wheel(wheels_dir, "cffi")
+      seed_native_wheel(wheels_dir, "cryptography")
+
+      ExUnit.CaptureIO.capture_io(fn ->
+        NativeBuild.copy_ios_safe_project_python_wheels(python_root, wheels_dir)
+      end)
+
+      site_packages = Path.join([python_root, "lib", "python3.13", "site-packages"])
+      assert File.dir?(Path.join(site_packages, "rns"))
+      refute File.dir?(Path.join(site_packages, "cffi"))
+      refute File.dir?(Path.join(site_packages, "cryptography"))
+    end
+
+    test "logs skip and copy decisions", %{
+      wheels_dir: wheels_dir,
+      python_root: python_root
+    } do
+      seed_pure_wheel(wheels_dir, "lxmf")
+      seed_native_wheel(wheels_dir, "cryptography")
+
+      output =
+        ExUnit.CaptureIO.capture_io(fn ->
+          NativeBuild.copy_ios_safe_project_python_wheels(python_root, wheels_dir)
+        end)
+
+      assert output =~ "[ios-wheels] copied lxmf"
+      assert output =~ "[ios-wheels] skipped wheel with native extensions"
+      assert output =~ "cryptography"
+    end
+
+    test "ignores non-directory entries (stray files) in the wheels dir", %{
+      wheels_dir: wheels_dir,
+      python_root: python_root
+    } do
+      seed_pure_wheel(wheels_dir, "rns")
+      File.write!(Path.join(wheels_dir, "README.md"), "not a wheel\n")
+
+      assert :ok = NativeBuild.copy_ios_safe_project_python_wheels(python_root, wheels_dir)
+
+      site_packages = Path.join([python_root, "lib", "python3.13", "site-packages"])
+      assert File.dir?(Path.join(site_packages, "rns"))
+      refute File.exists?(Path.join(site_packages, "README.md"))
+    end
+
+    test "is a no-op when wheels_dir does not exist", %{python_root: python_root, tmp: tmp} do
+      missing = Path.join(tmp, "no_such_dir")
+
+      assert :ok = NativeBuild.copy_ios_safe_project_python_wheels(python_root, missing)
+
+      refute File.exists?(Path.join([python_root, "lib"]))
+    end
+
+    test "creates site-packages even when wheels_dir is empty", %{
+      wheels_dir: wheels_dir,
+      python_root: python_root
+    } do
+      assert :ok = NativeBuild.copy_ios_safe_project_python_wheels(python_root, wheels_dir)
+
+      site_packages = Path.join([python_root, "lib", "python3.13", "site-packages"])
+      assert File.dir?(site_packages)
+    end
+  end
+
+  defp seed_pure_wheel(wheels_dir, name) do
+    pkg = Path.join([wheels_dir, name, name])
+    File.mkdir_p!(pkg)
+    File.write!(Path.join(pkg, "__init__.py"), "")
+    File.write!(Path.join(pkg, "marker.txt"), "from #{name}\n")
+  end
+
+  defp seed_native_wheel(wheels_dir, name) do
+    pkg = Path.join([wheels_dir, name, name])
+    File.mkdir_p!(pkg)
+    File.write!(Path.join(pkg, "__init__.py"), "")
+    File.write!(Path.join(pkg, "_ext.so"), <<0xCA, 0xFE, 0xBA, 0xBE>>)
+  end
 end
