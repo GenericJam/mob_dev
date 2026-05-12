@@ -8,6 +8,19 @@ defmodule MobDev.UninstallerTest do
   defp android(name), do: %Device{name: name, serial: name, platform: :android}
   defp ios(name), do: %Device{name: name, serial: name, platform: :ios}
 
+  # Typed factories for the select_devices/3 safety tests — physical
+  # vs emulator/sim has to be modelled explicitly because the safety
+  # filter routes off device.type.
+  defp android_emu(name),
+    do: %Device{name: name, serial: name, platform: :android, type: :emulator}
+
+  defp android_phys(name),
+    do: %Device{name: name, serial: name, platform: :android, type: :physical}
+
+  defp ios_sim(name), do: %Device{name: name, serial: name, platform: :ios, type: :simulator}
+
+  defp ios_phys(name), do: %Device{name: name, serial: name, platform: :ios, type: :physical}
+
   defp result(device, bundle_id, outcome, reason \\ nil) do
     %{device: device, bundle_id: bundle_id, outcome: outcome, reason: reason}
   end
@@ -261,6 +274,107 @@ defmodule MobDev.UninstallerTest do
       # platforms: [] forces list_all_devices to return [].
       assert {:error, :no_devices, %{detected: 0}} =
                Uninstaller.plan(platforms: [], device_ids: [])
+    end
+  end
+
+  # ── select_devices/3 — emulator vs physical safety ─────────────────────
+  #
+  # The principle: `--all-devices` sweeps emulators/sims only.
+  # Physical devices (someone's iPhone, a personal Android) require
+  # explicit `--all-physical` or `--device <id>`. Auto-detect (no flags,
+  # single device) NEVER picks a physical device. Pin every branch of
+  # the precedence ladder.
+
+  describe "select_devices/3 — emulator/physical safety filter" do
+    test "no flags + single emulator → auto-target it" do
+      emu = android_emu("emulator-5554")
+      assert Uninstaller.select_devices([emu], [], []) == [emu]
+    end
+
+    test "no flags + single physical → NEVER auto-target (returns empty)" do
+      # Regression for the safety design: a phone alone should not be
+      # the auto-target. User must say --device or --all-physical.
+      phone = android_phys("R5CW3089HVB")
+      assert Uninstaller.select_devices([phone], [], []) == []
+    end
+
+    test "no flags + emulator + physical → auto-target the emulator only" do
+      emu = android_emu("emulator-5554")
+      phone = android_phys("R5CW3089HVB")
+      assert Uninstaller.select_devices([emu, phone], [], []) == [emu]
+    end
+
+    test "no flags + multiple emulators → ambiguous (returns empty)" do
+      a = android_emu("emulator-5554")
+      b = android_emu("emulator-5556")
+      assert Uninstaller.select_devices([a, b], [], []) == []
+    end
+
+    test "--all-devices sweeps emulators + sims but NEVER physical" do
+      emu = android_emu("emulator-5554")
+      sim = ios_sim("iPhone 17")
+      phone_a = android_phys("R5CW")
+      phone_i = ios_phys("iPhone-Kevin")
+
+      assert Uninstaller.select_devices(
+               [emu, sim, phone_a, phone_i],
+               [],
+               all_devices: true
+             ) == [emu, sim]
+    end
+
+    test "--all-physical sweeps physical only, never emulators/sims" do
+      emu = android_emu("emulator-5554")
+      sim = ios_sim("iPhone 17")
+      phone_a = android_phys("R5CW")
+      phone_i = ios_phys("iPhone-Kevin")
+
+      assert Uninstaller.select_devices(
+               [emu, sim, phone_a, phone_i],
+               [],
+               all_physical: true
+             ) == [phone_a, phone_i]
+    end
+
+    test "--all-devices AND --all-physical → literally everything" do
+      emu = android_emu("emulator-5554")
+      phone = android_phys("R5CW")
+
+      assert Uninstaller.select_devices(
+               [emu, phone],
+               [],
+               all_devices: true,
+               all_physical: true
+             ) == [emu, phone]
+    end
+
+    test "--device <id> overrides the safety filter for that specific device" do
+      # The explicit consent case: user typed the id, that's an
+      # affirmative target choice — sweep filter doesn't apply.
+      phone = android_phys("R5CW3089HVB")
+      emu = android_emu("emulator-5554")
+
+      assert Uninstaller.select_devices([emu, phone], ["R5CW3089HVB"], []) == [phone]
+    end
+
+    test "REGRESSION: the design's headline guarantee — phone never gets nuked by mistake" do
+      # The full original concern: user has emulators + their personal
+      # iPhone connected, types `mix mob.uninstall --all-devices --yes`
+      # expecting to clean test apps off emulators. The fix says: phone
+      # is left alone. Pin that.
+      personal_phone = ios_phys("Kevin's iPhone")
+      dev_emulators = for i <- 1..3, do: android_emu("emulator-#{i}")
+
+      result =
+        Uninstaller.select_devices(
+          [personal_phone | dev_emulators],
+          [],
+          all_devices: true
+        )
+
+      refute personal_phone in result
+      assert length(result) == 3
+      assert Enum.all?(result, &(&1 in dev_emulators))
     end
   end
 end
