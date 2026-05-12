@@ -52,9 +52,12 @@ defmodule MobDev.Deployer do
 
   @doc """
   Discovers devices, pushes BEAMs, and optionally restarts apps.
-  Returns `{deployed, failed}` lists of `%Device{}`.
+  Returns `{deployed, failed, skipped}` lists of `%Device{}`.
+  `skipped` is the deploy-isn't-applicable case — e.g. the app
+  isn't installed on a device because only the other platform was
+  built. Distinct from `failed` (real error during push).
   """
-  @spec deploy_all(keyword()) :: {[Device.t()], [Device.t()]}
+  @spec deploy_all(keyword()) :: {[Device.t()], [Device.t()], [Device.t()]}
   def deploy_all(opts \\ []) do
     restart = Keyword.get(opts, :restart, true)
     platforms = Keyword.get(opts, :platforms, [:android, :ios])
@@ -81,7 +84,7 @@ defmodule MobDev.Deployer do
 
     if all == [] do
       IO.puts("  #{color(:yellow)}No devices found.#{color(:reset)}")
-      {[], []}
+      {[], [], []}
     else
       IO.puts("  Pushing #{count_beams(beam_dirs)} BEAM file(s) to #{length(all)} device(s)...")
 
@@ -130,6 +133,11 @@ defmodule MobDev.Deployer do
               IO.puts(" #{color(:green)}✓#{suffix}#{color(:reset)}")
               {:ok, d}
 
+            {:skipped, reason} ->
+              # Yellow dash, not a red x — this device wasn't a target.
+              IO.puts(" #{color(:yellow)}—#{color(:reset)} #{color(:faint)}#{reason}#{color(:reset)}")
+              {:skipped, %{device | status: :skipped, error: reason}}
+
             {:error, reason} ->
               IO.puts(" #{color(:red)}✗#{color(:reset)}")
               IO.puts("    #{color(:red)}#{reason}#{color(:reset)}")
@@ -139,7 +147,8 @@ defmodule MobDev.Deployer do
 
       deployed = for {:ok, d} <- results, do: d
       failed = for {:error, d} <- results, do: d
-      {deployed, failed}
+      skipped = for {:skipped, d} <- results, do: d
+      {deployed, failed, skipped}
     end
   end
 
@@ -177,8 +186,13 @@ defmodule MobDev.Deployer do
       )
 
     if not String.contains?(pm_out, "package:#{pkg}") do
-      {:error,
-       "#{pkg} is not installed on #{device.name || serial} — skipping (ABI mismatch or missing install)"}
+      # NOT a failure — this device isn't a deploy target for this app.
+      # Returning `:skipped` lets the top-level report distinguish
+      # "device didn't have the app installed" (a normal multi-device
+      # situation when only one platform was built) from real push
+      # failures.
+      {:skipped,
+       "#{pkg} not installed on #{device.name || serial} (ABI mismatch or app not built for this platform)"}
     else
       case ensure_erts_on_device(serial, pkg) do
         :ok ->
@@ -1278,5 +1292,6 @@ defmodule MobDev.Deployer do
   defp color(:yellow), do: IO.ANSI.yellow()
   defp color(:red), do: IO.ANSI.red()
   defp color(:cyan), do: IO.ANSI.cyan()
+  defp color(:faint), do: IO.ANSI.faint()
   defp color(:reset), do: IO.ANSI.reset()
 end
