@@ -232,17 +232,36 @@ audit work but landed in the same session.
 
 With audit + trace wired, the remaining lean_release work is:
 
-1. **Make `MobDev.OtpAudit.Slim` consume the trace-augmented strip
-   set.** Today it only knows the hardcoded baseline + mob.exs
-   overrides. Wiring `OtpAudit.audit(..., trace_input: ...)`'s
-   `strippable_libs ∩ trace_strippable_libs` into the strip
-   computation closes the audit→strip loop. Pre-req: a representative
-   trace captured against a real running app on device (drive the app
-   through the major screens, save with `mix mob.trace_otp --remote
-   ... --json`).
-2. **Per-module stripping inside partly-used libs.** Once a confident
-   "this module never ran" signal exists per lib, the 52 MB of dead
-   modules inside megaco/snmp/diameter can leave the bundle. Higher
-   risk than full-lib stripping (intra-lib calls may not appear in
-   the import graph). Needs the trace coverage from step 1 first.
+1. ~~**Make `MobDev.OtpAudit.Slim` consume the trace-augmented strip
+   set.**~~ Done 2026-05-11. `Slim.compute_strip_set/1` accepts
+   `:audit_input`; `mob.exs` `slim: [audit: true, trace_json: "..."]`
+   opts the build into auditing during slim. Pre-req remains: a real
+   device-side trace JSON to actually unlock the megaco/snmp/etc.
+   expansion. Until a trace is captured, the audit expansion only adds
+   the (allow-list-validated) foreign_app_names.
+
+2. **Per-module stripping inside partly-used libs.** Now genuinely
+   blocked on (a) a representative device trace and (b) `.app` file
+   rewriting (`{application, _, [{modules, ...}]}` has to lose the
+   stripped modules or the application controller will try to load
+   them at boot). Higher risk than full-lib stripping. Right next
+   step after a trace is captured.
+
 3. **`mix_unused` evaluation** — still orthogonal, still anytime.
+
+4. **Capture a baseline device trace.** Concrete user action that
+   unlocks the rest:
+
+       cd ~/code/<mob_app>
+       mix mob.connect --no-iex          # in one terminal
+       mix mob.trace_otp --remote <node>@127.0.0.1 \
+         --duration 60000 \
+         --json /tmp/mob_trace.json      # in another, drive the app meanwhile
+
+   Then add to `mob.exs`:
+
+       config :mob_dev,
+         slim: [audit: true, trace_json: "/tmp/mob_trace.json"]
+
+   And `mix mob.deploy --native --slim` will print the audit-driven
+   expansion in the build log.
