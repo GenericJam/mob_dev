@@ -84,26 +84,77 @@ defmodule MobDev.OtpAudit.Slim do
   Recognized opts:
     * `:keep_libs` — `[String.t()]`, force-keep (subtracts from set)
     * `:drop_libs` — `[String.t()]`, force-drop (adds to set)
+    * `:audit_input` — `MobDev.OtpAudit.report/0` to expand the strip
+      set with audit-derived libs. The expansion is conservative:
+        - `report.foreign_app_names` always unions in. With
+          `:project_deps` allow-listing in OtpAudit, foreign_apps is a
+          reliable signal — anything classified here was not a
+          legitimate dep of the project.
+        - When the audit was run with `:trace_input`, the intersection
+          `strippable_libs ∩ trace_strippable_libs` unions in (both
+          signals agree → high confidence) AND
+          `trace_strippable_libs \\ strippable_libs` unions in (trace
+          says never-called even though the static graph reaches it —
+          this is the megaco/snmp/diameter unblocking signal).
+        - Note: `strippable_libs` alone is NOT unioned. Without trace,
+          a lib's modules being statically unreachable could just mean
+          the static graph can't see `:erlang.load_nif` dispatch.
+          `exqlite` is the canonical example — would be a false
+          positive and break the build.
+      `:keep_libs` still wins over everything (caller's last word).
   """
   @spec compute_strip_set(keyword()) :: [String.t()]
   def compute_strip_set(opts \\ []) do
     keep = opts |> Keyword.get(:keep_libs, []) |> MapSet.new()
     drop = opts |> Keyword.get(:drop_libs, []) |> MapSet.new()
+    audit_expansion = audit_expansion(opts[:audit_input])
 
     @hardcoded_prefixes
     |> MapSet.new()
     |> MapSet.union(drop)
+    |> MapSet.union(audit_expansion)
     |> MapSet.difference(keep)
     |> Enum.sort()
+  end
+
+  # Builds the set of additional strippable lib names from an audit
+  # report. Returns an empty MapSet when no audit was given.
+  defp audit_expansion(nil), do: MapSet.new()
+
+  defp audit_expansion(audit_input) do
+    foreign = MapSet.new(audit_input.foreign_app_names || [])
+    static = MapSet.new(audit_input.strippable_libs || [])
+
+    case audit_input.trace_strippable_libs do
+      nil ->
+        # No trace data — only the (allow-list-validated) foreign apps
+        # are safe to add. Static-only `strippable_libs` is risky
+        # without trace (NIF dispatch invisible to the import graph).
+        foreign
+
+      trace ->
+        trace_set = MapSet.new(trace)
+        # Both signals agree the lib is dead → safest.
+        confirmed = MapSet.intersection(static, trace_set)
+        # Trace says never called even though static reaches it → the
+        # high-value signal that unlocks megaco / snmp / etc.
+        trace_only = MapSet.difference(trace_set, static)
+
+        foreign
+        |> MapSet.union(confirmed)
+        |> MapSet.union(trace_only)
+    end
   end
 
   @doc """
   Apply the strip pass to an OTP bundle in place.
 
   Recognized opts:
-    * `:keep_libs`, `:drop_libs` — see `compute_strip_set/1`.
-    * `:strip_set` — short-circuit override. When set, `keep_libs` and
-      `drop_libs` are ignored. Primarily for tests.
+    * `:keep_libs`, `:drop_libs`, `:audit_input` — see
+      `compute_strip_set/1`.
+    * `:strip_set` — short-circuit override. When set, every other
+      opt that would feed into the computation is ignored. Primarily
+      for tests.
     * `:on_step` — optional callback `fn(step_info) -> any()` invoked
       after each phase. Caller uses it for build-log output.
 
