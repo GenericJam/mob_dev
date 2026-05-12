@@ -138,3 +138,47 @@ Before doing anything else:
 3. Decide whether the next phase is: (a) `mix_unused` evaluation,
    (b) empirical-trace harness, or (c) `mix mob.release --slim`.
    Pick one; don't fan out.
+
+## Progress log
+
+### 2026-05-11 — Slim pass extracted from `MobDev.NativeBuild`
+
+`MobDev.OtpAudit.Slim` now owns the in-place strip pass that
+`mix mob.deploy --slim` runs. The hardcoded prefix list is its source
+of truth (`Slim.hardcoded_prefixes/0`); per-app `mob.exs` overrides
+(`:slim` sub-keyword with `:keep_libs` / `:drop_libs`) let users
+expand or restrict the strip set without code changes. 22 unit tests
+against fixture trees pin every phase.
+
+**Deliberately deferred:** audit-driven auto-expansion of the strip
+set. A baseline `mix mob.audit_otp` run against `~/code/pigeon` showed
+audit.strippable_libs catches `exqlite` (1.3 MB) as unreachable — a
+true false positive, since exqlite loads via `:erlang.load_nif` which
+the static call graph can't see. Auto-union is blocked on either
+(a) tighter foreign-app detection (cross-reference `_build/dev/lib/`
+to distinguish leftover cache from real runtime deps) or (b) trace
+data from `MobDev.OtpTrace` providing the empirical reachability
+signal. Both are higher-leverage next steps than `mix_unused`.
+
+**Same baseline run also surfaced:** the audit's `looks_like_user_app?`
+heuristic missed obvious foreign apps (`pigeon`, `push_notify`,
+`phase2q_lv`, `phase2q_smoke`, `pythonx_ios_spike`) because the
+prefix list is hardcoded too narrowly (`test_`, `toy_`, `mob_test`).
+Tightening that is its own task — should land before the audit-driven
+slim union since it removes false positives there too.
+
+**Headline numbers from the baseline run (against `~/code/pigeon`'s
+cached iOS device tree):**
+
+| Slice                              | KB        |
+|------------------------------------|-----------|
+| Total shipped                      | 103.0 MB  |
+| Reachable (kernel/stdlib/etc seed) | 25.5 MB   |
+| Strippable (audit, 0 reachable)    | 17.3 MB   |
+| Duplicate versions                 | 8.0 MB    |
+| Hardcoded baseline only catches    | ~28 MB extra (megaco, snmp, compiler, …) |
+| Unreachable modules INSIDE partly-used libs | ~52 MB (megaco 64/65 dead, snmp 83/90 dead, …) |
+
+That last row is the prize per-module stripping would unlock, but
+it's also the riskiest: it requires confident "this module is never
+called" answers that only trace data provides.
