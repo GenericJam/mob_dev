@@ -664,7 +664,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
     IO.puts("=== Mob Battery Benchmark (iOS) — Dry Run ===")
     IO.puts("")
     IO.puts("  Device:   #{opts[:device] || "(auto-detect at run time)"}")
-    IO.puts("  Bundle:   #{pkg || "(NOT SET)"}")
+    IO.puts("  Bundle:   #{pkg}")
     IO.puts("  Scheme:   #{scheme}")
     IO.puts("  Duration: #{duration}s (#{div(duration, 60)} min)")
     IO.puts("  Mode:     #{describe_mode(opts)}")

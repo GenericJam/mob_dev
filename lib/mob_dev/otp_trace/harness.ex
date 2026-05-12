@@ -180,9 +180,10 @@ defmodule MobDev.OtpTrace.Harness do
     # Stream + Range
     Stream.map(1..1000, &(&1 * 2)) |> Stream.take(10) |> Enum.to_list()
 
-    # Tuple
+    # Tuple. Calls below are intentional probes — the return value is
+    # discarded; we just want each MFA to land in the trace.
     Tuple.insert_at({1, 2}, 2, 3)
-    Tuple.to_list({1, 2, 3})
+    _ = Tuple.to_list({1, 2, 3})
 
     # Keyword
     kw = [a: 1, b: 2, c: 3]
@@ -202,11 +203,12 @@ defmodule MobDev.OtpTrace.Harness do
     String.slice("hello", 1, 3)
     String.trim("  spaced  ")
 
-    # Binary ops
+    # Binary ops. `_ =` on byte_size / binary_part because the return
+    # is discarded — we're probing the trace surface.
     <<a, b, c>> = "abc"
     bin = <<a, b, c>>
-    byte_size(bin)
-    binary_part(bin, 0, 2)
+    _ = byte_size(bin)
+    _ = binary_part(bin, 0, 2)
     :binary.copy("xy", 5)
 
     # IO data
