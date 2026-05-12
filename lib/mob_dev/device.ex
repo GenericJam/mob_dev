@@ -112,6 +112,28 @@ defmodule MobDev.Device do
   def display_id(%__MODULE__{platform: :ios, serial: serial}), do: serial
 
   @doc """
+  True for devices that aren't a development emulator/simulator.
+
+  Used as a safety predicate by destructive Mix tasks (`mix
+  mob.uninstall --all-devices`) so that the broad-sweep flags only
+  hit dev-disposable targets by default. Sweeping a personal
+  iPhone or shared physical Android is opt-in via `--all-physical`
+  or `--device <id>`.
+
+      iex> MobDev.Device.physical?(%MobDev.Device{type: :physical})
+      true
+
+      iex> MobDev.Device.physical?(%MobDev.Device{type: :emulator})
+      false
+
+      iex> MobDev.Device.physical?(%MobDev.Device{type: :simulator})
+      false
+  """
+  @spec physical?(t()) :: boolean()
+  def physical?(%__MODULE__{type: :physical}), do: true
+  def physical?(%__MODULE__{}), do: false
+
+  @doc """
   Returns true if `input` identifies this device.
 
   Matches `display_id/1` or the full serial, case-insensitively. Used by

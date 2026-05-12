@@ -62,6 +62,8 @@ defmodule MobDev.Uninstaller do
           :no_devices
           | :ambiguous_devices
           | :no_matching_devices
+          | :no_dev_devices
+          | :no_physical_devices
 
   @doc """
   Build the (devices × apps) plan without executing it.
@@ -84,29 +86,102 @@ defmodule MobDev.Uninstaller do
   def plan(opts \\ []) do
     all = list_all_devices(opts)
     device_ids = opts[:device_ids] || []
+    selected = select_devices(all, device_ids, opts)
 
     cond do
       all == [] ->
         {:error, :no_devices, %{detected: 0}}
 
-      opts[:all_devices] ->
-        {:ok, build_plan(all, opts)}
+      device_ids != [] and selected == [] ->
+        {:error, :no_matching_devices, %{requested: device_ids, detected: length(all)}}
 
-      device_ids != [] ->
-        case filter_devices_by_id(all, device_ids) do
-          [] ->
-            {:error, :no_matching_devices, %{requested: device_ids, detected: length(all)}}
-
-          matched ->
-            {:ok, build_plan(matched, opts)}
-        end
-
-      length(all) == 1 ->
-        # Auto-detect: exactly one device connected, target it.
-        {:ok, build_plan(all, opts)}
+      selected == [] ->
+        # Could mean: --all-devices was set but no emulators/sims
+        # connected (only physical), OR no flags + multiple devices
+        # connected, OR no flags + zero non-physical devices. Use
+        # the available counts to pick the right error.
+        ambiguous_or_only_physical_error(all, opts)
 
       true ->
-        {:error, :ambiguous_devices, %{detected: length(all)}}
+        {:ok, build_plan(selected, opts)}
+    end
+  end
+
+  @doc """
+  Pick the target device set from `all` connected devices given the
+  user-supplied opts.
+
+  Precedence:
+    1. `:device_ids` non-empty — match by id, regardless of type
+       (the user typed the id, that's explicit consent).
+    2. Both `:all_devices` and `:all_physical` — every connected
+       device.
+    3. `:all_devices` only — emulators/simulators (NEVER physical).
+       The destructive sweep is safe by default; touching a physical
+       device requires explicit `--all-physical` or `--device <id>`.
+    4. `:all_physical` only — physical devices only.
+    5. Auto-detect: exactly one NON-physical device → target it.
+       Physical devices are never the auto-target.
+
+  Public for testing — the precedence ladder is the safety contract.
+  """
+  @spec select_devices([Device.t()], [String.t()], keyword()) :: [Device.t()]
+  def select_devices(all, device_ids, opts) do
+    # Coerce to explicit booleans — opts[:foo] is nil when the flag
+    # wasn't passed, and `nil and X` crashes under Elixir 1.20.
+    all_devices? = Keyword.get(opts, :all_devices, false) == true
+    all_physical? = Keyword.get(opts, :all_physical, false) == true
+
+    cond do
+      device_ids != [] ->
+        filter_devices_by_id(all, device_ids)
+
+      all_devices? and all_physical? ->
+        all
+
+      all_devices? ->
+        Enum.reject(all, &Device.physical?/1)
+
+      all_physical? ->
+        Enum.filter(all, &Device.physical?/1)
+
+      true ->
+        non_physical = Enum.reject(all, &Device.physical?/1)
+        if length(non_physical) == 1, do: non_physical, else: []
+    end
+  end
+
+  defp ambiguous_or_only_physical_error(all, opts) do
+    physical = Enum.filter(all, &Device.physical?/1)
+    non_physical = Enum.reject(all, &Device.physical?/1)
+    # Same boolean-coercion guard as in select_devices/3.
+    all_devices? = Keyword.get(opts, :all_devices, false) == true
+    all_physical? = Keyword.get(opts, :all_physical, false) == true
+
+    cond do
+      all_devices? and non_physical == [] ->
+        # --all-devices targets non-physical; user has only phones.
+        {:error, :no_dev_devices,
+         %{
+           physical_count: length(physical),
+           hint:
+             "Only physical devices connected. `--all-devices` targets " <>
+               "emulators/simulators only — use `--all-physical` to also " <>
+               "uninstall on physical devices, or `--device <id>` to " <>
+               "target one explicitly."
+         }}
+
+      all_physical? and physical == [] ->
+        {:error, :no_physical_devices, %{detected: length(all)}}
+
+      true ->
+        # No flags + ambiguous (>1 non-physical) OR no non-physical at all.
+        {:error, :ambiguous_devices,
+         %{
+           detected: length(all),
+           non_physical: length(non_physical),
+           physical: length(physical)
+         }}
     end
   end
 
