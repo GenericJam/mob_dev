@@ -44,11 +44,20 @@ defmodule Mix.Tasks.Mob.AuditOtp do
 
     root = resolve_root(opts[:root])
     app_name = opts[:app] || infer_app_name()
+    project_deps = infer_project_deps()
 
     Mix.shell().info("Auditing OTP tree: #{root}")
-    if app_name, do: Mix.shell().info("App entry point: #{app_name}\n")
+    if app_name, do: Mix.shell().info("App entry point: #{app_name}")
 
-    report = OtpAudit.audit(root, app_name: app_name && String.to_atom(to_string(app_name)))
+    if project_deps,
+      do: Mix.shell().info("Project deps (allow-listed): #{length(project_deps)} apps\n"),
+      else: Mix.shell().info("")
+
+    report =
+      OtpAudit.audit(root,
+        app_name: app_name && String.to_atom(to_string(app_name)),
+        project_deps: project_deps
+      )
 
     if opts[:json] do
       report
@@ -86,6 +95,24 @@ defmodule Mix.Tasks.Mob.AuditOtp do
     case Mix.Project.get() do
       nil -> nil
       _ -> Mix.Project.config()[:app]
+    end
+  end
+
+  # Returns the project's runtime-dep apps, or nil when not in a Mix
+  # project context. `_build/dev/lib/` is Mix's view of every app the
+  # project needs (top-level deps + transitive closure + the app itself);
+  # using that as the source means we get exactly what Mix would have
+  # installed, no extra closure walking needed.
+  defp infer_project_deps do
+    case Mix.Project.get() do
+      nil ->
+        nil
+
+      _ ->
+        case File.ls("_build/dev/lib") do
+          {:ok, libs} -> Enum.map(libs, &String.to_atom/1)
+          _ -> nil
+        end
     end
   end
 

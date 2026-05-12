@@ -164,4 +164,176 @@ defmodule MobDev.OtpAuditTest do
       assert "wx" in report.strippable_libs
     end
   end
+
+  # The `:project_deps` allow-list classifier replaces the narrow
+  # name-pattern heuristic when the caller can supply the project's
+  # actual dep closure. Catches arbitrary leftover apps (pigeon,
+  # push_notify, phase2q_lv, etc.) that don't match `test_/toy_`
+  # but still aren't supposed to be in this bundle.
+  describe "audit/2 — :project_deps allow-list" do
+    test "an arbitrary lib NOT in project_deps is foreign", %{root: root} do
+      make_lib(root, "kernel", "9.2", modules: ["kernel"])
+      make_lib(root, "stdlib", "5.2", modules: ["lists"])
+      stranger = make_lib(root, "pigeon", "0.1.0", modules: ["Elixir.Pigeon"])
+
+      report =
+        OtpAudit.audit(root,
+          app_name: :my_app,
+          project_deps: [:my_app, :phoenix, :ecto]
+        )
+
+      assert stranger in report.foreign_apps
+      refute "pigeon" in Enum.map(report.libs, & &1.name)
+    end
+
+    test "OTP-shipped libs are never foreign even if not in project_deps", %{root: root} do
+      make_lib(root, "kernel", "9.2", modules: ["kernel"])
+      make_lib(root, "stdlib", "5.2", modules: ["lists"])
+      make_lib(root, "xmerl", "2.2", modules: ["xmerl"])
+      make_lib(root, "asn1", "5.4.3")
+      make_lib(root, "compiler", "10.0")
+
+      report =
+        OtpAudit.audit(root,
+          app_name: :my_app,
+          project_deps: [:my_app]
+        )
+
+      assert report.foreign_apps == []
+      # All four should be in libs (and so candidates for strippable_libs).
+      lib_names = Enum.map(report.libs, & &1.name)
+      assert "xmerl" in lib_names
+      assert "asn1" in lib_names
+      assert "compiler" in lib_names
+    end
+
+    test "Elixir-shipped libs are never foreign even if not in project_deps", %{root: root} do
+      make_lib(root, "kernel", "9.2", modules: ["kernel"])
+      make_lib(root, "stdlib", "5.2", modules: ["lists"])
+      make_lib(root, "elixir", "1.18.0", modules: ["Elixir.Kernel"])
+      make_lib(root, "eex", "1.0", modules: ["Elixir.EEx"])
+      make_lib(root, "logger", "1.18.0")
+
+      report =
+        OtpAudit.audit(root,
+          app_name: :my_app,
+          project_deps: [:my_app]
+        )
+
+      assert report.foreign_apps == []
+    end
+
+    test "the app under test is never foreign even if not in project_deps", %{root: root} do
+      make_lib(root, "kernel", "9.2", modules: ["kernel"])
+      make_lib(root, "stdlib", "5.2", modules: ["lists"])
+      make_lib(root, "my_app", "0.1.0", modules: ["Elixir.MyApp"])
+
+      report =
+        OtpAudit.audit(root,
+          app_name: :my_app,
+          # Deliberately empty — verify app_name still wins.
+          project_deps: []
+        )
+
+      assert report.foreign_apps == []
+    end
+
+    test "deps listed in project_deps are kept regardless of mod-callback shape", %{root: root} do
+      make_lib(root, "kernel", "9.2", modules: ["kernel"])
+      make_lib(root, "stdlib", "5.2", modules: ["lists"])
+      # exqlite-shaped: hex dep, has app callback, runtime-only NIF.
+      make_lib(root, "exqlite", "0.39.0", modules: ["Elixir.Exqlite"], mod: :exqlite_app)
+      # rns-shaped: pure-Python wheel-ish, no app callback.
+      make_lib(root, "rns", "0.5.0", modules: [])
+
+      report =
+        OtpAudit.audit(root,
+          app_name: :my_app,
+          project_deps: [:my_app, :exqlite, :rns]
+        )
+
+      assert report.foreign_apps == []
+      lib_names = Enum.map(report.libs, & &1.name)
+      assert "exqlite" in lib_names
+      assert "rns" in lib_names
+    end
+
+    test "empty project_deps still allows OTP/Elixir shipped libs through", %{root: root} do
+      # Boundary case: caller passes [] explicitly. Should NOT make
+      # OTP/Elixir libs foreign (the allow-list still includes them).
+      make_lib(root, "kernel", "9.2", modules: ["kernel"])
+      make_lib(root, "stdlib", "5.2", modules: ["lists"])
+      make_lib(root, "compiler", "10.0")
+
+      report = OtpAudit.audit(root, project_deps: [])
+
+      assert report.foreign_apps == []
+    end
+
+    test "real-world pigeon-shaped audit: foreign cluster correctly classified", %{root: root} do
+      # Recreates the shape from the ~/code/pigeon baseline audit:
+      # a bundle whose cache holds leftover apps from other projects.
+      make_lib(root, "kernel", "9.2", modules: ["kernel"])
+      make_lib(root, "stdlib", "5.2", modules: ["lists"])
+      make_lib(root, "elixir", "1.18.0", modules: ["Elixir.Kernel"])
+
+      # Real deps: pigeon + exqlite.
+      pigeon = make_lib(root, "pigeon", "0.1.0", modules: ["Elixir.Pigeon"])
+      make_lib(root, "exqlite", "0.39.0", modules: ["Elixir.Exqlite"])
+
+      # Leftover cache cruft from previous builds of other projects.
+      stale1 = make_lib(root, "push_notify", "0.1.0", modules: ["Elixir.PushNotify"])
+      stale2 = make_lib(root, "phase2q_lv", "0.1.0", modules: ["Elixir.Phase2qLv"])
+      stale3 = make_lib(root, "phase2q_smoke", "0.1.0", modules: ["Elixir.Phase2qSmoke"])
+      stale4 = make_lib(root, "pythonx_ios_spike", "0.1.0", modules: [])
+
+      report =
+        OtpAudit.audit(root,
+          app_name: :pigeon,
+          project_deps: [:pigeon, :exqlite]
+        )
+
+      # All four leftover apps land in foreign_apps.
+      assert stale1 in report.foreign_apps
+      assert stale2 in report.foreign_apps
+      assert stale3 in report.foreign_apps
+      assert stale4 in report.foreign_apps
+      assert length(report.foreign_apps) == 4
+
+      # Pigeon (the app) and exqlite (a real dep) are NOT foreign.
+      lib_names = Enum.map(report.libs, & &1.name)
+      assert "pigeon" in lib_names
+      assert "exqlite" in lib_names
+      refute pigeon in report.foreign_apps
+    end
+
+    test "without :project_deps, falls back to the name-pattern heuristic", %{root: root} do
+      # Backwards-compat check: existing callers that don't pass
+      # `:project_deps` get the old behaviour, which catches `toy_/test_`
+      # but misses arbitrarily-named foreigners like `pigeon`.
+      make_lib(root, "kernel", "9.2", modules: ["kernel"])
+      make_lib(root, "stdlib", "5.2", modules: ["lists"])
+      toy = make_lib(root, "toy_appp", "0.1.0", modules: ["Elixir.ToyAppp"])
+      make_lib(root, "pigeon", "0.1.0", modules: ["Elixir.Pigeon"])
+
+      report = OtpAudit.audit(root, app_name: :my_app)
+
+      assert toy in report.foreign_apps
+      # `pigeon` doesn't match the legacy heuristic so it slips through —
+      # this is exactly the case `:project_deps` was added to fix.
+      refute Enum.any?(report.foreign_apps, &String.contains?(&1, "pigeon-"))
+    end
+
+    test "scratch_ prefix is added to the legacy heuristic", %{root: root} do
+      # `scratch_` prefix appears in the Slim foreign_apps strip pass,
+      # so the audit heuristic should match it too for consistency.
+      make_lib(root, "kernel", "9.2", modules: ["kernel"])
+      make_lib(root, "stdlib", "5.2", modules: ["lists"])
+      scratch = make_lib(root, "scratch_lab", "0.1.0", modules: ["Elixir.ScratchLab"])
+
+      report = OtpAudit.audit(root, app_name: :my_app)
+
+      assert scratch in report.foreign_apps
+    end
+  end
 end
