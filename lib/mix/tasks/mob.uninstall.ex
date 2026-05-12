@@ -136,17 +136,13 @@ defmodule Mix.Tasks.Mob.Uninstall do
   end
 
   defp confirm_and_run(plan, opts) do
-    bundle_count = plan |> Enum.flat_map(fn {_d, bs} -> bs end) |> length()
-    device_count = length(plan)
-    single_target? = device_count == 1 and bundle_count == 1
-    skip_prompt? = opts[:yes] or single_target?
-
     Enum.each(Uninstaller.preview_lines(plan), fn line -> Mix.shell().info(line) end)
+    bundle_count = bundle_count(plan)
 
     if bundle_count == 0 do
       Mix.shell().info("(no apps to uninstall — nothing to do)")
     else
-      if skip_prompt? or confirm_yn() do
+      if should_skip_prompt?(plan, opts) or confirm_yn() do
         {uninstalled, failed, skipped} = Uninstaller.execute_plan(plan)
 
         Enum.each(format_summary(uninstalled, failed, skipped), fn line ->
@@ -159,6 +155,33 @@ defmodule Mix.Tasks.Mob.Uninstall do
       end
     end
   end
+
+  @doc """
+  Decides whether to skip the y/N confirmation prompt before executing
+  a `plan`. Returns `true` when:
+
+    * the user passed `--yes` (any truthy value at `opts[:yes]`), OR
+    * the plan targets exactly one device with exactly one bundle id
+      (low blast radius — destructive intent is unambiguous and the
+      preview already showed exactly what's about to happen).
+
+  Pure for testability — the original inline `opts[:yes] or
+  single_target?` form crashed on `BadBooleanError` because
+  `opts[:yes]` is `nil` when the flag isn't passed and Elixir 1.20's
+  type checker enforces boolean operands on `or`. Pinning this as a
+  helper means the boolean-coercion mistake can't happen again.
+  """
+  @spec should_skip_prompt?(Uninstaller.plan(), keyword()) :: boolean()
+  def should_skip_prompt?(plan, opts) do
+    bundle_count = bundle_count(plan)
+    device_count = length(plan)
+    single_target? = device_count == 1 and bundle_count == 1
+    yes? = opts[:yes] == true
+
+    yes? or single_target?
+  end
+
+  defp bundle_count(plan), do: plan |> Enum.flat_map(fn {_d, bs} -> bs end) |> length()
 
   defp confirm_yn do
     case Mix.shell().prompt("Proceed? [y/N]") |> String.trim() |> String.downcase() do
