@@ -34,11 +34,10 @@ defmodule MobDev.Uninstaller do
       installed or not, so we probe with `xcrun simctl listapps`
       first to distinguish skip-vs-uninstall.
 
-    * **iOS physical device (devicectl)** — not implemented in v1.
-      Returns `:skipped` with a "use Xcode" hint. The devicectl
-      output parsing is more complex than the simctl path and the
-      "I want to clear stale test apps" use case is rare on
-      physical devices.
+    * **iOS physical device (devicectl)** — `xcrun devicectl device
+      uninstall app --device <udid> <bundle>`. Exit 0 → uninstalled.
+      `ContainerLookupErrorDomain` in stderr → `:skipped`
+      (app not installed on this device).
   """
 
   alias MobDev.Discovery.{Android, IOS}
@@ -221,6 +220,41 @@ defmodule MobDev.Uninstaller do
   end
 
   @doc """
+  Parse `xcrun devicectl device uninstall app` output into an outcome.
+
+  devicectl is more structured than adb but its error reporting still
+  varies by Xcode version. Patterns:
+
+    * exit 0 → app actually uninstalled (or wasn't there — devicectl
+      doesn't always distinguish; check the listapps probe if
+      precision matters).
+    * `ContainerLookupErrorDomain` → bundle id not installed → `:skipped`.
+    * `MissingProfileError` / `NotPaired` → device-pairing problem,
+      real error.
+    * Anything else exit != 0 → `:error` with trimmed output.
+
+  Output is the combined stdout+stderr; exit_code is the process exit
+  status. Returns `{outcome, reason}`.
+
+  Public for regression-testing without a paired physical device.
+  """
+  @spec interpret_devicectl_uninstall(String.t(), non_neg_integer()) ::
+          {outcome(), String.t() | nil}
+  def interpret_devicectl_uninstall(output, exit_code) do
+    cond do
+      exit_code == 0 ->
+        {:uninstalled, nil}
+
+      String.contains?(output, "ContainerLookupErrorDomain") or
+          String.contains?(output, "not installed") ->
+        {:skipped, "not installed"}
+
+      true ->
+        {:error, String.trim(output)}
+    end
+  end
+
+  @doc """
   Parse `adb shell pm list packages <prefix>` output into a list of
   package names. Returns names without the `package:` prefix, sorted
   for deterministic ordering.
@@ -342,6 +376,26 @@ defmodule MobDev.Uninstaller do
       System.cmd("adb", ["-s", serial, "uninstall", bundle_id], stderr_to_stdout: true)
 
     {outcome, reason} = interpret_adb_uninstall(output, exit_code)
+    %{device: d, bundle_id: bundle_id, outcome: outcome, reason: reason}
+  end
+
+  defp uninstall_one(%Device{platform: :ios, type: :physical, serial: udid} = d, bundle_id) do
+    # iOS physical device: devicectl. Distinct from simctl —
+    # devicectl returns non-zero with "ContainerLookupErrorDomain"
+    # when the bundle id isn't installed on the device, vs simctl
+    # which returns 0 either way.
+    args = [
+      "devicectl",
+      "device",
+      "uninstall",
+      "app",
+      "--device",
+      udid,
+      bundle_id
+    ]
+
+    {output, exit_code} = System.cmd("xcrun", args, stderr_to_stdout: true)
+    {outcome, reason} = interpret_devicectl_uninstall(output, exit_code)
     %{device: d, bundle_id: bundle_id, outcome: outcome, reason: reason}
   end
 
