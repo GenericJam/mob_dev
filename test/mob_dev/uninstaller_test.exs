@@ -95,6 +95,49 @@ defmodule MobDev.UninstallerTest do
     end
   end
 
+  # ── interpret_devicectl_uninstall/2 ─────────────────────────────────────
+
+  describe "interpret_devicectl_uninstall/2" do
+    test "exit 0 → :uninstalled" do
+      assert {:uninstalled, nil} = Uninstaller.interpret_devicectl_uninstall("ok\n", 0)
+    end
+
+    test "'ContainerLookupErrorDomain' → :skipped (app not on device)" do
+      # devicectl shape for a bundle id that isn't installed on the
+      # device — same pattern as the install error path elsewhere
+      # in mob_dev's deployer.
+      out = """
+      Failed to load provisioning paramter list ...
+      ERROR: ContainerLookupErrorDomain code 1004 -- App not installed
+      """
+
+      assert {:skipped, "not installed"} = Uninstaller.interpret_devicectl_uninstall(out, 1)
+    end
+
+    test "'not installed' phrase → :skipped (alternate wording)" do
+      out = "App with bundle id com.example.foo is not installed\n"
+      assert {:skipped, "not installed"} = Uninstaller.interpret_devicectl_uninstall(out, 1)
+    end
+
+    test "other non-zero exit → :error with trimmed output" do
+      out = "device not paired with this host\n"
+      assert {:error, msg} = Uninstaller.interpret_devicectl_uninstall(out, 1)
+      assert msg =~ "not paired"
+      refute msg =~ "\n"
+    end
+
+    test "real-world Xcode 15+ devicectl error doesn't accidentally match skipped" do
+      # Make sure a transient devicectl error (e.g. tunnel disconnect)
+      # surfaces as :error, not as :skipped — the user needs to see it.
+      out = """
+      14:32:56 Acquired tunnel connection to device.
+      ERROR: connection lost mid-operation
+      """
+
+      assert {:error, _} = Uninstaller.interpret_devicectl_uninstall(out, 1)
+    end
+  end
+
   # ── parse_package_list/1 ────────────────────────────────────────────────
 
   describe "parse_package_list/1" do
