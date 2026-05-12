@@ -20,6 +20,14 @@ defmodule Mix.Tasks.Mob.AuditOtp do
       mix mob.audit_otp --json                           # machine-readable output
       mix mob.audit_otp --trace-json path/to/trace.json  # cross-reference against trace data
 
+      # Multiple traces are UNIONED — a lib is trace-strippable only if
+      # NONE of the captures observed any of its modules. Much safer
+      # than a single window for production stripping decisions.
+      mix mob.audit_otp \
+        --trace-json /tmp/boot.json \
+        --trace-json /tmp/ui.json \
+        --trace-json /tmp/auth.json
+
   ## Where the audit reads from
 
   Looks for an OTP root in this order:
@@ -46,14 +54,15 @@ defmodule Mix.Tasks.Mob.AuditOtp do
           root: :string,
           json: :boolean,
           app: :string,
-          trace_json: :string
+          trace_json: [:string, :keep]
         ]
       )
 
     root = resolve_root(opts[:root])
     app_name = opts[:app] || infer_app_name()
     project_deps = infer_project_deps()
-    trace_input = load_trace_json(opts[:trace_json])
+    trace_paths = Keyword.get_values(opts, :trace_json)
+    trace_input = union_trace_jsons(trace_paths)
 
     Mix.shell().info("Auditing OTP tree: #{root}")
     if app_name, do: Mix.shell().info("App entry point: #{app_name}")
@@ -63,7 +72,11 @@ defmodule Mix.Tasks.Mob.AuditOtp do
       else: :ok
 
     if trace_input,
-      do: Mix.shell().info("Trace input: #{MapSet.size(trace_input)} modules observed"),
+      do:
+        Mix.shell().info(
+          "Trace input: #{MapSet.size(trace_input)} unique modules observed across " <>
+            "#{length(trace_paths)} trace#{if length(trace_paths) == 1, do: "", else: "s"}"
+        ),
       else: :ok
 
     Mix.shell().info("")
@@ -132,23 +145,14 @@ defmodule Mix.Tasks.Mob.AuditOtp do
     end
   end
 
-  # Reads a JSON trace file written by `mix mob.trace_otp --json`. The
-  # file shape carries `modules` as a list of strings — convert to atoms
-  # so it lines up with what the .beam basenames decode to.
-  defp load_trace_json(nil), do: nil
-
-  defp load_trace_json(path) do
-    case File.read(path) do
-      {:ok, body} ->
-        body
-        |> Jason.decode!()
-        |> Map.get("modules", [])
-        |> Enum.map(&String.to_atom/1)
-        |> MapSet.new()
-
-      {:error, reason} ->
-        Mix.raise("Could not read --trace-json #{path}: #{inspect(reason)}")
-    end
+  # Reads one or more JSON trace files via OtpAudit.union_trace_jsons/2.
+  # In the CLI a failed read should be a hard error (typo in path,
+  # missing file the user explicitly asked for) — `Mix.raise` on the
+  # first failure, don't silently degrade.
+  defp union_trace_jsons(paths) do
+    OtpAudit.union_trace_jsons(paths, fn path, reason ->
+      Mix.raise("Could not read --trace-json #{path}: #{inspect(reason)}")
+    end)
   end
 
   defp print_report(r) do

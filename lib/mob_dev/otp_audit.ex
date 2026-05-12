@@ -188,6 +188,76 @@ defmodule MobDev.OtpAudit do
 
   defp normalize_trace_input(list) when is_list(list), do: MapSet.new(list)
 
+  @doc """
+  Reads one or more JSON trace files written by
+  `mix mob.trace_otp --json` and unions their `modules` atoms into a
+  single MapSet suitable for `:trace_input`.
+
+  Returns:
+
+    * `nil` when given an empty list (the audit will take its
+      no-trace branch).
+    * `nil` when every read failed — better than handing back an
+      empty set, which would let the trace-augmented expansion
+      strip every partly-used lib in the bundle. A warning is
+      emitted via `on_read_error.(path, reason)` for each failure
+      so callers can route them through their own logging.
+    * `MapSet.t/0` of `module()` atoms otherwise.
+
+  Multi-trace union is the right shape for "this lib is never
+  called" claims: a 60-second window only exercises one slice of
+  the app. Unioning boot + UI + auth + idle captures lets users
+  say "across ALL captured sessions, this lib was never touched"
+  — a much stronger signal than any single trace.
+
+  ## Example
+
+      iex> MobDev.OtpAudit.union_trace_jsons(["priv/boot.json", "priv/ui.json"])
+      #MapSet<[:kernel, :Elixir.Enum, :Elixir.Map, ...]>
+  """
+  @spec union_trace_jsons([Path.t()], (Path.t(), term() -> any())) :: MapSet.t() | nil
+  def union_trace_jsons(paths, on_read_error \\ &default_trace_read_warn/2)
+
+  def union_trace_jsons([], _on_read_error), do: nil
+
+  def union_trace_jsons(paths, on_read_error) when is_list(paths) do
+    union =
+      Enum.reduce(paths, MapSet.new(), fn path, acc ->
+        case load_trace_json(path) do
+          {:ok, ms} ->
+            MapSet.union(acc, ms)
+
+          {:error, reason} ->
+            # Callback is for side-effects only (logging / Mix.raise).
+            # Its return value MUST NOT affect the accumulator —
+            # otherwise the union ends up as whatever the callback
+            # happened to return.
+            _ = on_read_error.(path, reason)
+            acc
+        end
+      end)
+
+    if MapSet.size(union) == 0, do: nil, else: union
+  end
+
+  defp load_trace_json(path) do
+    with {:ok, body} <- File.read(path),
+         {:ok, decoded} <- Jason.decode(body) do
+      modules =
+        decoded
+        |> Map.get("modules", [])
+        |> Enum.map(&String.to_atom/1)
+        |> MapSet.new()
+
+      {:ok, modules}
+    end
+  end
+
+  defp default_trace_read_warn(path, reason) do
+    IO.warn("could not read trace_json #{path}: #{inspect(reason)} — skipping that trace")
+    nil
+  end
+
   # ── Discovery ─────────────────────────────────────────────────────────
 
   defp discover_libs(otp_root) do
