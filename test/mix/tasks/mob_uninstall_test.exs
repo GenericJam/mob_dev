@@ -139,12 +139,11 @@ defmodule Mix.Tasks.Mob.UninstallTest do
       #   ** (BadBooleanError) expected a boolean on left-side of "or",
       #      got: nil
       #
-      # Pin the boolean coercion so the bug can't reappear.
-      assert is_boolean(Uninstall.should_skip_prompt?(plan_many_many(), []))
-
-      # The specific user invocation: --all-devices, no --yes. No
-      # crash; falls through to "needs confirmation" — false.
-      refute Uninstall.should_skip_prompt?(plan_many_many(), all_devices: true)
+      # Pin the boolean coercion so the bug can't reappear. The
+      # specific user invocation: --all-devices, no --yes. No crash
+      # AND specifically false (multi-target → needs confirmation).
+      assert Uninstall.should_skip_prompt?(plan_many_many(), []) == false
+      assert Uninstall.should_skip_prompt?(plan_many_many(), all_devices: true) == false
     end
 
     test "opts[:yes] = false (explicit) is equivalent to absent" do
