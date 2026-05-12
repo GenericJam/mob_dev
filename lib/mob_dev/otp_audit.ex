@@ -57,6 +57,7 @@ defmodule MobDev.OtpAudit do
           libs: [lib_report()],
           duplicates: %{lib_name() => [String.t()]},
           foreign_apps: [String.t()],
+          foreign_app_names: [lib_name()],
           strippable_libs: [lib_name()],
           trace_strippable_libs: [lib_name()] | nil,
           total_kb: non_neg_integer(),
@@ -135,7 +136,7 @@ defmodule MobDev.OtpAudit do
     trace_input = normalize_trace_input(Keyword.get(opts, :trace_input))
     libs = discover_libs(otp_root)
     {duplicates, libs} = collapse_duplicates(libs)
-    {foreign_apps, libs} = split_foreign_apps(libs, app_name, project_deps)
+    {foreign_apps, foreign_app_names, libs} = split_foreign_apps(libs, app_name, project_deps)
     module_to_lib = build_module_index(libs)
     imports = build_import_graph(libs)
 
@@ -158,6 +159,7 @@ defmodule MobDev.OtpAudit do
       libs: lib_reports,
       duplicates: duplicates,
       foreign_apps: foreign_apps,
+      foreign_app_names: foreign_app_names,
       strippable_libs: strippable,
       trace_strippable_libs: trace_strippable,
       total_kb: Enum.sum(Enum.map(lib_reports, & &1.kb_total)),
@@ -268,13 +270,17 @@ defmodule MobDev.OtpAudit do
   # current app is foreign (leaked from another project's release tree
   # via a shared cache, almost always). Report separately so the user
   # can clean their cache.
+  #
+  # Returns `{paths, names, kept_libs}`: paths feed report.foreign_apps
+  # (what to delete), names feed report.foreign_app_names (what to log
+  # / dedupe against a hardcoded strip list).
   defp split_foreign_apps(libs, app_name, project_deps) do
     app_str = if app_name, do: to_string(app_name), else: nil
     classifier = foreign_classifier(app_str, project_deps)
 
     {foreign, kept} = Enum.split_with(libs, classifier)
 
-    {Enum.map(foreign, & &1.path), kept}
+    {Enum.map(foreign, & &1.path), Enum.map(foreign, & &1.name), kept}
   end
 
   # When the caller supplies `:project_deps`, use the strict classifier:

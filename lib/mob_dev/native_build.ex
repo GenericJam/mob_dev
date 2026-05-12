@@ -2839,10 +2839,13 @@ defmodule MobDev.NativeBuild do
 
       IO.puts("  === Slim strip pass")
 
+      audit_input = maybe_run_audit(otp_bundle, slim_opts)
+
       {:ok, result} =
         MobDev.OtpAudit.Slim.slim_bundle(otp_bundle,
           keep_libs: Keyword.get(slim_opts, :keep_libs, []),
           drop_libs: Keyword.get(slim_opts, :drop_libs, []),
+          audit_input: audit_input,
           on_step: fn %{label: label, before_kb: before, after_kb: after_size} ->
             delta = before - after_size
             IO.puts("  [SLIM:#{label}] #{before} KB → #{after_size} KB  (-#{delta} KB)")
@@ -2856,6 +2859,70 @@ defmodule MobDev.NativeBuild do
     end
 
     :ok
+  end
+
+  # Returns a MobDev.OtpAudit.report when slim_opts says to run the audit,
+  # nil otherwise. The Slim module's audit_expansion gracefully treats nil
+  # as "no expansion."
+  #
+  # The mob.exs surface is conservative — default off — because the audit
+  # walks every `.beam` in the bundle (seconds added per build). Users
+  # opt in once they've captured a trace and want to expand the strip set:
+  #
+  #     config :mob_dev,
+  #       slim: [audit: true, trace_json: "priv/mob_trace.json"]
+  defp maybe_run_audit(otp_bundle, slim_opts) do
+    if Keyword.get(slim_opts, :audit, false) do
+      trace_input =
+        case Keyword.get(slim_opts, :trace_json) do
+          nil ->
+            nil
+
+          path ->
+            case File.read(path) do
+              {:ok, body} ->
+                body
+                |> Jason.decode!()
+                |> Map.get("modules", [])
+                |> Enum.map(&String.to_atom/1)
+                |> MapSet.new()
+
+              {:error, reason} ->
+                IO.warn(
+                  "[SLIM:audit] could not read trace_json #{path}: " <>
+                    "#{inspect(reason)} — proceeding without trace data"
+                )
+
+                nil
+            end
+        end
+
+      project_deps = infer_project_deps()
+
+      app_name =
+        case Mix.Project.get() do
+          nil -> nil
+          _ -> Mix.Project.config()[:app]
+        end
+
+      IO.puts(
+        "  [SLIM:audit] running OtpAudit (project_deps=#{length(project_deps || [])}, " <>
+          "trace=#{if trace_input, do: MapSet.size(trace_input), else: "none"})"
+      )
+
+      MobDev.OtpAudit.audit(otp_bundle,
+        app_name: app_name,
+        project_deps: project_deps,
+        trace_input: trace_input
+      )
+    end
+  end
+
+  defp infer_project_deps do
+    case File.ls("_build/dev/lib") do
+      {:ok, libs} -> Enum.map(libs, &String.to_atom/1)
+      _ -> nil
+    end
   end
 
   defp embed_provisioning_profile(app_path, profile_uuid) do
