@@ -126,8 +126,11 @@ defmodule Mix.Tasks.Mob.RegenDriverTabTest do
   describe "--check mode" do
     test "passes silently when files match" do
       capture_run([])
-      # Re-run in --check mode against fresh files
-      capture_run(["--check"])
+      # Re-run in --check mode against fresh files — no drift, so
+      # no Mix.raise; the success path prints "files match :static_nifs".
+      out = capture_run(["--check"])
+      assert out =~ "files match"
+      refute out =~ "drift"
     end
 
     test "raises with a list of drifted paths" do
