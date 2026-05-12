@@ -459,13 +459,6 @@ defmodule MobDev.NativeBuild do
     end
   end
 
-  # Chaquopy's arm64-v8a slice corresponds to the standard android arm64
-  # OTP cache; x86_64 emulators use the same arm64 cache (Mob doesn't
-  # build a separate x86_64 OTP, so the 64-bit emulator runs the arm64
-  # OTP under translation).
-  defp android_otp_abi("arm64-v8a"), do: "arm64-v8a"
-  defp android_otp_abi("x86_64"), do: "arm64-v8a"
-
   # Cross-compiles Pythonx's NIF (deps/pythonx/c_src/{pythonx,python}.cpp)
   # for Android against the NDK and the Chaquopy headers. Output drops
   # into android/app/src/main/jniLibs/<abi>/libpythonx.so so the APK

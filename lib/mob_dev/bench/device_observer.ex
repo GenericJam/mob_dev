@@ -24,8 +24,6 @@ defmodule MobDev.Bench.DeviceObserver do
   state.
   """
 
-  require Logger
-
   defstruct [
     :node,
     :subscribed?,

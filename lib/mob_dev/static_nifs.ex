@@ -129,9 +129,6 @@ defmodule MobDev.StaticNifs do
   @spec validate_entry(nif_entry()) :: :ok | {:error, String.t()}
   def validate_entry(%{module: module} = entry) when is_atom(module) do
     cond do
-      not is_atom(module) ->
-        {:error, ":module must be an atom, got #{inspect(module)}"}
-
       Map.has_key?(entry, :init) and not is_binary(entry.init) ->
         {:error, ":init must be a string, got #{inspect(entry.init)}"}
 
