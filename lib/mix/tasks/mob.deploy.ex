@@ -31,6 +31,14 @@ defmodule Mix.Tasks.Mob.Deploy do
                                 (the strip pass adds ~5-10s per build); use this
                                 to verify a slim build runs before
                                 `mix mob.republish` round-trips through TestFlight.
+                                The strip set is controlled by `MobDev.OtpAudit.Slim`;
+                                per-app overrides live in `mob.exs`:
+
+                                    config :mob_dev,
+                                      slim: [
+                                        drop_libs: ["my_unused_dep"],
+                                        keep_libs: ["mnesia"]
+                                      ]
 
   ## BEAM scheduler tuning
 
