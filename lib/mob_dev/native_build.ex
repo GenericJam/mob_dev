@@ -1360,11 +1360,21 @@ defmodule MobDev.NativeBuild do
   end
 
   defp install_exqlite_otp_lib(otp_root) do
-    case detect_dep_version("exqlite") do
-      nil ->
+    ebin = Path.join(["_build", "dev", "lib", "exqlite", "ebin"])
+    vsn = detect_dep_version("exqlite")
+
+    case install_exqlite_decision(vsn, ebin) do
+      :noop ->
         :ok
 
-      vsn ->
+      :stale ->
+        IO.puts(
+          "  [exqlite] stale mix.lock entry — not compiled in _build/dev/lib/exqlite, skipping"
+        )
+
+        :ok
+
+      {:install, vsn} ->
         IO.puts("  === Installing exqlite as OTP library")
         lib_dir = Path.join([otp_root, "lib", "exqlite-#{vsn}"])
         # Remove any previous broken empty-version dir from older builds.
@@ -1372,13 +1382,39 @@ defmodule MobDev.NativeBuild do
         File.mkdir_p!(Path.join(lib_dir, "ebin"))
         File.mkdir_p!(Path.join(lib_dir, "priv"))
 
-        ebin = Path.join(["_build", "dev", "lib", "exqlite", "ebin"])
-
         Path.wildcard("#{ebin}/*.beam")
         |> Enum.each(&File.cp!(&1, Path.join([lib_dir, "ebin", Path.basename(&1)])))
 
         File.cp!(Path.join(ebin, "exqlite.app"), Path.join([lib_dir, "ebin", "exqlite.app"]))
         :ok
+    end
+  end
+
+  @doc """
+  Decides what to do for the exqlite install step.
+
+    * `:noop` — no exqlite lock entry; project doesn't use it.
+    * `:stale` — lock entry exists but the dep isn't compiled in
+      `_build/dev/lib/exqlite/`. Common cause: `ecto_sqlite3` was once
+      a dep, was removed, and the transitive `exqlite` lock entry
+      stayed behind (mix.lock isn't auto-pruned). Returning `:stale`
+      makes the caller skip cleanly instead of crashing on a
+      missing-source `File.cp!`.
+    * `{:install, vsn}` — version is locked and the `.app` file is
+      present; safe to install.
+
+  Public so the stale-lock guard can be regression-tested without
+  setting up an end-to-end build.
+  """
+  @spec install_exqlite_decision(String.t() | nil, String.t()) ::
+          :noop | :stale | {:install, String.t()}
+  def install_exqlite_decision(nil, _ebin), do: :noop
+
+  def install_exqlite_decision(vsn, ebin) when is_binary(vsn) do
+    if File.exists?(Path.join(ebin, "exqlite.app")) do
+      {:install, vsn}
+    else
+      :stale
     end
   end
 
