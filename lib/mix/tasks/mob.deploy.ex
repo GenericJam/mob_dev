@@ -209,7 +209,7 @@ defmodule Mix.Tasks.Mob.Deploy do
       Mix.raise("Native build failed")
     end
 
-    {deployed, failed} =
+    {deployed, failed, skipped} =
       MobDev.Deployer.deploy_all(
         restart: restart,
         platforms: platforms,
@@ -219,7 +219,7 @@ defmodule Mix.Tasks.Mob.Deploy do
         beam_flags: beam_flags
       )
 
-    if deployed == [] and failed == [] do
+    if deployed == [] and failed == [] and skipped == [] do
       IO.puts("#{IO.ANSI.yellow()}No devices found.#{IO.ANSI.reset()}")
       IO.puts("Try: mix mob.devices   to diagnose connection issues")
     else
@@ -235,6 +235,19 @@ defmodule Mix.Tasks.Mob.Deploy do
             "BEAMs pushed. In IEx: #{IO.ANSI.cyan()}nl(MyModule)#{IO.ANSI.reset()} to hot-load."
           )
         end
+      end
+
+      if skipped != [] do
+        IO.puts(
+          "\n#{IO.ANSI.yellow()}Skipped on #{length(skipped)} device(s) — app not installed " <>
+            "(build for that platform with --android / --ios if intended)#{IO.ANSI.reset()}"
+        )
+
+        Enum.each(skipped, fn d ->
+          IO.puts(
+            "  #{IO.ANSI.faint()}— #{d.name || d.serial}: #{d.error}#{IO.ANSI.reset()}"
+          )
+        end)
       end
 
       if failed != [] do
