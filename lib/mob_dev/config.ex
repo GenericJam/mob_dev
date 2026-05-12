@@ -28,11 +28,17 @@ defmodule MobDev.Config do
       "#{bundle_prefix()}.#{app_name()}"
   end
 
-  # Default reverse-DNS prefix when no platform manifest is available. Honors
-  # MOB_BUNDLE_PREFIX so users with a corporate prefix can set it once.
-  # Mirrors MobNew.ProjectGenerator.bundle_prefix/0 so the generator's default
-  # and the runtime fallback agree.
-  defp bundle_prefix do
+  @doc """
+  Default reverse-DNS prefix when no platform manifest is available.
+  Honors `MOB_BUNDLE_PREFIX` so users with a corporate prefix can set
+  it once. Mirrors `MobNew.ProjectGenerator.bundle_prefix/0` so the
+  generator's default and the runtime fallback agree.
+
+  Also used by `mix mob.uninstall --all-apps` to compute the prefix
+  match (e.g. uninstall every `com.example.*` package on a device).
+  """
+  @spec bundle_prefix() :: String.t()
+  def bundle_prefix do
     case System.get_env("MOB_BUNDLE_PREFIX") do
       nil -> "com.example"
       "" -> "com.example"
