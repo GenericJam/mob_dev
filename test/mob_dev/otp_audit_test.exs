@@ -491,4 +491,130 @@ defmodule MobDev.OtpAuditTest do
       refute "empty_placeholder" in report.trace_strippable_libs
     end
   end
+
+  describe "union_trace_jsons/2" do
+    setup do
+      tmp = Path.join(System.tmp_dir!(), "mob_trace_union_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      on_exit(fn -> File.rm_rf!(tmp) end)
+      {:ok, tmp: tmp}
+    end
+
+    test "empty list of paths returns nil" do
+      assert OtpAudit.union_trace_jsons([]) == nil
+    end
+
+    test "single trace returns its modules", %{tmp: tmp} do
+      path = write_trace(tmp, "one.json", ["kernel", "lists"])
+
+      result = OtpAudit.union_trace_jsons([path])
+
+      assert MapSet.equal?(result, MapSet.new([:kernel, :lists]))
+    end
+
+    test "multiple traces are UNIONED — modules from either count", %{tmp: tmp} do
+      # Real-shaped scenario: boot capture catches kernel/sasl;
+      # UI capture catches Elixir.Enum/Elixir.Map; auth capture
+      # catches crypto. None of them caught megaco. The union
+      # answers "what was EVER called" across all sessions.
+      boot = write_trace(tmp, "boot.json", ["kernel", "sasl"])
+      ui = write_trace(tmp, "ui.json", ["Elixir.Enum", "Elixir.Map"])
+      auth = write_trace(tmp, "auth.json", ["crypto"])
+
+      result = OtpAudit.union_trace_jsons([boot, ui, auth])
+
+      assert MapSet.equal?(
+               result,
+               MapSet.new([:kernel, :sasl, :"Elixir.Enum", :"Elixir.Map", :crypto])
+             )
+
+      refute :megaco in result
+    end
+
+    test "duplicates across traces collapse — set semantics", %{tmp: tmp} do
+      a = write_trace(tmp, "a.json", ["kernel", "lists", "Elixir.Enum"])
+      b = write_trace(tmp, "b.json", ["lists", "Elixir.Enum", "Elixir.Map"])
+
+      result = OtpAudit.union_trace_jsons([a, b])
+
+      assert MapSet.size(result) == 4
+    end
+
+    test "missing file invokes on_read_error callback", %{tmp: tmp} do
+      good = write_trace(tmp, "good.json", ["kernel"])
+      missing = Path.join(tmp, "does_not_exist.json")
+
+      parent = self()
+
+      result =
+        OtpAudit.union_trace_jsons([good, missing], fn path, _reason ->
+          send(parent, {:read_error, path})
+        end)
+
+      assert_received {:read_error, ^missing}
+      # The successful trace still contributes.
+      assert MapSet.equal?(result, MapSet.new([:kernel]))
+    end
+
+    test "all reads failing returns nil (don't strip the world)", %{tmp: tmp} do
+      missing_a = Path.join(tmp, "a.json")
+      missing_b = Path.join(tmp, "b.json")
+
+      # Custom no-op error handler keeps test output clean.
+      result = OtpAudit.union_trace_jsons([missing_a, missing_b], fn _path, _reason -> nil end)
+
+      assert result == nil, "all-failed → nil, NOT empty MapSet (would over-strip)"
+    end
+
+    test "malformed JSON triggers on_read_error, no crash", %{tmp: tmp} do
+      bad = Path.join(tmp, "bad.json")
+      File.write!(bad, "not actually json {{")
+
+      result = OtpAudit.union_trace_jsons([bad], fn _path, _reason -> nil end)
+
+      assert result == nil
+    end
+
+    test "missing :modules field treated as empty (defensive)", %{tmp: tmp} do
+      noisy = Path.join(tmp, "noisy.json")
+      File.write!(noisy, Jason.encode!(%{some_other_field: 1}))
+      good = write_trace(tmp, "good.json", ["kernel"])
+
+      result = OtpAudit.union_trace_jsons([noisy, good], fn _, _ -> nil end)
+
+      assert MapSet.equal?(result, MapSet.new([:kernel]))
+    end
+
+    test "end-to-end: feeding the union into audit/2 picks trace-strippable libs",
+         %{tmp: tmp, root: root} do
+      make_lib(root, "kernel", "9.2", modules: ["kernel"])
+      make_lib(root, "stdlib", "5.2", modules: ["lists"])
+      make_lib(root, "megaco", "4.9", modules: ["megaco"])
+
+      # No trace caught megaco → it's trace-strippable in the union.
+      boot = write_trace(tmp, "boot.json", ["kernel"])
+      ui = write_trace(tmp, "ui.json", ["lists"])
+
+      union = OtpAudit.union_trace_jsons([boot, ui])
+      report = OtpAudit.audit(root, trace_input: union)
+
+      assert "megaco" in report.trace_strippable_libs
+    end
+  end
+
+  defp write_trace(tmp, name, modules) do
+    path = Path.join(tmp, name)
+
+    File.write!(
+      path,
+      Jason.encode!(%{
+        modules: modules,
+        mfas: [],
+        module_count: length(modules),
+        mfa_count: 0
+      })
+    )
+
+    path
+  end
 end
