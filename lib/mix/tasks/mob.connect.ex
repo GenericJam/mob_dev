@@ -157,6 +157,9 @@ defmodule Mix.Tasks.Mob.Connect do
     end)
 
     # Hand off to IEx in this process — tunnels stay alive via adb daemon.
-    IEx.start()
+    # `IEx.Server.run/1` is the documented programmatic-start surface
+    # (added in 1.8.0). The old `IEx.start/0` was internal and removed
+    # in 1.20-rc.4.
+    IEx.Server.run([])
   end
 end

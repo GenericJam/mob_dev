@@ -115,8 +115,10 @@ defmodule MobDev.Bench.Summary do
 
   # ── State duration breakdown ─────────────────────────────────────────────
 
-  defp state_durations([]), do: %{}
-
+  # from_rows/1 short-circuits the empty-list case to empty_metrics/0, so
+  # state_durations is only called with non-empty input. Same for
+  # screen_duration below. The dedicated [] clauses were dead and Elixir
+  # 1.20's type checker started flagging them.
   defp state_durations(rows) do
     # For each row, the duration is the gap until the next row (or 0 for the
     # last row). We attribute that duration to the row's reachability state.
@@ -128,8 +130,6 @@ defmodule MobDev.Bench.Summary do
     end)
     |> Map.new(fn {k, v} -> {k, Float.round(v, 2)} end)
   end
-
-  defp screen_duration([], _state), do: 0.0
 
   defp screen_duration(rows, target_state) do
     rows

@@ -496,7 +496,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
     IO.puts("=== Mob Battery Benchmark (Android) — Dry Run ===")
     IO.puts("")
     IO.puts("  Device:   #{opts[:device] || "(auto-detect at run time)"}")
-    IO.puts("  Package:  #{pkg || "(NOT SET)"}")
+    IO.puts("  Package:  #{pkg}")
     IO.puts("  Duration: #{duration}s (#{div(duration, 60)} min)")
     IO.puts("  Mode:     #{describe_mode(opts)}")
     IO.puts("  Flags:    #{if cflags == "", do: "(default Nerves tuning)", else: cflags}")
