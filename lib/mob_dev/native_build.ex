@@ -3185,8 +3185,20 @@ defmodule MobDev.NativeBuild do
 
     python_src = Path.join(otp_root, "python")
 
-    if File.dir?(python_src),
-      do: rsync_dir!(python_src <> "/", Path.join(otp_bundle, "python") <> "/")
+    if File.dir?(python_src) do
+      rsync_dir!(python_src <> "/", Path.join(otp_bundle, "python") <> "/")
+      # Mirrors the Android `copy_project_python_wheels/1` call in
+      # `copy_python_assets/1`. iOS device builds nuke and rebuild
+      # `<otp_root>/python/lib/python3.13/` on every run (see
+      # `ios/build_device.sh` PYTHON_STDLIB block), so staging wheels
+      # into the OTP cache wouldn't survive. Doing the copy here, after
+      # the rsync into the .app bundle, lands them where Python's
+      # site-packages discovery will find them at runtime.
+      copy_ios_safe_project_python_wheels(
+        Path.join(otp_bundle, "python"),
+        Path.join("priv", "python_wheels")
+      )
+    end
 
     for ext <- ["png", "jpg"] do
       Path.wildcard("#{otp_root}/*.#{ext}")
