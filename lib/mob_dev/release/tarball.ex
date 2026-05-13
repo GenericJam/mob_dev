@@ -328,7 +328,8 @@ defmodule MobDev.Release.Tarball do
     * `:hash` — release hash (default: detected from OTP source git)
   """
   @spec build(atom(), keyword()) :: {:ok, map()} | Errors.t()
-  def build(target_id, opts \\ []) when target_id in [:android_arm64, :android_arm32, :ios_sim, :ios_device] do
+  def build(target_id, opts \\ [])
+      when target_id in [:android_arm64, :android_arm32, :ios_sim, :ios_device] do
     target = target_spec(target_id)
     shell = Shell.impl()
     otp_src = opts[:otp_src] || Helpers.default_otp_src()
@@ -402,7 +403,10 @@ defmodule MobDev.Release.Tarball do
         # The app directory is named like `<app>-<version>/`. Find the
         # first match via `ls -d`. Failure here is a hard precondition —
         # the Android install must have these apps.
-        case shell.cmd(["bash", "-c", "ls -d #{src_root}/lib/#{app}-*/ 2>/dev/null | head -1"], []) do
+        case shell.cmd(
+               ["bash", "-c", "ls -d #{src_root}/lib/#{app}-*/ 2>/dev/null | head -1"],
+               []
+             ) do
           {:ok, output} ->
             src = String.trim(output)
 
@@ -497,8 +501,9 @@ defmodule MobDev.Release.Tarball do
         )
 
       exqlite_build ->
-        with true <- shell.dir?(Path.join(exqlite_build, "ebin")) ||
-                       {:fs, Path.join(exqlite_build, "ebin"), :enoent},
+        with true <-
+               shell.dir?(Path.join(exqlite_build, "ebin")) ||
+                 {:fs, Path.join(exqlite_build, "ebin"), :enoent},
              {:ok, vsn} <- detect_exqlite_version(exqlite_build),
              dst = Path.join(stage, "lib/exqlite-#{vsn}"),
              :ok <- shell.mkdir_p(Path.join(dst, "ebin")),
@@ -647,7 +652,8 @@ defmodule MobDev.Release.Tarball do
   shell's `grep -q` semantics). Public for tests.
   """
   @spec check_entries(binary(), [String.t()], Path.t()) :: :ok | Errors.t()
-  def check_entries(listing, expected, tarball_path) when is_binary(listing) and is_list(expected) do
+  def check_entries(listing, expected, tarball_path)
+      when is_binary(listing) and is_list(expected) do
     missing =
       Enum.reject(expected, fn pattern ->
         # Compile as a regex — the shell version used grep -E, so .*
@@ -661,9 +667,7 @@ defmodule MobDev.Release.Tarball do
         :ok
 
       [first | _] ->
-        Errors.precondition(
-          "verify failed — tarball #{tarball_path} missing #{inspect(first)}"
-        )
+        Errors.precondition("verify failed — tarball #{tarball_path} missing #{inspect(first)}")
     end
   end
 
