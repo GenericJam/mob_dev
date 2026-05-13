@@ -36,6 +36,13 @@ defmodule MobDev.StaticNifsTest do
       assert defaults[:sqlite3_nif].archs == [:ios_device]
       assert defaults[:sqlite3_nif].guard == "MOB_STATIC_SQLITE_NIF"
     end
+
+    test "emlx_nif is iOS-only with MOB_STATIC_EMLX_NIF guard" do
+      defaults = StaticNifs.default_nifs() |> Map.new(&{&1.module, &1})
+      assert :emlx_nif in Map.keys(defaults)
+      assert defaults[:emlx_nif].archs == [:ios_device, :ios_sim]
+      assert defaults[:emlx_nif].guard == "MOB_STATIC_EMLX_NIF"
+    end
   end
 
   describe "init_fn/1" do
@@ -281,6 +288,31 @@ defmodule MobDev.StaticNifsTest do
       assert out =~ "build_options"
       assert out =~ "extern fn sqlite3_nif_nif_init"
       refute out =~ "#ifdef"
+    end
+
+    test "iOS Zig output gates emlx_nif with comptime emlx_static (default set)" do
+      # Default nifs include :emlx_nif with guard "MOB_STATIC_EMLX_NIF" and
+      # archs [:ios_device, :ios_sim]. Even though the archs match the full
+      # iOS platform, the explicit guard should still gate the NIF.
+      out =
+        StaticNifs.generate(:ios, StaticNifs.default_nifs(), format: :zig)
+        |> IO.iodata_to_binary()
+
+      assert out =~ "const emlx_static = build_options.emlx_static"
+      assert out =~ "extern fn emlx_nif_nif_init"
+      assert out =~ "const emlx_nif_const = ErtsStaticNif"
+    end
+
+    test "iOS Zig output emits 2^N branching for multiple guards" do
+      out =
+        StaticNifs.generate(:ios, StaticNifs.default_nifs(), format: :zig)
+        |> IO.iodata_to_binary()
+
+      # sqlite3_nif + emlx_nif → 4 mutually-exclusive branches
+      assert out =~ "if (sqlite_static and emlx_static)"
+      assert out =~ "else if (sqlite_static)"
+      assert out =~ "else if (emlx_static)"
+      assert out =~ "} else {"
     end
 
     test "Android Zig output has no comptime guards — all NIFs unconditional" do
