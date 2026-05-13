@@ -1251,7 +1251,8 @@ defmodule MobDev.NativeBuild do
     with :ok <- check_path(cfg[:mob_dir], "mob_dir"),
          :ok <- check_path(cfg[:elixir_lib], "elixir_lib"),
          {:ok, otp_root} <- MobDev.OtpDownloader.ensure_ios_sim(),
-         {:ok, python_bundle} <- maybe_ensure_python_bundle() do
+         {:ok, python_bundle} <- maybe_ensure_python_bundle(),
+         {:ok, mlx_dir} <- maybe_ensure_mlx_dir(:ios_sim) do
       IO.puts("  Building iOS simulator app...")
 
       mob_dir = Path.expand(cfg[:mob_dir])
@@ -1265,6 +1266,7 @@ defmodule MobDev.NativeBuild do
            :ok <- copy_app_beams(otp_root, app_module),
            :ok <- install_exqlite_otp_lib(otp_root),
            :ok <- cross_compile_exqlite_nif_sim(otp_root, erts_vsn, sdkroot),
+           :ok <- install_emlx_otp_lib(otp_root),
            :ok <- maybe_setup_pythonx_sim(otp_root, erts_vsn, sdkroot, python_bundle, app_module),
            :ok <- maybe_install_crypto_shim(otp_root, app_module),
            :ok <- maybe_copy_ssl_beams(otp_root, app_module),
@@ -1284,7 +1286,8 @@ defmodule MobDev.NativeBuild do
                erts_vsn,
                sdkroot,
                build_dir,
-               display_name
+               display_name,
+               mlx_dir
              ),
            {:ok, sim_id} <- pick_ios_sim(device_id),
            binary_path = "ios/zig-out/#{display_name}",
@@ -1350,6 +1353,51 @@ defmodule MobDev.NativeBuild do
   defp chmod_writable(dir) do
     _ = System.cmd("chmod", ["-R", "u+w", dir], stderr_to_stdout: true)
     :ok
+  end
+
+  # Stages emlx into the on-device OTP lib structure (emlx-VSN/ebin + priv/)
+  # when :emlx is a project dep. Without this, `:code.priv_dir(:emlx)` returns
+  # `{:error, :bad_name}` and EMLX.NIF.load_nifs/0 can't compute its path arg
+  # — so the static-NIF table lookup never gets a chance to fire.
+  #
+  # The priv/ dir is intentionally empty: libemlx.a is statically linked into
+  # the main binary (not shipped as a .so), so EMLX.NIF.load_nifs's call to
+  # `:erlang.load_nif("priv/libemlx", 0)` resolves via the static table even
+  # though no .so exists at that path.
+  defp install_emlx_otp_lib(otp_root) do
+    ebin = Path.join(["_build", "dev", "lib", "emlx", "ebin"])
+
+    if not File.dir?(ebin) do
+      :ok
+    else
+      vsn = detect_dep_version("emlx") || read_app_vsn(Path.join(ebin, "emlx.app")) || "0.0.0"
+      IO.puts("  === Installing emlx as OTP library (priv/ empty — NIF is statically linked)")
+      lib_dir = Path.join([otp_root, "lib", "emlx-#{vsn}"])
+      File.rm_rf!(Path.join(otp_root, "lib/emlx-"))
+      File.mkdir_p!(Path.join(lib_dir, "ebin"))
+      File.mkdir_p!(Path.join(lib_dir, "priv"))
+
+      Path.wildcard("#{ebin}/*.beam")
+      |> Enum.each(&File.cp!(&1, Path.join([lib_dir, "ebin", Path.basename(&1)])))
+
+      if File.exists?(Path.join(ebin, "emlx.app")) do
+        File.cp!(Path.join(ebin, "emlx.app"), Path.join([lib_dir, "ebin", "emlx.app"]))
+      end
+
+      :ok
+    end
+  end
+
+  # Reads the `vsn` from an `<app>.app` Erlang term file. Used as a fallback
+  # when `detect_dep_version/1` (which reads mix.lock) misses.
+  defp read_app_vsn(app_file) do
+    with true <- File.exists?(app_file),
+         {:ok, content} <- File.read(app_file),
+         [match] <- Regex.run(~r/\{vsn,\s*"([^"]+)"\}/, content, capture: :all_but_first) do
+      match
+    else
+      _ -> nil
+    end
   end
 
   defp install_exqlite_otp_lib(otp_root) do
@@ -1957,7 +2005,15 @@ defmodule MobDev.NativeBuild do
     end
   end
 
-  defp zig_build_binary_ios_sim(mob_dir, otp_root, erts_vsn, sdkroot, build_dir, display_name) do
+  defp zig_build_binary_ios_sim(
+         mob_dir,
+         otp_root,
+         erts_vsn,
+         sdkroot,
+         build_dir,
+         display_name,
+         mlx_dir
+       ) do
     driver_tab =
       cond do
         File.exists?("priv/generated/driver_tab_ios.zig") ->
@@ -1989,7 +2045,7 @@ defmodule MobDev.NativeBuild do
     ]
 
     with {:ok, nif_args} <- project_nif_zig_args(:ios_sim) do
-      args = base_args ++ nif_args
+      args = base_args ++ nif_args ++ mlx_zig_args(mlx_dir)
 
       case System.cmd("zig", args, stderr_to_stdout: true, into: IO.stream()) do
         {_, 0} -> :ok
@@ -1997,6 +2053,15 @@ defmodule MobDev.NativeBuild do
       end
     end
   end
+
+  # Returns the zig -D options that enable static linking of MLX + EMLX into
+  # the iOS app binary. `mlx_dir` is the cached extraction root from
+  # MobDev.MLXDownloader — containing lib/libmlx.a, lib/libemlx.a, include/.
+  # `nil` means EMLX isn't in the project, so emit no MLX flags.
+  defp mlx_zig_args(nil), do: []
+
+  defp mlx_zig_args(mlx_dir) when is_binary(mlx_dir),
+    do: ["-Dmlx_static=true", "-Dmlx_dir=#{mlx_dir}"]
 
   # ── iOS device-specific build helpers (Phase 2 iter 13c) ─────────────────────
   # Mirror the iOS-sim helpers above, with iphoneos SDK + arm64 single-arch +
@@ -2772,7 +2837,8 @@ defmodule MobDev.NativeBuild do
          epmd_build_src,
          build_dir,
          display_name,
-         sqlite_static_lib
+         sqlite_static_lib,
+         mlx_dir
        ) do
     driver_tab =
       cond do
@@ -2808,11 +2874,13 @@ defmodule MobDev.NativeBuild do
     ]
 
     with {:ok, nif_args} <- project_nif_zig_args(:ios_device) do
-      args =
+      sqlite_args =
         case sqlite_static_lib do
-          nil -> base_args ++ nif_args
-          path -> base_args ++ nif_args ++ ["-Dsqlite_static=true", "-Dsqlite_static_lib=#{path}"]
+          nil -> []
+          path -> ["-Dsqlite_static=true", "-Dsqlite_static_lib=#{path}"]
         end
+
+      args = base_args ++ nif_args ++ sqlite_args ++ mlx_zig_args(mlx_dir)
 
       case System.cmd("zig", args, stderr_to_stdout: true, into: IO.stream()) do
         {_, 0} ->
@@ -3019,6 +3087,7 @@ defmodule MobDev.NativeBuild do
     with {:ok, cfg} <- check_device_signing_config(cfg),
          {:ok, otp_root} <- MobDev.OtpDownloader.ensure_ios_device(),
          {:ok, python_bundle} <- maybe_ensure_python_bundle(),
+         {:ok, mlx_dir} <- maybe_ensure_mlx_dir(:ios_device),
          {:ok, sdkroot} <- xcrun_sdk_path_device(),
          erts_vsn = detect_erts_vsn(otp_root) || "erts-17.0",
          otp_release = detect_otp_release(otp_root) || "27",
@@ -3034,6 +3103,7 @@ defmodule MobDev.NativeBuild do
          :ok <- copy_app_beams(otp_root, app_module),
          :ok <- install_exqlite_otp_lib(otp_root),
          :ok <- cross_compile_exqlite_nif_device(otp_root, erts_vsn, sdkroot),
+         :ok <- install_emlx_otp_lib(otp_root),
          {:ok, sqlite_static_lib} = {:ok, sqlite_device_static_path(otp_root)},
          :ok <-
            maybe_setup_pythonx_device(otp_root, erts_vsn, sdkroot, python_bundle, app_module),
@@ -3059,7 +3129,8 @@ defmodule MobDev.NativeBuild do
              epmd_build_src,
              build_dir,
              display_name,
-             sqlite_static_lib
+             sqlite_static_lib,
+             mlx_dir
            ),
          binary_path = Path.join(build_dir, display_name),
          :ok <- check_path(binary_path, "iOS device binary"),
@@ -3742,6 +3813,35 @@ defmodule MobDev.NativeBuild do
   defp maybe_ensure_python_bundle do
     if pythonx_in_project?() do
       MobDev.PythonAppleSupport.ensure()
+    else
+      {:ok, nil}
+    end
+  end
+
+  @doc """
+  True when the current project has `:emlx` in its dependency tree.
+  Mirrors `pythonx_in_project?/1` — the trigger for downloading the MLX
+  bundle and adding `-Dmlx_static=true` to the iOS Zig build.
+  """
+  @spec emlx_in_project?(String.t()) :: boolean()
+  def emlx_in_project?(project_dir \\ File.cwd!()) do
+    File.dir?(Path.join([project_dir, "_build", "dev", "lib", "emlx"]))
+  end
+
+  # Downloads the cross-compiled MLX bundle iff EMLX is a dep, for the given
+  # target slice. Returns `{:ok, nil}` for projects without EMLX so the
+  # iOS-sim and iOS-device build paths can pattern-match the same shape.
+  defp maybe_ensure_mlx_dir(:ios_device) do
+    if emlx_in_project?() do
+      MobDev.MLXDownloader.ensure_ios_device()
+    else
+      {:ok, nil}
+    end
+  end
+
+  defp maybe_ensure_mlx_dir(:ios_sim) do
+    if emlx_in_project?() do
+      MobDev.MLXDownloader.ensure_ios_sim()
     else
       {:ok, nil}
     end
