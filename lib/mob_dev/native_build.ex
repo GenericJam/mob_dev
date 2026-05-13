@@ -168,27 +168,42 @@ defmodule MobDev.NativeBuild do
 
         IO.puts("  Compiling Android C objects via zig build (per-ABI)...")
 
-        Enum.reduce_while(
-          [{otp_arm64, "arm64-v8a"}, {otp_arm32, "armeabi-v7a"}],
-          :ok,
-          fn {otp_dir, abi}, _acc ->
-            case run_zig_android_objects(build_zig, abi, otp_dir, erts_vsn, mob_dir, driver_tab) do
-              :ok -> {:cont, :ok}
-              {:error, reason} -> {:halt, {:error, reason}}
+        # Cross-compile project Rust/Zig NIFs for aarch64-linux-android
+        # once; the per-ABI loop below only threads them into the arm64
+        # build (issue #19 scope — armv7 is a follow-up). The empty list
+        # for armv7 makes the build.zig template treat that ABI as
+        # "no project NIFs" — same shape as a project with none defined.
+        with {:ok, nif_args} <- project_nif_zig_args(:android) do
+          Enum.reduce_while(
+            [{otp_arm64, "arm64-v8a", nif_args}, {otp_arm32, "armeabi-v7a", []}],
+            :ok,
+            fn {otp_dir, abi, abi_nif_args}, _acc ->
+              case run_zig_android_objects(
+                     build_zig,
+                     abi,
+                     otp_dir,
+                     erts_vsn,
+                     mob_dir,
+                     driver_tab,
+                     abi_nif_args
+                   ) do
+                :ok -> {:cont, :ok}
+                {:error, reason} -> {:halt, {:error, reason}}
+              end
             end
-          end
-        )
+          )
+        end
     end
   end
 
-  defp run_zig_android_objects(build_zig, abi, otp_dir, erts_vsn, mob_dir, driver_tab) do
+  defp run_zig_android_objects(build_zig, abi, otp_dir, erts_vsn, mob_dir, driver_tab, nif_args) do
     app_name = Mix.Project.config() |> Keyword.fetch!(:app) |> Atom.to_string()
     project_root = Path.expand(".")
     project_jni_dir = Path.join(project_root, "android/app/src/main/jni")
     jni_libs_abi = Path.join([project_root, "android/app/src/main/jniLibs", abi])
     File.mkdir_p!(jni_libs_abi)
 
-    args = [
+    base_args = [
       "build",
       "native-lib",
       "--build-file",
@@ -206,6 +221,17 @@ defmodule MobDev.NativeBuild do
       "-Dproject_root=#{project_root}",
       "-Dexqlite_src=#{Path.join(project_root, "deps/exqlite/c_src")}"
     ]
+
+    # `project_nif_zig_args/1` also emits `-Dproject_root=` (since the
+    # iOS templates need it and don't have a baseline equivalent). The
+    # Android base_args above already supply it for the existing
+    # jniLibs install path, so drop the duplicate from `nif_args`
+    # before concatenating — Zig 0.16's option parser rejects
+    # `-Dproject_root=...` appearing twice with "expected a string,
+    # but received a list".
+    nif_args_no_root = Enum.reject(nif_args, &String.starts_with?(&1, "-Dproject_root="))
+
+    args = base_args ++ nif_args_no_root
 
     case System.cmd("zig", args, stderr_to_stdout: true, into: IO.stream()) do
       {_, 0} -> :ok
@@ -2527,7 +2553,21 @@ defmodule MobDev.NativeBuild do
           {:ok, [String.t()]} | {:error, String.t()}
   defp project_nif_zig_args(platform) do
     project_root = File.cwd!()
-    entries = project_nif_user_entries()
+    # Respect each entry's `:archs` field — a NIF with
+    # `archs: [:ios]` (in mob.exs `:static_nifs`) should be skipped on
+    # the Android build path entirely (and vice versa). The driver_tab
+    # generator already honours this via `on_platform?/2`; the
+    # cross-compile path now does too. Maps `mob_dev_platform/0` →
+    # the broader platform atom that `on_platform?/2` understands.
+    target_platform =
+      case platform do
+        p when p in [:ios_device, :ios_sim] -> :ios
+        :android -> :android
+      end
+
+    entries =
+      project_nif_user_entries()
+      |> Enum.filter(&MobDev.StaticNifs.on_platform?(&1, target_platform))
 
     {c_names, rust_manifests, zig_modules} =
       Enum.reduce(entries, {[], [], []}, fn entry, {c_acc, rust_acc, zig_acc} ->
@@ -2629,9 +2669,9 @@ defmodule MobDev.NativeBuild do
   defp cross_compile_zig_nifs(zig_modules, platform) do
     target = zig_build_target_for(platform)
 
-    with {:ok, sdkroot} <- apple_sdkroot_for(platform) do
+    with {:ok, sdkroot_args} <- sdkroot_args_for(platform) do
       Enum.reduce_while(zig_modules, {:ok, []}, fn {name, module}, {:ok, acc} ->
-        case cross_compile_zig_nif(name, module, target, sdkroot) do
+        case cross_compile_zig_nif(name, module, target, sdkroot_args) do
           {:ok, a_path} -> {:cont, {:ok, [a_path | acc]}}
           {:error, _} = err -> {:halt, err}
         end
@@ -2639,21 +2679,36 @@ defmodule MobDev.NativeBuild do
     end
   end
 
-  # Resolve the iOS/macOS SDK that Zigler's cImport-bearing modules
-  # need when cross-compiling. Returns `{:ok, ""}` for non-Apple
-  # targets (no SDK needed; Zig's bundled libc covers Linux/Android).
-  # Reuses the existing `xcrun_sdk_path/1` (originally for the iOS
-  # device/sim build pipeline).
-  defp apple_sdkroot_for(:ios_device), do: xcrun_sdk_path("iphoneos")
-  defp apple_sdkroot_for(:ios_sim), do: xcrun_sdk_path("iphonesimulator")
-  defp apple_sdkroot_for(_), do: {:ok, ""}
+  # Resolve the SDK / NDK sysroot that Zigler's cImport-bearing
+  # modules need when cross-compiling. Returns the list of `-D...=`
+  # args to append to `zig build` (empty list for desktop builds
+  # where Zig's host libc headers cover everything).
+  #
+  # * iOS device/sim — need Apple SDK for `<sys/types.h>` etc.
+  # * Android — need NDK sysroot; Zig 0.16's bundled libc for the
+  #   `aarch64-linux-android` target doesn't ship `<sys/types.h>`,
+  #   so erl_nif.h's transitive cImport fails without this.
+  defp sdkroot_args_for(:ios_device) do
+    with {:ok, path} <- xcrun_sdk_path("iphoneos") do
+      {:ok, ["-Dapple_sdkroot=#{path}"]}
+    end
+  end
+
+  defp sdkroot_args_for(:ios_sim) do
+    with {:ok, path} <- xcrun_sdk_path("iphonesimulator") do
+      {:ok, ["-Dapple_sdkroot=#{path}"]}
+    end
+  end
+
+  defp sdkroot_args_for(:android), do: {:ok, ["-Dandroid_sdkroot=#{ndk_sysroot()}"]}
+  defp sdkroot_args_for(_), do: {:ok, []}
 
   # Drives Zigler's build pipeline a SECOND time against the staging
   # directory (which Zigler set up during the normal `mix compile` host
   # build), with the static-link + alias options the GenericJam/zigler
   # fork added. Produces `libElixir.<Module>.a` in `zig-out/lib/` of
   # the staging dir, suitable for linking into the iOS device binary.
-  defp cross_compile_zig_nif(name, module, target, sdkroot) do
+  defp cross_compile_zig_nif(name, module, target, sdkroot_args) do
     # Resolve `Zig.Builder` dynamically — it only exists when the
     # consuming project has `:zigler` as a dep. mob_dev itself doesn't
     # depend on Zigler, so a static `Zig.Builder.staging_directory/1`
@@ -2708,12 +2763,7 @@ defmodule MobDev.NativeBuild do
             "-Dtarget=#{target}",
             "-Dnif_linkage=static",
             "-Dnif_init_alias=#{name}_nif_init"
-          ] ++
-            if sdkroot == "" do
-              []
-            else
-              ["-Dapple_sdkroot=#{sdkroot}"]
-            end
+          ] ++ sdkroot_args
 
         case System.cmd(zig_exe, args,
                cd: staging_dir,
