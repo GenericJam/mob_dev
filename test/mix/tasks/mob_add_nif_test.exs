@@ -146,11 +146,18 @@ defmodule Mix.Tasks.Mob.AddNifTest do
       |> assert_creates("c_src/audio_engine.c")
     end
 
-    test "C file pre-wires ERL_NIF_INIT to the registered name" do
+    test "C file pre-wires ERL_NIF_INIT to the Elixir.<Module> form" do
+      # First arg to ERL_NIF_INIT must be the BEAM module name —
+      # `Elixir.<DotPath>` for Elixir modules — so the static-NIF
+      # table lookup matches what `:erlang.load_nif/2` is called
+      # with from the Elixir stub. Empirically verified on iPhone:
+      # using bare `audio_engine` makes BEAM fall through to dlopen
+      # and fail because the entry.name doesn't match the module.
+      # See mob.add_nif's c_skeleton/3 docstring for the full diagnosis.
       igniter = add_nif("audio_engine", ["--type", "c"])
       file = Rewrite.source!(igniter.rewrite, "c_src/audio_engine.c")
       content = Rewrite.Source.get(file, :content)
-      assert content =~ "ERL_NIF_INIT(audio_engine,"
+      assert content =~ "ERL_NIF_INIT(Elixir.Test.Nifs.AudioEngine,"
     end
 
     test "elixir-only (default) does NOT create c_src/" do
@@ -304,6 +311,101 @@ defmodule Mix.Tasks.Mob.AddNifTest do
       assert content =~ "[target.x86_64-apple-darwin]"
       assert content =~ "link-arg=-undefined"
       assert content =~ "link-arg=dynamic_lookup"
+    end
+  end
+
+  describe "--demo flag" do
+    test "rejects --demo with --type elixir-only (no NIF to call)" do
+      igniter = add_nif("audio_engine", ["--type", "elixir-only", "--demo"])
+      issues = igniter.issues
+
+      assert Enum.any?(issues, &String.contains?(&1, "--demo requires a native backend"))
+    end
+
+    test "creates a demo screen module alongside the stub" do
+      igniter = add_nif("audio_engine", ["--type", "c", "--demo"])
+      # The screen lives under the NIF stub's namespace: <Stub>.Screen.
+      file = Rewrite.source!(igniter.rewrite, "lib/test/nifs/audio_engine/screen.ex")
+      content = Rewrite.Source.get(file, :content)
+
+      assert content =~ "defmodule Test.Nifs.AudioEngine.Screen"
+      assert content =~ "use Mob.Screen"
+      # The screen calls greet/0 on the stub module.
+      assert content =~ "alias Test.Nifs.AudioEngine"
+      assert content =~ "Nif.greet()"
+      # Logs each call so IEx sees it.
+      assert content =~ "require Logger"
+      assert content =~ "Logger.info"
+    end
+
+    test "demo screen NOT generated without --demo" do
+      "audio_engine"
+      |> add_nif(["--type", "c"])
+      |> refute_creates("lib/test/nifs/audio_engine/screen.ex")
+    end
+
+    test "C stub uses greet/0 when --demo (instead of hello/1)" do
+      igniter = add_nif("audio_engine", ["--type", "c", "--demo"])
+      file = Rewrite.source!(igniter.rewrite, "lib/test/nifs/audio_engine.ex")
+      content = Rewrite.Source.get(file, :content)
+
+      assert content =~ "def greet()"
+      refute content =~ "def hello(_arg)"
+    end
+
+    test "C source returns \"Hello from C!\" when --demo" do
+      igniter = add_nif("audio_engine", ["--type", "c", "--demo"])
+      file = Rewrite.source!(igniter.rewrite, "c_src/audio_engine.c")
+      content = Rewrite.Source.get(file, :content)
+
+      assert content =~ ~s|"Hello from C!"|
+      assert content =~ ~s|{"greet", 0,|
+      # 0-arity, not the default hello/1 from the non-demo path.
+      refute content =~ "hello_from_native"
+    end
+
+    test "Zigler stub returns \"Hello from Zig!\" via ~Z when --demo" do
+      igniter = add_nif("audio_engine", ["--type", "zigler", "--demo"])
+      file = Rewrite.source!(igniter.rewrite, "lib/test/nifs/audio_engine.ex")
+      content = Rewrite.Source.get(file, :content)
+
+      assert content =~ ~s|"Hello from Zig!"|
+      assert content =~ "pub fn greet()"
+    end
+
+    test "Rust crate returns \"Hello from Rust!\" when --demo" do
+      igniter = add_nif("audio_engine", ["--type", "rustler", "--demo"])
+      file = Rewrite.source!(igniter.rewrite, "native/audio_engine/src/lib.rs")
+      content = Rewrite.Source.get(file, :content)
+
+      assert content =~ ~s|"Hello from Rust!"|
+      assert content =~ "fn greet()"
+      assert content =~ "rustler::init!"
+      assert content =~ "[greet]"
+    end
+
+    test "Rust stub Elixir-side uses greet/0 (not add_one/1) when --demo" do
+      igniter = add_nif("audio_engine", ["--type", "rustler", "--demo"])
+      file = Rewrite.source!(igniter.rewrite, "lib/test/nifs/audio_engine.ex")
+      content = Rewrite.Source.get(file, :content)
+
+      assert content =~ "def greet()"
+      refute content =~ "def add_one(_input)"
+    end
+
+    test "prints a notice with three wiring options after generation" do
+      igniter = add_nif("audio_engine", ["--type", "c", "--demo"])
+
+      notice = Enum.find(igniter.notices, &String.contains?(&1, "Demo screen created"))
+      assert notice, "no demo-notice in igniter.notices"
+
+      # The three options the user can pick from.
+      assert notice =~ "Quick test from IEx"
+      assert notice =~ "Wire into your existing home screen"
+      assert notice =~ "root screen"
+
+      # Mentions Logger so the user knows the IEx visibility path.
+      assert notice =~ "Logger.info"
     end
   end
 
