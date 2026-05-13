@@ -11,6 +11,8 @@
         enabled: [
           {Credo.Check.Readability.Specs, files: %{excluded: ["test/"]}},
           {Credo.Check.Refactor.UnlessWithElse, []},
+          # ex_slop — runs the recommended bundle of AI-slop checks.
+          {ExSlop, []},
           # jump_credo_checks — general
           {Jump.CredoChecks.AvoidFunctionLevelElse, []},
           {Jump.CredoChecks.AvoidLoggerConfigureInTest, []},
@@ -22,11 +24,11 @@
           # jump_credo_checks — LiveView specific
           {Jump.CredoChecks.AssertElementSelectorCanNeverFail, []},
           {Jump.CredoChecks.AvoidSocketAssignsInTest, []},
-          {Jump.CredoChecks.LiveViewFormCanBeRehydrated, []},
+          {Jump.CredoChecks.LiveViewFormCanBeRehydrated, []}
         ],
         disabled: [
           # Pipes with single function calls are fine in this codebase
-          {Credo.Check.Readability.SinglePipe, []},
+          {Credo.Check.Readability.SinglePipe, []}
         ]
       }
     }
