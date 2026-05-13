@@ -88,6 +88,11 @@ defmodule MobDev.MixProject do
       # patterns (blanket rescue, narrator-style docs, redundant
       # Enum chains, etc). Plugged into the existing Credo run.
       {:ex_slop, "~> 0.4", only: [:dev, :test], runtime: false},
+      # ex_dna — semantic code duplication detector. Catches Type I/II/III
+      # clones (exact, renamed-var, near-miss). Runs as a Credo check or
+      # standalone Mix task. Useful for keeping parallel-agent work from
+      # drifting into duplicate implementations of the same idea.
+      {:ex_dna, "~> 1.5", only: [:dev, :test], runtime: false},
       # Mox — behaviour-based mocks for the MobDev.Release.* test suite.
       # Lets us test "given inputs, clang is invoked with these args"
       # without actually running clang.
