@@ -1,5 +1,11 @@
 defmodule MobDev.MLXDownloaderTest do
-  use ExUnit.Case, async: true
+  # async: false — these tests put/delete MOB_CACHE_DIR and
+  # MOB_MLX_LOCAL_TARBALL_DIR, which are process-global. Running async with
+  # any other test that reads MOB_CACHE_DIR can cause one test to
+  # extract into the real ~/.mob/cache/ (overwriting actual cached
+  # tarballs with 17-byte test stubs — seen in the wild once already
+  # during this session's iPhone device deploy).
+  use ExUnit.Case, async: false
 
   alias MobDev.MLXDownloader
 
