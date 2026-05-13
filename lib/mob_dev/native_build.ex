@@ -2473,12 +2473,12 @@ defmodule MobDev.NativeBuild do
   end
 
   @spec classify_project_nif(MobDev.StaticNifs.nif_entry()) ::
-          {:c, Path.t()} | {:rust, Path.t()} | :elixir_only
+          {:c, Path.t()} | {:rust, Path.t()} | {:zig, atom()} | :elixir_only
   def classify_project_nif(entry), do: classify_project_nif(entry, File.cwd!())
 
   @doc false
   @spec classify_project_nif(MobDev.StaticNifs.nif_entry(), Path.t()) ::
-          {:c, Path.t()} | {:rust, Path.t()} | :elixir_only
+          {:c, Path.t()} | {:rust, Path.t()} | {:zig, atom()} | :elixir_only
   def classify_project_nif(entry, project_root) do
     name = to_string(entry.module)
     c_src = Path.join(project_root, "c_src/#{name}.c")
@@ -2488,7 +2488,35 @@ defmodule MobDev.NativeBuild do
       # C wins if both exist — the user has explicitly written C.
       File.exists?(c_src) -> {:c, c_src}
       File.exists?(rust_manifest) -> {:rust, rust_manifest}
-      true -> :elixir_only
+      true -> classify_via_zig_stub(name, project_root)
+    end
+  end
+
+  # Detect Zigler-backed NIFs by `use Zig` in the generated stub.
+  # `mob.add_nif --type zigler` puts the stub at `lib/<app>/nifs/<name>.ex`.
+  # If it contains `use Zig,`, treat the NIF as Zigler-backed and record
+  # the BEAM module atom (needed for `Zig.Builder.staging_directory/1`).
+  defp classify_via_zig_stub(name, project_root) do
+    app =
+      case Application.fetch_env(:mob_dev, :__app_name__) do
+        {:ok, app} -> app
+        :error -> Mix.Project.config() |> Keyword.get(:app)
+      end
+
+    if is_nil(app) do
+      :elixir_only
+    else
+      stub = Path.join(project_root, "lib/#{app}/nifs/#{name}.ex")
+
+      if File.exists?(stub) and File.read!(stub) =~ ~r/use\s+Zig\b/ do
+        # Module follows the resolve_module/3 convention in mob.add_nif:
+        # <AppCamel>.Nifs.<NameCamel>
+        camel = app |> to_string() |> Macro.camelize()
+        nif_camel = name |> Macro.camelize()
+        {:zig, Module.concat([camel, "Nifs", nif_camel])}
+      else
+        :elixir_only
+      end
     end
   end
 
@@ -2501,26 +2529,36 @@ defmodule MobDev.NativeBuild do
     project_root = File.cwd!()
     entries = project_nif_user_entries()
 
-    {c_names, rust_manifests} =
-      Enum.reduce(entries, {[], []}, fn entry, {c_acc, rust_acc} ->
+    {c_names, rust_manifests, zig_modules} =
+      Enum.reduce(entries, {[], [], []}, fn entry, {c_acc, rust_acc, zig_acc} ->
         case classify_project_nif(entry, project_root) do
-          {:c, _path} -> {[to_string(entry.module) | c_acc], rust_acc}
-          {:rust, manifest} -> {c_acc, [{to_string(entry.module), manifest} | rust_acc]}
-          :elixir_only -> {c_acc, rust_acc}
+          {:c, _path} ->
+            {[to_string(entry.module) | c_acc], rust_acc, zig_acc}
+
+          {:rust, manifest} ->
+            {c_acc, [{to_string(entry.module), manifest} | rust_acc], zig_acc}
+
+          {:zig, module} ->
+            {c_acc, rust_acc, [{to_string(entry.module), module} | zig_acc]}
+
+          :elixir_only ->
+            {c_acc, rust_acc, zig_acc}
         end
       end)
 
-    case cross_compile_rust_nifs(rust_manifests, platform) do
-      {:ok, rust_libs} ->
-        {:ok,
-         [
-           "-Dproject_root=#{project_root}",
-           "-Dproject_c_nifs=#{Enum.join(Enum.reverse(c_names), ",")}",
-           "-Dproject_rust_libs=#{Enum.join(rust_libs, ",")}"
-         ]}
+    with {:ok, rust_libs} <- cross_compile_rust_nifs(rust_manifests, platform),
+         {:ok, zig_libs} <- cross_compile_zig_nifs(zig_modules, platform) do
+      # Pass both Rust and Zig static archives via the same flag
+      # (they go to the same linker step). Name kept legacy-flavored
+      # for the build template's existing consumer; sweep up later.
+      static_libs = Enum.reverse(rust_libs) ++ Enum.reverse(zig_libs)
 
-      {:error, _} = err ->
-        err
+      {:ok,
+       [
+         "-Dproject_root=#{project_root}",
+         "-Dproject_c_nifs=#{Enum.join(Enum.reverse(c_names), ",")}",
+         "-Dproject_rust_libs=#{Enum.join(static_libs, ",")}"
+       ]}
     end
   end
 
@@ -2581,6 +2619,117 @@ defmodule MobDev.NativeBuild do
   defp rust_target_for(:ios_device), do: "aarch64-apple-ios"
   defp rust_target_for(:ios_sim), do: "aarch64-apple-ios-sim"
   defp rust_target_for(:android), do: "aarch64-linux-android"
+
+  # ── Zigler cross-compile (issue #15 final piece) ─────────────────────────
+
+  @spec cross_compile_zig_nifs([{String.t(), module()}], atom()) ::
+          {:ok, [Path.t()]} | {:error, String.t()}
+  defp cross_compile_zig_nifs([], _platform), do: {:ok, []}
+
+  defp cross_compile_zig_nifs(zig_modules, platform) do
+    target = zig_build_target_for(platform)
+
+    Enum.reduce_while(zig_modules, {:ok, []}, fn {name, module}, {:ok, acc} ->
+      case cross_compile_zig_nif(name, module, target) do
+        {:ok, a_path} -> {:cont, {:ok, [a_path | acc]}}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+  end
+
+  # Drives Zigler's build pipeline a SECOND time against the staging
+  # directory (which Zigler set up during the normal `mix compile` host
+  # build), with the static-link + alias options the GenericJam/zigler
+  # fork added. Produces `libElixir.<Module>.a` in `zig-out/lib/` of
+  # the staging dir, suitable for linking into the iOS device binary.
+  defp cross_compile_zig_nif(name, module, target) do
+    # Resolve `Zig.Builder` dynamically — it only exists when the
+    # consuming project has `:zigler` as a dep. mob_dev itself doesn't
+    # depend on Zigler, so a static `Zig.Builder.staging_directory/1`
+    # reference would emit an "undefined module" warning at compile
+    # time and refuse `--warnings-as-errors`.
+    builder = Module.concat([:Zig, :Builder])
+
+    staging_dir =
+      if Code.ensure_loaded?(builder) and
+           function_exported?(builder, :staging_directory, 1) do
+        builder.staging_directory(module)
+      end
+
+    cond do
+      is_nil(staging_dir) ->
+        {:error,
+         "Zigler not loaded — can't cross-compile NIF '#{name}'. " <>
+           "Is `:zigler` in the project's deps?"}
+
+      not File.dir?(staging_dir) ->
+        {:error,
+         "Zigler staging dir missing for '#{name}': #{staging_dir}\n" <>
+           "  Has `mix compile` run yet? The host build sets up the staging dir."}
+
+      true ->
+        Mix.shell().info("  === Cross-compiling Zig NIF #{name} for #{target}")
+
+        # Resolve Zig via Zigler's own lookup (cache → ZIG_ARCHIVE_PATH
+        # → PATH) instead of `System.find_executable("zig")`. mob_dev
+        # users typically have a different Zig on PATH (mob's own
+        # pin) than the one Zigler 0.15.x expects (0.16 from
+        # the user cache). Hard-coding to PATH would pick the wrong
+        # version and break the build.
+        zig_cmd = Module.concat([:Zig, :Command])
+
+        zig_exe =
+          if Code.ensure_loaded?(zig_cmd) and
+               function_exported?(zig_cmd, :executable_path, 0) do
+            zig_cmd.executable_path()
+          else
+            "zig"
+          end
+
+        # `-Dtarget=...` is consumed by zig's `standardTargetOptions`
+        # at build time — overrides whatever the rendered build.zig
+        # had as its default. We can't use Zigler's TARGET_ARCH/OS/ABI
+        # env vars here because the staging build.zig was already
+        # rendered during the host `mix compile` (with default target).
+        args = [
+          "build",
+          "-Dtarget=#{target}",
+          "-Dnif_linkage=static",
+          "-Dnif_init_alias=#{name}_nif_init"
+        ]
+
+        case System.cmd(zig_exe, args,
+               cd: staging_dir,
+               stderr_to_stdout: true,
+               into: IO.stream()
+             ) do
+          {_, 0} ->
+            # Zigler names the output `libElixir.<Module>.a`.
+            a = Path.join([staging_dir, "zig-out/lib/libElixir.#{module_basename(module)}.a"])
+
+            if File.exists?(a) do
+              {:ok, a}
+            else
+              {:error,
+               "zig build for '#{name}' succeeded but #{a} not found — " <>
+                 "did Zigler change its output naming?"}
+            end
+
+          {_, code} ->
+            {:error, "zig build for Zig NIF '#{name}' exited #{code}"}
+        end
+    end
+  end
+
+  defp module_basename(module) do
+    module |> Module.split() |> Enum.join(".")
+  end
+
+  # Zig target triples passed to `-Dtarget=...`. iOS device + sim
+  # differ via the `.simulator` ABI suffix.
+  defp zig_build_target_for(:ios_device), do: "aarch64-ios-none"
+  defp zig_build_target_for(:ios_sim), do: "aarch64-ios-simulator"
+  defp zig_build_target_for(:android), do: "aarch64-linux-android"
 
   @spec generate_erl_errno_compat_stub(Path.t()) :: :ok
   def generate_erl_errno_compat_stub(build_dir) do
