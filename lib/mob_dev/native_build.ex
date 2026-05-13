@@ -1973,7 +1973,7 @@ defmodule MobDev.NativeBuild do
           Path.join([mob_dir, "ios", "driver_tab_ios.c"])
       end
 
-    args = [
+    base_args = [
       "build",
       "binary",
       "--build-file",
@@ -1988,9 +1988,13 @@ defmodule MobDev.NativeBuild do
       "-Dmodule_name=#{display_name}"
     ]
 
-    case System.cmd("zig", args, stderr_to_stdout: true, into: IO.stream()) do
-      {_, 0} -> :ok
-      {_, code} -> {:error, "zig build binary (iOS sim) exited #{code}"}
+    with {:ok, nif_args} <- project_nif_zig_args(:ios_sim) do
+      args = base_args ++ nif_args
+
+      case System.cmd("zig", args, stderr_to_stdout: true, into: IO.stream()) do
+        {_, 0} -> :ok
+        {_, code} -> {:error, "zig build binary (iOS sim) exited #{code}"}
+      end
     end
   end
 
@@ -2458,6 +2462,126 @@ defmodule MobDev.NativeBuild do
   # `nm libbeam.a | grep erl_errno_id_unknown` first; the iOS-device
   # link surfaces the regression as
   # `Undefined symbols: _erl_errno_id_unknown`.
+  # Visible to tests; private callers can pretend `defp`.
+  @spec project_nif_user_entries() :: [MobDev.StaticNifs.nif_entry()]
+  def project_nif_user_entries do
+    default_modules =
+      MobDev.StaticNifs.default_nifs() |> MapSet.new(& &1.module)
+
+    Mix.Tasks.Mob.RegenDriverTab.resolved_nifs()
+    |> Enum.reject(fn entry -> MapSet.member?(default_modules, entry.module) end)
+  end
+
+  @spec classify_project_nif(MobDev.StaticNifs.nif_entry()) ::
+          {:c, Path.t()} | {:rust, Path.t()} | :elixir_only
+  def classify_project_nif(entry), do: classify_project_nif(entry, File.cwd!())
+
+  @doc false
+  @spec classify_project_nif(MobDev.StaticNifs.nif_entry(), Path.t()) ::
+          {:c, Path.t()} | {:rust, Path.t()} | :elixir_only
+  def classify_project_nif(entry, project_root) do
+    name = to_string(entry.module)
+    c_src = Path.join(project_root, "c_src/#{name}.c")
+    rust_manifest = Path.join(project_root, "native/#{name}/Cargo.toml")
+
+    cond do
+      # C wins if both exist — the user has explicitly written C.
+      File.exists?(c_src) -> {:c, c_src}
+      File.exists?(rust_manifest) -> {:rust, rust_manifest}
+      true -> :elixir_only
+    end
+  end
+
+  # Build args to pass to `zig build`. Returns
+  # `{:ok, ["-Dproject_c_nifs=…", "-Dproject_rust_libs=…", "-Dproject_root=…"]}`
+  # or `{:error, reason}` if a Rust cross-compile fails.
+  @spec project_nif_zig_args(:ios_device | :ios_sim | :android) ::
+          {:ok, [String.t()]} | {:error, String.t()}
+  defp project_nif_zig_args(platform) do
+    project_root = File.cwd!()
+    entries = project_nif_user_entries()
+
+    {c_names, rust_manifests} =
+      Enum.reduce(entries, {[], []}, fn entry, {c_acc, rust_acc} ->
+        case classify_project_nif(entry, project_root) do
+          {:c, _path} -> {[to_string(entry.module) | c_acc], rust_acc}
+          {:rust, manifest} -> {c_acc, [{to_string(entry.module), manifest} | rust_acc]}
+          :elixir_only -> {c_acc, rust_acc}
+        end
+      end)
+
+    case cross_compile_rust_nifs(rust_manifests, platform) do
+      {:ok, rust_libs} ->
+        {:ok,
+         [
+           "-Dproject_root=#{project_root}",
+           "-Dproject_c_nifs=#{Enum.join(Enum.reverse(c_names), ",")}",
+           "-Dproject_rust_libs=#{Enum.join(rust_libs, ",")}"
+         ]}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  @spec cross_compile_rust_nifs([{String.t(), Path.t()}], atom()) ::
+          {:ok, [Path.t()]} | {:error, String.t()}
+  defp cross_compile_rust_nifs([], _platform), do: {:ok, []}
+
+  defp cross_compile_rust_nifs(manifests, platform) do
+    target = rust_target_for(platform)
+
+    Enum.reduce_while(manifests, {:ok, []}, fn {name, manifest}, {:ok, acc} ->
+      case cross_compile_rust_nif(name, manifest, target) do
+        {:ok, a_path} -> {:cont, {:ok, [a_path | acc]}}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+  end
+
+  defp cross_compile_rust_nif(name, manifest, target) do
+    Mix.shell().info("  === Cross-compiling Rust NIF #{name} for #{target}")
+
+    args = [
+      "rustc",
+      "--release",
+      "--target",
+      target,
+      "--crate-type",
+      "staticlib",
+      "--manifest-path",
+      manifest
+    ]
+
+    case System.cmd("cargo", args, stderr_to_stdout: true, into: IO.stream()) do
+      {_, 0} ->
+        a = Path.expand("native/#{name}/target/#{target}/release/lib#{name}.a")
+
+        if File.exists?(a) do
+          {:ok, a}
+        else
+          {:error,
+           "cargo rustc for '#{name}' succeeded but #{a} not found — " <>
+             "check that the crate-type includes staticlib"}
+        end
+
+      {_, code} ->
+        {:error,
+         "cargo rustc for Rust NIF '#{name}' (target=#{target}) exited #{code}.\n" <>
+           "  Common causes:\n" <>
+           "    1. `rustup target add #{target}` not run — check `rustup target list --installed`.\n" <>
+           "    2. Cargo.toml's [lib] crate-type doesn't include \"staticlib\".\n" <>
+           "    3. The Rust source has a compile error — see the cargo output above."}
+    end
+  end
+
+  # Apple toolchains differ between simulator and device targets. Both
+  # are arm64 on Apple Silicon Macs; sim has the `-sim` suffix because
+  # the SDK headers differ.
+  defp rust_target_for(:ios_device), do: "aarch64-apple-ios"
+  defp rust_target_for(:ios_sim), do: "aarch64-apple-ios-sim"
+  defp rust_target_for(:android), do: "aarch64-linux-android"
+
   @spec generate_erl_errno_compat_stub(Path.t()) :: :ok
   def generate_erl_errno_compat_stub(build_dir) do
     File.write!(
@@ -2517,19 +2641,21 @@ defmodule MobDev.NativeBuild do
       "-Derrno_compat=#{Path.join(build_dir, "erl_errno_id_compat.c")}"
     ]
 
-    args =
-      case sqlite_static_lib do
-        nil -> base_args
-        path -> base_args ++ ["-Dsqlite_static=true", "-Dsqlite_static_lib=#{path}"]
+    with {:ok, nif_args} <- project_nif_zig_args(:ios_device) do
+      args =
+        case sqlite_static_lib do
+          nil -> base_args ++ nif_args
+          path -> base_args ++ nif_args ++ ["-Dsqlite_static=true", "-Dsqlite_static_lib=#{path}"]
+        end
+
+      case System.cmd("zig", args, stderr_to_stdout: true, into: IO.stream()) do
+        {_, 0} ->
+          File.cp!("ios/zig-out/#{display_name}", Path.join(build_dir, display_name))
+          :ok
+
+        {_, code} ->
+          {:error, "zig build binary (iOS device) exited #{code}"}
       end
-
-    case System.cmd("zig", args, stderr_to_stdout: true, into: IO.stream()) do
-      {_, 0} ->
-        File.cp!("ios/zig-out/#{display_name}", Path.join(build_dir, display_name))
-        :ok
-
-      {_, code} ->
-        {:error, "zig build binary (iOS device) exited #{code}"}
     end
   end
 

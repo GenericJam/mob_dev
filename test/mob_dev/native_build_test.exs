@@ -713,4 +713,52 @@ defmodule MobDev.NativeBuildTest do
       assert contents =~ ~s|return "unknown"|
     end
   end
+
+  describe "classify_project_nif/2" do
+    # Pins the source-classification logic that decides whether a
+    # project-side NIF gets the C wiring path, the Rust cross-compile +
+    # link path, or no native wiring at all (Elixir-only stub). Issue #18.
+    #
+    # The 2-arg form takes the project root explicitly so tests don't
+    # have to File.cd! (which mutates global OS-process state and races
+    # with other async tests).
+
+    setup do
+      tmp = Path.join(System.tmp_dir!(), "classify_nif_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      on_exit(fn -> File.rm_rf!(tmp) end)
+      {:ok, tmp: tmp}
+    end
+
+    test "finds C source at c_src/<name>.c", %{tmp: tmp} do
+      c_path = Path.join(tmp, "c_src/foo.c")
+      File.mkdir_p!(Path.dirname(c_path))
+      File.write!(c_path, "")
+
+      assert {:c, ^c_path} = NativeBuild.classify_project_nif(%{module: :foo}, tmp)
+    end
+
+    test "finds Rust manifest at native/<name>/Cargo.toml", %{tmp: tmp} do
+      cargo_path = Path.join(tmp, "native/foo/Cargo.toml")
+      File.mkdir_p!(Path.dirname(cargo_path))
+      File.write!(cargo_path, "")
+
+      assert {:rust, ^cargo_path} = NativeBuild.classify_project_nif(%{module: :foo}, tmp)
+    end
+
+    test "C wins if both exist (user has explicitly written C)", %{tmp: tmp} do
+      File.mkdir_p!(Path.join(tmp, "c_src"))
+      File.mkdir_p!(Path.join(tmp, "native/foo"))
+      File.write!(Path.join(tmp, "c_src/foo.c"), "")
+      File.write!(Path.join(tmp, "native/foo/Cargo.toml"), "")
+
+      assert {:c, _} = NativeBuild.classify_project_nif(%{module: :foo}, tmp)
+    end
+
+    test "elixir_only when neither C nor Rust source exists", %{tmp: tmp} do
+      # Stub-only NIF (the `--type elixir-only` from mob.add_nif).
+      # No native wiring — the Elixir module just raises nif_error.
+      assert :elixir_only = NativeBuild.classify_project_nif(%{module: :no_native}, tmp)
+    end
+  end
 end
