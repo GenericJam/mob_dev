@@ -2435,11 +2435,31 @@ defmodule MobDev.NativeBuild do
     end
   end
 
-  defp generate_erl_errno_compat_stub(build_dir) do
-    # erl_errno_id_unknown is missing from libbeam.a in OTP 17.0 (function was
-    # split into a separate compilation unit but the pre-built tarball omits
-    # it). A weak definition satisfies the linker and loses to the real symbol
-    # if a future tarball includes it.
+  @doc false
+  # `def` (not `defp`) so the test suite can pin the contract. This shim
+  # has been mistakenly removed before — the test exists to flag the
+  # next attempt as a test failure rather than an iOS device link
+  # failure.
+  #
+  # erl_errno_id_unknown is missing from libbeam.a in the iOS-device OTP
+  # tarball — it's referenced only by erl_posix_str.o (the legacy
+  # implementation), which the linker pulls in because it comes before
+  # the newer erl_errno_str.o in the archive's `ar` index AND because
+  # the iOS BEAM startup path (mob_beam.m) doesn't reference
+  # erts_errno_init, so erl_errno_str.o is never pulled in to provide
+  # the symbol the modern way. Net: legacy file wins, needs the
+  # `_unknown` helper, we provide it weakly here. A weak definition
+  # loses to the real symbol if a future tarball includes it.
+  #
+  # The iOS-sim and Android tarballs don't have erl_posix_str.o at all
+  # (only erl_errno_str.o) and don't need this shim. If the iOS-device
+  # OTP tarball is ever rebuilt without erl_posix_str.c (matching the
+  # sim/Android configs), this shim becomes obsolete — but verify with
+  # `nm libbeam.a | grep erl_errno_id_unknown` first; the iOS-device
+  # link surfaces the regression as
+  # `Undefined symbols: _erl_errno_id_unknown`.
+  @spec generate_erl_errno_compat_stub(Path.t()) :: :ok
+  def generate_erl_errno_compat_stub(build_dir) do
     File.write!(
       Path.join(build_dir, "erl_errno_id_compat.c"),
       """
