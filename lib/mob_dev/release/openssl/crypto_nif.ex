@@ -252,7 +252,8 @@ defmodule MobDev.Release.OpenSSL.CryptoNif do
     * `:ndk_root` — Android NDK root (Android targets only)
   """
   @spec build(atom(), keyword()) :: {:ok, map()} | Errors.t()
-  def build(target_id, opts \\ []) when target_id in [:android_arm64, :android_arm32, :ios_sim, :ios_device] do
+  def build(target_id, opts \\ [])
+      when target_id in [:android_arm64, :android_arm32, :ios_sim, :ios_device] do
     target = target_spec(target_id)
     shell = Shell.impl()
     otp_src = opts[:otp_src] || default_otp_src(shell)
@@ -339,9 +340,7 @@ defmodule MobDev.Release.OpenSSL.CryptoNif do
   defp precheck(target, shell, otp_src, openssl_prefix, opts) do
     cond do
       not shell.dir?(otp_src) ->
-        Errors.precondition(
-          "OTP_SRC missing at #{otp_src} — clone github.com/erlang/otp"
-        )
+        Errors.precondition("OTP_SRC missing at #{otp_src} — clone github.com/erlang/otp")
 
       not shell.dir?(openssl_prefix) ->
         Errors.precondition(

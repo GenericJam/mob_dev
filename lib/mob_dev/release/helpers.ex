@@ -60,7 +60,11 @@ defmodule MobDev.Release.Helpers do
         parse_git_hash(output)
 
       {output, exit_code} ->
-        Errors.cmd_failed(["git", "-C", otp_src, "rev-parse", "--short=#{@hash_length}", "HEAD"], exit_code, output)
+        Errors.cmd_failed(
+          ["git", "-C", otp_src, "rev-parse", "--short=#{@hash_length}", "HEAD"],
+          exit_code,
+          output
+        )
     end
   end
 

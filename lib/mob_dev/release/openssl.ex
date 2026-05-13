@@ -237,7 +237,8 @@ defmodule MobDev.Release.OpenSSL do
     * `:ndk_root` — Android NDK root override (Android targets only)
   """
   @spec build(atom(), keyword()) :: {:ok, map()} | Errors.t()
-  def build(target_id, opts \\ []) when target_id in [:android_arm64, :android_arm32, :ios_sim, :ios_device] do
+  def build(target_id, opts \\ [])
+      when target_id in [:android_arm64, :android_arm32, :ios_sim, :ios_device] do
     target = target_spec(target_id)
     shell = Shell.impl()
     openssl_src = opts[:openssl_src] || default_openssl_src(shell)

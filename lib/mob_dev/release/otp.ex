@@ -215,7 +215,8 @@ defmodule MobDev.Release.OTP do
     * `:ndk_root` — Android NDK override (Android targets only)
   """
   @spec build(atom(), keyword()) :: {:ok, map()} | Errors.t()
-  def build(target_id, opts \\ []) when target_id in [:android_arm64, :android_arm32, :ios_sim, :ios_device] do
+  def build(target_id, opts \\ [])
+      when target_id in [:android_arm64, :android_arm32, :ios_sim, :ios_device] do
     target = target_spec(target_id)
     shell = Shell.impl()
     otp_src = opts[:otp_src] || default_otp_src(shell)

@@ -89,7 +89,9 @@ defmodule MobDev.Release.TarballTest do
   describe "tarball_path/3" do
     test "android_arm64 is `<out>/otp-android-<hash>.tar.gz`" do
       target = Tarball.target_spec(:android_arm64)
-      assert Tarball.tarball_path(target, "/tmp", "abc12345") == "/tmp/otp-android-abc12345.tar.gz"
+
+      assert Tarball.tarball_path(target, "/tmp", "abc12345") ==
+               "/tmp/otp-android-abc12345.tar.gz"
     end
 
     test "ios_device interpolates the basename + hash" do
