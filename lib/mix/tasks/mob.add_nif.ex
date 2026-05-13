@@ -395,13 +395,22 @@ defmodule Mix.Tasks.Mob.AddNif do
   # ── Optional Hex dep (zigler/rustler) ─────────────────────────────────────
 
   defp maybe_add_zigler_dep(igniter, "zigler") do
-    # Queue `mix zig.get` to run after Igniter applies its changes. Without
-    # this, Zigler falls through to `System.find_executable("zig")` and picks
-    # up whatever Zig is on PATH — almost always the wrong version for what
-    # Zigler 0.15.x expects. The cache populated by `zig.get` takes
-    # precedence over PATH lookups in Zigler's `executable_path/0`.
+    # Use the GenericJam/zigler fork's zig-016-port branch — Zigler's
+    # upstream 0.15.2 pin breaks on macOS 26 (Sequoia/Tahoe) because
+    # Zig 0.15.x's stdlib references absent libSystem symbols. The fork
+    # ports priv/beam/ to Zig 0.16.0 (which works on macOS 26).
+    #
+    # Once upstream Zigler ships 0.16, this flips back to a hex pin.
+    # Track upstream issue #578 + closed PR #579.
+    #
+    # `mix zig.get` is still queued so Zigler's executable_path lookup
+    # finds the cached Zig before falling through to PATH (which on
+    # mob developer machines points at 0.17-dev, the wrong stdlib for
+    # the port — needs 0.16.0 specifically).
     igniter
-    |> Igniter.Project.Deps.add_dep({:zigler, "~> 0.15"})
+    |> Igniter.Project.Deps.add_dep(
+      {:zigler, github: "GenericJam/zigler", branch: "zig-016-port"}
+    )
     |> Igniter.add_task("zig.get")
   end
 
