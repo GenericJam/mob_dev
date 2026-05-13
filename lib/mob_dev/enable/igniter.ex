@@ -105,6 +105,27 @@ defmodule MobDev.Enable.Igniter do
     |> add_android_liveview_network_config()
   end
 
+  # ── mlx ───────────────────────────────────────────────────────────────────
+
+  @doc """
+  Enables MLX + EMLX (Apple's MLX numerics + the EMLX Nx backend) for
+  iOS. Adds `:nx` and `:emlx` to deps; generates a tiny
+  `<App>.MLInit` helper that picks `EMLX.Backend` at boot with a clean
+  fallback to `Nx.BinaryBackend` if the NIF can't load.
+
+  The `:emlx_nif` static NIF entry is already in `MobDev.StaticNifs`
+  defaults — `MobDev.NativeBuild` auto-detects the `:emlx` dep, downloads
+  the cross-compiled MLX bundle, and sets `MOB_STATIC_EMLX_NIF` so the
+  driver_tab + linker include EMLX. So `mob.enable mlx` is mostly about
+  the dep wiring and the helper module.
+  """
+  @spec enable_mlx(Igniter.t(), String.t()) :: Igniter.t()
+  def enable_mlx(igniter, app_name) do
+    igniter
+    |> inject_mlx_deps()
+    |> create_ml_init_module(app_name)
+  end
+
   # ── python ────────────────────────────────────────────────────────────────
 
   @spec enable_python(Igniter.t(), String.t()) :: Igniter.t()
@@ -404,6 +425,64 @@ defmodule MobDev.Enable.Igniter do
           end
         end)
     end
+  end
+
+  # ── mlx: helpers ──────────────────────────────────────────────────────────
+
+  defp inject_mlx_deps(igniter) do
+    igniter
+    |> Igniter.Project.Deps.add_dep({:nx, "~> 0.10"})
+    |> Igniter.Project.Deps.add_dep({:emlx, "~> 0.2"})
+  end
+
+  defp create_ml_init_module(igniter, app_name) do
+    module_name = Macro.camelize(app_name)
+    module = Module.concat([module_name, "MLInit"])
+    {exists?, igniter} = Igniter.Project.Module.module_exists(igniter, module)
+
+    if exists? do
+      igniter
+    else
+      Igniter.Project.Module.create_module(igniter, module, ml_init_module_body())
+    end
+  end
+
+  # Body for the generated `<App>.MLInit` module. Kept inline because the
+  # template is small and doesn't need a separate `.eex` file. The string is
+  # the *body* — `Igniter.Project.Module.create_module/3` wraps it in
+  # `defmodule <module> do ... end`.
+  defp ml_init_module_body do
+    """
+    @moduledoc \"\"\"
+    Picks the right Nx backend for this build. Called from
+    `Mob.App.on_start/0` once the app and its deps have started.
+
+    On iOS device + simulator: EMLX (Apple's MLX, statically linked into the
+    app via mob_dev's MLX integration). Falls back to `Nx.BinaryBackend`
+    (pure Elixir) when the NIF can't load — keeps the app running even if
+    MLX isn't available on this build (e.g. an Android build that hasn't
+    cross-compiled MLX yet).
+
+    The default device is `:cpu` because v1 of the EMLX iOS integration
+    ships CPU-only. Update to `:gpu` once the Metal variant lands.
+    \"\"\"
+    require Logger
+
+    @doc \"Configure the global Nx backend. Returns the chosen backend module.\"
+    def configure do
+      case Application.ensure_all_started(:emlx) do
+        {:ok, _} ->
+          Nx.global_default_backend({EMLX.Backend, device: :cpu})
+          Logger.info("Nx backend: EMLX (cpu)")
+          EMLX.Backend
+
+        {:error, reason} ->
+          Logger.warning(\"EMLX failed to start: \#\{inspect(reason)\}; using Nx.BinaryBackend\")
+          Nx.global_default_backend(Nx.BinaryBackend)
+          Nx.BinaryBackend
+      end
+    end
+    """
   end
 
   # ── python: helpers ───────────────────────────────────────────────────────

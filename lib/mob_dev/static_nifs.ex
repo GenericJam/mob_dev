@@ -102,6 +102,15 @@ defmodule MobDev.StaticNifs do
         module: :sqlite3_nif,
         archs: [:ios_device],
         guard: "MOB_STATIC_SQLITE_NIF"
+      },
+      # EMLX NIF — statically linked when the project enables MLX via
+      # `mix mob.enable mlx`. The guard means the entry only fires when
+      # the build defines MOB_STATIC_EMLX_NIF, so apps that don't use Nx
+      # pay zero size cost. See MobDev.MLXDownloader for tarball fetching.
+      %{
+        module: :emlx_nif,
+        archs: [:ios_device, :ios_sim],
+        guard: "MOB_STATIC_EMLX_NIF"
       }
     ]
   end
@@ -312,11 +321,10 @@ defmodule MobDev.StaticNifs do
   end
 
   defp zig_extern_decls(nifs, platform) do
-    # iOS: when a NIF needs a guard (e.g. sqlite3_nif on device only),
-    # gate the extern declaration AND the table row on a comptime const
-    # that's threaded through `b.addOptions` in build_device.zig.
-    # We use `sqlite_static` as a convention for the only current guarded
-    # NIF; future guards would extend this map.
+    # iOS: each guarded NIF (e.g. :sqlite3_nif on device only, :emlx_nif
+    # when EMLX is enabled) gets its own comptime flag, threaded in via
+    # `b.addOptions` in build_device.zig. Flag name is derived from the
+    # `:guard` value — see guard_flag_name/1.
     plain =
       nifs
       |> Enum.reject(&needs_guard_in_zig?(&1, platform))
@@ -324,19 +332,29 @@ defmodule MobDev.StaticNifs do
         "extern fn #{init_fn(nif)}() callconv(.c) ?*anyopaque;\n"
       end)
 
+    guarded = Enum.filter(nifs, &needs_guard_in_zig?(&1, platform))
+
     guard_imports =
-      case Enum.filter(nifs, &needs_guard_in_zig?(&1, platform)) do
+      case guarded do
         [] ->
           []
 
-        guarded ->
+        _ ->
+          flag_decls =
+            guarded
+            |> Enum.map(& &1.guard)
+            |> Enum.uniq()
+            |> Enum.map(fn guard ->
+              "const #{guard_flag_name(guard)} = build_options.#{guard_flag_name(guard)};\n"
+            end)
+
           [
             "\n",
-            "// Comptime flag threaded from build.zig via b.addOptions().\n",
-            "// Default false; the device build sets it to true to opt into\n",
-            "// statically-linked exqlite (sqlite3_nif.a).\n",
+            "// Comptime flags threaded from build.zig via b.addOptions().\n",
+            "// Each per-feature flag defaults to false; the build sets it to true\n",
+            "// when the project opts into the corresponding statically-linked NIF.\n",
             "const build_options = @import(\"build_options\");\n",
-            "const sqlite_static = build_options.sqlite_static;\n",
+            flag_decls,
             "\n",
             Enum.map(guarded, fn nif ->
               "extern fn #{init_fn(nif)}() callconv(.c) ?*anyopaque;\n"
@@ -348,7 +366,27 @@ defmodule MobDev.StaticNifs do
   end
 
   defp needs_guard_in_zig?(nif, platform) do
-    needs_guard?(nif, platform) and Map.has_key?(nif, :guard)
+    guarded?(nif) and on_platform?(nif, platform)
+  end
+
+  @doc """
+  True when the entry carries a `:guard` key. The guard is the user's
+  explicit opt-in (e.g. `MOB_STATIC_EMLX_NIF`) and gets emitted as a
+  preprocessor `#ifdef` in C output or a comptime const in Zig output,
+  independent of whether the entry's archs narrow the platform.
+  """
+  @spec guarded?(nif_entry()) :: boolean()
+  def guarded?(nif), do: Map.has_key?(nif, :guard)
+
+  # Convention: MOB_STATIC_SQLITE_NIF → sqlite_static, MOB_STATIC_EMLX_NIF →
+  # emlx_static. Lowercased, stripped of the `MOB_STATIC_` prefix and the
+  # `_NIF` suffix. Future guards follow the same convention.
+  defp guard_flag_name(guard) when is_binary(guard) do
+    guard
+    |> String.replace_prefix("MOB_STATIC_", "")
+    |> String.replace_suffix("_NIF", "")
+    |> String.downcase()
+    |> Kernel.<>("_static")
   end
 
   defp zig_driver_tab_block do
@@ -370,7 +408,7 @@ defmodule MobDev.StaticNifs do
 
     base_rows = Enum.map(plain_nifs, &zig_nif_row/1)
 
-    sentinel =
+    sentinel_row =
       "    .{ .nif_init = null, .is_builtin = 0, .nif_mod = THE_NON_VALUE, .entry = null },\n"
 
     case guarded_nifs do
@@ -378,35 +416,115 @@ defmodule MobDev.StaticNifs do
         [
           "export var erts_static_nif_tab = [_]ErtsStaticNif{\n",
           base_rows,
-          sentinel,
+          sentinel_row,
           "};\n"
         ]
 
       [_ | _] ->
-        # Build the table comptime — base rows + (conditionally) the guarded
-        # rows + sentinel.
-        guarded_rows = Enum.map(guarded_nifs, &zig_nif_row/1)
+        # Build the table comptime — base rows + per-flag conditionally-added
+        # guarded rows + sentinel. Each guarded NIF gets its own ErtsStaticNif
+        # const, and the final array is selected via a branching block.
+        per_nif_consts =
+          Enum.map(guarded_nifs, fn nif ->
+            init = init_fn(nif)
+            builtin = if Map.get(nif, :builtin, false), do: "1", else: "0"
+
+            "const #{nif_const_name(nif)} = ErtsStaticNif{ " <>
+              ".nif_init = #{init}, .is_builtin = #{builtin}, " <>
+              ".nif_mod = THE_NON_VALUE, .entry = null };\n"
+          end)
 
         [
           "const base_nifs = [_]ErtsStaticNif{\n",
           base_rows,
           "};\n\n",
-          "const guarded_nifs = [_]ErtsStaticNif{\n",
-          guarded_rows,
-          "};\n\n",
+          per_nif_consts,
+          "\n",
           "const sentinel = ErtsStaticNif{ .nif_init = null, .is_builtin = 0, .nif_mod = THE_NON_VALUE, .entry = null };\n\n",
-          """
-          export var erts_static_nif_tab = blk: {
-              if (sqlite_static) {
-                  break :blk base_nifs ++ guarded_nifs ++ [_]ErtsStaticNif{sentinel};
-              } else {
-                  break :blk base_nifs ++ [_]ErtsStaticNif{sentinel};
-              }
-          };
-          """
+          zig_branching_table(guarded_nifs)
         ]
     end
   end
+
+  # Builds the `export var erts_static_nif_tab = blk: { ... }` chain.
+  # For N guarded NIFs we emit 2^N branches enumerating every subset of
+  # active guards. N=1 → 2 branches (current sqlite-only behavior). N=2 →
+  # 4 branches (sqlite + emlx). Higher N is theoretical for now.
+  defp zig_branching_table(guarded_nifs) do
+    n = length(guarded_nifs)
+    subsets = subsets(guarded_nifs)
+
+    branches =
+      subsets
+      # Most-specific subsets first (all flags true) so `if (a and b)` shadows
+      # `if (a)` correctly.
+      |> Enum.sort_by(&(-length(&1)))
+      |> Enum.with_index()
+      |> Enum.map(fn {active, idx} ->
+        condition = zig_branch_condition(active, guarded_nifs)
+        rows_expr = zig_branch_rows(active)
+        keyword = if idx == 0, do: "if", else: "} else if"
+
+        if length(active) == 0 do
+          "} else {\n        break :blk #{rows_expr};\n"
+        else
+          "#{keyword} (#{condition}) {\n        break :blk #{rows_expr};\n"
+        end
+      end)
+
+    case n do
+      1 ->
+        # Simpler shape for the common N=1 case — matches the legacy output.
+        [nif] = guarded_nifs
+
+        [
+          "export var erts_static_nif_tab = blk: {\n",
+          "    if (#{guard_flag_name(nif.guard)}) {\n",
+          "        break :blk base_nifs ++ [_]ErtsStaticNif{ #{nif_const_name(nif)}, sentinel };\n",
+          "    } else {\n",
+          "        break :blk base_nifs ++ [_]ErtsStaticNif{sentinel};\n",
+          "    }\n",
+          "};\n"
+        ]
+
+      _ ->
+        [
+          "export var erts_static_nif_tab = blk: {\n    ",
+          Enum.intersperse(branches, "    "),
+          "    }\n};\n"
+        ]
+    end
+  end
+
+  defp subsets([]), do: [[]]
+
+  defp subsets([h | t]) do
+    rest = subsets(t)
+    rest ++ Enum.map(rest, &[h | &1])
+  end
+
+  defp zig_branch_condition([], _all), do: "true"
+
+  defp zig_branch_condition(active, _all) do
+    active
+    |> Enum.map(&guard_flag_name(&1.guard))
+    |> Enum.join(" and ")
+  end
+
+  defp zig_branch_rows([]) do
+    "base_nifs ++ [_]ErtsStaticNif{sentinel}"
+  end
+
+  defp zig_branch_rows(active) do
+    extras =
+      active
+      |> Enum.map(&nif_const_name/1)
+      |> Enum.join(", ")
+
+    "base_nifs ++ [_]ErtsStaticNif{ #{extras}, sentinel }"
+  end
+
+  defp nif_const_name(%{module: module}), do: "#{module}_const"
 
   defp zig_nif_row(nif) do
     init = init_fn(nif)
@@ -484,7 +602,7 @@ defmodule MobDev.StaticNifs do
     Enum.map(nifs, fn nif ->
       decl = "void *#{init_fn(nif)}(void);\n"
 
-      if needs_guard?(nif, platform) and Map.has_key?(nif, :guard) do
+      if guarded?(nif) and on_platform?(nif, platform) do
         "#ifdef #{nif.guard}\n#{decl}#endif\n"
       else
         decl
@@ -497,7 +615,7 @@ defmodule MobDev.StaticNifs do
       Enum.map(nifs, fn nif ->
         row = format_row(nif)
 
-        if needs_guard?(nif, platform) and Map.has_key?(nif, :guard) do
+        if guarded?(nif) and on_platform?(nif, platform) do
           "#ifdef #{nif.guard}\n    #{row}\n#endif\n"
         else
           "    #{row}\n"
