@@ -129,9 +129,40 @@ defmodule Mix.Tasks.Mob.Enable do
       run) or `Pythonx.init/4` on `{:ios, _}` / `{:android, _}`.
 
   See `guides/python_embedding.md` for the full template.
+
+  ### `mlx`
+
+  Enables Apple's [MLX](https://github.com/ml-explore/mlx) library + the
+  [EMLX](https://hex.pm/packages/emlx) Nx backend on iOS. Gives the app
+  fast on-device tensor math (matmul, FFT, linalg, etc.) backed by
+  Apple's Accelerate framework (vectorized BLAS/LAPACK).
+
+  - **iOS device + simulator:** `libmlx.a` + `libemlx.a` are
+    cross-compiled and statically linked into the app binary. The
+    pre-built bundle (~5 MB compressed, ~30 MB on disk per arch) is
+    downloaded once and cached at `~/.mob/cache/libmlx-<ver>-ios-<slice>/`
+    by `MobDev.MLXDownloader`. `MOB_STATIC_EMLX_NIF` flips on
+    automatically — the EMLX NIF is registered in the static-NIF table
+    so `load_nif/2` resolves it without dlopen.
+  - **Android:** not supported in v1. No Metal on Android — a CPU-only
+    NDK build via OpenBLAS is the path forward but isn't shipped yet.
+  - **CPU-only for v1.** Metal-on-iOS needs the iOS-Metal CMakeLists
+    patch and Xcode 16's optional Metal Toolchain — deferred to a v2
+    tarball variant.
+
+  What it does:
+
+    - Adds `{:nx, "~> 0.10"}` and `{:emlx, "~> 0.2"}` to `mix.exs` deps.
+    - Generates `lib/<app>/ml_init.ex` — a one-call helper that sets
+      `EMLX.Backend` as Nx's global default, with a clean
+      `Nx.BinaryBackend` fallback if the NIF can't load.
+
+  After running, your `Mob.App.on_start/0` should call
+  `<App>.MLInit.configure()` once `Mob.Screen.start_root/1` and
+  `Mob.Dist.ensure_started/1` have run.
   """
 
-  @valid_features ~w(liveview camera photo_library file_sharing location notifications python)
+  @valid_features ~w(liveview camera photo_library file_sharing location notifications python mlx)
 
   @impl Igniter.Mix.Task
   def info(_argv, _composing_task) do
@@ -206,9 +237,38 @@ defmodule Mix.Tasks.Mob.Enable do
     |> Igniter.add_notice(python_next_steps(app_name))
   end
 
+  defp dispatch(igniter, "mlx", app_name) do
+    igniter
+    |> EI.enable_mlx(app_name)
+    |> Igniter.add_notice(mlx_next_steps(app_name))
+  end
+
   defp parse_features(argv) do
     {_opts, features, _} = OptionParser.parse(argv, strict: [yes: :boolean])
     features
+  end
+
+  defp mlx_next_steps(app_name) do
+    module = Macro.camelize(app_name)
+
+    """
+    Next steps for mlx:
+      1. Run `mix deps.get` to fetch :nx + :emlx.
+      2. In your `Mob.App.on_start/0`, call:
+           #{module}.MLInit.configure()
+         after `Mob.Screen.start_root/1` and `Mob.Dist.ensure_started/1`.
+         It picks EMLX as Nx's global backend (CPU + Apple Accelerate on
+         iOS) and falls back to Nx.BinaryBackend if EMLX can't load.
+      3. `mix mob.deploy --native --device <udid>` to cross-compile and
+         install the app. The first build downloads ~5 MB of pre-built
+         MLX (libmlx.a + libemlx.a) into ~/.mob/cache/.
+
+    Bundle size impact: ~5 MB compressed (~30 MB on disk per arch).
+    Apply this only when you actually want fast on-device tensor math.
+
+    iOS-only for v1. Android MLX support is a separate cross-compile
+    (no Metal — CPU + NDK BLAS); not shipped yet.
+    """
   end
 
   defp python_next_steps(app_name) do
