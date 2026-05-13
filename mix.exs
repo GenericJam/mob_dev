@@ -93,6 +93,12 @@ defmodule MobDev.MixProject do
       # standalone Mix task. Useful for keeping parallel-agent work from
       # drifting into duplicate implementations of the same idea.
       {:ex_dna, "~> 1.5", only: [:dev, :test], runtime: false},
+      # reach — program dependence graph + architecture analysis. Mix
+      # tasks `reach.map`, `reach.inspect`, `reach.trace`, `reach.check`,
+      # `reach.otp` plus an HTML report. Useful for validating the
+      # cross-package layering (mob_dev tasks shouldn't be reachable
+      # from runtime code, etc).
+      {:reach, "~> 2.3", only: [:dev, :test], runtime: false},
       # Mox — behaviour-based mocks for the MobDev.Release.* test suite.
       # Lets us test "given inputs, clang is invoked with these args"
       # without actually running clang.
