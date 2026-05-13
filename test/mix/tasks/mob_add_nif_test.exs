@@ -205,6 +205,25 @@ defmodule Mix.Tasks.Mob.AddNifTest do
       content = Rewrite.Source.get(file, :content)
       assert content =~ "module: :audio_engine"
     end
+
+    test "queues mix zig.get so Zigler uses its own pinned Zig" do
+      # Without this, Zigler 0.15.x falls back to System.find_executable("zig")
+      # and uses whatever's on PATH (typically the wrong version).
+      # zig.get downloads Zig 0.15.2 to the user-cache directory, which
+      # Zigler's executable_path/0 checks before PATH.
+      "audio_engine"
+      |> add_nif(["--type", "zigler"])
+      |> assert_has_task("zig.get", [])
+    end
+
+    test "moduledoc warns about the Zig toolchain pin (mix zig.get)" do
+      igniter = add_nif("audio_engine", ["--type", "zigler"])
+      file = Rewrite.source!(igniter.rewrite, "lib/test/nifs/audio_engine.ex")
+      content = Rewrite.Source.get(file, :content)
+      # If we ever stop auto-running zig.get, this assertion still
+      # tells users they need to.
+      assert content =~ "zig.get"
+    end
   end
 
   describe "--type rustler" do
@@ -264,6 +283,27 @@ defmodule Mix.Tasks.Mob.AddNifTest do
       "audio_engine"
       |> add_nif(["--type", "rustler"])
       |> refute_creates("c_src/audio_engine.c")
+    end
+
+    test "creates native/<name>/.cargo/config.toml with -undefined dynamic_lookup for macOS" do
+      # Rustler's default cdylib references enif_* symbols that aren't
+      # resolved until BEAM dlopen. macOS ld64 errors on undefined
+      # symbols without `-undefined dynamic_lookup`, so first
+      # `mix compile` on a Mac fails with:
+      #
+      #   Undefined symbols: _enif_raise_exception, _enif_schedule_nif
+      #
+      # The config file deferring symbols at link time is what makes the
+      # scaffold compile out-of-the-box on macOS. Linux linkers defer by
+      # default and ignore this file (rustflags scope is Apple-only).
+      igniter = add_nif("audio_engine", ["--type", "rustler"])
+      file = Rewrite.source!(igniter.rewrite, "native/audio_engine/.cargo/config.toml")
+      content = Rewrite.Source.get(file, :content)
+
+      assert content =~ "[target.aarch64-apple-darwin]"
+      assert content =~ "[target.x86_64-apple-darwin]"
+      assert content =~ "link-arg=-undefined"
+      assert content =~ "link-arg=dynamic_lookup"
     end
   end
 
