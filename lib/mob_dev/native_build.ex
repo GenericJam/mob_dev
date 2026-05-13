@@ -2724,17 +2724,61 @@ defmodule MobDev.NativeBuild do
             # Zigler names the output `libElixir.<Module>.a`.
             a = Path.join([staging_dir, "zig-out/lib/libElixir.#{module_basename(module)}.a"])
 
-            if File.exists?(a) do
-              {:ok, a}
-            else
-              {:error,
-               "zig build for '#{name}' succeeded but #{a} not found — " <>
-                 "did Zigler change its output naming?"}
+            cond do
+              not File.exists?(a) ->
+                {:error,
+                 "zig build for '#{name}' succeeded but #{a} not found — " <>
+                   "did Zigler change its output naming?"}
+
+              # Apple ld64 requires .a archive members to be 8-byte aligned.
+              # Zig 0.16's archive output isn't aligned and ld64 rejects it
+              # with "not 8-byte aligned". Re-archive with xcrun ar to
+              # produce a Mach-O-compatible static library.
+              :else ->
+                case rearchive_for_apple_ld(a) do
+                  :ok -> {:ok, a}
+                  {:error, _} = err -> err
+                end
             end
 
           {_, code} ->
             {:error, "zig build for Zig NIF '#{name}' exited #{code}"}
         end
+    end
+  end
+
+  # Re-archives a Zig-built `.a` using `xcrun ar` so its members are
+  # 8-byte aligned (required by Apple's ld64). Extracts the .o members
+  # from the existing archive into a temp dir, then re-archives them
+  # in-place. Idempotent — calling on an already-aligned archive is fine.
+  defp rearchive_for_apple_ld(archive_path) do
+    tmp = Path.join(System.tmp_dir!(), "mob_zig_ar_#{:erlang.unique_integer([:positive])}")
+    File.mkdir_p!(tmp)
+
+    try do
+      case System.cmd("xcrun", ["ar", "-x", archive_path], cd: tmp, stderr_to_stdout: true) do
+        {_, 0} ->
+          members =
+            tmp
+            |> File.ls!()
+            |> Enum.reject(&String.starts_with?(&1, "__."))
+
+          # File perms on extracted members can be 000; chmod to readable.
+          Enum.each(members, fn m -> File.chmod!(Path.join(tmp, m), 0o644) end)
+
+          case System.cmd("xcrun", ["ar", "rcs", archive_path | members],
+                 cd: tmp,
+                 stderr_to_stdout: true
+               ) do
+            {_, 0} -> :ok
+            {out, code} -> {:error, "xcrun ar rcs failed (#{code}): #{out}"}
+          end
+
+        {out, code} ->
+          {:error, "xcrun ar -x failed (#{code}): #{out}"}
+      end
+    after
+      File.rm_rf!(tmp)
     end
   end
 
@@ -2837,8 +2881,12 @@ defmodule MobDev.NativeBuild do
 
     case File.ls(releases) do
       {:ok, entries} ->
+        # Plain integer-string filter — avoids a literal `~r` regex
+        # because OTP 28.0 trips on `:re.import/1` for module-level
+        # compiled regexes. Switch back to `~r/.../` once the
+        # project's OTP pin is 28.1+ or ≤ 27.
         entries
-        |> Enum.filter(&Regex.match?(~r/^\d+$/, &1))
+        |> Enum.filter(&match?({_, ""}, Integer.parse(&1)))
         |> Enum.sort_by(&String.to_integer/1, :desc)
         |> List.first()
 
