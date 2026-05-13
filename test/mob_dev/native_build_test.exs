@@ -667,4 +667,50 @@ defmodule MobDev.NativeBuildTest do
       assert NativeBuild.resolve_booted_udid(runtime, "defd4bdc") == nil
     end
   end
+
+  describe "generate_erl_errno_compat_stub/1" do
+    # This shim is load-bearing for iOS device builds — the link will
+    # fail with `Undefined symbols: _erl_errno_id_unknown` without it.
+    # See the function's docstring for the full diagnosis. The tests
+    # below exist specifically so an agent (or human) who concludes
+    # "this shim looks obsolete" hits a red test rather than a
+    # broken iOS device build.
+
+    setup do
+      build_dir =
+        Path.join(System.tmp_dir!(), "errno_compat_test_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(build_dir)
+      on_exit(fn -> File.rm_rf!(build_dir) end)
+      {:ok, build_dir: build_dir}
+    end
+
+    test "writes erl_errno_id_compat.c into the build dir", %{build_dir: build_dir} do
+      assert :ok = NativeBuild.generate_erl_errno_compat_stub(build_dir)
+      assert File.exists?(Path.join(build_dir, "erl_errno_id_compat.c"))
+    end
+
+    test "the shim defines erl_errno_id_unknown weakly", %{build_dir: build_dir} do
+      :ok = NativeBuild.generate_erl_errno_compat_stub(build_dir)
+      contents = File.read!(Path.join(build_dir, "erl_errno_id_compat.c"))
+
+      # `weak` is what lets a future OTP tarball that ships the real
+      # symbol take precedence without a duplicate-symbol error. If
+      # this assertion is failing because someone changed it to a
+      # strong definition, that breaks the forward-compatibility path.
+      assert contents =~ "__attribute__((weak))"
+      assert contents =~ "erl_errno_id_unknown"
+    end
+
+    test "the shim returns a non-empty string so callers see a valid C-string", %{
+      build_dir: build_dir
+    } do
+      :ok = NativeBuild.generate_erl_errno_compat_stub(build_dir)
+      contents = File.read!(Path.join(build_dir, "erl_errno_id_compat.c"))
+
+      # The return value flows through BEAM error reporting (errno
+      # → atom). Returning NULL would crash the formatter.
+      assert contents =~ ~s|return "unknown"|
+    end
+  end
 end
