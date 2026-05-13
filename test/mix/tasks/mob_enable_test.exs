@@ -136,6 +136,67 @@ defmodule Mix.Tasks.Mob.EnableTest do
     end
   end
 
+  describe "mlx feature" do
+    test "adds :nx and :emlx deps via Igniter" do
+      igniter =
+        test_project()
+        |> Igniter.compose_task("mob.enable", ["mlx"])
+
+      mix_exs = Rewrite.Source.get(Rewrite.source!(igniter.rewrite, "mix.exs"), :content)
+      assert mix_exs =~ ":nx"
+      assert mix_exs =~ ":emlx"
+    end
+
+    test "generates lib/<app>/ml_init.ex with EMLX configure/0" do
+      igniter =
+        test_project()
+        |> Igniter.compose_task("mob.enable", ["mlx"])
+
+      file = Rewrite.source!(igniter.rewrite, "lib/test/ml_init.ex")
+      content = Rewrite.Source.get(file, :content)
+      assert content =~ "defmodule Test.MLInit"
+      assert content =~ "EMLX.Backend"
+      assert content =~ "Nx.global_default_backend"
+      # Fallback path for when the NIF can't load.
+      assert content =~ "Nx.BinaryBackend"
+    end
+
+    test "is idempotent — re-adding doesn't duplicate :emlx" do
+      mix_exs = """
+      defmodule Test.MixProject do
+        use Mix.Project
+
+        def project, do: [app: :test, deps: deps()]
+
+        defp deps do
+          [
+            {:nx, "~> 0.10"},
+            {:emlx, "~> 0.2"}
+          ]
+        end
+      end
+      """
+
+      igniter =
+        test_project(files: %{"mix.exs" => mix_exs})
+        |> Igniter.compose_task("mob.enable", ["mlx"])
+
+      patched = Rewrite.Source.get(Rewrite.source!(igniter.rewrite, "mix.exs"), :content)
+      # Each name should only appear once in the deps list (after the
+      # `:` separator). The `defmodule` doesn't count.
+      assert patched |> String.split(":emlx") |> length() == 2
+      assert patched |> String.split(":nx,") |> length() == 2
+    end
+
+    test "adds a next-steps notice mentioning MLInit.configure" do
+      igniter =
+        test_project()
+        |> Igniter.compose_task("mob.enable", ["mlx"])
+
+      assert Enum.any?(igniter.notices, &(&1 =~ "Test.MLInit.configure()"))
+    end
+  end
+
   describe "missing platform dirs" do
     test "no ios/ → adds a notice instead of failing" do
       igniter =
