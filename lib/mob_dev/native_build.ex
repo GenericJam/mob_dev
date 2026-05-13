@@ -2629,20 +2629,31 @@ defmodule MobDev.NativeBuild do
   defp cross_compile_zig_nifs(zig_modules, platform) do
     target = zig_build_target_for(platform)
 
-    Enum.reduce_while(zig_modules, {:ok, []}, fn {name, module}, {:ok, acc} ->
-      case cross_compile_zig_nif(name, module, target) do
-        {:ok, a_path} -> {:cont, {:ok, [a_path | acc]}}
-        {:error, _} = err -> {:halt, err}
-      end
-    end)
+    with {:ok, sdkroot} <- apple_sdkroot_for(platform) do
+      Enum.reduce_while(zig_modules, {:ok, []}, fn {name, module}, {:ok, acc} ->
+        case cross_compile_zig_nif(name, module, target, sdkroot) do
+          {:ok, a_path} -> {:cont, {:ok, [a_path | acc]}}
+          {:error, _} = err -> {:halt, err}
+        end
+      end)
+    end
   end
+
+  # Resolve the iOS/macOS SDK that Zigler's cImport-bearing modules
+  # need when cross-compiling. Returns `{:ok, ""}` for non-Apple
+  # targets (no SDK needed; Zig's bundled libc covers Linux/Android).
+  # Reuses the existing `xcrun_sdk_path/1` (originally for the iOS
+  # device/sim build pipeline).
+  defp apple_sdkroot_for(:ios_device), do: xcrun_sdk_path("iphoneos")
+  defp apple_sdkroot_for(:ios_sim), do: xcrun_sdk_path("iphonesimulator")
+  defp apple_sdkroot_for(_), do: {:ok, ""}
 
   # Drives Zigler's build pipeline a SECOND time against the staging
   # directory (which Zigler set up during the normal `mix compile` host
   # build), with the static-link + alias options the GenericJam/zigler
   # fork added. Produces `libElixir.<Module>.a` in `zig-out/lib/` of
   # the staging dir, suitable for linking into the iOS device binary.
-  defp cross_compile_zig_nif(name, module, target) do
+  defp cross_compile_zig_nif(name, module, target, sdkroot) do
     # Resolve `Zig.Builder` dynamically — it only exists when the
     # consuming project has `:zigler` as a dep. mob_dev itself doesn't
     # depend on Zigler, so a static `Zig.Builder.staging_directory/1`
@@ -2691,12 +2702,18 @@ defmodule MobDev.NativeBuild do
         # had as its default. We can't use Zigler's TARGET_ARCH/OS/ABI
         # env vars here because the staging build.zig was already
         # rendered during the host `mix compile` (with default target).
-        args = [
-          "build",
-          "-Dtarget=#{target}",
-          "-Dnif_linkage=static",
-          "-Dnif_init_alias=#{name}_nif_init"
-        ]
+        args =
+          [
+            "build",
+            "-Dtarget=#{target}",
+            "-Dnif_linkage=static",
+            "-Dnif_init_alias=#{name}_nif_init"
+          ] ++
+            if sdkroot == "" do
+              []
+            else
+              ["-Dapple_sdkroot=#{sdkroot}"]
+            end
 
         case System.cmd(zig_exe, args,
                cd: staging_dir,
