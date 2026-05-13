@@ -270,6 +270,30 @@ defmodule Mix.Tasks.Mob.AddNifTest do
       assert content =~ "rustler"
     end
 
+    test "Cargo.toml emits both staticlib and cdylib crate types" do
+      # staticlib is required for Mob's iOS/Android device builds (the
+      # .a gets linked into the main binary). cdylib keeps the host-dev
+      # `mix compile` path working. Empirically verified end-to-end on
+      # iPhone: removing staticlib here would leave the user stuck after
+      # the host-dev demo works, with no path to actually ship.
+      igniter = add_nif("audio_engine", ["--type", "rustler"])
+      file = Rewrite.source!(igniter.rewrite, "native/audio_engine/Cargo.toml")
+      content = Rewrite.Source.get(file, :content)
+      assert content =~ "staticlib"
+      assert content =~ "cdylib"
+    end
+
+    test "Cargo.toml pins rustler 0.37+ for the per-crate nif_init symbol" do
+      # Rustler 0.37+ derives the static-NIF init symbol name from
+      # CARGO_CRATE_NAME as `<crate>_nif_init`, matching what Mob's
+      # driver_tab declares. Older versions hardcode `nif_init` and
+      # need manual symbol-renaming. Don't quietly downgrade this pin.
+      igniter = add_nif("audio_engine", ["--type", "rustler"])
+      file = Rewrite.source!(igniter.rewrite, "native/audio_engine/Cargo.toml")
+      content = Rewrite.Source.get(file, :content)
+      assert content =~ ~r/rustler\s*=\s*"0\.(3[7-9]|[4-9]\d)/
+    end
+
     test "creates native/<name>/src/lib.rs with rustler::init! pointing at the Elixir module" do
       igniter = add_nif("audio_engine", ["--type", "rustler"])
       file = Rewrite.source!(igniter.rewrite, "native/audio_engine/src/lib.rs")
