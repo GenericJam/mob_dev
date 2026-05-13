@@ -84,6 +84,10 @@ defmodule MobDev.MixProject do
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:jump_credo_checks, "~> 0.1.0", only: [:dev, :test], runtime: false},
+      # ex_slop — Credo plugin that catches AI-generated Elixir
+      # patterns (blanket rescue, narrator-style docs, redundant
+      # Enum chains, etc). Plugged into the existing Credo run.
+      {:ex_slop, "~> 0.4", only: [:dev, :test], runtime: false},
       # Mox — behaviour-based mocks for the MobDev.Release.* test suite.
       # Lets us test "given inputs, clang is invoked with these args"
       # without actually running clang.
