@@ -467,15 +467,18 @@ defmodule Mix.Tasks.Mob.AddNif do
 
     [lib]
     name = "#{name}"
-    # `cdylib` is Rustler's default — produces a `.so`/`.dylib` for dlopen.
-    # For Mob's static-link path, change to `crate-type = ["staticlib"]`
-    # and wire the resulting `lib<name>.a` into ios/build.zig + android
-    # CMakeLists. The default below keeps the host-dev `mix phx.server`
-    # path working out-of-the-box; switch when you're ready to ship.
-    crate-type = ["cdylib"]
+    # `staticlib` is required for Mob's iOS/Android device builds
+    # (the .a gets linked into the main binary). `cdylib` keeps the
+    # host-dev `mix compile` path working — produces priv/native/<name>.so
+    # for the BEAM to dlopen on Mac/Linux dev.
+    crate-type = ["staticlib", "cdylib"]
 
     [dependencies]
-    rustler = "0.32"
+    # 0.37+ derives the static-NIF init symbol from CARGO_CRATE_NAME
+    # (`<crate>_nif_init`), which matches what Mob's driver_tab
+    # declares. Older versions (≤0.36) hardcode `nif_init` and
+    # require manual symbol-renaming to use with Mob's static link.
+    rustler = "0.37"
     """
   end
 
