@@ -147,36 +147,6 @@ defmodule Mix.Tasks.Mob.EnableTest do
     end
   end
 
-  describe "python (deprecated alias)" do
-    # `mix mob.enable python` was the original spelling. We keep it working
-    # so existing invocations don't break, but it emits a deprecation notice
-    # promoting `pythonx` as the canonical name. Drop this describe block
-    # (and the alias dispatch) once the deprecation cycle ends.
-
-    test "still produces the same :pythonx dep + python_paths.ex output" do
-      igniter =
-        test_project()
-        |> Igniter.compose_task("mob.enable", ["python"])
-
-      mix_exs = Rewrite.Source.get(Rewrite.source!(igniter.rewrite, "mix.exs"), :content)
-      assert mix_exs =~ ":pythonx"
-
-      file = Rewrite.source!(igniter.rewrite, "lib/test/python_paths.ex")
-      assert Rewrite.Source.get(file, :content) =~ "defmodule Test.PythonPaths"
-    end
-
-    test "emits a deprecation notice naming both the old and new spellings" do
-      igniter =
-        test_project()
-        |> Igniter.compose_task("mob.enable", ["python"])
-
-      assert Enum.any?(igniter.notices, fn n ->
-               n =~ "deprecated" and n =~ "mob.enable python" and n =~ "mob.enable pythonx"
-             end),
-             "Expected a deprecation notice naming both `mob.enable python` and " <>
-               "`mob.enable pythonx`. Got notices:\n#{Enum.join(igniter.notices, "\n---\n")}"
-    end
-  end
 
   describe "mlx feature" do
     test "adds :nx and :emlx deps via Igniter" do
