@@ -129,6 +129,7 @@ defmodule MobDev.MixProject do
       extras: [
         "README.md": [title: "mob_dev"],
         "build_release.md": [title: "Building OTP Release Tarballs"],
+        "guides/nifs.md": [title: "Static NIFs (C, Rust, Zig, Python)"],
         "guides/security_scan.md": [title: "Security scanning"],
         "guides/slim_release.md": [title: "Slim Release (bundle size)"],
         "guides/publishing_to_testflight.md": [title: "Publishing to TestFlight (iOS)"],
