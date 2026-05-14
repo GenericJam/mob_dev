@@ -168,14 +168,22 @@ defmodule MobDev.NativeBuild do
 
         IO.puts("  Compiling Android C objects via zig build (per-ABI)...")
 
-        # Cross-compile project Rust/Zig NIFs for aarch64-linux-android
-        # once; the per-ABI loop below only threads them into the arm64
-        # build (issue #19 scope — armv7 is a follow-up). The empty list
-        # for armv7 makes the build.zig template treat that ABI as
-        # "no project NIFs" — same shape as a project with none defined.
-        with {:ok, nif_args} <- project_nif_zig_args(:android) do
+        # Cross-compile project Rust/Zig NIFs once per ABI. Each
+        # invocation targets `aarch64-linux-android` or
+        # `armv7-linux-androideabi` (Rust) / `arm-linux-androideabi`
+        # (Zig) and produces its own per-target `.a` paths. NIFs whose
+        # `mob.exs` `:archs` entry lists `[:android_arm64]` only
+        # appear in the arm64 build; same for arm32; `[:all]` and
+        # `[:android]` land in both. The per-ABI build.zig invocation
+        # in `run_zig_android_objects` then receives the right archive
+        # set and links them into its `lib<app>.so`.
+        with {:ok, arm64_nif_args} <- project_nif_zig_args(:android_arm64),
+             {:ok, arm32_nif_args} <- project_nif_zig_args(:android_arm32) do
           Enum.reduce_while(
-            [{otp_arm64, "arm64-v8a", nif_args}, {otp_arm32, "armeabi-v7a", []}],
+            [
+              {otp_arm64, "arm64-v8a", arm64_nif_args},
+              {otp_arm32, "armeabi-v7a", arm32_nif_args}
+            ],
             :ok,
             fn {otp_dir, abi, abi_nif_args}, _acc ->
               case run_zig_android_objects(
@@ -2605,25 +2613,28 @@ defmodule MobDev.NativeBuild do
   # Build args to pass to `zig build`. Returns
   # `{:ok, ["-Dproject_c_nifs=…", "-Dproject_rust_libs=…", "-Dproject_root=…"]}`
   # or `{:error, reason}` if a Rust cross-compile fails.
-  @spec project_nif_zig_args(:ios_device | :ios_sim | :android) ::
+  @spec project_nif_zig_args(:ios_device | :ios_sim | :android_arm64 | :android_arm32) ::
           {:ok, [String.t()]} | {:error, String.t()}
   defp project_nif_zig_args(platform) do
     project_root = File.cwd!()
     # Respect each entry's `:archs` field — a NIF with
     # `archs: [:ios]` (in mob.exs `:static_nifs`) should be skipped on
-    # the Android build path entirely (and vice versa). The driver_tab
-    # generator already honours this via `on_platform?/2`; the
-    # cross-compile path now does too. Maps `mob_dev_platform/0` →
-    # the broader platform atom that `on_platform?/2` understands.
-    target_platform =
+    # the Android build path entirely (and vice versa), and a NIF with
+    # `archs: [:android_arm64]` should only land in the arm64 build,
+    # not the armv7 one. The driver_tab generator already honours this
+    # via `on_platform?/2`; the cross-compile path now does too. Maps
+    # the mob_dev build atom → the StaticNifs arch atom that
+    # `on_platform?/2` understands.
+    target_arch =
       case platform do
         p when p in [:ios_device, :ios_sim] -> :ios
-        :android -> :android
+        :android_arm64 -> :android_arm64
+        :android_arm32 -> :android_arm32
       end
 
     entries =
       project_nif_user_entries()
-      |> Enum.filter(&MobDev.StaticNifs.on_platform?(&1, target_platform))
+      |> Enum.filter(&MobDev.StaticNifs.on_platform?(&1, target_arch))
 
     {c_names, rust_manifests, zig_modules} =
       Enum.reduce(entries, {[], [], []}, fn entry, {c_acc, rust_acc, zig_acc} ->
@@ -2711,10 +2722,12 @@ defmodule MobDev.NativeBuild do
 
   # Apple toolchains differ between simulator and device targets. Both
   # are arm64 on Apple Silicon Macs; sim has the `-sim` suffix because
-  # the SDK headers differ.
+  # the SDK headers differ. Android splits per-ABI: arm64-v8a uses
+  # `aarch64-linux-android`; armeabi-v7a uses `armv7-linux-androideabi`.
   defp rust_target_for(:ios_device), do: "aarch64-apple-ios"
   defp rust_target_for(:ios_sim), do: "aarch64-apple-ios-sim"
-  defp rust_target_for(:android), do: "aarch64-linux-android"
+  defp rust_target_for(:android_arm64), do: "aarch64-linux-android"
+  defp rust_target_for(:android_arm32), do: "armv7-linux-androideabi"
 
   # ── Zigler cross-compile (issue #15 final piece) ─────────────────────────
 
@@ -2756,7 +2769,8 @@ defmodule MobDev.NativeBuild do
     end
   end
 
-  defp sdkroot_args_for(:android), do: {:ok, ["-Dandroid_sdkroot=#{ndk_sysroot()}"]}
+  defp sdkroot_args_for(:android_arm64), do: {:ok, ["-Dandroid_sdkroot=#{ndk_sysroot()}"]}
+  defp sdkroot_args_for(:android_arm32), do: {:ok, ["-Dandroid_sdkroot=#{ndk_sysroot()}"]}
   defp sdkroot_args_for(_), do: {:ok, []}
 
   # Drives Zigler's build pipeline a SECOND time against the staging
@@ -2813,12 +2827,21 @@ defmodule MobDev.NativeBuild do
         # had as its default. We can't use Zigler's TARGET_ARCH/OS/ABI
         # env vars here because the staging build.zig was already
         # rendered during the host `mix compile` (with default target).
+        #
+        # `--prefix zig-out-<target>` keeps per-target outputs in
+        # separate directories so running this twice (Android arm64
+        # + armv7) doesn't overwrite the first build's archive — the
+        # default `zig-out/` would clobber on the second invocation.
+        prefix = "zig-out-#{target}"
+
         args =
           [
             "build",
             "-Dtarget=#{target}",
             "-Dnif_linkage=static",
-            "-Dnif_init_alias=#{name}_nif_init"
+            "-Dnif_init_alias=#{name}_nif_init",
+            "--prefix",
+            prefix
           ] ++ sdkroot_args
 
         case System.cmd(zig_exe, args,
@@ -2828,7 +2851,7 @@ defmodule MobDev.NativeBuild do
              ) do
           {_, 0} ->
             # Zigler names the output `libElixir.<Module>.a`.
-            a = Path.join([staging_dir, "zig-out/lib/libElixir.#{module_basename(module)}.a"])
+            a = Path.join([staging_dir, "#{prefix}/lib/libElixir.#{module_basename(module)}.a"])
 
             cond do
               not File.exists?(a) ->
@@ -2905,7 +2928,11 @@ defmodule MobDev.NativeBuild do
   # differ via the `.simulator` ABI suffix.
   defp zig_build_target_for(:ios_device), do: "aarch64-ios-none"
   defp zig_build_target_for(:ios_sim), do: "aarch64-ios-simulator"
-  defp zig_build_target_for(:android), do: "aarch64-linux-android"
+  defp zig_build_target_for(:android_arm64), do: "aarch64-linux-android"
+  # Zig's armv7-android triple uses `arm-linux-androideabi`; the
+  # `androideabi` ABI marker matches Rust's `armv7-linux-androideabi`
+  # for ELF-level compatibility when both libs land in the same .so.
+  defp zig_build_target_for(:android_arm32), do: "arm-linux-androideabi"
 
   @spec generate_erl_errno_compat_stub(Path.t()) :: :ok
   def generate_erl_errno_compat_stub(build_dir) do
