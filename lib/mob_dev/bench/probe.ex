@@ -384,14 +384,7 @@ defmodule MobDev.Bench.Probe do
 
   # ── Helpers ──────────────────────────────────────────────────────────────
 
-  defp derive_host(nil), do: nil
-
-  defp derive_host(node) when is_atom(node) do
-    case Atom.to_string(node) |> String.split("@", parts: 2) do
-      [_, host] -> host
-      _ -> nil
-    end
-  end
+  defp derive_host(node), do: MobDev.NodeUtil.host_from_node(node)
 
   @doc """
   Format the probe result as a one-line trace fragment.

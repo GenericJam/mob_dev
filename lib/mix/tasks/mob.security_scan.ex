@@ -86,7 +86,7 @@ defmodule Mix.Tasks.Mob.SecurityScan do
       Mix.shell().info("wrote markdown report to #{path}")
     end
 
-    maybe_exit_strict(report, opts[:strict])
+    Report.maybe_exit_strict(report, opts[:strict])
   end
 
   defp parse_skip(nil), do: []
@@ -105,17 +105,4 @@ defmodule Mix.Tasks.Mob.SecurityScan do
     if opts[:json], do: :ok, else: :ok
   end
 
-  defp maybe_exit_strict(_report, nil), do: :ok
-  defp maybe_exit_strict(_report, false), do: :ok
-
-  defp maybe_exit_strict(report, true) do
-    case Report.worst_severity(report) do
-      sev when sev in [:critical, :high, :medium] ->
-        Mix.shell().error("--strict: #{sev} finding(s) present")
-        exit({:shutdown, 1})
-
-      _ ->
-        :ok
-    end
-  end
 end

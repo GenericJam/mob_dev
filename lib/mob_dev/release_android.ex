@@ -127,30 +127,7 @@ defmodule MobDev.ReleaseAndroid do
     app_dirs ++ eex ++ ssl
   end
 
-  defp exqlite_version do
-    with {:ok, lock} <- File.read("mix.lock"),
-         [_, vsn] <- Regex.run(Regex.compile!("\"exqlite\"[^\"]*\"(\\d+\\.\\d+\\.\\d+)\""), lock) do
-      vsn
-    else
-      _ ->
-        case Path.wildcard("_build/dev/lib/exqlite/ebin/exqlite.app") do
-          [app_file | _] ->
-            case File.read(app_file) do
-              {:ok, content} ->
-                case Regex.run(Regex.compile!("\\{vsn,\"([^\"]+)\"\\}"), content) do
-                  [_, vsn] -> vsn
-                  _ -> nil
-                end
-
-              _ ->
-                nil
-            end
-
-          _ ->
-            nil
-        end
-    end
-  end
+  defp exqlite_version, do: MobDev.AppFile.dep_version(:exqlite)
 
   # The Android OTP release lacks :crypto (no cross-compiled OpenSSL NIF).
   # Many deps (ecto, phoenix_pubsub, plug_crypto, …) declare it as a required

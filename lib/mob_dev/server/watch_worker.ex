@@ -60,7 +60,7 @@ defmodule MobDev.Server.WatchWorker do
 
   def handle_call(:start, _from, state) do
     nodes = connect_nodes()
-    sources = snapshot_sources()
+    sources = MobDev.SourceWatch.snapshot()
     timer = schedule_tick()
     state = %{state | watching: true, sources: sources, nodes: nodes, timer: timer}
     broadcast({:watch_status, :watching})
@@ -83,8 +83,8 @@ defmodule MobDev.Server.WatchWorker do
   def handle_info(:tick, %{watching: false} = state), do: {:noreply, state}
 
   def handle_info(:tick, state) do
-    current = snapshot_sources()
-    changed = changed_files(state.sources, current)
+    current = MobDev.SourceWatch.snapshot()
+    changed = MobDev.SourceWatch.diff(state.sources, current)
 
     state =
       if changed == [] do
@@ -92,7 +92,7 @@ defmodule MobDev.Server.WatchWorker do
       else
         # Debounce — let format-on-save and multi-file saves settle.
         Process.sleep(@debounce)
-        current2 = snapshot_sources()
+        current2 = MobDev.SourceWatch.snapshot()
 
         nodes = reconnect(state.nodes)
 
@@ -145,25 +145,6 @@ defmodule MobDev.Server.WatchWorker do
   defp compile do
     mix = System.find_executable("mix") || "mix"
     System.cmd(mix, ["compile"], cd: File.cwd!(), stderr_to_stdout: true)
-  end
-
-  defp snapshot_sources do
-    Path.wildcard("lib/**/*.ex")
-    |> Map.new(fn path ->
-      mtime =
-        case File.stat(path, time: :posix) do
-          {:ok, %{mtime: t}} -> t
-          _ -> 0
-        end
-
-      {path, mtime}
-    end)
-  end
-
-  defp changed_files(old, current) do
-    current
-    |> Enum.filter(fn {path, mtime} -> Map.get(old, path) != mtime end)
-    |> Enum.map(&elem(&1, 0))
   end
 
   defp broadcast(msg), do: Phoenix.PubSub.broadcast(@pubsub, @topic, msg)

@@ -130,10 +130,6 @@ defmodule Mix.Tasks.Mob.VerifyStrip do
         end
     end
 
-    Mix.shell().info("  Elapsed: #{format_us(report.elapsed_us)}")
+    Mix.shell().info("  Elapsed: #{MobDev.Duration.format_us(report.elapsed_us)}")
   end
-
-  defp format_us(us) when us < 1_000, do: "#{us}μs"
-  defp format_us(us) when us < 1_000_000, do: "#{Float.round(us / 1_000, 1)}ms"
-  defp format_us(us), do: "#{Float.round(us / 1_000_000, 2)}s"
 end

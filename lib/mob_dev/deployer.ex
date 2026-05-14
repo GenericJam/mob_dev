@@ -312,14 +312,8 @@ defmodule MobDev.Deployer do
 
     device_vsn =
       case run_adb(["-s", serial, "shell", "run-as #{pkg} cat #{elixir_app}"]) do
-        {:ok, content} ->
-          case Regex.run(Regex.compile!("\\{vsn,\"([^\"]+)\"\\}"), content) do
-            [_, v] -> v
-            _ -> nil
-          end
-
-        _ ->
-          nil
+        {:ok, content} -> MobDev.AppFile.vsn_from_content(content)
+        _ -> nil
       end
 
     if device_vsn != host_vsn do
@@ -658,32 +652,7 @@ defmodule MobDev.Deployer do
     end
   end
 
-  defp exqlite_version do
-    # Try mix.lock first (most reliable)
-    with {:ok, lock} <- File.read("mix.lock"),
-         [_, vsn] <- Regex.run(Regex.compile!("\"exqlite\"[^\"]*\"(\\d+\\.\\d+\\.\\d+)\""), lock) do
-      vsn
-    else
-      _ ->
-        # Fall back to .app file
-        case Path.wildcard("_build/dev/lib/exqlite/ebin/exqlite.app") do
-          [app_file | _] ->
-            case File.read(app_file) do
-              {:ok, content} ->
-                case Regex.run(Regex.compile!("\\{vsn,\"([^\"]+)\"\\}"), content) do
-                  [_, vsn] -> vsn
-                  _ -> nil
-                end
-
-              _ ->
-                nil
-            end
-
-          [] ->
-            nil
-        end
-    end
-  end
+  defp exqlite_version, do: MobDev.AppFile.dep_version(:exqlite)
 
   defp push_beams_android(serial, beam_dirs) do
     # Try adb root first (works on emulators and eng builds).

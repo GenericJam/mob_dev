@@ -230,14 +230,7 @@ defmodule MobDev.PythonAndroidSupport do
     end
   end
 
-  defp download(url, dest) do
-    case System.cmd("curl", ["-L", "--fail", "--progress-bar", "-o", dest, url],
-           stderr_to_stdout: false
-         ) do
-      {_, 0} -> :ok
-      {out, rc} -> {:error, "curl failed (exit #{rc}): #{String.trim(out)}"}
-    end
-  end
+  defp download(url, dest), do: MobDev.Download.curl(url, dest)
 
   defp extract_zip(zip, dest_dir) do
     case System.cmd("unzip", ["-q", "-o", zip, "-d", dest_dir], stderr_to_stdout: true) do
