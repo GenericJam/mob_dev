@@ -104,5 +104,4 @@ defmodule Mix.Tasks.Mob.SecurityScan do
   defp on_layer_done(_layer, opts) do
     if opts[:json], do: :ok, else: :ok
   end
-
 end

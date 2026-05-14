@@ -248,5 +248,4 @@ defmodule Mix.Tasks.Mob.TraceOtp do
 
     File.write!(path, Jason.encode!(payload, pretty: true))
   end
-
 end

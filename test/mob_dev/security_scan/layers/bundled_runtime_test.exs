@@ -17,7 +17,9 @@ defmodule MobDev.SecurityScan.Layers.BundledRuntimeTest do
 
     path = Path.join(cache_dir, dir_name)
 
-    erts_lib = Path.join([path, "erts-#{MobDev.SecurityScan.BundledVersions.active().erts}", "lib"])
+    erts_lib =
+      Path.join([path, "erts-#{MobDev.SecurityScan.BundledVersions.active().erts}", "lib"])
+
     File.mkdir_p!(erts_lib)
 
     if openssl = opts[:openssl] do

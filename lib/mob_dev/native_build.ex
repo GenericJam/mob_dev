@@ -276,8 +276,12 @@ defmodule MobDev.NativeBuild do
     # `addCObject`, so either extension flows through correctly.
     generated_zig = "priv/generated/driver_tab_#{platform}.zig"
     generated_c = "priv/generated/driver_tab_#{platform}.c"
-    mob_zig = Path.join(mob_subdir ++ ["driver_tab_#{platform}.zig"]) |> then(&Path.join([mob_dir, &1]))
-    mob_c = Path.join(mob_subdir ++ ["driver_tab_#{platform}.c"]) |> then(&Path.join([mob_dir, &1]))
+
+    mob_zig =
+      Path.join(mob_subdir ++ ["driver_tab_#{platform}.zig"]) |> then(&Path.join([mob_dir, &1]))
+
+    mob_c =
+      Path.join(mob_subdir ++ ["driver_tab_#{platform}.c"]) |> then(&Path.join([mob_dir, &1]))
 
     cond do
       File.exists?(generated_zig) -> Path.expand(generated_zig)
