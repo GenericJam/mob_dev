@@ -161,14 +161,12 @@ Conditional, per `--type`:
 | `zigler`     | none (Zig source lives inline in the stub via `~Z`) | `:zigler ~> 0.15` |
 | `rustler`    | `native/<name>/{Cargo.toml,src/lib.rs,.gitignore}`  | `:rustler ~> 0.32` |
 
-**⚠️  Static-link gotcha for zigler / rustler.** Both libraries' default
-flow produces a dynamically-loaded `.so` library. That's incompatible
-with Mob's static-link requirement (iOS App Store rejects bundled
-`.dylib`s; Android `RTLD_LOCAL` hides parent symbols from children).
-For host-dev (`mix phx.server`, sim) the default works out-of-the-box;
-for on-device shipping, you'll need to wire the Zigler/Rustler
-artifact into `ios/build.zig` + `android/jni/` manually. The generated
-stubs include warning callouts in their `@moduledoc`.
+For the contract per backend — how Rustler, Zigler, Pythonx normally
+work, what Mob changes for static linking, where the bundled Python
+runtime comes from on each platform, and which patches are
+transient — see [`guides/nifs.md`](guides/nifs.md). Read it before
+filing a "my NIF builds host-dev but not on device" issue; it
+probably answers the question.
 
 ## Navigation validation (`mix mob.routes`)
 
