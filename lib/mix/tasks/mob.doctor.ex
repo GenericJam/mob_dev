@@ -319,7 +319,44 @@ defmodule Mix.Tasks.Mob.Doctor do
       end,
       check_android_sdk(),
       check_android_ndk()
-    ]
+    ] ++ maybe_check_rust_android_targets()
+  end
+
+  # If the project has any Rust NIFs (native/*/Cargo.toml), make sure both
+  # Android rustup targets are installed. Without these, `cargo build
+  # --target=aarch64-linux-android` (or `armv7-linux-androideabi`) fails
+  # with "error: toolchain '<x>' is not installed".
+  defp maybe_check_rust_android_targets do
+    if has_rust_nif?() and System.find_executable("rustup") do
+      [check_rust_android_targets()]
+    else
+      []
+    end
+  end
+
+  defp has_rust_nif?, do: Path.wildcard("native/*/Cargo.toml") != []
+
+  defp check_rust_android_targets do
+    case System.cmd("rustup", ["target", "list", "--installed"], stderr_to_stdout: true) do
+      {out, 0} ->
+        installed = String.split(out, "\n", trim: true)
+
+        wanted = ["aarch64-linux-android", "armv7-linux-androideabi"]
+        missing = wanted -- installed
+
+        case missing do
+          [] ->
+            {:ok, "rust android targets", "aarch64 + armv7 ✓", nil}
+
+          _ ->
+            {:fail, "rust android targets", "missing: #{Enum.join(missing, ", ")}",
+             "Install:\n      rustup target add #{Enum.join(missing, " ")}"}
+        end
+
+      {_, _} ->
+        {:warn, "rust android targets", "rustup target list failed",
+         "Verify rustup is functional: rustup --version"}
+    end
   end
 
   # Validate the Android NDK install matches what mob's bundled OTP runtime
