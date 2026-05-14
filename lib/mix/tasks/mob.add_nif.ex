@@ -174,14 +174,14 @@ defmodule Mix.Tasks.Mob.AddNif do
     binds each `#[rustler::nif]`-annotated function as a function on
     this module. Replace the example `add_one/1` with your real surface.
 
-    > **⚠️  Static linking note.** Rustler's default flow produces a
-    > dynamically-loaded `.so` library, which is incompatible with Mob's
-    > static-link requirement (iOS App Store rejects bundled `.dylib`s;
-    > Android `RTLD_LOCAL` hides parent symbols from children). To make
-    > this work on-device you'll need to build the Rust crate as a
-    > `staticlib` and wire the resulting archive into `ios/build.zig`
-    > + `android/jni/` manually. The host-dev path (`mix phx.server`,
-    > sim) works out of the box.
+    Static linking on-device (iOS device + Android) is handled by
+    `mob_dev` automatically — it cross-compiles the crate as a
+    staticlib and links the `.a` into the main app binary alongside
+    libbeam.a. Host-dev (`mix phx.server`, simulator) keeps using
+    Rustler's standard cdylib dlopen path. See
+    `guides/nifs.md` in mob_dev for the full per-backend contract,
+    including the transient Android dlsym patch in the generated
+    Cargo.toml.
     \"\"\"
 
     use Rustler, otp_app: :#{app}, crate: "#{name}"
@@ -207,27 +207,20 @@ defmodule Mix.Tasks.Mob.AddNif do
     its build pipeline and exposes each `pub fn` as a NIF function on this
     module. Replace the example `add_one/1` with your real surface.
 
-    > **⚠️  Static linking note.** Zigler's default flow produces a
-    > dynamically-loaded `.so` library, which is incompatible with Mob's
-    > static-link requirement (iOS App Store rejects bundled `.dylib`s;
-    > Android `RTLD_LOCAL` hides parent symbols from children). To make
-    > this work on-device you'll need to wire the Zigler-compiled archive
-    > into your `ios/build.zig` + `android/jni/` pipeline manually. The
-    > host-dev path (`mix phx.server`, sim) works out of the box.
+    Static linking on-device (iOS device + Android) is handled by
+    `mob_dev` automatically — Zigler's compiled archive is linked into
+    the main app binary. Host-dev (`mix phx.server`, simulator) keeps
+    using Zigler's standard dlopen path. See `guides/nifs.md` in
+    mob_dev for the full per-backend contract.
 
-    > **⚠️  Zig toolchain note.** Zigler 0.15.x pins its own Zig version
-    > (0.15.2) and downloads it via `mix zig.get` into the user-cache
-    > directory. `mix mob.add_nif --type zigler` runs `zig.get`
-    > automatically — without it, Zigler falls back to `System.find_executable("zig")`
-    > and uses whatever's on PATH (typically the wrong version).
-
-    > **⚠️  macOS 26 (Sequoia/Tahoe) note.** As of Zig 0.15.2, Zig's
-    > bundled `compiler_rt` references `__availability_version_check`
-    > and related symbols that aren't available when linking with
-    > macOS 26's SDK. Compile fails with `undefined symbol:
-    > __availability_version_check` and a cascade of POSIX symbols.
-    > Linux and older macOS are unaffected. Tracking upstream — once
-    > Zigler supports Zig 0.16+ this resolves itself.
+    `mob.add_nif --type zigler` pins a fork (`{:zigler, github:
+    "GenericJam/zigler", branch: "zig-016-port"}`) and runs
+    `mix zig.get` automatically. Two reasons, both transient:
+    macOS 26's SDK rejects symbols `compiler_rt` references in Zig
+    0.15.x, and Zig 0.16's bare `nif_init` symbol collided with
+    Rustler's at static-link time. Both reasons evaporate when
+    upstream Zigler ships Zig 0.16 with a per-NIF init alias —
+    tracker: upstream issues #578 / #579.
     \"\"\"
 
     use Zig, otp_app: :#{app}
