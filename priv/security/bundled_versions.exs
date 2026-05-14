@@ -1,57 +1,37 @@
 # Source-of-truth manifest for what versions ship inside the OTP
 # tarballs that `MobDev.OtpDownloader` fetches.
 #
-# This file MUST be updated every time those tarballs are rebuilt
-# and re-uploaded to the GitHub release. The bundled-runtime scan
-# layer fingerprints the cached tarballs at scan time and raises if
-# the binaries disagree with what's declared here — drift between
-# what we say we shipped and what we actually shipped is exactly
-# the failure mode this manifest is designed to catch.
+# `:active_hash` MUST match `@otp_hash` in
+# `lib/mob_dev/otp_downloader.ex` — the security-scan layer
+# fingerprints `~/.mob/cache/otp-*-{hash}/` against the bundle
+# entry for this hash and raises if they disagree.
 #
 # When updating:
 #
-#   1. Bump the appropriate `:otp_hash` entry (or add a new one)
-#   2. Update the version fields under `:bundles`
+#   1. Bump `:active_hash` to the new hash
+#   2. Add or replace the corresponding bundle entry
 #   3. Run `mix mob.security_scan` — the bundled-runtime layer
 #      will fingerprint the cached tarball and assert that the
 #      binary matches the manifest. If it doesn't, fix the
 #      manifest, the tarball, or both.
 #
-# The OTP hash matches `MobDev.OtpDownloader`'s `@otp_hash`. There
-# is exactly one active hash per published Mob release.
-#
-# Format:
-#
-#   %{
-#     active_hash: "73ba6e0f",
-#     bundles: %{
-#       "73ba6e0f" => %{
-#         erts: "16.3",         # erts-* directory in tarball
-#         otp_release: "28",    # major OTP release number
-#         elixir: "1.19.5",     # bundled Elixir stdlib version
-#         openssl: "3.4.0",     # statically linked into libcrypto.a
-#         exqlite_beam: "0.36.0",
-#         openssl_release_date: "2024-10-22",
-#         platforms: [:android, :android_arm32, :ios_sim, :ios_device]
-#       }
-#     }
-#   }
+# Per-platform overrides let a single bundle entry describe
+# platforms whose artifact set differs. `%{exqlite_beam: nil}`
+# means "this platform deliberately does not ship the exqlite
+# beam in the tarball" — the host's `_build/dev/lib/exqlite`
+# is bundled at deploy time instead.
 
 %{
-  active_hash: "73ba6e0f",
+  active_hash: "550d7b78",
   bundles: %{
-    "73ba6e0f" => %{
-      erts: "16.3",
-      otp_release: "28",
-      elixir: "1.19.5",
+    "550d7b78" => %{
+      erts: "17.0",
+      otp_release: "29",
+      elixir: "1.20.0-rc.5",
       openssl: "3.4.0",
       exqlite_beam: "0.36.0",
       openssl_release_date: "2024-10-22",
       platforms: [:android, :android_arm32, :ios_sim, :ios_device],
-      # Per-platform overrides. A field here replaces the bundle-level
-      # default for that platform; setting it to `nil` means "this
-      # platform deliberately does not ship that artifact" (and the
-      # fingerprinter should not flag its absence as drift).
       per_platform: %{
         ios_sim: %{exqlite_beam: nil},
         ios_device: %{exqlite_beam: nil}
