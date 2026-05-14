@@ -214,15 +214,16 @@ defmodule MobDev.Tunnel do
   # binary, which doesn't ship with macOS or BSD by default. Calls adb
   # directly via System.cmd/3 (no shell, no quoting concerns).
   defp run_adb(args) do
-    task = Task.async(fn ->
-      System.cmd("adb", args, stderr_to_stdout: true)
-    end)
+    task =
+      Task.async(fn ->
+        System.cmd("adb", args, stderr_to_stdout: true)
+      end)
 
     case Task.yield(task, 8_000) || Task.shutdown(task, :brutal_kill) do
-      {:ok, {output, 0}}     -> {:ok, String.trim(output)}
-      {:ok, {output, _rc}}   -> {:error, String.trim(output)}
-      nil                    -> {:error, "adb timed out"}
-      {:exit, reason}        -> {:error, "adb crashed: #{inspect(reason)}"}
+      {:ok, {output, 0}} -> {:ok, String.trim(output)}
+      {:ok, {output, _rc}} -> {:error, String.trim(output)}
+      nil -> {:error, "adb timed out"}
+      {:exit, reason} -> {:error, "adb crashed: #{inspect(reason)}"}
     end
   end
 end

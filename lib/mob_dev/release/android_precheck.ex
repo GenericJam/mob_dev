@@ -24,7 +24,9 @@ defmodule MobDev.Release.AndroidPrecheck do
     if shell.dir?(ndk_root) do
       :ok
     else
-      Errors.precondition("Android NDK not at #{ndk_root} — install NDK #{NdkVersion.effective()}")
+      Errors.precondition(
+        "Android NDK not at #{ndk_root} — install NDK #{NdkVersion.effective()}"
+      )
     end
   end
 
