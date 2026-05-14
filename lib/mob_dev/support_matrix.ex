@@ -165,9 +165,8 @@ defmodule MobDev.SupportMatrix do
     [
       {:pythonx, &pythonx_enabled?/1}
     ]
-    |> Enum.flat_map(fn {feature, detect} ->
-      if detect.(project_dir), do: [feature], else: []
-    end)
+    |> Enum.filter(fn {_feature, detect} -> detect.(project_dir) end)
+    |> Enum.map(&elem(&1, 0))
   end
 
   defp pythonx_enabled?(project_dir) do
