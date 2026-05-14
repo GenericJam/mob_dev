@@ -338,7 +338,7 @@ defmodule MobDev.Enable do
 
   @doc """
   Returns the source for the `<App>.PythonPaths` module that
-  `mix mob.enable python` writes to `lib/<app>/python_paths.ex`.
+  `mix mob.enable pythonx` writes to `lib/<app>/python_paths.ex`.
 
   Pure — no filesystem access. The generated module supports iOS
   (paths under `<otp_root>/python/`) and Android (paths from

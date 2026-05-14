@@ -90,11 +90,11 @@ defmodule Mix.Tasks.Mob.EnableTest do
     end
   end
 
-  describe "python feature" do
-    test "adds :pythonx dep via Igniter (AST-aware) — iter 2" do
+  describe "pythonx feature" do
+    test "adds :pythonx dep via Igniter (AST-aware)" do
       igniter =
         test_project()
-        |> Igniter.compose_task("mob.enable", ["python"])
+        |> Igniter.compose_task("mob.enable", ["pythonx"])
 
       mix_exs = Rewrite.Source.get(Rewrite.source!(igniter.rewrite, "mix.exs"), :content)
       # The dep was added via `Igniter.Project.Deps.add_dep` (parses
@@ -105,7 +105,7 @@ defmodule Mix.Tasks.Mob.EnableTest do
     test "generates lib/<app>/python_paths.ex as an Elixir module" do
       igniter =
         test_project()
-        |> Igniter.compose_task("mob.enable", ["python"])
+        |> Igniter.compose_task("mob.enable", ["pythonx"])
 
       file = Rewrite.source!(igniter.rewrite, "lib/test/python_paths.ex")
       content = Rewrite.Source.get(file, :content)
@@ -129,10 +129,52 @@ defmodule Mix.Tasks.Mob.EnableTest do
 
       igniter =
         test_project(files: %{"mix.exs" => mix_exs})
-        |> Igniter.compose_task("mob.enable", ["python"])
+        |> Igniter.compose_task("mob.enable", ["pythonx"])
 
       patched = Rewrite.Source.get(Rewrite.source!(igniter.rewrite, "mix.exs"), :content)
       assert patched |> String.split(":pythonx") |> length() == 2
+    end
+
+    test "emits a 'next steps for pythonx' notice (library-named, not generic)" do
+      igniter =
+        test_project()
+        |> Igniter.compose_task("mob.enable", ["pythonx"])
+
+      # The notice header should match the canonical name. Catches the
+      # accidental "Next steps for python:" regression if someone reverts
+      # only half of the rename.
+      assert Enum.any?(igniter.notices, &(&1 =~ "Next steps for pythonx"))
+    end
+  end
+
+  describe "python (deprecated alias)" do
+    # `mix mob.enable python` was the original spelling. We keep it working
+    # so existing invocations don't break, but it emits a deprecation notice
+    # promoting `pythonx` as the canonical name. Drop this describe block
+    # (and the alias dispatch) once the deprecation cycle ends.
+
+    test "still produces the same :pythonx dep + python_paths.ex output" do
+      igniter =
+        test_project()
+        |> Igniter.compose_task("mob.enable", ["python"])
+
+      mix_exs = Rewrite.Source.get(Rewrite.source!(igniter.rewrite, "mix.exs"), :content)
+      assert mix_exs =~ ":pythonx"
+
+      file = Rewrite.source!(igniter.rewrite, "lib/test/python_paths.ex")
+      assert Rewrite.Source.get(file, :content) =~ "defmodule Test.PythonPaths"
+    end
+
+    test "emits a deprecation notice naming both the old and new spellings" do
+      igniter =
+        test_project()
+        |> Igniter.compose_task("mob.enable", ["python"])
+
+      assert Enum.any?(igniter.notices, fn n ->
+               n =~ "deprecated" and n =~ "mob.enable python" and n =~ "mob.enable pythonx"
+             end),
+             "Expected a deprecation notice naming both `mob.enable python` and " <>
+               "`mob.enable pythonx`. Got notices:\n#{Enum.join(igniter.notices, "\n---\n")}"
     end
   end
 

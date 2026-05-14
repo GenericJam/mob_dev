@@ -362,7 +362,7 @@ that the interpreter came from a different upstream.
 Scaffold:
 
 ```bash
-mix mob.enable python      # not `mob.add_nif` — Python is an enable, not a generic NIF
+mix mob.enable pythonx     # not `mob.add_nif` — Pythonx is an enable, not a generic NIF
 ```
 
 For the app-integration story (when Pythonx initializes, where

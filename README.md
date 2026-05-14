@@ -106,7 +106,7 @@ mix mob.enable file_sharing                           # iOS plist keys + Android
 mix mob.enable location                               # iOS plist + Android ACCESS_FINE_LOCATION
 mix mob.enable notifications                          # creates ios/<app>.entitlements with aps-environment
 mix mob.enable liveview                               # generates lib/<app>/mob_screen.ex + assets + mob.exs
-mix mob.enable python                                 # adds :pythonx dep + generates <App>.PythonPaths
+mix mob.enable pythonx                                # adds :pythonx dep + generates <App>.PythonPaths
 ```
 
 Per-feature surface:
