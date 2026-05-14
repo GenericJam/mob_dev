@@ -84,7 +84,12 @@ defmodule Mix.Tasks.Mob.Enable do
   - Android: runtime only — `POST_NOTIFICATIONS` is requested at runtime, no
     manifest key needed.
 
-  ### `python`
+  ### `pythonx`
+
+  (Also accepted as `python` — that name is deprecated and will be
+  removed in a future release. The library-named form is consistent
+  with `mob.add_nif --type rustler` / `--type zigler` and the
+  `mob.enable mlx` feature.)
 
   Enables embedded CPython via [Pythonx](https://hex.pm/packages/pythonx)
   on iOS **and** Android.
@@ -162,7 +167,13 @@ defmodule Mix.Tasks.Mob.Enable do
   `Mob.Dist.ensure_started/1` have run.
   """
 
-  @valid_features ~w(liveview camera photo_library file_sharing location notifications python mlx)
+  @valid_features ~w(liveview camera photo_library file_sharing location notifications pythonx mlx)
+
+  # Deprecated feature names accepted for backwards compatibility. Each
+  # routes to its canonical entry and emits a notice telling the user to
+  # switch. Drop the entries (and the dispatch fall-throughs below) once
+  # the deprecation cycle is over.
+  @deprecated_features %{"python" => "pythonx"}
 
   @impl Igniter.Mix.Task
   def info(_argv, _composing_task) do
@@ -179,7 +190,8 @@ defmodule Mix.Tasks.Mob.Enable do
   @impl Igniter.Mix.Task
   def igniter(igniter) do
     features = parse_features(igniter.args.argv)
-    unknown = features -- @valid_features
+    accepted = @valid_features ++ Map.keys(@deprecated_features)
+    unknown = features -- accepted
 
     cond do
       features == [] ->
@@ -231,16 +243,32 @@ defmodule Mix.Tasks.Mob.Enable do
 
   defp dispatch(igniter, "liveview", app_name), do: EI.enable_liveview(igniter, app_name)
 
+  defp dispatch(igniter, "pythonx", app_name), do: enable_pythonx(igniter, app_name)
+
+  # Deprecated alias — kept working for one or two minor releases so existing
+  # invocations don't break, but the notice promotes the canonical name so
+  # the deprecation actually lands.
   defp dispatch(igniter, "python", app_name) do
     igniter
-    |> EI.enable_python(app_name)
-    |> Igniter.add_notice(python_next_steps(app_name))
+    |> Igniter.add_notice(
+      "`mix mob.enable python` is deprecated — use `mix mob.enable pythonx`. " <>
+        "The library-named form is consistent with `mob.add_nif --type rustler` " <>
+        "/ `--type zigler` and the existing `mob.enable mlx` feature. " <>
+        "Behaviour is unchanged; this notice will become an error in a future release."
+    )
+    |> enable_pythonx(app_name)
   end
 
   defp dispatch(igniter, "mlx", app_name) do
     igniter
     |> EI.enable_mlx(app_name)
     |> Igniter.add_notice(mlx_next_steps(app_name))
+  end
+
+  defp enable_pythonx(igniter, app_name) do
+    igniter
+    |> EI.enable_python(app_name)
+    |> Igniter.add_notice(pythonx_next_steps(app_name))
   end
 
   defp parse_features(argv) do
@@ -271,11 +299,11 @@ defmodule Mix.Tasks.Mob.Enable do
     """
   end
 
-  defp python_next_steps(app_name) do
+  defp pythonx_next_steps(app_name) do
     module = Macro.camelize(app_name)
 
     """
-    Next steps for python:
+    Next steps for pythonx:
       1. Run `mix deps.get` to fetch :pythonx
       2. In your `Mob.App.on_start/0`:
            {:ok, _} = Application.ensure_all_started(:pythonx)

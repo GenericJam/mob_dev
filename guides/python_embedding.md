@@ -1,6 +1,6 @@
 # Embedded CPython
 
-`mix mob.enable python` adds [Pythonx](https://hex.pm/packages/pythonx)
+`mix mob.enable pythonx` adds [Pythonx](https://hex.pm/packages/pythonx)
 support to a Mob app and bundles a real CPython interpreter into both
 the iOS and Android app artifacts. Once enabled you can call
 `Pythonx.eval/2` from BEAM to run Python code that ships inside the
@@ -75,7 +75,7 @@ mix mob.deploy --native --device <udid>
 
 ```bash
 cd my_app
-mix mob.enable python
+mix mob.enable pythonx
 mix deps.get
 mix mob.deploy --native --device <udid>
 ```
@@ -88,7 +88,7 @@ distribution into `~/.mob/cache/` and reuses it across projects:
 | iOS | BeeWare's `Python-Apple-support` (~70 MB) | `python-apple-support-<vsn>/` |
 | Android | Chaquopy prebuilts (~30 MB after pruning) | `python-android-support-<vsn>/` |
 
-`mix mob.enable python` runs a freshness check on existing projects
+`mix mob.enable pythonx` runs a freshness check on existing projects
 and warns if `ios/build.sh`, `android/.../CMakeLists.txt`, or
 `MainActivity.kt` are missing the build-time hooks the deploy
 expects. If you see that warning, regenerate from the latest
@@ -98,7 +98,7 @@ expects. If you see that warning, regenerate from the latest
 
 ## Wiring it up
 
-`mix mob.enable python` writes:
+`mix mob.enable pythonx` writes:
 
 - `lib/<app>/python_paths.ex` — a pure detection module that returns
   `:desktop` / `{:ios, paths}` / `{:android, paths}` /
@@ -256,7 +256,7 @@ back and feeds them to `Pythonx.init/4`.
 
 The build script's Pythonx work is gated on
 `if [ -d "_build/dev/lib/pythonx" ]` — projects that have never run
-`mix mob.enable python` see the gate as a no-op and pay no overhead.
+`mix mob.enable pythonx` see the gate as a no-op and pay no overhead.
 
 ---
 
