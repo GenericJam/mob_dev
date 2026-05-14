@@ -196,6 +196,127 @@ Scaffold:
 mix mob.add_nif audio_engine --type rustler
 ```
 
+### Bringing in an existing Rust crate
+
+`mob.add_nif` is for scaffolding a new NIF from scratch. If you already
+have a Rust crate written elsewhere — your own work, a multi-crate
+project authored against vanilla Rustler, anything that produces NIFs
+the standard way — Mob doesn't auto-import it, but the manual hookup
+is short. The four steps below are the whole list.
+
+**1. Drop the crate(s) into `native/<name>/`.** Each crate gets its own
+directory with its own `Cargo.toml` and `src/` tree. Mob doesn't care
+about Rust-internal structure — files, submodules, `build.rs`, bench
+targets, external deps, subdirectory module trees — that's all cargo's
+business. Mob compiles each crate via:
+
+```
+cargo rustc --release --target <arch> --crate-type staticlib \
+            --manifest-path native/<name>/Cargo.toml
+```
+
+Whatever cargo can build, Mob can ship.
+
+**2. Per Cargo.toml: add `staticlib` to `crate-type`.** A standard
+Rustler crate has:
+
+```toml
+[lib]
+crate-type = ["cdylib"]
+```
+
+Mob needs:
+
+```toml
+[lib]
+crate-type = ["staticlib", "cdylib"]
+```
+
+The `cdylib` keeps host-dev (`mix compile` on Mac/Linux) working
+through Rustler's normal dlopen path. The `staticlib` is what Mob's
+cross-compile consumes for the on-device link. One-line edit per
+crate.
+
+**3. Per Cargo.toml: add the Android dlsym patch.** Until upstream
+rustler ships the dladdr+dlopen(NOLOAD) fix (see "When the upstream
+lands its own fix" below), each crate's Cargo.toml needs:
+
+```toml
+[patch.crates-io]
+rustler = { git = "https://github.com/GenericJam/rustler.git",
+            branch = "genericjam-android-rtld-default" }
+```
+
+Without it, NIF init panics on Android with `undefined symbol:
+enif_priv_data`. iOS/macOS/Linux are unaffected.
+
+**4. Register each crate in `mob.exs`.** Open `mob.exs` and add one
+entry per crate to `:static_nifs`:
+
+```elixir
+config :mob_dev,
+  static_nifs: [
+    %{module: :dsp_utils, archs: [:all]},
+    %{module: :phy_modem, archs: [:all]},
+    %{module: :melpe,     archs: [:all]}
+  ]
+```
+
+The `module:` atom matches the directory name under `native/` and
+the `[lib] name = "..."` in that Cargo.toml. Then run:
+
+```bash
+mix mob.regen_driver_tab
+```
+
+which rewrites `priv/generated/driver_tab_{ios,android}.zig` to
+declare and dispatch each new init function. `mob.add_nif` calls this
+for you; when bringing in crates by hand, run it explicitly.
+
+The Elixir-side stubs (`lib/<app>/nifs/<name>.ex`) are also up to you
+to write. The pattern is:
+
+```elixir
+defmodule MyApp.Nifs.PhyModem do
+  use Rustler, otp_app: :my_app, crate: "phy_modem"
+
+  def modulate(_input), do: :erlang.nif_error(:nif_not_loaded)
+  # … one stub per #[rustler::nif] fn in the crate …
+end
+```
+
+That's the full list. No further wiring is needed. `mix mob.deploy
+--native` cross-compiles every registered crate, links each
+`lib<name>.a` into the app binary, and `:erlang.load_nif/2` resolves
+to the static dispatch table at startup.
+
+**Where to run mob commands from.** Mob resolves `native/<name>/`
+relative to the current working directory. For a standalone project
+that's the project root. **For an umbrella project, run mob commands
+from the child app directory** (the one whose `apps/<app>/` contains
+`mob.exs` + `ios/` + `android/` + `native/`), not from the umbrella
+root. There is no umbrella-aware app selection (yet); running from
+the wrong directory silently finds no `native/` entries and emits no
+NIFs.
+
+**One-time toolchain prerequisites** — same as any cross-compiled
+Rust project, not Mob-specific:
+
+```bash
+rustup target add aarch64-apple-ios aarch64-apple-ios-sim aarch64-linux-android armv7-linux-androideabi
+```
+
+`mix mob.doctor` verifies these are installed and flags missing ones.
+
+**Caveat for external Cargo deps.** Pure-Rust dependencies
+(`rustfft`, `serde`, `tokio`, etc.) cross-compile cleanly to all four
+Mob targets and need no special handling. Crates that pull in C via
+`build.rs` or `bindgen` may need the corresponding C library
+available for the target — that's upstream's concern, same as in any
+non-Mob cross-compile. If `cargo rustc --target aarch64-linux-android`
+fails for a transitive C dep, that's not a Mob issue; check the dep's
+own cross-compile instructions.
+
 ---
 
 ## Zig via Zigler
