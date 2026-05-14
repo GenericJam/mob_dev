@@ -355,17 +355,7 @@ defmodule MobDev.Release.OpenSSL.CryptoNif do
     end
   end
 
-  defp android_precheck(shell, opts) do
-    ndk_root = opts[:ndk_root] || default_ndk_root()
-
-    if shell.dir?(ndk_root) do
-      :ok
-    else
-      Errors.precondition(
-        "Android NDK not at #{ndk_root} — install NDK #{NdkVersion.effective()}"
-      )
-    end
-  end
+  defp android_precheck(shell, opts), do: MobDev.Release.AndroidPrecheck.verify_ndk(shell, opts)
 
   # ── Per-target toolchain factories ─────────────────────────────────────
 

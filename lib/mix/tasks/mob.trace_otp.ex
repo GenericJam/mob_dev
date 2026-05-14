@@ -210,7 +210,7 @@ defmodule Mix.Tasks.Mob.TraceOtp do
     Mix.shell().info("  Phase exercised:  #{phase}")
     Mix.shell().info("  Modules touched:  #{MapSet.size(result.modules)}")
     Mix.shell().info("  Unique MFAs:      #{MapSet.size(result.mfas)}")
-    Mix.shell().info("  Wall time:        #{format_us(result.elapsed_us)}")
+    Mix.shell().info("  Wall time:        #{MobDev.Duration.format_us(result.elapsed_us)}")
 
     Mix.shell().info("\n#{h1}=== Modules touched (sorted) ==={reset}")
 
@@ -249,7 +249,4 @@ defmodule Mix.Tasks.Mob.TraceOtp do
     File.write!(path, Jason.encode!(payload, pretty: true))
   end
 
-  defp format_us(us) when us < 1_000, do: "#{us}μs"
-  defp format_us(us) when us < 1_000_000, do: "#{Float.round(us / 1_000, 1)}ms"
-  defp format_us(us), do: "#{Float.round(us / 1_000_000, 2)}s"
 end

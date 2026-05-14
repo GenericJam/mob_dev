@@ -153,14 +153,7 @@ defmodule MobDev.OtpDownloader do
     end
   end
 
-  defp download(url, dest) do
-    case System.cmd("curl", ["-L", "--fail", "--progress-bar", "-o", dest, url],
-           stderr_to_stdout: false
-         ) do
-      {_, 0} -> :ok
-      {out, rc} -> {:error, "curl failed (exit #{rc}): #{String.trim(out)}"}
-    end
-  end
+  defp download(url, dest), do: MobDev.Download.curl(url, dest)
 
   defp extract(tarball, dest_dir) do
     File.mkdir_p!(dest_dir)

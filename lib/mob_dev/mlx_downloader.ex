@@ -192,10 +192,7 @@ defmodule MobDev.MLXDownloader do
 
     # The tarball's top-level dir matches `name/1`, so extracting into the
     # parent of `dest_dir` lands the right layout. Verify happens afterward.
-    case System.cmd("tar", ["xzf", tarball, "-C", parent], stderr_to_stdout: true) do
-      {_, 0} -> :ok
-      {out, rc} -> {:error, "tar failed (exit #{rc}): #{String.trim(out)}"}
-    end
+    MobDev.Download.untar(tarball, parent)
   end
 
   defp verify_layout(dir) do

@@ -173,23 +173,13 @@ defmodule MobDev.PythonAppleSupport do
     end
   end
 
-  defp download(url, dest) do
-    case System.cmd("curl", ["-L", "--fail", "--progress-bar", "-o", dest, url],
-           stderr_to_stdout: false
-         ) do
-      {_, 0} -> :ok
-      {out, rc} -> {:error, "curl failed (exit #{rc}): #{String.trim(out)}"}
-    end
-  end
+  defp download(url, dest), do: MobDev.Download.curl(url, dest)
 
   defp extract(tarball, dest_dir) do
     File.mkdir_p!(dest_dir)
     # BeeWare's tarball doesn't have a single top-level directory — extract
     # straight in. Verify happens afterward.
-    case System.cmd("tar", ["xzf", tarball, "-C", dest_dir], stderr_to_stdout: true) do
-      {_, 0} -> :ok
-      {out, rc} -> {:error, "tar failed (exit #{rc}): #{String.trim(out)}"}
-    end
+    MobDev.Download.untar(tarball, dest_dir)
   end
 
   defp verify_layout(dir) do

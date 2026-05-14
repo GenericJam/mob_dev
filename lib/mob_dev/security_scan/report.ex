@@ -73,4 +73,24 @@ defmodule MobDev.SecurityScan.Report do
   def duration_ms(%__MODULE__{started_at: s, finished_at: f}) do
     DateTime.diff(f, s, :millisecond)
   end
+
+  @doc """
+  If `strict?` is true and the report contains medium-or-worse findings,
+  print a message to stderr and `exit({:shutdown, 1})`. Otherwise returns
+  `:ok`. Shared between `mix mob.security_scan` and its `.log` sibling.
+  """
+  @spec maybe_exit_strict(t(), boolean() | nil) :: :ok
+  def maybe_exit_strict(_report, nil), do: :ok
+  def maybe_exit_strict(_report, false), do: :ok
+
+  def maybe_exit_strict(report, true) do
+    case worst_severity(report) do
+      sev when sev in [:critical, :high, :medium] ->
+        Mix.shell().error("--strict: #{sev} finding(s) present")
+        exit({:shutdown, 1})
+
+      _ ->
+        :ok
+    end
+  end
 end

@@ -82,7 +82,7 @@ defmodule Mix.Tasks.Mob.Watch do
     end
 
     # Snapshot source mtimes.
-    sources = snapshot_sources()
+    sources = MobDev.SourceWatch.snapshot()
     IO.puts("  Watching #{map_size(sources)} source file(s)...\n")
 
     watch_loop(sources, nodes, cookie, debounce, interval)
@@ -93,8 +93,8 @@ defmodule Mix.Tasks.Mob.Watch do
   defp watch_loop(sources, nodes, cookie, debounce, interval) do
     :timer.sleep(interval)
 
-    current = snapshot_sources()
-    changed_files = changed_sources(sources, current)
+    current = MobDev.SourceWatch.snapshot()
+    changed_files = MobDev.SourceWatch.diff(sources, current)
 
     if changed_files == [] do
       watch_loop(current, nodes, cookie, debounce, interval)
@@ -107,7 +107,7 @@ defmodule Mix.Tasks.Mob.Watch do
 
       # Debounce — wait in case more saves are incoming (e.g. format-on-save).
       :timer.sleep(debounce)
-      current2 = snapshot_sources()
+      current2 = MobDev.SourceWatch.snapshot()
 
       # Re-connect if any nodes dropped (device rebooted, app restarted, etc.)
       live_nodes = reconnect_if_needed(nodes, cookie)
@@ -180,25 +180,6 @@ defmodule Mix.Tasks.Mob.Watch do
     |> String.split("\n", trim: true)
     |> Enum.reject(fn line -> Enum.any?(@noise_prefixes, &String.starts_with?(line, &1)) end)
     |> Enum.each(&IO.puts/1)
-  end
-
-  defp snapshot_sources do
-    Path.wildcard("lib/**/*.ex")
-    |> Map.new(fn path ->
-      mtime =
-        case File.stat(path, time: :posix) do
-          {:ok, %{mtime: t}} -> t
-          _ -> 0
-        end
-
-      {path, mtime}
-    end)
-  end
-
-  defp changed_sources(old, current) do
-    current
-    |> Enum.filter(fn {path, mtime} -> Map.get(old, path) != mtime end)
-    |> Enum.map(&elem(&1, 0))
   end
 
   defp short_node(node) do

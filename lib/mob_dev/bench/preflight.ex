@@ -382,12 +382,5 @@ defmodule MobDev.Bench.Preflight do
     end
   end
 
-  defp derive_host(nil), do: nil
-
-  defp derive_host(node) when is_atom(node) do
-    case Atom.to_string(node) |> String.split("@", parts: 2) do
-      [_, host] -> host
-      _ -> nil
-    end
-  end
+  defp derive_host(node), do: MobDev.NodeUtil.host_from_node(node)
 end
