@@ -294,6 +294,28 @@ defmodule Mix.Tasks.Mob.AddNifTest do
       assert content =~ ~r/rustler\s*=\s*"0\.(3[7-9]|[4-9]\d)/
     end
 
+    test "Cargo.toml patches rustler to the Android-dlsym-fix fork (mob#7)" do
+      # Rustler 0.37's nif_filler uses dlopen(NULL) to find enif_* symbols.
+      # On Bionic that handle doesn't see the app's RTLD_GLOBAL-promoted .so
+      # — every NIF init panics with `undefined symbol: enif_priv_data`.
+      # The GenericJam fork patches the Android branch. Without this
+      # [patch.crates-io] block in the scaffolded Cargo.toml, a user who
+      # follows the docs hits the panic on first Android deploy and has
+      # to figure out the workaround themselves. Drop the block (and this
+      # test) once upstream rustler ships the fix.
+      igniter = add_nif("audio_engine", ["--type", "rustler"])
+      file = Rewrite.source!(igniter.rewrite, "native/audio_engine/Cargo.toml")
+      content = Rewrite.Source.get(file, :content)
+      assert content =~ "[patch.crates-io]"
+      assert content =~ "github.com/GenericJam/rustler"
+      assert content =~ "genericjam-android-rtld-default"
+
+      # The block must carry a "drop when upstream merges" cue. Without it,
+      # someone bumps the rustler version, forgets the patch, and either
+      # (a) breaks Android again, or (b) keeps shipping a workaround forever.
+      assert content =~ ~r/DROP WHEN|once upstream/i
+    end
+
     test "creates native/<name>/src/lib.rs with rustler::init! pointing at the Elixir module" do
       igniter = add_nif("audio_engine", ["--type", "rustler"])
       file = Rewrite.source!(igniter.rewrite, "native/audio_engine/src/lib.rs")

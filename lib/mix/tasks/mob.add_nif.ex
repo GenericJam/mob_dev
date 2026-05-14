@@ -488,6 +488,19 @@ defmodule Mix.Tasks.Mob.AddNif do
     # declares. Older versions (≤0.36) hardcode `nif_init` and
     # require manual symbol-renaming to use with Mob's static link.
     rustler = "0.37"
+
+    # ─── DROP WHEN UPSTREAM RUSTLER MERGES THE ANDROID DLSYM FIX ───────────────
+    # Rustler 0.37's nif_filler uses `dlopen(NULL)` to find `enif_*` symbols.
+    # On Android (Bionic), that handle doesn't see the app's RTLD_GLOBAL-promoted
+    # .so, so every NIF init panics with `undefined symbol: enif_priv_data`.
+    # The GenericJam fork patches the Android branch to do `dladdr` + `dlopen(self,
+    # RTLD_NOLOAD)` for an explicit self-handle. Other platforms are unchanged.
+    #
+    # Once upstream merges (or a release containing the fix lands on crates.io),
+    # bump the `rustler = "0.37"` line above to that version and DELETE this
+    # whole [patch.crates-io] block. Tracker: https://github.com/GenericJam/mob/issues/7
+    [patch.crates-io]
+    rustler = { git = "https://github.com/GenericJam/rustler.git", branch = "genericjam-android-rtld-default" }
     """
   end
 
