@@ -196,9 +196,9 @@ defmodule Mix.Tasks.Mob.Watch do
   end
 
   defp changed_sources(old, current) do
-    Enum.flat_map(current, fn {path, mtime} ->
-      if Map.get(old, path) != mtime, do: [path], else: []
-    end)
+    current
+    |> Enum.filter(fn {path, mtime} -> Map.get(old, path) != mtime end)
+    |> Enum.map(&elem(&1, 0))
   end
 
   defp short_node(node) do

@@ -161,9 +161,9 @@ defmodule MobDev.Server.WatchWorker do
   end
 
   defp changed_files(old, current) do
-    Enum.flat_map(current, fn {path, mtime} ->
-      if Map.get(old, path) != mtime, do: [path], else: []
-    end)
+    current
+    |> Enum.filter(fn {path, mtime} -> Map.get(old, path) != mtime end)
+    |> Enum.map(&elem(&1, 0))
   end
 
   defp broadcast(msg), do: Phoenix.PubSub.broadcast(@pubsub, @topic, msg)

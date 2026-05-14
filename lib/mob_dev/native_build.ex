@@ -2157,8 +2157,6 @@ defmodule MobDev.NativeBuild do
            :ok <- run_ar(["rcs", out_a, nif_o, sqlite_o]) do
         File.rm_rf!(build_dir_tmp)
         :ok
-      else
-        err -> err
       end
     else
       :ok
@@ -2845,15 +2843,24 @@ defmodule MobDev.NativeBuild do
                  "zig build for '#{name}' succeeded but #{a} not found — " <>
                    "did Zigler change its output naming?"}
 
-              # Apple ld64 requires .a archive members to be 8-byte aligned.
-              # Zig 0.16's archive output isn't aligned and ld64 rejects it
-              # with "not 8-byte aligned". Re-archive with xcrun ar to
-              # produce a Mach-O-compatible static library.
-              :else ->
+              # Apple ld64 requires .a archive members to be 8-byte
+              # aligned. Zig 0.16's archive output isn't aligned and
+              # ld64 rejects it with "not 8-byte aligned". Re-archive
+              # with xcrun ar to produce a Mach-O-compatible static
+              # library. macOS's `ar` doesn't understand ELF archives
+              # (Zig's Android output) — running it against an ELF .a
+              # extracts zero members and the rearchive errors with
+              # "ar: no archive members specified". The NDK linker
+              # accepts Zig's archive directly, so skip the rearchive
+              # for non-Apple targets.
+              String.contains?(target, "-ios") ->
                 case rearchive_for_apple_ld(a) do
                   :ok -> {:ok, a}
                   {:error, _} = err -> err
                 end
+
+              :else ->
+                {:ok, a}
             end
 
           {_, code} ->
