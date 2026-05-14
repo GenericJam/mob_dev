@@ -50,7 +50,11 @@ defmodule MobDev.StaticNifs do
   output to those files.
   """
 
-  @type platform :: :ios | :android
+  # Top-level platforms cover both arches; per-arch "platforms" are
+  # accepted by `on_platform?/2` so cross-compile callers (e.g.
+  # `NativeBuild.project_nif_zig_args/1`) can filter entries against a
+  # specific ABI.
+  @type platform :: :ios | :android | arch()
   @type arch ::
           :all
           | :ios
@@ -196,6 +200,16 @@ defmodule MobDev.StaticNifs do
 
   defp platform_archs(:ios), do: [:ios_sim, :ios_device]
   defp platform_archs(:android), do: [:android_arm64, :android_arm32]
+  # Per-arch "platforms" — used by `NativeBuild.project_nif_zig_args/1`
+  # to filter user NIF entries against a specific ABI when the iOS or
+  # Android build path needs to cross-compile per-ABI (e.g. Android's
+  # arm64 + armv7 .sos each get their own static-NIF set). Each is a
+  # singleton list so `on_platform?/2`'s intersection check still
+  # behaves the way the broader `:ios`/`:android` callers expect.
+  defp platform_archs(:ios_device), do: [:ios_device]
+  defp platform_archs(:ios_sim), do: [:ios_sim]
+  defp platform_archs(:android_arm64), do: [:android_arm64]
+  defp platform_archs(:android_arm32), do: [:android_arm32]
 
   defp expand_archs(archs) do
     Enum.flat_map(archs, fn
