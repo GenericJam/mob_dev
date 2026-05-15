@@ -176,25 +176,77 @@ Everything in the Rust source. You can:
 - Use Rustler's full surface — `Term`, `Atom`, `Encoder`/`Decoder`,
   `ResourceArc`, `NifTuple`, etc. — without modification.
 
-### Multiple Rust NIFs per app
+### Preferred shape: one Rust crate, many NIFs
 
-Each `mob.exs :static_nifs` entry whose name matches a
-`native/<name>/Cargo.toml` is cross-compiled to its own
-`lib<name>.a` and linked. No workspace required. `nif_combo` ships
-three NIFs (`greet_c` + `greet_rust` + `greet_zig`) in one app as
-the canonical example.
+If you have several pieces of Rust functionality, the recommended
+shape is **one Rustler crate per app, with multiple `#[rustler::nif]`
+functions inside it**, registered by a single `rustler::init!(...)`
+call. This is what Rustler is designed around — dynamic loading of one
+shared library is the well-supported path, and our static-link pipeline
+inherits the same single-`<crate>_nif_init` symbol model.
 
-If you want Cargo workspaces for shared deps across multiple Rust
-NIFs, the scaffold doesn't generate one but Cargo's
-workspace-detection is transparent to `cargo rustc --manifest-path
-native/<name>/Cargo.toml`. Add a `native/Cargo.toml` workspace
-yourself and Cargo wires it up.
+```rust
+// native/my_app/src/lib.rs
+#[rustler::nif] fn audio_decode(bytes: Binary) -> NifResult<...> { ... }
+#[rustler::nif] fn audio_encode(samples: Vec<f32>) -> NifResult<...> { ... }
+#[rustler::nif] fn image_resize(buf: Binary, w: u32, h: u32) -> NifResult<...> { ... }
 
-Scaffold:
+rustler::init!("Elixir.MyApp.Native", [audio_decode, audio_encode, image_resize]);
+```
+
+```elixir
+# Elixir-side wrappers can still live in topical modules:
+defmodule MyApp.Audio do
+  defdelegate decode(bytes), to: MyApp.Native, as: :audio_decode
+  defdelegate encode(samples), to: MyApp.Native, as: :audio_encode
+end
+```
+
+Why this is preferred (paraphrasing the upstream Rustler maintainer
+[filmor](https://github.com/rusterlium/rustler/issues/686#issuecomment-2725879502)):
+Rustler's design assumes one shared library loaded via `load_nif`.
+Static linking is something we layer on top with a recompiled BEAM
+(see `libbeam.a`) and Rustler 0.37's per-crate symbol mangling — the
+narrower you stay to "one crate, one init", the more upstream
+fixes and updates apply to you cleanly.
+
+Internal organisation inside the single crate is unrestricted —
+`mod audio;`, `mod image;`, separate sub-modules with their own
+sub-deps in `[dependencies]`, anything Cargo allows.
+
+### Multiple Rust crates per app (escape hatch)
+
+If you genuinely need multiple separate Rustler crates in one app
+(e.g., crates whose Cargo dependency trees would conflict, or where
+you want each Elixir-side module to own its own `:erlang.load_nif/2`),
+Mob supports it: each `mob.exs :static_nifs` entry whose name matches
+a `native/<name>/Cargo.toml` is cross-compiled to its own `lib<name>.a`
+and linked. `nif_combo` ships three NIFs (`greet_c` + `greet_rust` +
+`greet_zig`) in one app as a working example.
+
+Caveats compared to the single-crate preferred shape:
+
+- Each crate brings its own copy of any shared dependency unless you
+  set up a Cargo workspace (which the scaffold doesn't generate but
+  Cargo discovers transparently if you add `native/Cargo.toml`).
+- Symbol collisions are avoided only because Rustler 0.37+ mangles
+  `nif_init` to `<crate>_nif_init` per `CARGO_CRATE_NAME` — silently
+  downgrading rustler will break the build at link time.
+- Bug reports against rustler upstream are more likely to bounce
+  ("we don't support that configuration") since this is outside the
+  well-trodden dynamic-load path. The escape valves we ship (the
+  GenericJam rustler fork for Android, the `<crate>_nif_init`
+  driver_tab generator) are ours to maintain.
+
+Scaffold a new crate:
 
 ```bash
 mix mob.add_nif audio_engine --type rustler
 ```
+
+If you're scaffolding a second Rustler-backed NIF, prefer adding the
+new functions to your existing crate over running `mob.add_nif`
+again.
 
 ### Bringing in an existing Rust crate
 
