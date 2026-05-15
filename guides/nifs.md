@@ -514,6 +514,95 @@ guards after the fact.
 
 ---
 
+## Nx backends on mobile
+
+Nx applications often ask "which backend should I use on phone?" Three
+real options, picked by what your app actually needs:
+
+| Backend | iOS device | iOS sim | Android arm64 | Android arm32 | Enable with |
+|---|:---:|:---:|:---:|:---:|---|
+| `Nx.BinaryBackend` (pure Elixir) | ✓ | ✓ | ✓ | ✓ | nothing — default |
+| NxEigen (Eigen C++, CPU) | ✓ | ✓ | ✓ | ✓ | `mix mob.enable nxeigen` |
+| EMLX (Apple MLX, CPU + Metal GPU) | ✓ | ✓ | — | — | `mix mob.enable mlx` |
+| EXLA (Google XLA, JIT) | ✗ | ✗ | ✗ | ✗ | not viable on mobile — see below |
+
+### `Nx.BinaryBackend`
+
+Pure Elixir. Works everywhere with no setup. Slow for real numerics
+work, but if your app is mostly stdlib ops or small tensors, it's the
+zero-friction option.
+
+### NxEigen — the CPU choice that works on both platforms
+
+[NxEigen](https://github.com/cocoa-xu/nx_eigen) is a CPU Nx backend
+over the [Eigen](https://eigen.tuxfamily.org) C++ template library.
+Eigen is header-only, vectorised via SSE/NEON, and portable — clang
+with any Darwin or Android NDK target will compile it. For Android
+this is the only real numerics path (EMLX is Apple-only); for iOS
+without a Metal GPU available it's a fine CPU peer to EMLX.
+
+Run `mix mob.enable nxeigen` in your app and follow the printed next
+steps. Mob handles the cross-compile by treating NxEigen's NIF as a
+C++ static-NIF entry — the build pipeline cross-compiles a
+`libnx_eigen.a` per target arch (arm64-ios, arm64-android,
+armv7a-android, etc.) and statically links it into the BEAM the same
+way it does the framework's own NIFs. No per-target prebuilt downloads;
+the source is two `.cpp` files + Eigen headers, compiled once per
+arch.
+
+FFT support uses Eigen's bundled kissfft (header-only); a FFTW
+variant can be substituted later if you need higher throughput.
+
+### EMLX — Metal GPU on iOS, CPU on iOS sim
+
+[EMLX](https://github.com/elixir-nx/emlx) is the Elixir wrapper around
+Apple's MLX framework. iOS only — Android isn't possible (MLX is
+hard-tied to Metal + the Apple BLAS). Run `mix mob.enable mlx` and
+follow the printed next steps. The first cross-build downloads
+~5 MB compressed (~30 MB on disk per arch) of pre-built `libmlx.a` +
+`libemlx.a` into `~/.mob/cache/`.
+
+By default EMLX uses Apple Accelerate (CPU) — fast, no GPU requirement.
+For Metal GPU on iOS device, opt in per backend reference:
+
+```elixir
+Nx.global_default_backend({EMLX.Backend, device: :gpu})
+```
+
+Mob's deploy pipeline ships the precompiled `mlx.metallib` (Metal
+kernel library) inside the .app bundle so the GPU path works on device
+without runtime kernel compilation. iOS simulator doesn't have Metal;
+the `:gpu` backend silently falls back to CPU there.
+
+### Why not EXLA
+
+EXLA sounds attractive — XLA's JIT compiler is genuinely fast — but
+isn't realistic on mobile today. Empirically: EXLA's BEAM modules
+ship and the Elixir layer loads, but `EXLA.NIF` is unloadable because:
+
+  1. `mix compile` on the Mac builds `libexla.dylib` for **macOS arm64
+     only** — nothing for iOS or Android targets.
+  2. Mob's cross-compile pipeline doesn't touch EXLA's NIF (it only
+     drives entries declared in `mob.exs :static_nifs` or recognised
+     Rustler/Zigler crates; EXLA isn't structured as either).
+  3. Even if we did cross-compile EXLA's NIF, the runtime would then
+     `dlopen libxla.so` from the `xla` Hex package — which only ships
+     prebuilts for desktop/server (`x86_64-linux`, `arm64-darwin`,
+     etc.). No `arm64-android` or `arm64-ios` prebuilt exists.
+
+Getting EXLA to work on either mobile platform is two missing
+cross-compiles deep — building XLA itself for arm64-ios/android via
+Bazel (no published recipe, multi-day project, hundreds of MB output),
+then cross-compiling EXLA against that, then wiring both into the
+deploy pipeline. Not on the roadmap.
+
+For ML model inference on mobile via Elixir, the natural future
+addition is **TFLite** (TensorFlow Lite), which is Google's blessed
+mobile path with native iOS + Android support. Would require writing
+TFLite-bindings as a NIF; not in mob today.
+
+---
+
 ## Inspecting what got linked
 
 After `mix mob.deploy --native` finishes:
