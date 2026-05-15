@@ -126,6 +126,26 @@ defmodule MobDev.Enable.Igniter do
     |> create_ml_init_module(app_name)
   end
 
+  # ── nxeigen ───────────────────────────────────────────────────────────────
+
+  @doc """
+  Enables the NxEigen Nx backend (Eigen-backed C++ NIF) on both iOS and
+  Android. mob_dev cross-compiles `libnx_eigen.a` per arch from the
+  `:nx_eigen` Hex dep + the Eigen header tarball it auto-downloads.
+
+  The `:nx_eigen` static-NIF entry is already in
+  `MobDev.StaticNifs` defaults — `MobDev.NativeBuild` auto-detects the
+  `:nx_eigen` dep and sets `MOB_STATIC_NX_EIGEN_NIF` so the driver_tab
+  + linker include it. `mob.enable nxeigen` does the dep wiring + the
+  helper module.
+  """
+  @spec enable_nxeigen(Igniter.t(), String.t()) :: Igniter.t()
+  def enable_nxeigen(igniter, app_name) do
+    igniter
+    |> inject_nxeigen_deps()
+    |> create_nxeigen_init_module(app_name)
+  end
+
   # ── python ────────────────────────────────────────────────────────────────
 
   @spec enable_python(Igniter.t(), String.t()) :: Igniter.t()
@@ -433,6 +453,64 @@ defmodule MobDev.Enable.Igniter do
     igniter
     |> Igniter.Project.Deps.add_dep({:nx, "~> 0.10"})
     |> Igniter.Project.Deps.add_dep({:emlx, "~> 0.2"})
+  end
+
+  # ── nxeigen: helpers ──────────────────────────────────────────────────────
+
+  defp inject_nxeigen_deps(igniter) do
+    igniter
+    |> Igniter.Project.Deps.add_dep({:nx, "~> 0.10"})
+    |> Igniter.Project.Deps.add_dep({:nx_eigen, "~> 0.1"})
+  end
+
+  defp create_nxeigen_init_module(igniter, app_name) do
+    module_name = Macro.camelize(app_name)
+    module = Module.concat([module_name, "NxEigenInit"])
+    {exists?, igniter} = Igniter.Project.Module.module_exists(igniter, module)
+
+    if exists? do
+      igniter
+    else
+      Igniter.Project.Module.create_module(igniter, module, nxeigen_init_module_body())
+    end
+  end
+
+  # Body for the generated `<App>.NxEigenInit` module. Picks NxEigen as
+  # the Nx global default with a clean fall-back to `Nx.BinaryBackend`.
+  # Parallel to MLInit but used on Android (where EMLX isn't an option)
+  # or on iOS apps that want NxEigen's specific behaviour.
+  defp nxeigen_init_module_body do
+    """
+    @moduledoc \"\"\"
+    Picks NxEigen as the Nx backend. Called from `Mob.App.on_start/0`
+    once the app and its deps have started.
+
+    NxEigen is an Eigen-backed CPU Nx backend (C++ template library,
+    vectorised via NEON on ARM). Works on both iOS and Android — Eigen
+    is header-only, so mob_dev cross-compiles a single libnx_eigen.a
+    per arch and statically links it into the app.
+
+    Falls back to `Nx.BinaryBackend` (pure Elixir) when the NIF can't
+    load — keeps the app running on builds that haven't cross-compiled
+    NxEigen yet.
+    \"\"\"
+    require Logger
+
+    @doc \"Configure the global Nx backend. Returns the chosen backend module.\"
+    def configure do
+      case Application.ensure_all_started(:nx_eigen) do
+        {:ok, _} ->
+          Nx.global_default_backend(NxEigen.Backend)
+          Logger.info("Nx backend: NxEigen (Eigen CPU)")
+          NxEigen.Backend
+
+        {:error, reason} ->
+          Logger.warning(\"NxEigen failed to start: \#\{inspect(reason)\}; using Nx.BinaryBackend\")
+          Nx.global_default_backend(Nx.BinaryBackend)
+          Nx.BinaryBackend
+      end
+    end
+    """
   end
 
   defp create_ml_init_module(igniter, app_name) do

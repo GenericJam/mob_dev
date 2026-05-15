@@ -123,6 +123,8 @@ defmodule MobDev.NativeBuild do
          :ok <- ensure_jni_libs(otp_arm64, "arm64-v8a"),
          :ok <- ensure_jni_libs(otp_arm32, "armeabi-v7a"),
          :ok <- ensure_python_android_libs(python_android_bundle),
+         :ok <- install_nx_eigen_otp_lib(otp_arm64),
+         :ok <- install_nx_eigen_otp_lib(otp_arm32),
          :ok <- zig_build_android_objects(mob_dir, otp_arm64, otp_arm32),
          :ok <- gradle_assemble(),
          :ok <- adb_install_all(apk, bundle_id, device_id),
@@ -178,14 +180,16 @@ defmodule MobDev.NativeBuild do
         # in `run_zig_android_objects` then receives the right archive
         # set and links them into its `lib<app>.so`.
         with {:ok, arm64_nif_args} <- project_nif_zig_args(:android_arm64),
-             {:ok, arm32_nif_args} <- project_nif_zig_args(:android_arm32) do
+             {:ok, arm32_nif_args} <- project_nif_zig_args(:android_arm32),
+             {:ok, arm64_nxeigen} <- maybe_build_nxeigen(:android_arm64),
+             {:ok, arm32_nxeigen} <- maybe_build_nxeigen(:android_arm32) do
           Enum.reduce_while(
             [
-              {otp_arm64, "arm64-v8a", arm64_nif_args},
-              {otp_arm32, "armeabi-v7a", arm32_nif_args}
+              {otp_arm64, "arm64-v8a", arm64_nif_args, arm64_nxeigen},
+              {otp_arm32, "armeabi-v7a", arm32_nif_args, arm32_nxeigen}
             ],
             :ok,
-            fn {otp_dir, abi, abi_nif_args}, _acc ->
+            fn {otp_dir, abi, abi_nif_args, abi_nxeigen}, _acc ->
               case run_zig_android_objects(
                      build_zig,
                      abi,
@@ -193,7 +197,8 @@ defmodule MobDev.NativeBuild do
                      erts_vsn,
                      mob_dir,
                      driver_tab,
-                     abi_nif_args
+                     abi_nif_args,
+                     abi_nxeigen
                    ) do
                 :ok -> {:cont, :ok}
                 {:error, reason} -> {:halt, {:error, reason}}
@@ -204,7 +209,16 @@ defmodule MobDev.NativeBuild do
     end
   end
 
-  defp run_zig_android_objects(build_zig, abi, otp_dir, erts_vsn, mob_dir, driver_tab, nif_args) do
+  defp run_zig_android_objects(
+         build_zig,
+         abi,
+         otp_dir,
+         erts_vsn,
+         mob_dir,
+         driver_tab,
+         nif_args,
+         nxeigen_archive
+       ) do
     app_name = Mix.Project.config() |> Keyword.fetch!(:app) |> Atom.to_string()
     project_root = Path.expand(".")
     project_jni_dir = Path.join(project_root, "android/app/src/main/jni")
@@ -239,7 +253,7 @@ defmodule MobDev.NativeBuild do
     # but received a list".
     nif_args_no_root = Enum.reject(nif_args, &String.starts_with?(&1, "-Dproject_root="))
 
-    args = base_args ++ nif_args_no_root
+    args = base_args ++ nif_args_no_root ++ nxeigen_zig_args_android(nxeigen_archive)
 
     case System.cmd("zig", args, stderr_to_stdout: true, into: IO.stream()) do
       {_, 0} -> :ok
@@ -1296,7 +1310,8 @@ defmodule MobDev.NativeBuild do
          :ok <- check_path(cfg[:elixir_lib], "elixir_lib"),
          {:ok, otp_root} <- MobDev.OtpDownloader.ensure_ios_sim(),
          {:ok, python_bundle} <- maybe_ensure_python_bundle(),
-         {:ok, mlx_dir} <- maybe_ensure_mlx_dir(:ios_sim) do
+         {:ok, mlx_dir} <- maybe_ensure_mlx_dir(:ios_sim),
+         {:ok, nxeigen_archive} <- maybe_build_nxeigen(:ios_sim) do
       IO.puts("  Building iOS simulator app...")
 
       mob_dir = Path.expand(cfg[:mob_dir])
@@ -1311,6 +1326,7 @@ defmodule MobDev.NativeBuild do
            :ok <- install_exqlite_otp_lib(otp_root),
            :ok <- cross_compile_exqlite_nif_sim(otp_root, erts_vsn, sdkroot),
            :ok <- install_emlx_otp_lib(otp_root),
+           :ok <- install_nx_eigen_otp_lib(otp_root),
            :ok <- maybe_setup_pythonx_sim(otp_root, erts_vsn, sdkroot, python_bundle, app_module),
            :ok <- maybe_install_crypto_shim(otp_root, app_module),
            :ok <- maybe_copy_ssl_beams(otp_root, app_module),
@@ -1331,7 +1347,8 @@ defmodule MobDev.NativeBuild do
                sdkroot,
                build_dir,
                display_name,
-               mlx_dir
+               mlx_dir,
+               nxeigen_archive
              ),
            {:ok, sim_id} <- pick_ios_sim(device_id),
            binary_path = "ios/zig-out/#{display_name}",
@@ -1396,6 +1413,48 @@ defmodule MobDev.NativeBuild do
 
   defp chmod_writable(dir) do
     _ = System.cmd("chmod", ["-R", "u+w", dir], stderr_to_stdout: true)
+    :ok
+  end
+
+  # Stages nx_eigen + fine into the on-device OTP lib structure for the
+  # same reason as install_emlx_otp_lib/1 — without an emlx-VSN/-style
+  # dir, `:code.priv_dir(:nx_eigen)` returns `{:error, :bad_name}` and
+  # NxEigen.NIF.load_nif/0 crashes on Path.join. Staging an empty priv/
+  # gives it a valid path; the static-NIF table then resolves the
+  # `libnx_eigen` lookup by basename. Also stages `:fine` (NxEigen's
+  # binding helper dep) so any code that consults `:code.priv_dir(:fine)`
+  # doesn't blow up.
+  @doc false
+  @spec install_nx_eigen_otp_lib(String.t()) :: :ok
+  def install_nx_eigen_otp_lib(otp_root) do
+    Enum.each([:nx_eigen, :fine], fn app ->
+      stage_empty_priv_otp_lib(otp_root, Atom.to_string(app))
+    end)
+
+    :ok
+  end
+
+  @doc false
+  @spec stage_empty_priv_otp_lib(String.t(), String.t()) :: :ok
+  def stage_empty_priv_otp_lib(otp_root, app) do
+    ebin = Path.join(["_build", "dev", "lib", app, "ebin"])
+
+    if File.dir?(ebin) do
+      vsn = detect_dep_version(app) || read_app_vsn(Path.join(ebin, "#{app}.app")) || "0.0.0"
+      IO.puts("  === Installing #{app} as OTP library (priv/ empty — NIF static-linked)")
+      lib_dir = Path.join([otp_root, "lib", "#{app}-#{vsn}"])
+      File.rm_rf!(Path.join(otp_root, "lib/#{app}-"))
+      File.mkdir_p!(Path.join(lib_dir, "ebin"))
+      File.mkdir_p!(Path.join(lib_dir, "priv"))
+
+      Path.wildcard("#{ebin}/*.beam")
+      |> Enum.each(&File.cp!(&1, Path.join([lib_dir, "ebin", Path.basename(&1)])))
+
+      if File.exists?(Path.join(ebin, "#{app}.app")) do
+        File.cp!(Path.join(ebin, "#{app}.app"), Path.join([lib_dir, "ebin", "#{app}.app"]))
+      end
+    end
+
     :ok
   end
 
@@ -2056,7 +2115,8 @@ defmodule MobDev.NativeBuild do
          sdkroot,
          build_dir,
          display_name,
-         mlx_dir
+         mlx_dir,
+         nxeigen_archive
        ) do
     driver_tab = resolve_driver_tab_ios(mob_dir)
 
@@ -2076,7 +2136,11 @@ defmodule MobDev.NativeBuild do
     ]
 
     with {:ok, nif_args} <- project_nif_zig_args(:ios_sim) do
-      args = base_args ++ nif_args ++ mlx_zig_args(mlx_dir)
+      args =
+        base_args ++
+          nif_args ++
+          mlx_zig_args(mlx_dir) ++
+          nxeigen_zig_args_ios(nxeigen_archive)
 
       case System.cmd("zig", args, stderr_to_stdout: true, into: IO.stream()) do
         {_, 0} -> :ok
@@ -2093,6 +2157,132 @@ defmodule MobDev.NativeBuild do
 
   defp mlx_zig_args(mlx_dir) when is_binary(mlx_dir),
     do: ["-Dmlx_static=true", "-Dmlx_dir=#{mlx_dir}"]
+
+  # ── NxEigen ────────────────────────────────────────────────────────────
+  # Mirrors the MLX hooks but with one important difference: MLX is
+  # downloaded as a pre-built bundle (MobDev.MLXDownloader pulls a
+  # tarball); NxEigen we cross-compile ourselves from sources in the
+  # user's `deps/nx_eigen/` via MobDev.NxEigenNif.build/2. The output
+  # lives in `_build/<env>/nxeigen/<target>/` so `mix clean` removes it.
+
+  @doc false
+  @spec nxeigen_in_project?() :: boolean()
+  def nxeigen_in_project? do
+    Mix.Project.config()
+    |> Keyword.get(:deps, [])
+    |> Enum.any?(fn
+      {:nx_eigen, _} -> true
+      {:nx_eigen, _, _} -> true
+      _ -> false
+    end)
+  end
+
+  # Build libnx_eigen.a for the given target if nx_eigen is in the project's
+  # deps. Returns `{:ok, archive_path}` on success, `{:ok, nil}` if nx_eigen
+  # isn't a dep, or a tagged-tuple error.
+  defp maybe_build_nxeigen(target_id)
+       when target_id in [:android_arm64, :android_arm32, :ios_sim, :ios_device] do
+    if nxeigen_in_project?() do
+      do_build_nxeigen(target_id)
+    else
+      {:ok, nil}
+    end
+  end
+
+  defp do_build_nxeigen(target_id) do
+    deps_path = Mix.Project.deps_path()
+    nx_eigen_dir = Path.join(deps_path, "nx_eigen")
+    fine_dir = Path.join(deps_path, "fine")
+
+    erts_inc =
+      case nxeigen_erts_include(target_id) do
+        {:ok, path} -> path
+        {:error, _} = err -> throw(err)
+      end
+
+    out_dir = nxeigen_out_dir(target_id)
+
+    IO.puts("  === Building libnx_eigen.a (#{target_id})")
+
+    case MobDev.NxEigenNif.build(target_id,
+           nx_eigen_dir: nx_eigen_dir,
+           fine_dir: fine_dir,
+           erts_include: erts_inc,
+           out_dir: out_dir
+         ) do
+      {:ok, info} ->
+        IO.puts("    ✓ #{info.archive}")
+        {:ok, info.archive}
+
+      {:error, {tag, detail}} ->
+        {:error, "NxEigen cross-compile failed (#{target_id}, #{tag}): #{inspect(detail)}"}
+    end
+  catch
+    {:error, _} = err -> err
+  end
+
+  defp nxeigen_out_dir(target_id) do
+    Path.join([Mix.Project.build_path(), "nxeigen", Atom.to_string(target_id)])
+  end
+
+  defp nxeigen_erts_include(:ios_sim) do
+    otp_dir = MobDev.OtpDownloader.ios_sim_otp_dir()
+    resolve_erts_include(otp_dir)
+  end
+
+  defp nxeigen_erts_include(:ios_device) do
+    otp_dir = MobDev.OtpDownloader.ios_device_otp_dir()
+    resolve_erts_include(otp_dir)
+  end
+
+  defp nxeigen_erts_include(:android_arm64) do
+    otp_dir = MobDev.OtpDownloader.android_otp_dir("arm64-v8a")
+    resolve_erts_include(otp_dir)
+  end
+
+  defp nxeigen_erts_include(:android_arm32) do
+    otp_dir = MobDev.OtpDownloader.android_otp_dir("armeabi-v7a")
+    resolve_erts_include(otp_dir)
+  end
+
+  defp resolve_erts_include(otp_dir) do
+    case Path.wildcard(Path.join([otp_dir, "erts-*", "include"])) do
+      [path | _] -> {:ok, path}
+      [] -> {:error, "no erts-*/include found under #{otp_dir} — was the OTP tarball extracted?"}
+    end
+  end
+
+  @doc """
+  Returns the iOS-side zig -D flags. The iOS template expects
+  `nxeigen_dir` (a directory containing `libnx_eigen.a`); since we
+  build to `<out_dir>/libnx_eigen.a`, dirname is the right value.
+
+  `nil` means NxEigen isn't in this build → emit no flags.
+  Public for testing.
+  """
+  @doc false
+  @spec nxeigen_zig_args_ios(nil | String.t()) :: [String.t()]
+  def nxeigen_zig_args_ios(nil), do: []
+
+  def nxeigen_zig_args_ios(archive_path) when is_binary(archive_path) do
+    ["-Dnxeigen_static=true", "-Dnxeigen_dir=#{Path.dirname(archive_path)}"]
+  end
+
+  @doc """
+  Returns the Android-side zig -D flags. The Android template expects
+  `nxeigen_lib` (an absolute path to libnx_eigen.a for this ABI), since
+  the per-ABI archives live in different out_dirs.
+
+  `nil` means NxEigen isn't in this build → emit no flags.
+  Public for testing.
+  """
+  @doc false
+  @spec nxeigen_zig_args_android(nil | String.t()) :: [String.t()]
+  def nxeigen_zig_args_android(nil), do: []
+
+  def nxeigen_zig_args_android(archive_path) when is_binary(archive_path) do
+    ["-Dnxeigen_static=true", "-Dnxeigen_lib=#{archive_path}"]
+  end
 
   # ── iOS device-specific build helpers (Phase 2 iter 13c) ─────────────────────
   # Mirror the iOS-sim helpers above, with iphoneos SDK + arm64 single-arch +
@@ -2963,7 +3153,8 @@ defmodule MobDev.NativeBuild do
          build_dir,
          display_name,
          sqlite_static_lib,
-         mlx_dir
+         mlx_dir,
+         nxeigen_archive
        ) do
     driver_tab = resolve_driver_tab_ios(mob_dir)
 
@@ -2992,7 +3183,12 @@ defmodule MobDev.NativeBuild do
           path -> ["-Dsqlite_static=true", "-Dsqlite_static_lib=#{path}"]
         end
 
-      args = base_args ++ nif_args ++ sqlite_args ++ mlx_zig_args(mlx_dir)
+      args =
+        base_args ++
+          nif_args ++
+          sqlite_args ++
+          mlx_zig_args(mlx_dir) ++
+          nxeigen_zig_args_ios(nxeigen_archive)
 
       case System.cmd("zig", args, stderr_to_stdout: true, into: IO.stream()) do
         {_, 0} ->
@@ -3204,6 +3400,7 @@ defmodule MobDev.NativeBuild do
          {:ok, otp_root} <- MobDev.OtpDownloader.ensure_ios_device(),
          {:ok, python_bundle} <- maybe_ensure_python_bundle(),
          {:ok, mlx_dir} <- maybe_ensure_mlx_dir(:ios_device),
+         {:ok, nxeigen_archive} <- maybe_build_nxeigen(:ios_device),
          {:ok, sdkroot} <- xcrun_sdk_path_device(),
          erts_vsn = detect_erts_vsn(otp_root) || "erts-17.0",
          otp_release = detect_otp_release(otp_root) || "27",
@@ -3220,6 +3417,7 @@ defmodule MobDev.NativeBuild do
          :ok <- install_exqlite_otp_lib(otp_root),
          :ok <- cross_compile_exqlite_nif_device(otp_root, erts_vsn, sdkroot),
          :ok <- install_emlx_otp_lib(otp_root),
+         :ok <- install_nx_eigen_otp_lib(otp_root),
          {:ok, sqlite_static_lib} = {:ok, sqlite_device_static_path(otp_root)},
          :ok <-
            maybe_setup_pythonx_device(otp_root, erts_vsn, sdkroot, python_bundle, app_module),
@@ -3246,7 +3444,8 @@ defmodule MobDev.NativeBuild do
              build_dir,
              display_name,
              sqlite_static_lib,
-             mlx_dir
+             mlx_dir,
+             nxeigen_archive
            ),
          binary_path = Path.join(build_dir, display_name),
          :ok <- check_path(binary_path, "iOS device binary"),

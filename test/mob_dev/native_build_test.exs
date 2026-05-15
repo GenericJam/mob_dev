@@ -761,4 +761,149 @@ defmodule MobDev.NativeBuildTest do
       assert :elixir_only = NativeBuild.classify_project_nif(%{module: :no_native}, tmp)
     end
   end
+
+  # ── NxEigen integration helpers ──────────────────────────────────────────
+  # Pure functions — no toolchain or filesystem touched.
+
+  describe "nxeigen_zig_args_ios/1" do
+    test "nil → no flags (NxEigen not in this build)" do
+      assert NativeBuild.nxeigen_zig_args_ios(nil) == []
+    end
+
+    test "archive path → -Dnxeigen_static=true + -Dnxeigen_dir=<dirname>" do
+      args = NativeBuild.nxeigen_zig_args_ios("/some/build/ios_sim/libnx_eigen.a")
+      assert args == ["-Dnxeigen_static=true", "-Dnxeigen_dir=/some/build/ios_sim"]
+    end
+
+    test "uses dirname (not full path) so the template's `{nxeigen_dir}/libnx_eigen.a` resolves" do
+      args = NativeBuild.nxeigen_zig_args_ios("/x/libnx_eigen.a")
+      assert "-Dnxeigen_dir=/x" in args
+      refute Enum.any?(args, &String.contains?(&1, "libnx_eigen.a"))
+    end
+  end
+
+  describe "nxeigen_zig_args_android/1" do
+    test "nil → no flags" do
+      assert NativeBuild.nxeigen_zig_args_android(nil) == []
+    end
+
+    test "archive path → -Dnxeigen_static=true + -Dnxeigen_lib=<full path>" do
+      # Android passes the full per-ABI archive path (not dirname) so a
+      # single zig invocation can target one ABI's lib precisely. Two
+      # ABI builds → two different `nxeigen_lib` values.
+      args = NativeBuild.nxeigen_zig_args_android("/build/android_arm64/libnx_eigen.a")
+      assert args == ["-Dnxeigen_static=true", "-Dnxeigen_lib=/build/android_arm64/libnx_eigen.a"]
+    end
+
+    test "iOS uses dir, Android uses lib — they differ for the same archive" do
+      # Regression guard: the two flag shapes are intentionally
+      # asymmetric. iOS templates expect a directory because the link
+      # uses `{nxeigen_dir}/libnx_eigen.a`; Android templates expect
+      # the per-ABI lib path directly.
+      ios = NativeBuild.nxeigen_zig_args_ios("/x/libnx_eigen.a")
+      android = NativeBuild.nxeigen_zig_args_android("/x/libnx_eigen.a")
+      refute ios == android
+    end
+  end
+
+  # ── install_nx_eigen_otp_lib — filesystem integration ────────────────────
+
+  describe "install_nx_eigen_otp_lib/1 (and stage_empty_priv_otp_lib/2)" do
+    setup do
+      tmp =
+        Path.join(
+          System.tmp_dir!(),
+          "mobdev_install_nxeigen_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(tmp)
+      on_exit(fn -> File.rm_rf!(tmp) end)
+      {:ok, tmp: tmp}
+    end
+
+    test "no-op when neither dep ebin exists in _build/dev/lib/", %{tmp: otp_root} do
+      # No _build dir at all — should silently no-op (the function isn't
+      # required to fail when a project just doesn't have the deps).
+      assert :ok = NativeBuild.install_nx_eigen_otp_lib(otp_root)
+      refute File.dir?(Path.join([otp_root, "lib"]))
+    end
+
+    test "stages a single dep into <otp_root>/lib/<app>-<vsn>/{ebin,priv}", %{tmp: otp_root} do
+      project = setup_project_with_dep("nx_eigen", "1.2.3")
+
+      File.cd!(project, fn ->
+        NativeBuild.stage_empty_priv_otp_lib(otp_root, "nx_eigen")
+      end)
+
+      lib_dir = Path.join([otp_root, "lib", "nx_eigen-1.2.3"])
+      assert File.dir?(lib_dir)
+      assert File.dir?(Path.join(lib_dir, "ebin"))
+      # priv MUST exist (so :code.priv_dir/1 returns a path), and MUST
+      # be empty (the .a is statically linked into the main binary).
+      assert File.dir?(Path.join(lib_dir, "priv"))
+      assert File.ls!(Path.join(lib_dir, "priv")) == []
+
+      # .beam files copied through.
+      assert File.exists?(Path.join([lib_dir, "ebin", "Elixir.NxEigen.NIF.beam"]))
+      # .app file copied through too.
+      assert File.exists?(Path.join([lib_dir, "ebin", "nx_eigen.app"]))
+    end
+
+    test "is idempotent — re-staging the same app overwrites without duplicating", %{
+      tmp: otp_root
+    } do
+      project = setup_project_with_dep("nx_eigen", "1.2.3")
+
+      File.cd!(project, fn ->
+        NativeBuild.stage_empty_priv_otp_lib(otp_root, "nx_eigen")
+        NativeBuild.stage_empty_priv_otp_lib(otp_root, "nx_eigen")
+      end)
+
+      # Still exactly one lib dir; ebin still has the same contents.
+      lib_dirs = File.ls!(Path.join(otp_root, "lib"))
+      assert lib_dirs == ["nx_eigen-1.2.3"]
+    end
+
+    test "install_nx_eigen_otp_lib stages BOTH nx_eigen + fine", %{tmp: otp_root} do
+      # Both deps need staging because Fine is the C++ binding helper;
+      # any code that consults `:code.priv_dir(:fine)` would crash on
+      # the same `:bad_name` pattern without it.
+      project = setup_project_with_dep("nx_eigen", "1.2.3")
+      _ = setup_dep_in_project(project, "fine", "0.5.0")
+
+      File.cd!(project, fn ->
+        NativeBuild.install_nx_eigen_otp_lib(otp_root)
+      end)
+
+      lib_dirs = Enum.sort(File.ls!(Path.join(otp_root, "lib")))
+      assert lib_dirs == ["fine-0.5.0", "nx_eigen-1.2.3"]
+    end
+
+    # Helper: build a fake project containing _build/dev/lib/<app>/ebin/
+    # with one .beam + a .app file the staging code expects.
+    defp setup_project_with_dep(app, vsn) do
+      tmp = Path.join(System.tmp_dir!(), "mobdev_proj_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      on_exit(fn -> File.rm_rf!(tmp) end)
+      setup_dep_in_project(tmp, app, vsn)
+      tmp
+    end
+
+    defp setup_dep_in_project(project, app, vsn) do
+      ebin = Path.join([project, "_build", "dev", "lib", app, "ebin"])
+      File.mkdir_p!(ebin)
+
+      File.write!(
+        Path.join(ebin, "Elixir.#{Macro.camelize(app)}.NIF.beam"),
+        "FAKE_BEAM_BYTES"
+      )
+
+      File.write!(
+        Path.join(ebin, "#{app}.app"),
+        ~s({application,#{app},[{vsn,"#{vsn}"},{description,"test"}]}.)
+      )
+
+      project
+    end
+  end
 end
