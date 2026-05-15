@@ -22,7 +22,9 @@ defmodule Mix.Tasks.Mob.EnableTest do
     test "all valid features are accepted (no validation issue)" do
       # We only assert that validation passes — most handlers issue notices
       # because the test project has no ios/, android/, assets/ etc. dirs.
-      for feature <- ~w(camera photo_library location file_sharing notifications) do
+      # Coverage of the full @valid_features list catches "did the new
+      # feature get added to validation as well as dispatch?" regressions.
+      for feature <- ~w(camera photo_library location file_sharing notifications nxeigen) do
         igniter = enable([feature])
         assert igniter.issues == [], "feature #{feature} was rejected: #{inspect(igniter.issues)}"
       end
@@ -147,7 +149,6 @@ defmodule Mix.Tasks.Mob.EnableTest do
     end
   end
 
-
   describe "mlx feature" do
     test "adds :nx and :emlx deps via Igniter" do
       igniter =
@@ -206,6 +207,60 @@ defmodule Mix.Tasks.Mob.EnableTest do
         |> Igniter.compose_task("mob.enable", ["mlx"])
 
       assert Enum.any?(igniter.notices, &(&1 =~ "Test.MLInit.configure()"))
+    end
+  end
+
+  describe "nxeigen feature" do
+    test "adds :nx and :nx_eigen deps via Igniter" do
+      igniter =
+        test_project()
+        |> Igniter.compose_task("mob.enable", ["nxeigen"])
+
+      mix_exs = Rewrite.Source.get(Rewrite.source!(igniter.rewrite, "mix.exs"), :content)
+      assert mix_exs =~ ":nx"
+      assert mix_exs =~ ":nx_eigen"
+    end
+
+    test "generates lib/<app>/nx_eigen_init.ex with NxEigen.Backend configure/0" do
+      igniter =
+        test_project()
+        |> Igniter.compose_task("mob.enable", ["nxeigen"])
+
+      file = Rewrite.source!(igniter.rewrite, "lib/test/nx_eigen_init.ex")
+      content = Rewrite.Source.get(file, :content)
+      assert content =~ "defmodule Test.NxEigenInit"
+      assert content =~ "NxEigen.Backend"
+      assert content =~ "Nx.global_default_backend"
+      # Fallback path for when the NIF can't load.
+      assert content =~ "Nx.BinaryBackend"
+    end
+
+    # Idempotency for the nx_eigen dep is verified by
+    # `Igniter.Project.Deps.add_dep` upstream — it short-circuits when
+    # the dep tuple already exists. A test mirroring the mlx/pythonx
+    # idempotent test would inherit those tests' Rewrite.Error failure
+    # mode (test_project's mix.exs source isn't picked up by Rewrite
+    # the way the task expects), so we skip it. Re-add once those are
+    # fixed.
+
+    test "adds a next-steps notice mentioning NxEigenInit.configure" do
+      igniter =
+        test_project()
+        |> Igniter.compose_task("mob.enable", ["nxeigen"])
+
+      assert Enum.any?(igniter.notices, &(&1 =~ "Test.NxEigenInit.configure()"))
+    end
+
+    test "next-steps notice flags the cross-platform story (iOS + Android)" do
+      # Distinct from mlx which is iOS-only — this is the explicit
+      # selling point. Pin it so the message can't drift.
+      igniter =
+        test_project()
+        |> Igniter.compose_task("mob.enable", ["nxeigen"])
+
+      notice = Enum.find(igniter.notices, &(&1 =~ "nxeigen"))
+      assert notice
+      assert notice =~ ~r/iOS.*Android|Android.*iOS/
     end
   end
 

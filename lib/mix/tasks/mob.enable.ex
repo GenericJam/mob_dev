@@ -162,7 +162,7 @@ defmodule Mix.Tasks.Mob.Enable do
   `Mob.Dist.ensure_started/1` have run.
   """
 
-  @valid_features ~w(liveview camera photo_library file_sharing location notifications pythonx mlx)
+  @valid_features ~w(liveview camera photo_library file_sharing location notifications pythonx mlx nxeigen)
 
   @impl Igniter.Mix.Task
   def info(_argv, _composing_task) do
@@ -243,6 +243,12 @@ defmodule Mix.Tasks.Mob.Enable do
     |> Igniter.add_notice(mlx_next_steps(app_name))
   end
 
+  defp dispatch(igniter, "nxeigen", app_name) do
+    igniter
+    |> EI.enable_nxeigen(app_name)
+    |> Igniter.add_notice(nxeigen_next_steps(app_name))
+  end
+
   defp parse_features(argv) do
     {_opts, features, _} = OptionParser.parse(argv, strict: [yes: :boolean])
     features
@@ -268,6 +274,33 @@ defmodule Mix.Tasks.Mob.Enable do
 
     iOS-only for v1. Android MLX support is a separate cross-compile
     (no Metal — CPU + NDK BLAS); not shipped yet.
+    """
+  end
+
+  defp nxeigen_next_steps(app_name) do
+    module = Macro.camelize(app_name)
+
+    """
+    Next steps for nxeigen:
+      1. Run `mix deps.get` to fetch :nx + :nx_eigen.
+      2. Run `mix deps.compile nx_eigen` once on host — this triggers
+         the auto-download of the Eigen 3.4.0 header tarball into
+         deps/nx_eigen/eigen-3.4.0/, which mob_dev's cross-compile
+         then references.
+      3. In your `Mob.App.on_start/0`, call:
+           #{module}.NxEigenInit.configure()
+         after `Mob.Screen.start_root/1` and `Mob.Dist.ensure_started/1`.
+         It picks NxEigen as Nx's global backend (Eigen CPU, header-only,
+         NEON-vectorised on ARM) and falls back to Nx.BinaryBackend if
+         the NIF can't load.
+      4. `mix mob.deploy --native --device <udid>` to cross-compile and
+         install the app. The first build cross-compiles libnx_eigen.a
+         (two .cpp files: NxEigen's main NIF + our Eigen-FFT bridge)
+         per target arch into `_build/<env>/nxeigen/`.
+
+    Works on BOTH iOS (device + sim) and Android (arm64 + arm32) —
+    Eigen is header-only C++. FFT support uses Eigen's built-in
+    kissfft (header-only); swap to a FFTW variant later if needed.
     """
   end
 
