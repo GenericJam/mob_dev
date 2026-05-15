@@ -183,6 +183,28 @@ defmodule MobDev.MLXDownloaderTest do
     end
   end
 
+  # ── metallib_path/1 ─────────────────────────────────────────────────────────
+
+  describe "metallib_path/1" do
+    @tag :tmp_dir
+    test "returns nil for a CPU-only bundle (no metallib)", %{tmp_dir: tmp} do
+      stub_complete_bundle(tmp)
+      assert MLXDownloader.metallib_path(tmp) == nil
+    end
+
+    @tag :tmp_dir
+    test "returns the lib/mlx.metallib path when present", %{tmp_dir: tmp} do
+      stub_complete_bundle(tmp)
+      metallib = Path.join([tmp, "lib", "mlx.metallib"])
+      File.write!(metallib, "stub-metallib")
+      assert MLXDownloader.metallib_path(tmp) == metallib
+    end
+
+    test "returns nil for a non-existent dir" do
+      assert MLXDownloader.metallib_path("/no/such/dir") == nil
+    end
+  end
+
   # ── helpers ─────────────────────────────────────────────────────────────────
 
   # Build the layout MLXDownloader.valid_dir?/1 expects, directly on disk.

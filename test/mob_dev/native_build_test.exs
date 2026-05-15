@@ -761,4 +761,267 @@ defmodule MobDev.NativeBuildTest do
       assert :elixir_only = NativeBuild.classify_project_nif(%{module: :no_native}, tmp)
     end
   end
+
+  # ── NxEigen integration helpers ──────────────────────────────────────────
+  # Pure functions — no toolchain or filesystem touched.
+
+  describe "nxeigen_zig_args_ios/1" do
+    test "nil → no flags (NxEigen not in this build)" do
+      assert NativeBuild.nxeigen_zig_args_ios(nil) == []
+    end
+
+    test "archive path → -Dnxeigen_static=true + -Dnxeigen_dir=<dirname>" do
+      args = NativeBuild.nxeigen_zig_args_ios("/some/build/ios_sim/libnx_eigen.a")
+      assert args == ["-Dnxeigen_static=true", "-Dnxeigen_dir=/some/build/ios_sim"]
+    end
+
+    test "uses dirname (not full path) so the template's `{nxeigen_dir}/libnx_eigen.a` resolves" do
+      args = NativeBuild.nxeigen_zig_args_ios("/x/libnx_eigen.a")
+      assert "-Dnxeigen_dir=/x" in args
+      refute Enum.any?(args, &String.contains?(&1, "libnx_eigen.a"))
+    end
+  end
+
+  describe "nxeigen_zig_args_android/1" do
+    test "nil → no flags" do
+      assert NativeBuild.nxeigen_zig_args_android(nil) == []
+    end
+
+    test "archive path → -Dnxeigen_static=true + -Dnxeigen_lib=<full path>" do
+      # Android passes the full per-ABI archive path (not dirname) so a
+      # single zig invocation can target one ABI's lib precisely. Two
+      # ABI builds → two different `nxeigen_lib` values.
+      args = NativeBuild.nxeigen_zig_args_android("/build/android_arm64/libnx_eigen.a")
+      assert args == ["-Dnxeigen_static=true", "-Dnxeigen_lib=/build/android_arm64/libnx_eigen.a"]
+    end
+
+    test "iOS uses dir, Android uses lib — they differ for the same archive" do
+      # Regression guard: the two flag shapes are intentionally
+      # asymmetric. iOS templates expect a directory because the link
+      # uses `{nxeigen_dir}/libnx_eigen.a`; Android templates expect
+      # the per-ABI lib path directly.
+      ios = NativeBuild.nxeigen_zig_args_ios("/x/libnx_eigen.a")
+      android = NativeBuild.nxeigen_zig_args_android("/x/libnx_eigen.a")
+      refute ios == android
+    end
+  end
+
+  # ── install_nx_eigen_otp_lib — filesystem integration ────────────────────
+
+  describe "install_nx_eigen_otp_lib/1 (and stage_empty_priv_otp_lib/2)" do
+    setup do
+      tmp =
+        Path.join(
+          System.tmp_dir!(),
+          "mobdev_install_nxeigen_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(tmp)
+      on_exit(fn -> File.rm_rf!(tmp) end)
+      {:ok, tmp: tmp}
+    end
+
+    test "no-op when neither dep ebin exists in _build/dev/lib/", %{tmp: otp_root} do
+      # No _build dir at all — should silently no-op (the function isn't
+      # required to fail when a project just doesn't have the deps).
+      assert :ok = NativeBuild.install_nx_eigen_otp_lib(otp_root)
+      refute File.dir?(Path.join([otp_root, "lib"]))
+    end
+
+    test "stages a single dep into <otp_root>/lib/<app>-<vsn>/{ebin,priv}", %{tmp: otp_root} do
+      project = setup_project_with_dep("nx_eigen", "1.2.3")
+
+      File.cd!(project, fn ->
+        NativeBuild.stage_empty_priv_otp_lib(otp_root, "nx_eigen")
+      end)
+
+      lib_dir = Path.join([otp_root, "lib", "nx_eigen-1.2.3"])
+      assert File.dir?(lib_dir)
+      assert File.dir?(Path.join(lib_dir, "ebin"))
+      # priv MUST exist (so :code.priv_dir/1 returns a path), and MUST
+      # be empty (the .a is statically linked into the main binary).
+      assert File.dir?(Path.join(lib_dir, "priv"))
+      assert File.ls!(Path.join(lib_dir, "priv")) == []
+
+      # .beam files copied through.
+      assert File.exists?(Path.join([lib_dir, "ebin", "Elixir.NxEigen.NIF.beam"]))
+      # .app file copied through too.
+      assert File.exists?(Path.join([lib_dir, "ebin", "nx_eigen.app"]))
+    end
+
+    test "is idempotent — re-staging the same app overwrites without duplicating", %{
+      tmp: otp_root
+    } do
+      project = setup_project_with_dep("nx_eigen", "1.2.3")
+
+      File.cd!(project, fn ->
+        NativeBuild.stage_empty_priv_otp_lib(otp_root, "nx_eigen")
+        NativeBuild.stage_empty_priv_otp_lib(otp_root, "nx_eigen")
+      end)
+
+      # Still exactly one lib dir; ebin still has the same contents.
+      lib_dirs = File.ls!(Path.join(otp_root, "lib"))
+      assert lib_dirs == ["nx_eigen-1.2.3"]
+    end
+
+    test "install_nx_eigen_otp_lib stages BOTH nx_eigen + fine", %{tmp: otp_root} do
+      # Both deps need staging because Fine is the C++ binding helper;
+      # any code that consults `:code.priv_dir(:fine)` would crash on
+      # the same `:bad_name` pattern without it.
+      project = setup_project_with_dep("nx_eigen", "1.2.3")
+      _ = setup_dep_in_project(project, "fine", "0.5.0")
+
+      File.cd!(project, fn ->
+        NativeBuild.install_nx_eigen_otp_lib(otp_root)
+      end)
+
+      lib_dirs = Enum.sort(File.ls!(Path.join(otp_root, "lib")))
+      assert lib_dirs == ["fine-0.5.0", "nx_eigen-1.2.3"]
+    end
+
+    # Helper: build a fake project containing _build/dev/lib/<app>/ebin/
+    # with one .beam + a .app file the staging code expects.
+    defp setup_project_with_dep(app, vsn) do
+      tmp = Path.join(System.tmp_dir!(), "mobdev_proj_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      on_exit(fn -> File.rm_rf!(tmp) end)
+      setup_dep_in_project(tmp, app, vsn)
+      tmp
+    end
+
+    defp setup_dep_in_project(project, app, vsn) do
+      ebin = Path.join([project, "_build", "dev", "lib", app, "ebin"])
+      File.mkdir_p!(ebin)
+
+      File.write!(
+        Path.join(ebin, "Elixir.#{Macro.camelize(app)}.NIF.beam"),
+        "FAKE_BEAM_BYTES"
+      )
+
+      File.write!(
+        Path.join(ebin, "#{app}.app"),
+        ~s({application,#{app},[{vsn,"#{vsn}"},{description,"test"}]}.)
+      )
+
+      project
+    end
+  end
+
+  # ── maybe_bundle_mlx_metallib/1 ──────────────────────────────────────────
+  # Copies mlx.metallib (the precompiled Metal GPU kernels) out of mob's
+  # MLX cache into the .app bundle so MLX's load_colocated_library can
+  # find it next to the running binary. No-op when the cached bundle is
+  # CPU-only (no metallib in the staged tarball).
+
+  describe "maybe_bundle_mlx_metallib/1" do
+    setup do
+      tmp =
+        Path.join(System.tmp_dir!(), "mob_metallib_test_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(tmp)
+
+      original_cache = System.get_env("MOB_CACHE_DIR")
+      original_local = System.get_env("MOB_MLX_LOCAL_TARBALL_DIR")
+
+      on_exit(fn ->
+        File.rm_rf!(tmp)
+        restore_env("MOB_CACHE_DIR", original_cache)
+        restore_env("MOB_MLX_LOCAL_TARBALL_DIR", original_local)
+      end)
+
+      {:ok, tmp: tmp}
+    end
+
+    test "copies mlx.metallib into the .app when the cached bundle ships one", %{tmp: tmp} do
+      app_path = Path.join(tmp, "Test.app")
+      File.mkdir_p!(app_path)
+
+      stage_mlx_cache(tmp, with_metallib: true)
+
+      assert :ok = NativeBuild.maybe_bundle_mlx_metallib(app_path)
+      copied = Path.join(app_path, "mlx.metallib")
+      assert File.regular?(copied)
+      assert File.read!(copied) == "stub-metallib-bytes"
+    end
+
+    test "no-op when the cached bundle is CPU-only (no metallib)", %{tmp: tmp} do
+      app_path = Path.join(tmp, "Test.app")
+      File.mkdir_p!(app_path)
+
+      stage_mlx_cache(tmp, with_metallib: false)
+
+      assert :ok = NativeBuild.maybe_bundle_mlx_metallib(app_path)
+      refute File.exists?(Path.join(app_path, "mlx.metallib"))
+    end
+  end
+
+  # Stage a fake MLX cache + local tarball under tmp/. Uses the same
+  # MOB_MLX_LOCAL_TARBALL_DIR override the MLXDownloader tests use so
+  # ensure_ios_device/0 doesn't touch the network.
+  defp stage_mlx_cache(tmp, opts) do
+    bundle_name = MobDev.MLXDownloader.name(:ios_device)
+    tarball_name = MobDev.MLXDownloader.tarball_name(:ios_device)
+
+    # Build the staging dir (what the tarball will contain).
+    stage_root = Path.join(tmp, "stage")
+    bundle_dir = Path.join(stage_root, bundle_name)
+    File.mkdir_p!(Path.join(bundle_dir, "lib"))
+    File.mkdir_p!(Path.join([bundle_dir, "include", "mlx"]))
+    File.write!(Path.join([bundle_dir, "lib", "libmlx.a"]), "stub-mlx")
+    File.write!(Path.join([bundle_dir, "lib", "libemlx.a"]), "stub-emlx")
+    File.write!(Path.join(bundle_dir, "VERSION"), "mlx_version=stub\nvariant=test\n")
+
+    if opts[:with_metallib] do
+      File.write!(Path.join([bundle_dir, "lib", "mlx.metallib"]), "stub-metallib-bytes")
+    end
+
+    # Pack into a tarball at the location the local-tarball override
+    # expects.
+    local_dir = Path.join(tmp, "local")
+    File.mkdir_p!(local_dir)
+    tar_out = Path.join(local_dir, tarball_name)
+
+    {_, 0} = System.cmd("tar", ["-czf", tar_out, "-C", stage_root, bundle_name])
+    File.rm_rf!(stage_root)
+
+    # Point the downloader at a fresh tmp cache + the staged tarball.
+    cache_dir = Path.join(tmp, "cache")
+    System.put_env("MOB_CACHE_DIR", cache_dir)
+    System.put_env("MOB_MLX_LOCAL_TARBALL_DIR", local_dir)
+  end
+
+  defp restore_env(name, nil), do: System.delete_env(name)
+  defp restore_env(name, value), do: System.put_env(name, value)
+
+  # ── Pin script + patch presence ──────────────────────────────────────────
+  # The Metal build process depends on two files living at known paths.
+  # If a refactor removes or renames either, fail loudly here instead of
+  # silently producing a CPU-only bundle.
+
+  describe "MLX Metal build artifacts present" do
+    test "ios_device_metal.sh exists and is executable" do
+      script =
+        Path.join([
+          File.cwd!(),
+          "scripts/release/mlx/ios_device_metal.sh"
+        ])
+
+      assert File.regular?(script), "expected #{script} to exist"
+      assert File.stat!(script).mode |> Bitwise.band(0o111) > 0, "expected #{script} to be executable"
+    end
+
+    test "iOS-Metal CMake patch file exists" do
+      patch =
+        Path.join([
+          File.cwd!(),
+          "scripts/release/mlx/patches/0001-ios-metal-build.patch"
+        ])
+
+      assert File.regular?(patch), "expected #{patch} to exist"
+
+      content = File.read!(patch)
+      assert String.contains?(content, "iOS"), "patch should mention iOS"
+      assert String.contains?(content, "iphoneos"), "patch should switch to iphoneos SDK"
+    end
+  end
 end

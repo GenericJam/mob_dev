@@ -94,6 +94,23 @@ defmodule MobDev.MLXDownloader do
       File.regular?(Path.join([dir, "VERSION"]))
   end
 
+  @doc """
+  Path to `mlx.metallib` if this bundle ships Metal GPU kernels, or
+  `nil` if it's a CPU-only bundle.
+
+  The CPU build (`scripts/release/mlx/ios_device.sh`) doesn't produce
+  a metallib. The Metal build (`ios_device_metal.sh`) puts one at
+  `lib/mlx.metallib` alongside the static archives. Callers use this
+  to decide whether to copy the metallib into the iOS .app bundle so
+  EMLX's runtime `device: :gpu` path can find it (via MLX's
+  `load_colocated_library`).
+  """
+  @spec metallib_path(String.t()) :: nil | String.t()
+  def metallib_path(dir) do
+    path = Path.join([dir, "lib", "mlx.metallib"])
+    if File.regular?(path), do: path, else: nil
+  end
+
   @doc "Bundle name (no extension, no path) for `target` — `libmlx-0.25.1-ios-device` etc."
   @spec name(target()) :: String.t()
   def name(:ios_device), do: "libmlx-#{@mlx_version}-ios-device"

@@ -1,0 +1,91 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -64,11 +64,25 @@
+     endif()
+   endif()
+ 
++elseif(${CMAKE_SYSTEM_NAME} MATCHES "iOS")
++  # mob_dev iOS+Metal patch: treat iOS like Darwin for Metal purposes
++  # (the iphoneos SDK has metal + metallib; metal-cpp ships iOS headers).
++  message(STATUS "Building MLX for iOS — Metal eligible when MLX_BUILD_METAL=ON")
+ else()
+   set(MLX_BUILD_METAL OFF)
+   message(WARNING "MLX is prioritised for Apple silicon systems using macOS.")
+ endif()
+ 
++# mob_dev iOS+Metal patch: pick the matching xcrun SDK + version-min
++# flag prefix based on the target platform.
++if(${CMAKE_SYSTEM_NAME} MATCHES "iOS")
++  set(MLX_XCRUN_SDK "iphoneos")
++  set(MLX_VERSION_MIN_FLAG_PREFIX "-mios-version-min=")
++else()
++  set(MLX_XCRUN_SDK "macosx")
++  set(MLX_VERSION_MIN_FLAG_PREFIX "-mmacosx-version-min=")
++endif()
++
+ # ----------------------------- Lib -----------------------------
+ 
+ include(FetchContent)
+@@ -96,26 +110,26 @@
+ 
+   # Throw an error if xcrun not found
+   execute_process(
+-    COMMAND zsh "-c" "/usr/bin/xcrun -sdk macosx --show-sdk-version"
+-    OUTPUT_VARIABLE MACOS_SDK_VERSION COMMAND_ERROR_IS_FATAL ANY)
++    COMMAND zsh "-c" "/usr/bin/xcrun -sdk ${MLX_XCRUN_SDK} --show-sdk-version"
++    OUTPUT_VARIABLE MLX_SDK_VERSION COMMAND_ERROR_IS_FATAL ANY)
+ 
+-  if(${MACOS_SDK_VERSION} LESS 14.0)
++  if(${MLX_SDK_VERSION} LESS 14.0)
+     message(
+       FATAL_ERROR
+-        "MLX requires macOS SDK >= 14.0 to be built with MLX_BUILD_METAL=ON")
++        "MLX requires ${MLX_XCRUN_SDK} SDK >= 14.0 to be built with MLX_BUILD_METAL=ON")
+   endif()
+-  message(STATUS "Building with macOS SDK version ${MACOS_SDK_VERSION}")
++  message(STATUS "Building with ${MLX_XCRUN_SDK} SDK version ${MLX_SDK_VERSION}")
+ 
+   set(METAL_CPP_URL
+       https://developer.apple.com/metal/cpp/files/metal-cpp_macOS15_iOS18.zip)
+ 
+   if(NOT CMAKE_OSX_DEPLOYMENT_TARGET STREQUAL "")
+-    set(XCRUN_FLAGS "-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
++    set(XCRUN_FLAGS "${MLX_VERSION_MIN_FLAG_PREFIX}${CMAKE_OSX_DEPLOYMENT_TARGET}")
+   endif()
+   execute_process(
+     COMMAND
+       zsh "-c"
+-      "echo \"__METAL_VERSION__\" | xcrun -sdk macosx metal ${XCRUN_FLAGS} -E -x metal -P - | tail -1 | tr -d '\n'"
++      "echo \"__METAL_VERSION__\" | xcrun -sdk ${MLX_XCRUN_SDK} metal ${XCRUN_FLAGS} -E -x metal -P - | tail -1 | tr -d '\n'"
+     OUTPUT_VARIABLE MLX_METAL_VERSION COMMAND_ERROR_IS_FATAL ANY)
+   FetchContent_Declare(metal_cpp URL ${METAL_CPP_URL})
+ 
+--- a/mlx/backend/metal/kernels/CMakeLists.txt
++++ b/mlx/backend/metal/kernels/CMakeLists.txt
+@@ -15,7 +15,7 @@
+   endif()
+   if(NOT CMAKE_OSX_DEPLOYMENT_TARGET STREQUAL "")
+     set(METAL_FLAGS ${METAL_FLAGS}
+-                    "-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
++                    "${MLX_VERSION_MIN_FLAG_PREFIX}${CMAKE_OSX_DEPLOYMENT_TARGET}")
+   endif()
+   if(MLX_METAL_VERSION GREATER_EQUAL 310)
+     set(VERSION_INCLUDES
+@@ -25,7 +25,7 @@
+         ${PROJECT_SOURCE_DIR}/mlx/backend/metal/kernels/metal_3_0)
+   endif()
+   add_custom_command(
+-    COMMAND xcrun -sdk macosx metal ${METAL_FLAGS} -c ${SRCFILE}
++    COMMAND xcrun -sdk ${MLX_XCRUN_SDK} metal ${METAL_FLAGS} -c ${SRCFILE}
+             -I${PROJECT_SOURCE_DIR} -I${VERSION_INCLUDES} -o ${TARGET}.air
+     DEPENDS ${SRCFILE} ${DEPS} ${BASE_HEADERS}
+     OUTPUT ${TARGET}.air
+@@ -125,7 +125,7 @@
+ 
+ add_custom_command(
+   OUTPUT ${MLX_METAL_PATH}/mlx.metallib
+-  COMMAND xcrun -sdk macosx metallib ${KERNEL_AIR} -o
++  COMMAND xcrun -sdk ${MLX_XCRUN_SDK} metallib ${KERNEL_AIR} -o
+           ${MLX_METAL_PATH}/mlx.metallib
+   DEPENDS ${KERNEL_AIR}
+   COMMENT "Building mlx.metallib"
