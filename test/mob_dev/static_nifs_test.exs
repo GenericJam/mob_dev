@@ -315,16 +315,19 @@ defmodule MobDev.StaticNifsTest do
       assert out =~ "} else {"
     end
 
-    test "Android Zig output has no comptime guards — all NIFs unconditional" do
+    test "Android Zig output: sqlite/emlx absent, nx_eigen present and guarded" do
       out =
         StaticNifs.generate(:android, StaticNifs.default_nifs(), format: :zig)
         |> IO.iodata_to_binary()
 
-      # No sqlite_static comptime const on Android — sqlite is iOS-device-only
-      # in the defaults. The Android table is a single straight array.
+      # sqlite is iOS-device-only, emlx is iOS-only — neither appears on Android.
       refute out =~ "sqlite_static"
-      refute out =~ "build_options"
-      assert out =~ "export var erts_static_nif_tab = [_]ErtsStaticNif{"
+      refute out =~ "emlx_static"
+
+      # nx_eigen is opt-in on Android via the nx_eigen_static comptime flag
+      # (set true when `mix mob.enable nxeigen` was run).
+      assert out =~ "nx_eigen_static"
+      assert out =~ "build_options"
     end
 
     test "produces parseable Zig source (round-trip via zig ast-check)" do

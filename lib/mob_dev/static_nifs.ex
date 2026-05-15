@@ -115,6 +115,17 @@ defmodule MobDev.StaticNifs do
         module: :emlx_nif,
         archs: [:ios_device, :ios_sim],
         guard: "MOB_STATIC_EMLX_NIF"
+      },
+      # NxEigen NIF (Eigen-backed Nx backend) — statically linked when the
+      # project enables it via `mix mob.enable nxeigen`. Available on iOS
+      # AND Android (Eigen is header-only C++; mob_dev cross-compiles
+      # libnx_eigen.a per arch). Guard `MOB_STATIC_NX_EIGEN_NIF` keeps the
+      # entry zero-cost for apps that don't use Nx. See MobDev.NxEigenNif
+      # for the cross-compile.
+      %{
+        module: :nx_eigen,
+        archs: [:all],
+        guard: "MOB_STATIC_NX_EIGEN_NIF"
       }
     ]
   end
