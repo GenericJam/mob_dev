@@ -906,4 +906,122 @@ defmodule MobDev.NativeBuildTest do
       project
     end
   end
+
+  # ── maybe_bundle_mlx_metallib/1 ──────────────────────────────────────────
+  # Copies mlx.metallib (the precompiled Metal GPU kernels) out of mob's
+  # MLX cache into the .app bundle so MLX's load_colocated_library can
+  # find it next to the running binary. No-op when the cached bundle is
+  # CPU-only (no metallib in the staged tarball).
+
+  describe "maybe_bundle_mlx_metallib/1" do
+    setup do
+      tmp =
+        Path.join(System.tmp_dir!(), "mob_metallib_test_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(tmp)
+
+      original_cache = System.get_env("MOB_CACHE_DIR")
+      original_local = System.get_env("MOB_MLX_LOCAL_TARBALL_DIR")
+
+      on_exit(fn ->
+        File.rm_rf!(tmp)
+        restore_env("MOB_CACHE_DIR", original_cache)
+        restore_env("MOB_MLX_LOCAL_TARBALL_DIR", original_local)
+      end)
+
+      {:ok, tmp: tmp}
+    end
+
+    test "copies mlx.metallib into the .app when the cached bundle ships one", %{tmp: tmp} do
+      app_path = Path.join(tmp, "Test.app")
+      File.mkdir_p!(app_path)
+
+      stage_mlx_cache(tmp, with_metallib: true)
+
+      assert :ok = NativeBuild.maybe_bundle_mlx_metallib(app_path)
+      copied = Path.join(app_path, "mlx.metallib")
+      assert File.regular?(copied)
+      assert File.read!(copied) == "stub-metallib-bytes"
+    end
+
+    test "no-op when the cached bundle is CPU-only (no metallib)", %{tmp: tmp} do
+      app_path = Path.join(tmp, "Test.app")
+      File.mkdir_p!(app_path)
+
+      stage_mlx_cache(tmp, with_metallib: false)
+
+      assert :ok = NativeBuild.maybe_bundle_mlx_metallib(app_path)
+      refute File.exists?(Path.join(app_path, "mlx.metallib"))
+    end
+  end
+
+  # Stage a fake MLX cache + local tarball under tmp/. Uses the same
+  # MOB_MLX_LOCAL_TARBALL_DIR override the MLXDownloader tests use so
+  # ensure_ios_device/0 doesn't touch the network.
+  defp stage_mlx_cache(tmp, opts) do
+    bundle_name = MobDev.MLXDownloader.name(:ios_device)
+    tarball_name = MobDev.MLXDownloader.tarball_name(:ios_device)
+
+    # Build the staging dir (what the tarball will contain).
+    stage_root = Path.join(tmp, "stage")
+    bundle_dir = Path.join(stage_root, bundle_name)
+    File.mkdir_p!(Path.join(bundle_dir, "lib"))
+    File.mkdir_p!(Path.join([bundle_dir, "include", "mlx"]))
+    File.write!(Path.join([bundle_dir, "lib", "libmlx.a"]), "stub-mlx")
+    File.write!(Path.join([bundle_dir, "lib", "libemlx.a"]), "stub-emlx")
+    File.write!(Path.join(bundle_dir, "VERSION"), "mlx_version=stub\nvariant=test\n")
+
+    if opts[:with_metallib] do
+      File.write!(Path.join([bundle_dir, "lib", "mlx.metallib"]), "stub-metallib-bytes")
+    end
+
+    # Pack into a tarball at the location the local-tarball override
+    # expects.
+    local_dir = Path.join(tmp, "local")
+    File.mkdir_p!(local_dir)
+    tar_out = Path.join(local_dir, tarball_name)
+
+    {_, 0} = System.cmd("tar", ["-czf", tar_out, "-C", stage_root, bundle_name])
+    File.rm_rf!(stage_root)
+
+    # Point the downloader at a fresh tmp cache + the staged tarball.
+    cache_dir = Path.join(tmp, "cache")
+    System.put_env("MOB_CACHE_DIR", cache_dir)
+    System.put_env("MOB_MLX_LOCAL_TARBALL_DIR", local_dir)
+  end
+
+  defp restore_env(name, nil), do: System.delete_env(name)
+  defp restore_env(name, value), do: System.put_env(name, value)
+
+  # ── Pin script + patch presence ──────────────────────────────────────────
+  # The Metal build process depends on two files living at known paths.
+  # If a refactor removes or renames either, fail loudly here instead of
+  # silently producing a CPU-only bundle.
+
+  describe "MLX Metal build artifacts present" do
+    test "ios_device_metal.sh exists and is executable" do
+      script =
+        Path.join([
+          File.cwd!(),
+          "scripts/release/mlx/ios_device_metal.sh"
+        ])
+
+      assert File.regular?(script), "expected #{script} to exist"
+      assert File.stat!(script).mode |> Bitwise.band(0o111) > 0, "expected #{script} to be executable"
+    end
+
+    test "iOS-Metal CMake patch file exists" do
+      patch =
+        Path.join([
+          File.cwd!(),
+          "scripts/release/mlx/patches/0001-ios-metal-build.patch"
+        ])
+
+      assert File.regular?(patch), "expected #{patch} to exist"
+
+      content = File.read!(patch)
+      assert String.contains?(content, "iOS"), "patch should mention iOS"
+      assert String.contains?(content, "iphoneos"), "patch should switch to iphoneos SDK"
+    end
+  end
 end

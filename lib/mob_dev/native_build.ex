@@ -3506,7 +3506,28 @@ defmodule MobDev.NativeBuild do
           do: compile_ios_device_icons(app_path)
 
         bundle_otp_runtime(app_path, otp_root, app_module, erts_vsn)
+        maybe_bundle_mlx_metallib(app_path)
         {:ok, app_path}
+    end
+  end
+
+  # MLX's Metal backend looks for a colocated `mlx.metallib` next to the
+  # running binary (`get_binary_directory()/mlx.metallib`). When mob ships
+  # a Metal-enabled MLX bundle the cached MLX_DIR contains a
+  # `lib/mlx.metallib` next to the static archives — copy it into the
+  # .app bundle alongside the main binary so MLX can find it at runtime.
+  # No-op when the bundle is CPU-only (`device: :gpu` then returns the
+  # "Cannot get gpu stream" error from EMLX).
+  @doc false
+  @spec maybe_bundle_mlx_metallib(String.t()) :: :ok
+  def maybe_bundle_mlx_metallib(app_path) do
+    with {:ok, mlx_dir} <- MobDev.MLXDownloader.ensure_ios_device(),
+         src when is_binary(src) <- MobDev.MLXDownloader.metallib_path(mlx_dir) do
+      File.cp!(src, Path.join(app_path, "mlx.metallib"))
+      IO.puts("  === Copied mlx.metallib (Metal GPU kernels) into .app")
+      :ok
+    else
+      _ -> :ok
     end
   end
 

@@ -38,6 +38,25 @@ ensure_mlx_src() {
     log "MLX source ready at $MLX_SRC"
 }
 
+# Apply the iOS-Metal CMakeLists patches to $MLX_SRC. Idempotent — checks
+# for a sentinel comment in CMakeLists.txt before re-applying. Only the
+# Metal build script (ios_device_metal.sh) calls this; the CPU build
+# (ios_device.sh) doesn't need iOS-Metal support.
+apply_ios_metal_patch() {
+    local sentinel="mob_dev iOS+Metal patch"
+    if grep -q "$sentinel" "$MLX_SRC/CMakeLists.txt"; then
+        log "iOS-Metal patches already applied to $MLX_SRC"
+        return 0
+    fi
+
+    log "applying iOS-Metal patches to $MLX_SRC..."
+    local patch="$SCRIPT_DIR/patches/0001-ios-metal-build.patch"
+    [ -f "$patch" ] || fail "patch file not found at $patch"
+
+    (cd "$MLX_SRC" && patch -p1 < "$patch") || fail "iOS-Metal patch failed to apply"
+    log "patches applied"
+}
+
 # Resolve the EMLX source directory. Defaults to the user's test_emlx project
 # checkout — overridable via $EMLX_SRC. For a publish-grade build the caller
 # should pass a known-good EMLX checkout.
