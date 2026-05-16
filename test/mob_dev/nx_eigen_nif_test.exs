@@ -182,8 +182,11 @@ defmodule MobDev.NxEigenNifTest do
       march_idx = Enum.find_index(flags, &(&1 == "-march=armv7-a"))
       branch_idx = Enum.find_index(flags, &(&1 == "-mbranch-protection=standard"))
 
-      assert march_idx
-      assert branch_idx
+      assert is_integer(march_idx), "-march=armv7-a not present in #{inspect(flags)}"
+
+      assert is_integer(branch_idx),
+             "-mbranch-protection=standard not present in #{inspect(flags)}"
+
       assert march_idx < branch_idx
     end
   end
@@ -357,11 +360,7 @@ defmodule MobDev.NxEigenNifTest do
     # in cxxflags/2 cover the surface this test was guarding.
     @tag :android_ndk
     test "uses NDK clang++, archives, verifies ELF symbol" do
-      unless MobDev.NdkVersion.installed?(MobDev.NdkVersion.effective()) do
-        # No NDK — bail before installing Mox expectations so
-        # verify_on_exit doesn't complain.
-        :skipped
-      else
+      if MobDev.NdkVersion.installed?(MobDev.NdkVersion.effective()) do
         stub_all_dir_checks_true()
         Mox.expect(MobDev.Release.ShellMock, :mkdir_p, 2, fn _ -> :ok end)
 
@@ -401,6 +400,10 @@ defmodule MobDev.NxEigenNifTest do
 
         assert info.target == :android_arm64
         assert info.archive == "/fake/out/libnx_eigen.a"
+      else
+        # No NDK — bail before installing Mox expectations so
+        # verify_on_exit doesn't complain.
+        :skipped
       end
     end
   end

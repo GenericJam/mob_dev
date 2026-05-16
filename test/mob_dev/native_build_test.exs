@@ -1012,6 +1012,12 @@ defmodule MobDev.NativeBuildTest do
              "expected #{script} to be executable"
     end
 
+    # ExSlop flags this as "doesn't exercise application code" — strictly true
+    # (it only touches File.regular?/1 + String.contains?/2) but the assertion
+    # is on a build asset the deploy pipeline consumes. Losing the patch
+    # silently would break iOS Metal builds in a way a regular test couldn't
+    # catch, since the consumer is `mix mob.deploy --native --ios`, not BEAM.
+    # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
     test "iOS-Metal CMake patch file exists" do
       patch =
         Path.join([
