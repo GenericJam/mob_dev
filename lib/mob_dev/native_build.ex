@@ -2252,14 +2252,12 @@ defmodule MobDev.NativeBuild do
     end
   end
 
-  @doc """
-  Returns the iOS-side zig -D flags. The iOS template expects
-  `nxeigen_dir` (a directory containing `libnx_eigen.a`); since we
-  build to `<out_dir>/libnx_eigen.a`, dirname is the right value.
-
-  `nil` means NxEigen isn't in this build → emit no flags.
-  Public for testing.
-  """
+  # Returns the iOS-side zig -D flags. The iOS template expects
+  # `nxeigen_dir` (a directory containing `libnx_eigen.a`); since we
+  # build to `<out_dir>/libnx_eigen.a`, dirname is the right value.
+  #
+  # `nil` means NxEigen isn't in this build → emit no flags.
+  # Public for testing; @doc false keeps it out of the published docs.
   @doc false
   @spec nxeigen_zig_args_ios(nil | String.t()) :: [String.t()]
   def nxeigen_zig_args_ios(nil), do: []
@@ -2268,14 +2266,12 @@ defmodule MobDev.NativeBuild do
     ["-Dnxeigen_static=true", "-Dnxeigen_dir=#{Path.dirname(archive_path)}"]
   end
 
-  @doc """
-  Returns the Android-side zig -D flags. The Android template expects
-  `nxeigen_lib` (an absolute path to libnx_eigen.a for this ABI), since
-  the per-ABI archives live in different out_dirs.
-
-  `nil` means NxEigen isn't in this build → emit no flags.
-  Public for testing.
-  """
+  # Returns the Android-side zig -D flags. The Android template expects
+  # `nxeigen_lib` (an absolute path to libnx_eigen.a for this ABI), since
+  # the per-ABI archives live in different out_dirs.
+  #
+  # `nil` means NxEigen isn't in this build → emit no flags.
+  # Public for testing; @doc false keeps it out of the published docs.
   @doc false
   @spec nxeigen_zig_args_android(nil | String.t()) :: [String.t()]
   def nxeigen_zig_args_android(nil), do: []
