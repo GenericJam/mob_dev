@@ -8,7 +8,7 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
-## [Unreleased]
+## [0.5.4]
 
 ### Fixed
 - HexDocs source links pointed at the non-existent `main` branch — corrected to `master` so each `</>` glyph in generated docs opens the actual source file.
