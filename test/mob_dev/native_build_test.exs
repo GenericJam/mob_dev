@@ -831,9 +831,7 @@ defmodule MobDev.NativeBuildTest do
     test "stages a single dep into <otp_root>/lib/<app>-<vsn>/{ebin,priv}", %{tmp: otp_root} do
       project = setup_project_with_dep("nx_eigen", "1.2.3")
 
-      File.cd!(project, fn ->
-        NativeBuild.stage_empty_priv_otp_lib(otp_root, "nx_eigen")
-      end)
+      NativeBuild.stage_empty_priv_otp_lib(otp_root, "nx_eigen", project)
 
       lib_dir = Path.join([otp_root, "lib", "nx_eigen-1.2.3"])
       assert File.dir?(lib_dir)
@@ -854,10 +852,8 @@ defmodule MobDev.NativeBuildTest do
     } do
       project = setup_project_with_dep("nx_eigen", "1.2.3")
 
-      File.cd!(project, fn ->
-        NativeBuild.stage_empty_priv_otp_lib(otp_root, "nx_eigen")
-        NativeBuild.stage_empty_priv_otp_lib(otp_root, "nx_eigen")
-      end)
+      NativeBuild.stage_empty_priv_otp_lib(otp_root, "nx_eigen", project)
+      NativeBuild.stage_empty_priv_otp_lib(otp_root, "nx_eigen", project)
 
       # Still exactly one lib dir; ebin still has the same contents.
       lib_dirs = File.ls!(Path.join(otp_root, "lib"))
@@ -871,9 +867,7 @@ defmodule MobDev.NativeBuildTest do
       project = setup_project_with_dep("nx_eigen", "1.2.3")
       _ = setup_dep_in_project(project, "fine", "0.5.0")
 
-      File.cd!(project, fn ->
-        NativeBuild.install_nx_eigen_otp_lib(otp_root)
-      end)
+      NativeBuild.install_nx_eigen_otp_lib(otp_root, project)
 
       lib_dirs = Enum.sort(File.ls!(Path.join(otp_root, "lib")))
       assert lib_dirs == ["fine-0.5.0", "nx_eigen-1.2.3"]
