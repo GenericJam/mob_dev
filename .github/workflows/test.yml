@@ -43,6 +43,15 @@ jobs:
       - run: mix deps.compile
       - run: mix compile --warnings-as-errors
 
+      # Some HotPush tests inspect `_build/dev/lib/*/ebin/*.beam` to verify
+      # which runtime BEAMs the `mix mob.push` helper would ship to a device.
+      # Under MIX_ENV=test the dev tree doesn't exist; pre-populate it so
+      # those tests have something to look at.
+      - name: Compile :dev tree (for HotPush tests)
+        env:
+          MIX_ENV: dev
+        run: mix compile
+
       - name: Format check
         run: mix format --check-formatted
 
@@ -50,7 +59,10 @@ jobs:
         run: mix credo --strict
 
       - name: Tests
-        run: mix test
+        # `:macos_only` covers tests that shell out to /usr/libexec/PlistBuddy
+        # and similar macOS-bound tools — they're meaningful on a maintainer's
+        # macOS laptop, not on a Linux CI runner.
+        run: mix test --exclude macos_only
 
   security_scan:
     name: Security scan

@@ -5,6 +5,12 @@ defmodule Mix.Tasks.Mob.RepublishTest do
   # mob.release + mob.publish) needs a real iOS toolchain + an App Store
   # Connect API key and is exercised by `mix mob.republish --ios` on a
   # configured machine — out of scope for unit tests.
+  #
+  # The CFBundleVersion bump shells out to `/usr/libexec/PlistBuddy`, which
+  # only exists on macOS. CI runs on Linux for the Elixir suite — exclude
+  # this module there via `mix test --exclude macos_only`. Local macOS dev
+  # runs pick it up by default.
+  @moduletag :macos_only
 
   alias Mix.Tasks.Mob.Republish
 
