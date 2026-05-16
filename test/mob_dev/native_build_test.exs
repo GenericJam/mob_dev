@@ -1007,7 +1007,9 @@ defmodule MobDev.NativeBuildTest do
         ])
 
       assert File.regular?(script), "expected #{script} to exist"
-      assert File.stat!(script).mode |> Bitwise.band(0o111) > 0, "expected #{script} to be executable"
+
+      assert File.stat!(script).mode |> Bitwise.band(0o111) > 0,
+             "expected #{script} to be executable"
     end
 
     test "iOS-Metal CMake patch file exists" do
