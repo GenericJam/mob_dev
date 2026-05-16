@@ -5,7 +5,7 @@ defmodule MobDev.OtpDownloader do
   Artifacts are cached at `~/.mob/cache/` and reused across projects.
   """
 
-  @otp_hash "550d7b78"
+  @otp_hash "d9045670"
   @release_tag "otp-#{@otp_hash}"
   @base_url "https://github.com/GenericJam/mob/releases/download/#{@release_tag}"
 
