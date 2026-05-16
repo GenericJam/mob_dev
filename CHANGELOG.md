@@ -8,6 +8,20 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.5.6]
+
+### Added
+- `CLAUDE.md` "Release flow" section pointing at the canonical process
+  in [`mob/RELEASE.md`](https://github.com/GenericJam/mob/blob/master/RELEASE.md)
+  (URL form so it resolves without a local mob checkout). mob_dev
+  specifics: the pre-push hook additionally runs `mix mob.security_scan`
+  here (this is the only repo that ships the scanner), and the OTP
+  tarball workflow stays separate from `mix.exs` version bumps.
+- `.githooks/pre-push` — same script shipped in mob (cheap preflight
+  always, release preflight when `mix.exs` changed). The
+  `mob.security_scan` step is gated via `mix help` availability so the
+  same hook script works in all three repos.
+
 ## [0.5.5]
 
 ### Fixed
