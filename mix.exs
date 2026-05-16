@@ -125,9 +125,10 @@ defmodule MobDev.MixProject do
     [
       main: "readme",
       source_url: "https://github.com/genericjam/mob_dev",
-      source_url_pattern: "https://github.com/genericjam/mob_dev/blob/main/%{path}#L%{line}",
+      source_url_pattern: "https://github.com/genericjam/mob_dev/blob/master/%{path}#L%{line}",
       extras: [
         "README.md": [title: "mob_dev"],
+        "CHANGELOG.md": [title: "Changelog"],
         "build_release.md": [title: "Building OTP Release Tarballs"],
         "guides/nifs.md": [title: "Static NIFs (C, Rust, Zig, Python)"],
         "guides/security_scan.md": [title: "Security scanning"],
