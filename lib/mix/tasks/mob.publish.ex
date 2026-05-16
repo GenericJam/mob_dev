@@ -262,6 +262,10 @@ defmodule Mix.Tasks.Mob.Publish do
       Mix.raise("App Store Connect API key not found at #{key_path}")
     end
 
+    # Apple's altool reads .p8 keys from this fixed home-dir location;
+    # the "priv" substring is literally "private_keys", not Mob's own
+    # priv/ directory. Application.app_dir/2 doesn't apply here.
+    # credo:disable-for-next-line ExSlop.Check.Warning.PathExpandPriv
     target_dir = Path.expand("~/.appstoreconnect/private_keys")
     File.mkdir_p!(target_dir)
     target = Path.join(target_dir, "AuthKey_#{key_id}.p8")

@@ -259,7 +259,10 @@ defmodule Mix.Tasks.Mob.EnableTest do
         |> Igniter.compose_task("mob.enable", ["nxeigen"])
 
       notice = Enum.find(igniter.notices, &(&1 =~ "nxeigen"))
-      assert notice
+
+      assert is_binary(notice),
+             "expected a notice mentioning nxeigen; got: #{inspect(igniter.notices)}"
+
       assert notice =~ ~r/iOS.*Android|Android.*iOS/
     end
   end

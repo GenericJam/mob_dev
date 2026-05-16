@@ -1076,8 +1076,8 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
 
   # Match `<expected_prefix>@<host>` (with optional `_<udid>` segment for
   # simulators that disambiguate by booted UDID, e.g. `mob_qa_ios_78354490`).
-  # Lets `test_nif_ios` accept `test_nif_ios@10.0.0.120` *and*
-  # `test_nif_ios_<udid>@127.0.0.1` (sim) but reject `mob_qa_ios_*@anything`.
+  # `test_nif_ios` therefore accepts `test_nif_ios@10.0.0.120` *and*
+  # `test_nif_ios_<udid>@127.0.0.1` (sim) but rejects `mob_qa_ios_*@anything`.
   @doc false
   @spec node_matches_prefix?(node() | nil, String.t()) :: boolean()
   def node_matches_prefix?(nil, _prefix), do: false
