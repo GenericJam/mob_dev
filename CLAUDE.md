@@ -120,6 +120,35 @@ analysis. See [`README.md`](README.md#security-scan-mix-mobsecurity_scan)
 for the full layer list and the one-time `brew install` of external
 scanners.
 
+## Release flow
+
+Canonical process lives in
+[`mob/RELEASE.md`](https://github.com/GenericJam/mob/blob/master/RELEASE.md)
+— trigger model (mix.exs as source of truth), patch-bump default with
+mandatory permission, CHANGELOG conventions, per-step idempotency of
+`release.yml`. **mob_dev specifics:**
+
+- The pre-push hook (below) additionally runs `mix mob.security_scan`
+  in this repo — the scanner ships from here, so we get the
+  highest-fidelity check before pushing.
+- OTP runtime tarballs (`otp-<hash>` releases on the `mob` repo) are
+  built and published manually via `scripts/release/` — they are NOT
+  driven by `mix.exs` bumps. See `## Releasing a new OTP runtime`
+  below for the tarball workflow. The `mix.exs` bump that ships a
+  `@otp_hash` change in `lib/mob_dev/otp_downloader.ex` follows the
+  standard release flow.
+
+**Pre-push hook**: `.githooks/pre-push` runs `mix format
+--check-formatted`, `mix credo --strict`, `mix compile
+--warnings-as-errors` on every push (fast). When the push touches
+`mix.exs` it additionally runs the full test suite + `mix
+mob.security_scan` as the release preflight. Activate once per clone
+or worktree:
+
+```bash
+git config core.hooksPath .githooks
+```
+
 ## What to test
 
 **Always testable (pure functions, no hardware):**
