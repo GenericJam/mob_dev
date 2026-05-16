@@ -50,10 +50,7 @@ jobs:
         run: mix credo --strict
 
       - name: Tests
-        # Lower parallelism: 24-way default surfaces a parallel-compile flake
-        # in test/mob_dev/google_play/setup_wizard_test.exs that's environmental,
-        # not a real failure (see PLAN.md notes on this).
-        run: mix test --max-cases 4
+        run: mix test
 
   security_scan:
     name: Security scan

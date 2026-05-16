@@ -1425,19 +1425,24 @@ defmodule MobDev.NativeBuild do
   # binding helper dep) so any code that consults `:code.priv_dir(:fine)`
   # doesn't blow up.
   @doc false
-  @spec install_nx_eigen_otp_lib(String.t()) :: :ok
-  def install_nx_eigen_otp_lib(otp_root) do
+  @spec install_nx_eigen_otp_lib(String.t(), Path.t()) :: :ok
+  def install_nx_eigen_otp_lib(otp_root, project_root \\ File.cwd!()) do
     Enum.each([:nx_eigen, :fine], fn app ->
-      stage_empty_priv_otp_lib(otp_root, Atom.to_string(app))
+      stage_empty_priv_otp_lib(otp_root, Atom.to_string(app), project_root)
     end)
 
     :ok
   end
 
   @doc false
-  @spec stage_empty_priv_otp_lib(String.t(), String.t()) :: :ok
-  def stage_empty_priv_otp_lib(otp_root, app) do
-    ebin = Path.join(["_build", "dev", "lib", app, "ebin"])
+  @spec stage_empty_priv_otp_lib(String.t(), String.t(), Path.t()) :: :ok
+  def stage_empty_priv_otp_lib(otp_root, app, project_root \\ File.cwd!()) do
+    # `project_root` defaults to the current working directory, which is what
+    # the production caller (mix mob.deploy --native) wants. Tests can pass
+    # an explicit path so they don't have to wrap calls in File.cd!/2 — that
+    # changes process-wide cwd and races other async tests during parallel
+    # compilation (Kernel.ParallelCompiler.require_file picks up wrong paths).
+    ebin = Path.join([project_root, "_build", "dev", "lib", app, "ebin"])
 
     if File.dir?(ebin) do
       vsn = detect_dep_version(app) || read_app_vsn(Path.join(ebin, "#{app}.app")) || "0.0.0"
