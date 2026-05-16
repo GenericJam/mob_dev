@@ -1,5 +1,12 @@
 defmodule MobDev.NativeBuildTest do
-  use ExUnit.Case, async: true
+  # async: false — a handful of tests in this module mutate process-global
+  # env vars (`MOB_CACHE_DIR`, `MOB_MLX_LOCAL_TARBALL_DIR`) inside the
+  # maybe_bundle_mlx_metallib/1 describe block. Running async with
+  # MobDev.OtpDownloaderTest (which reads MOB_CACHE_DIR via OtpDownloader.
+  # cache_dir/1) races and surfaces the polluted path as a real assertion
+  # failure. Whole module is sync; 82 tests in ~200ms — the parallelism
+  # gain isn't worth the env-var-shared-state hazard.
+  use ExUnit.Case, async: false
 
   alias MobDev.NativeBuild
 

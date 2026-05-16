@@ -59,10 +59,12 @@ jobs:
         run: mix credo --strict
 
       - name: Tests
-        # `:macos_only` covers tests that shell out to /usr/libexec/PlistBuddy
-        # and similar macOS-bound tools — they're meaningful on a maintainer's
-        # macOS laptop, not on a Linux CI runner.
-        run: mix test --exclude macos_only
+        # `:macos_only` — tests that shell out to /usr/libexec/PlistBuddy
+        # and similar macOS-bound tools.
+        # `:requires_zig` — the StaticNifs zig-ast-check round-trip; we
+        # don't install Zig in CI yet (it's a 30 MB download for one test).
+        # Both run by default on a maintainer's laptop; CI explicitly skips.
+        run: mix test --exclude macos_only --exclude requires_zig
 
   security_scan:
     name: Security scan
