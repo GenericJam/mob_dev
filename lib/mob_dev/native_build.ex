@@ -182,14 +182,21 @@ defmodule MobDev.NativeBuild do
         with {:ok, arm64_nif_args} <- project_nif_zig_args(:android_arm64),
              {:ok, arm32_nif_args} <- project_nif_zig_args(:android_arm32),
              {:ok, arm64_nxeigen} <- maybe_build_nxeigen(:android_arm64),
-             {:ok, arm32_nxeigen} <- maybe_build_nxeigen(:android_arm32) do
+             {:ok, arm32_nxeigen} <- maybe_build_nxeigen(:android_arm32),
+             {:ok, arm64_tflite} <- maybe_build_tflite(:android_arm64),
+             {:ok, arm32_tflite} <- maybe_build_tflite(:android_arm32) do
           Enum.reduce_while(
             [
-              {otp_arm64, "arm64-v8a", arm64_nif_args, arm64_nxeigen},
-              {otp_arm32, "armeabi-v7a", arm32_nif_args, arm32_nxeigen}
+              {otp_arm64, "arm64-v8a", arm64_nif_args, arm64_nxeigen, arm64_tflite},
+              {otp_arm32, "armeabi-v7a", arm32_nif_args, arm32_nxeigen, arm32_tflite}
             ],
             :ok,
-            fn {otp_dir, abi, abi_nif_args, abi_nxeigen}, _acc ->
+            fn {otp_dir, abi, abi_nif_args, abi_nxeigen, abi_tflite}, _acc ->
+              # Drop the TFLite runtime .so into jniLibs/<abi>/ alongside
+              # the static-NIF archive that gets linked into native-lib.
+              # No-op when TFLite isn't enabled.
+              :ok = copy_tflite_runtime_lib_android(abi_tflite, abi)
+
               case run_zig_android_objects(
                      build_zig,
                      abi,
@@ -198,7 +205,8 @@ defmodule MobDev.NativeBuild do
                      mob_dir,
                      driver_tab,
                      abi_nif_args,
-                     abi_nxeigen
+                     abi_nxeigen,
+                     abi_tflite
                    ) do
                 :ok -> {:cont, :ok}
                 {:error, reason} -> {:halt, {:error, reason}}
@@ -217,7 +225,8 @@ defmodule MobDev.NativeBuild do
          mob_dir,
          driver_tab,
          nif_args,
-         nxeigen_archive
+         nxeigen_archive,
+         tflite_build
        ) do
     app_name = Mix.Project.config() |> Keyword.fetch!(:app) |> Atom.to_string()
     project_root = Path.expand(".")
@@ -253,7 +262,11 @@ defmodule MobDev.NativeBuild do
     # but received a list".
     nif_args_no_root = Enum.reject(nif_args, &String.starts_with?(&1, "-Dproject_root="))
 
-    args = base_args ++ nif_args_no_root ++ nxeigen_zig_args_android(nxeigen_archive)
+    args =
+      base_args ++
+        nif_args_no_root ++
+        nxeigen_zig_args_android(nxeigen_archive) ++
+        tflite_zig_args_android(tflite_build)
 
     case System.cmd("zig", args, stderr_to_stdout: true, into: IO.stream()) do
       {_, 0} -> :ok
@@ -1311,7 +1324,8 @@ defmodule MobDev.NativeBuild do
          {:ok, otp_root} <- MobDev.OtpDownloader.ensure_ios_sim(),
          {:ok, python_bundle} <- maybe_ensure_python_bundle(),
          {:ok, mlx_dir} <- maybe_ensure_mlx_dir(:ios_sim),
-         {:ok, nxeigen_archive} <- maybe_build_nxeigen(:ios_sim) do
+         {:ok, nxeigen_archive} <- maybe_build_nxeigen(:ios_sim),
+         {:ok, tflite_build} <- maybe_build_tflite(:ios_sim) do
       IO.puts("  Building iOS simulator app...")
 
       mob_dir = Path.expand(cfg[:mob_dir])
@@ -1348,12 +1362,19 @@ defmodule MobDev.NativeBuild do
                build_dir,
                display_name,
                mlx_dir,
-               nxeigen_archive
+               nxeigen_archive,
+               tflite_build
              ),
            {:ok, sim_id} <- pick_ios_sim(device_id),
            binary_path = "ios/zig-out/#{display_name}",
            :ok <- check_path(binary_path, "iOS binary"),
            {:ok, app_path} <- bundle_ios_app(binary_path, display_name),
+           :ok <-
+             copy_tflite_frameworks_ios(
+               tflite_build,
+               "ios-arm64_x86_64-simulator",
+               Path.join(app_path, "Frameworks")
+             ),
            :ok <- install_ios_sim(sim_id, app_path) do
         {:ok, "iOS"}
       else
@@ -2121,7 +2142,8 @@ defmodule MobDev.NativeBuild do
          build_dir,
          display_name,
          mlx_dir,
-         nxeigen_archive
+         nxeigen_archive,
+         tflite_build
        ) do
     driver_tab = resolve_driver_tab_ios(mob_dir)
 
@@ -2145,7 +2167,8 @@ defmodule MobDev.NativeBuild do
         base_args ++
           nif_args ++
           mlx_zig_args(mlx_dir) ++
-          nxeigen_zig_args_ios(nxeigen_archive)
+          nxeigen_zig_args_ios(nxeigen_archive) ++
+          tflite_zig_args_ios(tflite_build)
 
       case System.cmd("zig", args, stderr_to_stdout: true, into: IO.stream()) do
         {_, 0} -> :ok
@@ -2283,6 +2306,163 @@ defmodule MobDev.NativeBuild do
 
   def nxeigen_zig_args_android(archive_path) when is_binary(archive_path) do
     ["-Dnxeigen_static=true", "-Dnxeigen_lib=#{archive_path}"]
+  end
+
+  # ── TFLite NIF integration (mirrors NxEigen above) ─────────────────────────
+  # Same shape as nxeigen but with TFLite-specific details: the runtime
+  # library (libtensorflowlite_jni.so on Android, TensorFlowLiteC.framework
+  # on iOS) is fetched via TfliteDownloader and the NIF is cross-compiled
+  # via TfliteNif. Both .so / framework get bundled into the deployed app
+  # alongside the static NIF archive — see `copy_tflite_runtime_lib_android/2`
+  # and the iOS framework-copy step in the device assembly path.
+
+  defp tflite_in_project? do
+    Mix.Project.config()[:deps] |> Enum.any?(&match_tflite_dep?/1)
+  end
+
+  defp match_tflite_dep?(dep) do
+    case dep do
+      {:nx_tflite_mob, _} -> true
+      {:nx_tflite_mob, _, _} -> true
+      _ -> false
+    end
+  end
+
+  defp maybe_build_tflite(target_id)
+       when target_id in [:android_arm64, :android_arm32, :ios_sim, :ios_device] do
+    if tflite_in_project?() do
+      do_build_tflite(target_id)
+    else
+      {:ok, nil}
+    end
+  end
+
+  defp do_build_tflite(target_id) do
+    # Use Mix.Project.deps_paths()[:nx_tflite_mob] rather than
+    # Path.join(deps_path, "nx_tflite_mob") so `path:` and `github:` deps
+    # both resolve correctly. `path:` deps don't get symlinked into
+    # deps/ — they're consumed in-place from the user's source.
+    nx_tflite_mob_dir = Mix.Project.deps_paths()[:nx_tflite_mob]
+
+    with :ok <-
+           (if nx_tflite_mob_dir do
+              :ok
+            else
+              {:error,
+               "Mix.Project.deps_paths() has no :nx_tflite_mob entry — is it in mix deps?"}
+            end),
+         {:ok, tflite_dir} <- MobDev.TfliteDownloader.ensure(target_id),
+         {:ok, erts_inc} <- tflite_erts_include(target_id) do
+      out_dir = tflite_out_dir(target_id)
+      IO.puts("  === Building libtflite_nif.a (#{target_id})")
+
+      case MobDev.TfliteNif.build(target_id,
+             nx_tflite_mob_dir: nx_tflite_mob_dir,
+             tflite_dir: tflite_dir,
+             erts_include: erts_inc,
+             out_dir: out_dir
+           ) do
+        {:ok, info} ->
+          IO.puts("    ✓ #{info.archive}")
+          {:ok, %{archive: info.archive, tflite_dir: tflite_dir}}
+
+        {:error, {tag, detail}} ->
+          {:error, "TFLite cross-compile failed (#{target_id}, #{tag}): #{inspect(detail)}"}
+      end
+    end
+  end
+
+  defp tflite_out_dir(target_id),
+    do: Path.join([Mix.Project.build_path(), "tflite", Atom.to_string(target_id)])
+
+  defp tflite_erts_include(:ios_sim),
+    do: resolve_erts_include(MobDev.OtpDownloader.ios_sim_otp_dir())
+
+  defp tflite_erts_include(:ios_device),
+    do: resolve_erts_include(MobDev.OtpDownloader.ios_device_otp_dir())
+
+  defp tflite_erts_include(:android_arm64),
+    do: resolve_erts_include(MobDev.OtpDownloader.android_otp_dir("arm64-v8a"))
+
+  defp tflite_erts_include(:android_arm32),
+    do: resolve_erts_include(MobDev.OtpDownloader.android_otp_dir("armeabi-v7a"))
+
+  @doc false
+  @spec tflite_zig_args_android(nil | map()) :: [String.t()]
+  def tflite_zig_args_android(nil), do: []
+
+  def tflite_zig_args_android(%{archive: archive_path}) when is_binary(archive_path) do
+    ["-Dtflite_static=true", "-Dtflite_lib=#{archive_path}"]
+  end
+
+  @doc false
+  @spec tflite_zig_args_ios(nil | map()) :: [String.t()]
+  def tflite_zig_args_ios(nil), do: []
+
+  def tflite_zig_args_ios(%{archive: archive_path, tflite_dir: tflite_dir})
+      when is_binary(archive_path) and is_binary(tflite_dir) do
+    [
+      "-Dtflite_static=true",
+      "-Dtflite_dir=#{Path.dirname(archive_path)}",
+      "-Dtflite_framework_dir=#{Path.join(tflite_dir, "Frameworks")}"
+    ]
+  end
+
+  @doc """
+  Copy the TFLite runtime library (`libtensorflowlite_jni.so`) into the
+  Android app's `jniLibs/<abi>/` so the APK packager includes it. Called
+  during the Android assemble step when TFLite is enabled.
+
+  No-op when `tflite_build` is nil (TFLite not enabled in this project).
+  """
+  @spec copy_tflite_runtime_lib_android(nil | map(), String.t()) :: :ok
+  def copy_tflite_runtime_lib_android(nil, _abi), do: :ok
+
+  def copy_tflite_runtime_lib_android(%{tflite_dir: tflite_dir}, abi) do
+    src = Path.join([tflite_dir, "jni", abi, "libtensorflowlite_jni.so"])
+    dst_dir = "android/app/src/main/jniLibs/#{abi}"
+    File.mkdir_p!(dst_dir)
+    dst = Path.join(dst_dir, "libtensorflowlite_jni.so")
+
+    if File.regular?(src) do
+      File.cp!(src, dst)
+      IO.puts("  === Copied libtensorflowlite_jni.so to #{dst}")
+      :ok
+    else
+      raise "TFLite runtime lib missing at #{src}"
+    end
+  end
+
+  @doc """
+  Copy the TFLite frameworks (Core + CoreML + Metal) into the iOS app's
+  `Frameworks/` dir so the .app bundle ships them. Called during iOS
+  app assembly when TFLite is enabled.
+
+  Same pattern as `Python.framework` embedding. Codesigning happens at
+  the app-bundle level — the frameworks just need to be present in the
+  bundle when the codesign step runs.
+
+  `slice` is either `"ios-arm64"` (device) or
+  `"ios-arm64_x86_64-simulator"` (sim).
+
+  No-op when `tflite_build` is nil.
+  """
+  @spec copy_tflite_frameworks_ios(nil | map(), String.t(), Path.t()) :: :ok
+  def copy_tflite_frameworks_ios(nil, _slice, _app_frameworks_dir), do: :ok
+
+  def copy_tflite_frameworks_ios(%{tflite_dir: tflite_dir}, slice, app_frameworks_dir) do
+    File.mkdir_p!(app_frameworks_dir)
+    fw_root = Path.join(tflite_dir, "Frameworks")
+
+    for fw_name <- ~w(TensorFlowLiteC TensorFlowLiteCCoreML TensorFlowLiteCMetal) do
+      src = Path.join([fw_root, "#{fw_name}.xcframework", slice, "#{fw_name}.framework"])
+      dst = Path.join(app_frameworks_dir, "#{fw_name}.framework")
+      File.rm_rf!(dst)
+      cp_r!(src, dst)
+      IO.puts("  === Copied #{fw_name}.framework (#{slice}) to #{dst}")
+    end
+
+    :ok
   end
 
   # ── iOS device-specific build helpers (Phase 2 iter 13c) ─────────────────────
@@ -3154,7 +3334,8 @@ defmodule MobDev.NativeBuild do
          display_name,
          sqlite_static_lib,
          mlx_dir,
-         nxeigen_archive
+         nxeigen_archive,
+         tflite_build
        ) do
     driver_tab = resolve_driver_tab_ios(mob_dir)
 
@@ -3188,7 +3369,8 @@ defmodule MobDev.NativeBuild do
           nif_args ++
           sqlite_args ++
           mlx_zig_args(mlx_dir) ++
-          nxeigen_zig_args_ios(nxeigen_archive)
+          nxeigen_zig_args_ios(nxeigen_archive) ++
+          tflite_zig_args_ios(tflite_build)
 
       case System.cmd("zig", args, stderr_to_stdout: true, into: IO.stream()) do
         {_, 0} ->
@@ -3401,6 +3583,7 @@ defmodule MobDev.NativeBuild do
          {:ok, python_bundle} <- maybe_ensure_python_bundle(),
          {:ok, mlx_dir} <- maybe_ensure_mlx_dir(:ios_device),
          {:ok, nxeigen_archive} <- maybe_build_nxeigen(:ios_device),
+         {:ok, tflite_build} <- maybe_build_tflite(:ios_device),
          {:ok, sdkroot} <- xcrun_sdk_path_device(),
          erts_vsn = detect_erts_vsn(otp_root) || "erts-17.0",
          otp_release = detect_otp_release(otp_root) || "27",
@@ -3445,11 +3628,18 @@ defmodule MobDev.NativeBuild do
              display_name,
              sqlite_static_lib,
              mlx_dir,
-             nxeigen_archive
+             nxeigen_archive,
+             tflite_build
            ),
          binary_path = Path.join(build_dir, display_name),
          :ok <- check_path(binary_path, "iOS device binary"),
          {:ok, app_path} <- bundle_ios_device_app(binary_path, otp_root, cfg, build_dir),
+         :ok <-
+           copy_tflite_frameworks_ios(
+             tflite_build,
+             "ios-arm64",
+             Path.join(app_path, "Frameworks")
+           ),
          :ok <- maybe_slim_otp_bundle(app_path, cfg),
          :ok <- embed_provisioning_profile(app_path, cfg[:ios_profile_uuid]),
          :ok <- codesign_ios_device_app(app_path, cfg, build_dir),
