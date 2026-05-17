@@ -8,6 +8,50 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.5.8]
+
+### Added
+- **End-to-end `mix mob.enable tflite`** — what 0.5.7 promised as
+  "lands in 0.5.8". `MobDev.NativeBuild` now auto-detects the
+  `:nx_tflite_mob` dep and threads the full TFLite path through
+  Android + iOS sim + iOS device build pipelines:
+  - `maybe_build_tflite/1` → `MobDev.TfliteDownloader.ensure/1` +
+    `MobDev.TfliteNif.build/2` for each target arch
+  - `tflite_zig_args_android/1` emits `-Dtflite_static=true
+    -Dtflite_lib=…` for the per-ABI Android link
+  - `tflite_zig_args_ios/1` emits `-Dtflite_static=true
+    -Dtflite_dir=… -Dtflite_framework_dir=…` for the iOS link
+  - `copy_tflite_runtime_lib_android/2` drops
+    `libtensorflowlite_jni.so` into `android/app/src/main/jniLibs/<abi>/`
+    during the assemble step
+- `copy_tflite_frameworks_ios/3` (kept as future-compat hook) — see
+  the iOS-deploy-fix gotcha below
+- 13 new tests covering the public NativeBuild plumbing
+  (`native_build_tflite_test.exs`), bringing the TFLite suite to 76
+  passing total
+
+### Fixed
+- **iOS deploy: TFLite framework binaries are MH_OBJECT, not
+  MH_DYLIB.** TFLite's iOS xcframework slices ship their binaries as
+  filetype=1 relocatable objects, which the linker statically pulls
+  into the app's main Mach-O at build time. Trying to embed them as
+  runtime `.framework` bundles tripped iOS install twice during this
+  cut: first on missing per-framework Info.plist (which CocoaPods
+  generates), then on "code signature version no longer supported"
+  (iOS 26+ rejects v1 signatures, and codesign only makes v3 sigs
+  for MH_EXECUTE/MH_DYLIB). The fix is to do nothing — the framework
+  search-path arg already covers everything at build time.
+- **Resolve `:nx_tflite_mob` via `Mix.Project.deps_paths()`** rather
+  than `Path.join(deps_path, "nx_tflite_mob")`. The latter assumes
+  the dep landed in `deps/` (hex / git deps do), but `path:` deps
+  consume in-place from the user's source tree.
+
+### Verified on real hardware
+- Moto G Power 5G (BXM-8-256, Android 15): 75-117 ms YOLOv8n via
+  NNAPI / `mtk-gpu_shim`
+- iPhone SE 3rd gen (A15, iOS 26.4): 24 ms YOLOv8n via Core ML → ANE
+  (FP16 model; 214/385 nodes delegated)
+
 ## [0.5.7]
 
 ### Added
