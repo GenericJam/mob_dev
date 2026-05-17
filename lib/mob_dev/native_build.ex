@@ -2413,14 +2413,21 @@ defmodule MobDev.NativeBuild do
   Android app's `jniLibs/<abi>/` so the APK packager includes it. Called
   during the Android assemble step when TFLite is enabled.
 
+  `project_root` defaults to the current working directory — that's the
+  Mob-app project root in normal `mix mob.deploy` invocations. Tests
+  pass an explicit path to avoid cd'ing into a temp dir (which would
+  race other tests' parallel compilation).
+
   No-op when `tflite_build` is nil (TFLite not enabled in this project).
   """
-  @spec copy_tflite_runtime_lib_android(nil | map(), String.t()) :: :ok
-  def copy_tflite_runtime_lib_android(nil, _abi), do: :ok
+  @spec copy_tflite_runtime_lib_android(nil | map(), String.t(), Path.t() | nil) :: :ok
+  def copy_tflite_runtime_lib_android(tflite_build, abi, project_root \\ nil)
+  def copy_tflite_runtime_lib_android(nil, _abi, _project_root), do: :ok
 
-  def copy_tflite_runtime_lib_android(%{tflite_dir: tflite_dir}, abi) do
+  def copy_tflite_runtime_lib_android(%{tflite_dir: tflite_dir}, abi, project_root) do
+    root = project_root || File.cwd!()
     src = Path.join([tflite_dir, "jni", abi, "libtensorflowlite_jni.so"])
-    dst_dir = "android/app/src/main/jniLibs/#{abi}"
+    dst_dir = Path.join([root, "android/app/src/main/jniLibs", abi])
     File.mkdir_p!(dst_dir)
     dst = Path.join(dst_dir, "libtensorflowlite_jni.so")
 
@@ -2471,42 +2478,6 @@ defmodule MobDev.NativeBuild do
     # point.
     IO.puts("  === TFLite frameworks linked statically (no .app embedding)")
     :ok
-  end
-
-  # Minimal Info.plist for an embedded TFLite framework. CFBundleExecutable
-  # must match the binary name inside the framework — Apple's loader uses
-  # this key to find the Mach-O image.
-  defp tflite_framework_info_plist(framework_name) do
-    """
-    <?xml version="1.0" encoding="UTF-8"?>
-    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-    <plist version="1.0">
-    <dict>
-        <key>CFBundleDevelopmentRegion</key>
-        <string>en</string>
-        <key>CFBundleExecutable</key>
-        <string>#{framework_name}</string>
-        <key>CFBundleIdentifier</key>
-        <string>org.tensorflow.#{framework_name}</string>
-        <key>CFBundleInfoDictionaryVersion</key>
-        <string>6.0</string>
-        <key>CFBundleName</key>
-        <string>#{framework_name}</string>
-        <key>CFBundlePackageType</key>
-        <string>FMWK</string>
-        <key>CFBundleShortVersionString</key>
-        <string>2.17.0</string>
-        <key>CFBundleVersion</key>
-        <string>2.17.0</string>
-        <key>MinimumOSVersion</key>
-        <string>15.0</string>
-        <key>CFBundleSupportedPlatforms</key>
-        <array>
-            <string>iPhoneOS</string>
-        </array>
-    </dict>
-    </plist>
-    """
   end
 
   # ── iOS device-specific build helpers (Phase 2 iter 13c) ─────────────────────
