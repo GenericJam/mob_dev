@@ -162,7 +162,7 @@ defmodule Mix.Tasks.Mob.Enable do
   `Mob.Dist.ensure_started/1` have run.
   """
 
-  @valid_features ~w(liveview camera photo_library file_sharing location notifications pythonx mlx nxeigen)
+  @valid_features ~w(liveview camera photo_library file_sharing location notifications pythonx mlx nxeigen tflite)
 
   @impl Igniter.Mix.Task
   def info(_argv, _composing_task) do
@@ -249,6 +249,12 @@ defmodule Mix.Tasks.Mob.Enable do
     |> Igniter.add_notice(nxeigen_next_steps(app_name))
   end
 
+  defp dispatch(igniter, "tflite", app_name) do
+    igniter
+    |> EI.enable_tflite(app_name)
+    |> Igniter.add_notice(tflite_next_steps(app_name))
+  end
+
   defp parse_features(argv) do
     {_opts, features, _} = OptionParser.parse(argv, strict: [yes: :boolean])
     features
@@ -301,6 +307,34 @@ defmodule Mix.Tasks.Mob.Enable do
     Works on BOTH iOS (device + sim) and Android (arm64 + arm32) —
     Eigen is header-only C++. FFT support uses Eigen's built-in
     kissfft (header-only); swap to a FFTW variant later if needed.
+    """
+  end
+
+  defp tflite_next_steps(app_name) do
+    module = Macro.camelize(app_name)
+
+    """
+    Next steps for tflite:
+      1. Run `mix deps.get` to fetch :nx + :nx_tflite_mob.
+      2. Drop a `.tflite` model into `priv/` (e.g. exported from Ultralytics:
+           yolo export model=yolov8n.pt format=tflite int8=True
+         produces `yolov8n_full_integer_quant.tflite`).
+      3. Use in app code:
+           tflite = File.read!(Path.join(:code.priv_dir(:#{app_name}), "yolov8n_full_integer_quant.tflite"))
+           {:ok, m} = NxTfliteMob.load_module(tflite, #{module}.TfliteInit.default_opts())
+           {:ok, [out]} = NxTfliteMob.call(m, [input_bytes])
+      4. `mix mob.deploy --native --device <udid>` to cross-compile and install.
+         First build downloads:
+           - Android: tensorflow-lite-2.16.1.aar (~6 MB) into ~/.mob/cache/
+           - iOS:     TensorFlowLiteC-2.17.0.tar.gz (~77 MB) into ~/.mob/cache/
+
+    Bundle size impact: ~3-4 MB compressed (Android `libtensorflowlite_jni.so`);
+    ~20-30 MB on iOS (TensorFlowLiteC + CoreML/Metal frameworks). Apply this
+    only when you actually want to run TFLite models.
+
+    Cross-platform: same `.tflite` model + same `NxTfliteMob.call/2` Elixir
+    code on iOS and Android. The per-platform delegate is picked by
+    `#{module}.TfliteInit.default_opts/0` automatically.
     """
   end
 

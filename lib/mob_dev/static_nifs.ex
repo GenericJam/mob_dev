@@ -126,6 +126,20 @@ defmodule MobDev.StaticNifs do
         module: :nx_eigen,
         archs: [:all],
         guard: "MOB_STATIC_NX_EIGEN_NIF"
+      },
+      # TFLite NIF (TensorFlow Lite Nx backend) — statically linked when
+      # the project enables it via `mix mob.enable tflite`. Cross-platform:
+      # NNAPI on Android (vendor GPU/NPU HAL), CoreML on iOS (Apple
+      # Neural Engine). The TFLite runtime itself
+      # (`libtensorflowlite_jni.so` on Android,
+      # `TensorFlowLiteC.framework` on iOS) ships as a separate dynamic
+      # library bundled with the .apk / .app — only the NIF init has to be
+      # static. See `MobDev.TfliteNif` for the per-arch cross-compile and
+      # `MobDev.TfliteDownloader` for the runtime fetch/cache.
+      %{
+        module: :tflite_nif,
+        archs: [:all],
+        guard: "MOB_STATIC_TFLITE_NIF"
       }
     ]
   end
