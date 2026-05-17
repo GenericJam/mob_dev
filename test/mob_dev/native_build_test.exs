@@ -65,6 +65,34 @@ defmodule MobDev.NativeBuildTest do
     end
   end
 
+  describe "__ios_swift_sources_arg__/1" do
+    test "joins extra iOS Swift sources as absolute comma-separated paths" do
+      cwd = File.cwd!()
+
+      assert NativeBuild.__ios_swift_sources_arg__(
+               ios_swift_sources: ["ios/Bridge.swift", "../shared/Peer.swift"]
+             ) ==
+               Enum.join(
+                 [
+                   Path.expand("ios/Bridge.swift", cwd),
+                   Path.expand("../shared/Peer.swift", cwd)
+                 ],
+                 ","
+               )
+    end
+
+    test "defaults to an empty option value" do
+      assert NativeBuild.__ios_swift_sources_arg__([]) == ""
+      assert NativeBuild.__ios_swift_sources_arg__(ios_swift_sources: nil) == ""
+    end
+
+    test "rejects comma-containing source entries" do
+      assert_raise Mix.Error, ~r/must not contain commas/, fn ->
+        NativeBuild.__ios_swift_sources_arg__(ios_swift_sources: ["a.swift,b.swift"])
+      end
+    end
+  end
+
   describe "read_sdk_dir/1" do
     setup do
       tmp =
