@@ -57,8 +57,13 @@ defmodule Mix.Tasks.Mob.Emulators do
     # Both shown if neither flag specified, otherwise only the requested one(s).
     android? = Keyword.get(opts, :android, false)
     ios? = Keyword.get(opts, :ios, false)
-    show_android = android? or (not android? and not ios?)
-    show_ios = ios? or (not android? and not ios?)
+    # `or` short-circuits, so the right operand only evaluates when the
+    # left is false — at which point `not android?` / `not ios?` is
+    # redundant and Elixir 1.20's type checker flags it. Simplified:
+    # show the unrequested one only when the requested one isn't asked
+    # for at all (i.e. no flags → show both).
+    show_android = android? or not ios?
+    show_ios = ios? or not android?
 
     IO.puts("")
 
@@ -212,8 +217,13 @@ defmodule Mix.Tasks.Mob.Emulators do
     # Both shown if neither flag specified, otherwise only the requested one(s).
     android? = Keyword.get(opts, :android, false)
     ios? = Keyword.get(opts, :ios, false)
-    show_android = android? or (not android? and not ios?)
-    show_ios = ios? or (not android? and not ios?)
+    # `or` short-circuits, so the right operand only evaluates when the
+    # left is false — at which point `not android?` / `not ios?` is
+    # redundant and Elixir 1.20's type checker flags it. Simplified:
+    # show the unrequested one only when the requested one isn't asked
+    # for at all (i.e. no flags → show both).
+    show_android = android? or not ios?
+    show_ios = ios? or not android?
 
     running =
       []
