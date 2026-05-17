@@ -146,6 +146,28 @@ defmodule MobDev.Enable.Igniter do
     |> create_nxeigen_init_module(app_name)
   end
 
+  # ── tflite ────────────────────────────────────────────────────────────────
+
+  @doc """
+  Enables the TensorFlow Lite NIF (`:nx_tflite_mob`) on both iOS and
+  Android. Adds the dep, generates a small `<App>.TfliteInit` helper that
+  surfaces per-platform default opts (NNAPI accelerator on Android, Core
+  ML delegate on iOS), and registers the static-NIF guard via the
+  build pipeline.
+
+  Unlike `mlx` / `nxeigen`, this is not an Nx backend — `NxTfliteMob`
+  wraps TFLite's model-inference API directly. The user loads a
+  `.tflite` model and calls `NxTfliteMob.call(handle, inputs)`. The
+  generated `<App>.TfliteInit` only provides convenience helpers for
+  picking the right delegate + accelerator for the host platform.
+  """
+  @spec enable_tflite(Igniter.t(), String.t()) :: Igniter.t()
+  def enable_tflite(igniter, app_name) do
+    igniter
+    |> inject_tflite_deps()
+    |> create_tflite_init_module(app_name)
+  end
+
   # ── python ────────────────────────────────────────────────────────────────
 
   @spec enable_python(Igniter.t(), String.t()) :: Igniter.t()
@@ -473,6 +495,82 @@ defmodule MobDev.Enable.Igniter do
     else
       Igniter.Project.Module.create_module(igniter, module, nxeigen_init_module_body())
     end
+  end
+
+  # ── tflite: helpers ───────────────────────────────────────────────────────
+
+  defp inject_tflite_deps(igniter) do
+    igniter
+    |> Igniter.Project.Deps.add_dep({:nx, "~> 0.10"})
+    |> Igniter.Project.Deps.add_dep(
+      {:nx_tflite_mob, github: "GenericJam/nx_tflite_mob", branch: "main"}
+    )
+  end
+
+  defp create_tflite_init_module(igniter, app_name) do
+    module_name = Macro.camelize(app_name)
+    module = Module.concat([module_name, "TfliteInit"])
+    {exists?, igniter} = Igniter.Project.Module.module_exists(igniter, module)
+
+    if exists? do
+      igniter
+    else
+      Igniter.Project.Module.create_module(igniter, module, tflite_init_module_body())
+    end
+  end
+
+  # Body for the generated `<App>.TfliteInit` module. Picks per-platform
+  # default TFLite delegate options — NNAPI/mtk-gpu_shim on Android (the
+  # vendor GPU HAL path, ~155 ms YOLOv8n on the Moto BXM-8-256), Core ML
+  # delegate on iOS (Apple Neural Engine when available, ~30-80 ms YOLOv8n
+  # depending on op coverage).
+  defp tflite_init_module_body do
+    """
+    @moduledoc \"\"\"
+    Default TFLite delegate options per platform. Surface convenience for
+    `NxTfliteMob.load_module/2` callers — pass the result of `default_opts/0`
+    and you get the best-available accelerator on this device.
+
+      tflite = File.read!("priv/yolov8n_full_integer_quant.tflite")
+      {:ok, m} = NxTfliteMob.load_module(tflite, MyApp.TfliteInit.default_opts())
+    \"\"\"
+
+    require Logger
+
+    @doc \"Best-available TFLite delegate opts for this platform.\"
+    def default_opts do
+      case :os.type() do
+        {:unix, :darwin} ->
+          # iOS (or Mac dev host). Core ML delegate hits Apple Neural Engine
+          # when ops are supported; falls back to CPU/GPU otherwise.
+          [delegate: "coreml", coreml_ane_only: false]
+
+        {:unix, :linux} ->
+          # Android (or Linux dev host). NNAPI's mtk-gpu_shim is the
+          # MediaTek-blessed name on Dimensity-class devices. On other
+          # OEMs the accelerator name may differ — qti-gpu (Qualcomm),
+          # samsung-gpu (Exynos), google-edgetpu (Pixel).
+          [delegate: "nnapi", accelerator: "mtk-gpu_shim", allow_fp16: true]
+
+        _ ->
+          # Desktop dev (Windows or other Unix). Stay on the bundled CPU path.
+          [delegate: "xnnpack"]
+      end
+    end
+
+    @doc \"Log whether the NIF appears loadable. Call once at app boot.\"
+    def configure do
+      case Code.ensure_loaded?(NxTfliteMob) do
+        true ->
+          Logger.info("NxTfliteMob loaded; default delegate opts: \#\{inspect(default_opts())\}")
+          :ok
+
+        false ->
+          Logger.warning("NxTfliteMob not loaded — TFLite inference will fail until built")
+          {:error, :not_loaded}
+      end
+    end
+    """
   end
 
   # Body for the generated `<App>.NxEigenInit` module. Picks NxEigen as
