@@ -2450,19 +2450,63 @@ defmodule MobDev.NativeBuild do
   @spec copy_tflite_frameworks_ios(nil | map(), String.t(), Path.t()) :: :ok
   def copy_tflite_frameworks_ios(nil, _slice, _app_frameworks_dir), do: :ok
 
-  def copy_tflite_frameworks_ios(%{tflite_dir: tflite_dir}, slice, app_frameworks_dir) do
-    File.mkdir_p!(app_frameworks_dir)
-    fw_root = Path.join(tflite_dir, "Frameworks")
-
-    for fw_name <- ~w(TensorFlowLiteC TensorFlowLiteCCoreML TensorFlowLiteCMetal) do
-      src = Path.join([fw_root, "#{fw_name}.xcframework", slice, "#{fw_name}.framework"])
-      dst = Path.join(app_frameworks_dir, "#{fw_name}.framework")
-      File.rm_rf!(dst)
-      cp_r!(src, dst)
-      IO.puts("  === Copied #{fw_name}.framework (#{slice}) to #{dst}")
-    end
-
+  def copy_tflite_frameworks_ios(%{tflite_dir: _tflite_dir}, _slice, _app_frameworks_dir) do
+    # No-op: TFLite's xcframework slices ship binaries as MH_OBJECT
+    # (filetype=1, relocatable object) rather than MH_DYLIB. The linker
+    # at build time (-F<path> -framework TensorFlowLiteC via swiftc)
+    # pulls the object content directly into the app's main Mach-O
+    # binary, statically. There's no runtime dylib to resolve, so the
+    # .framework bundles do NOT need to be embedded in the .app's
+    # Frameworks/ dir. Doing so would also fail iOS install:
+    #
+    # * the bundles lack Info.plist (CocoaPods generates them)
+    # * the bundles' MH_OBJECT binaries can't be re-signed in a way
+    #   modern iOS accepts ("code signature version is no longer
+    #   supported" — codesign only produces v3 sigs for MH_EXECUTE /
+    #   MH_DYLIB)
+    #
+    # If a future TFLite release ships true MH_DYLIB frameworks, we'll
+    # need to re-enable the copy + framework codesign step. For now this
+    # caller is kept around as a documentation hook + future-compat
+    # point.
+    IO.puts("  === TFLite frameworks linked statically (no .app embedding)")
     :ok
+  end
+
+  # Minimal Info.plist for an embedded TFLite framework. CFBundleExecutable
+  # must match the binary name inside the framework — Apple's loader uses
+  # this key to find the Mach-O image.
+  defp tflite_framework_info_plist(framework_name) do
+    """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+    <plist version="1.0">
+    <dict>
+        <key>CFBundleDevelopmentRegion</key>
+        <string>en</string>
+        <key>CFBundleExecutable</key>
+        <string>#{framework_name}</string>
+        <key>CFBundleIdentifier</key>
+        <string>org.tensorflow.#{framework_name}</string>
+        <key>CFBundleInfoDictionaryVersion</key>
+        <string>6.0</string>
+        <key>CFBundleName</key>
+        <string>#{framework_name}</string>
+        <key>CFBundlePackageType</key>
+        <string>FMWK</string>
+        <key>CFBundleShortVersionString</key>
+        <string>2.17.0</string>
+        <key>CFBundleVersion</key>
+        <string>2.17.0</string>
+        <key>MinimumOSVersion</key>
+        <string>15.0</string>
+        <key>CFBundleSupportedPlatforms</key>
+        <array>
+            <string>iPhoneOS</string>
+        </array>
+    </dict>
+    </plist>
+    """
   end
 
   # ── iOS device-specific build helpers (Phase 2 iter 13c) ─────────────────────
@@ -3965,6 +4009,12 @@ defmodule MobDev.NativeBuild do
     if File.dir?(Path.join(otp_bundle, "python")),
       do: codesign_python_dylibs(otp_bundle, sign_identity)
 
+    # Sign embedded TFLite frameworks before signing the app bundle.
+    # iOS requires every nested .framework to carry its own signature;
+    # the app-level sign then includes the framework hashes in its
+    # sealed-resources list.
+    codesign_tflite_frameworks(app_path, sign_identity)
+
     {_, 0} =
       System.cmd(
         "codesign",
@@ -3980,6 +4030,59 @@ defmodule MobDev.NativeBuild do
         stderr_to_stdout: true,
         into: IO.stream()
       )
+
+    :ok
+  end
+
+  defp codesign_tflite_frameworks(app_path, sign_identity) do
+    frameworks_dir = Path.join(app_path, "Frameworks")
+
+    for fw_name <- ~w(TensorFlowLiteC TensorFlowLiteCCoreML TensorFlowLiteCMetal) do
+      fw_path = Path.join(frameworks_dir, "#{fw_name}.framework")
+
+      if File.dir?(fw_path) do
+        IO.puts("  === Signing #{fw_name}.framework")
+
+        # Sign the binary inside the framework first (deepest), then
+        # sign the framework dir itself. iOS 17+ rejects pre-existing
+        # CocoaPods-style signatures so --force overwrites any leftover.
+        # --generate-entitlement-der writes the modern entitlement
+        # encoding required by iOS 26.
+        binary = Path.join(fw_path, fw_name)
+
+        if File.exists?(binary) do
+          {_, 0} =
+            System.cmd(
+              "codesign",
+              [
+                "--force",
+                "--sign",
+                sign_identity,
+                "--timestamp=none",
+                "--generate-entitlement-der",
+                binary
+              ],
+              stderr_to_stdout: true,
+              into: IO.stream()
+            )
+        end
+
+        {_, 0} =
+          System.cmd(
+            "codesign",
+            [
+              "--force",
+              "--sign",
+              sign_identity,
+              "--timestamp=none",
+              "--generate-entitlement-der",
+              fw_path
+            ],
+            stderr_to_stdout: true,
+            into: IO.stream()
+          )
+      end
+    end
 
     :ok
   end
