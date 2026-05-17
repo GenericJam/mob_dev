@@ -165,6 +165,5 @@ defmodule MobDev.SecurityScan.HistoryFormatter do
   defp severity_rank(:low), do: 3
   defp severity_rank(_), do: 4
 
-  defp escape_md(nil), do: nil
   defp escape_md(s) when is_binary(s), do: String.replace(s, "|", "\\|")
 end

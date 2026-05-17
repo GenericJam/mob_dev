@@ -2966,7 +2966,6 @@ defmodule MobDev.NativeBuild do
 
   defp sdkroot_args_for(:android_arm64), do: {:ok, ["-Dandroid_sdkroot=#{ndk_sysroot()}"]}
   defp sdkroot_args_for(:android_arm32), do: {:ok, ["-Dandroid_sdkroot=#{ndk_sysroot()}"]}
-  defp sdkroot_args_for(_), do: {:ok, []}
 
   # Drives Zigler's build pipeline a SECOND time against the staging
   # directory (which Zigler set up during the normal `mix compile` host
