@@ -8,6 +8,34 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.5.7]
+
+### Added
+- `mix mob.enable tflite` — wires TensorFlow Lite into a Mob project on
+  iOS AND Android. Adds `{:nx_tflite_mob, ...}` to deps and generates
+  `<App>.TfliteInit` (returns per-platform default delegate opts —
+  NNAPI/`mtk-gpu_shim` on Android, Core ML delegate on iOS). The
+  static-NIF table entry `%{module: :tflite_nif, guard: "MOB_STATIC_TFLITE_NIF"}`
+  is registered in `MobDev.StaticNifs.default_nifs/0`, so the zig
+  build picks it up automatically once `tflite_static=true` is set.
+- `MobDev.TfliteDownloader` — fetches `tensorflow-lite-2.16.1.aar`
+  (Maven Central, Android) and `TensorFlowLiteC-2.17.0.tar.gz`
+  (dl.google.com, iOS) into `~/.mob/cache/`. Honours `MOB_CACHE_DIR`
+  for test redirection and `MOB_TFLITE_LOCAL_TARBALL_DIR` for offline
+  iteration.
+- `MobDev.TfliteNif` — cross-compiles `tflite_nif.c` (from the
+  `:nx_tflite_mob` dep) per-arch and archives as `libtflite_nif.a` for
+  static linking. Mirrors `MobDev.NxEigenNif` shape. Validates the
+  produced symbol (`tflite_nif_nif_init`) before declaring success.
+
+Bundle size impact: ~3-4 MB extracted (Android `libtensorflowlite_jni.so`),
+~20-30 MB on iOS (TensorFlowLiteC + CoreML + Metal frameworks). Apps
+that don't enable TFLite pay zero size cost — the guard keeps the
+static-NIF table entry inactive.
+
+End-to-end deploy (`mob.deploy --native` auto-build + runtime-lib
+embedding) lands in 0.5.8; this release ships the building blocks.
+
 ## [0.5.6]
 
 ### Added
