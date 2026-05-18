@@ -95,12 +95,20 @@ defmodule MobDev.Deployer do
       # after a native build/install where the old BEAM process is dead.
       dist_nodes = if force_fs, do: [], else: connect_dist(all)
 
+      # Manual overrides from `mix mob.deploy --dist-port N --node-suffix X`.
+      # When set, all targeted devices share the same port/suffix (the user
+      # is being explicit about a single device they care about). The
+      # auto-allocated per-device values (one port per index, suffix per
+      # serial/UDID) only apply when these are nil.
+      dist_port_override = Keyword.get(opts, :dist_port)
+      node_suffix_override = Keyword.get(opts, :node_suffix)
+
       results =
         all
         |> Enum.with_index()
         |> Enum.map(fn {device, idx} ->
           IO.write("  #{device.name || device.serial}  →  pushing...")
-          dist_port = Tunnel.dist_port(idx)
+          dist_port = dist_port_override || Tunnel.dist_port(idx)
           node = Device.node_name(device)
 
           {method, result} =
@@ -113,6 +121,7 @@ defmodule MobDev.Deployer do
                     deploy_android(device, beam_dirs,
                       restart: restart,
                       dist_port: dist_port,
+                      node_suffix: node_suffix_override,
                       beam_flags: beam_flags
                     )
 
@@ -120,6 +129,7 @@ defmodule MobDev.Deployer do
                     deploy_ios(device, beam_dirs,
                       restart: restart,
                       dist_port: dist_port,
+                      node_suffix: node_suffix_override,
                       beam_flags: beam_flags
                     )
                 end
@@ -215,6 +225,7 @@ defmodule MobDev.Deployer do
   defp deploy_android(%Device{serial: serial} = device, beam_dirs, opts) do
     restart = Keyword.get(opts, :restart, true)
     dist_port = Keyword.get(opts, :dist_port, 9100)
+    node_suffix = Keyword.get(opts, :node_suffix)
     beam_flags = Keyword.get(opts, :beam_flags, nil)
     pkg = android_package()
 
@@ -240,7 +251,8 @@ defmodule MobDev.Deployer do
               write_beam_flags_android(serial, beam_flags)
               setup_exqlite_android(serial)
               setup_app_priv_android(serial)
-              if restart, do: restart_android(serial, dist_port: dist_port)
+              if restart,
+                do: restart_android(serial, dist_port: dist_port, node_suffix: node_suffix)
               {:ok, device}
 
             {:error, reason} ->
@@ -860,7 +872,11 @@ defmodule MobDev.Deployer do
       if restart do
         IOS.terminate_app(udid, ios_bundle_id())
         :timer.sleep(300)
-        IOS.launch_app(udid, ios_bundle_id(), dist_port: dist_port)
+        # node_suffix nil → IOS.launch_app omits SIMCTL_CHILD_MOB_NODE_SUFFIX
+        # → mob_beam.m auto-derives from SIMULATOR_UDID. Pass explicit when
+        # `mix mob.deploy --node-suffix ...` was used.
+        node_suffix = Keyword.get(opts, :node_suffix)
+        IOS.launch_app(udid, ios_bundle_id(), dist_port: dist_port, node_suffix: node_suffix)
       end
 
       {:ok, device}

@@ -21,6 +21,13 @@ defmodule MobDev.Device do
     :node,
     # 9100
     :dist_port,
+    # Per-device suffix appended to the BEAM node name to keep concurrent
+    # devices distinguishable in Mac's EPMD. Auto-derived from the device
+    # serial (Android) or short UDID hex (iOS) by default; the `mix
+    # mob.deploy --node-suffix X` flag overrides for scripted scenarios
+    # (multiple builds on one sim, custom naming schemes). Sanitised
+    # (lowercase a-z0-9_) before being applied at launch time.
+    :node_suffix,
     # Device IP for physical iOS: USB link-local (169.254.x.x), WiFi LAN, or Tailscale
     :host_ip,
     # :discovered | :unauthorized | :tunneled | :connected | :error
