@@ -139,9 +139,20 @@ defmodule MobDev.Connector do
     :timer.sleep(300)
   end
 
-  defp restart_app(%Device{platform: :android, serial: serial, dist_port: port}) do
+  defp restart_app(%Device{
+         platform: :android,
+         serial: serial,
+         dist_port: port,
+         node_suffix: suffix
+       }) do
     IO.write("  Restarting app on #{serial}...")
-    Android.restart_app(serial, android_package(), @android_activity, dist_port: port)
+    # node_suffix may be nil — Android.restart_app falls back to
+    # device_node_suffix(serial) in that case (auto-derive from serial).
+    Android.restart_app(serial, android_package(), @android_activity,
+      dist_port: port,
+      node_suffix: suffix
+    )
+
     IO.puts(" done")
   end
 
@@ -152,11 +163,13 @@ defmodule MobDev.Connector do
     IO.puts(" done")
   end
 
-  defp restart_app(%Device{platform: :ios, serial: udid, dist_port: port}) do
+  defp restart_app(%Device{platform: :ios, serial: udid, dist_port: port, node_suffix: suffix}) do
     IO.write("  Restarting app on #{udid}...")
     IOS.terminate_app(udid, ios_bundle_id())
     :timer.sleep(500)
-    IOS.launch_app(udid, ios_bundle_id(), dist_port: port)
+    # node_suffix nil → IOS.launch_app omits SIMCTL_CHILD_MOB_NODE_SUFFIX
+    # → mob_beam.m auto-derives from SIMULATOR_UDID.
+    IOS.launch_app(udid, ios_bundle_id(), dist_port: port, node_suffix: suffix)
     IO.puts(" done")
   end
 

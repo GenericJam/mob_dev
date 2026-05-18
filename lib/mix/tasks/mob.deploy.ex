@@ -24,6 +24,13 @@ defmodule Mix.Tasks.Mob.Deploy do
     * `--native`              — build native binaries before pushing BEAMs
     * `--no-restart`          — push BEAMs but don't restart the app
     * `--device <id>`         — target a specific device; use `mix mob.devices` to find IDs
+    * `--dist-port <N>`       — pin the BEAM dist listen port (default: auto-allocated per
+                              device, `9100 + index`). Use to resolve EPMD collisions when
+                              multiple sims/emulators are running the same app concurrently
+                              and the auto-allocated ports aren't what you want.
+    * `--node-suffix <S>`     — append `_<S>` to the BEAM node name (default: auto-derived
+                              from device serial on Android, SIMULATOR_UDID on iOS sim). Use
+                              for scripted scenarios where you need a specific naming scheme.
     * `--schedulers <N>`      — set BEAM scheduler count (saved to mob.exs)
     * `--beam-flags "<flags>"` — arbitrary BEAM flags string (saved to mob.exs)
     * `--slim`                — strip OTP source/debug for size measurement on
@@ -119,6 +126,17 @@ defmodule Mix.Tasks.Mob.Deploy do
     device: :string,
     schedulers: :integer,
     beam_flags: :string,
+    # Manual overrides for the BEAM-distribution surface — useful when
+    # the auto-allocated per-device dist port (`Tunnel.dist_port(idx)`)
+    # or auto-derived node-name suffix (`Discovery.Android.device_node_suffix`
+    # / SIMULATOR_UDID-derived) collides with another locally-running
+    # device, or when scripting a specific naming scheme.
+    #
+    # When set, ALL targeted devices share the same value (so use with
+    # `--device` to be explicit about which one you mean). Auto-allocation
+    # only kicks in when neither flag is set.
+    dist_port: :integer,
+    node_suffix: :string,
     # Slim build (drops src/include + .beam debug chunks + Apple-policy strips).
     # On by default for both dev and release. Pass `--no-slim` to keep the
     # full OTP runtime in the bundle — useful if you need debug info on
@@ -216,7 +234,11 @@ defmodule Mix.Tasks.Mob.Deploy do
         force_fs: native,
         device: device_id,
         ios_device: effective_device_id,
-        beam_flags: beam_flags
+        beam_flags: beam_flags,
+        # nil → auto-allocation (per-device port + auto-derived suffix).
+        # Set → all targeted devices use these values verbatim.
+        dist_port: opts[:dist_port],
+        node_suffix: opts[:node_suffix]
       )
 
     Enum.each(format_summary(deployed, failed, skipped, restart: restart), &IO.puts/1)

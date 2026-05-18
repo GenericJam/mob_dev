@@ -213,4 +213,27 @@ defmodule MobDev.DeviceTest do
       assert Device.summary(physical) =~ "physical"
     end
   end
+
+  # ── :node_suffix field ───────────────────────────────────────────────────────
+
+  describe ":node_suffix field" do
+    test "defaults to nil (auto-derive in launchers)" do
+      d = %Device{platform: :android, serial: "emulator-5554"}
+      assert d.node_suffix == nil
+    end
+
+    test "accepts an explicit string (manual override path)" do
+      d = %Device{platform: :ios, serial: "udid", node_suffix: "alt"}
+      assert d.node_suffix == "alt"
+    end
+
+    test "Connector / Deployer / IOS.launch_app pattern-match on it" do
+      # Defensive contract: if the struct is reshaped and :node_suffix is
+      # dropped, this fails fast. The pattern-match sites:
+      #   - MobDev.Connector.restart_app/1 (both Android + iOS variants)
+      #   - MobDev.Deployer iOS-sim launch path
+      d = %Device{platform: :android, serial: "s", dist_port: 9100, node_suffix: "x"}
+      assert match?(%Device{node_suffix: "x"}, d)
+    end
+  end
 end
