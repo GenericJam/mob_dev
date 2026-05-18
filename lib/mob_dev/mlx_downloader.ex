@@ -35,6 +35,16 @@ defmodule MobDev.MLXDownloader do
 
   # Distinct release tag from the OTP tarballs so MLX can move independently.
   # Repo-hosted on the same `GenericJam/mob` release surface OtpDownloader uses.
+  #
+  # TODO(2026-05-17): switch `@base_url` to `cocoa-xu/mlx-build/releases/...`
+  # once that repo publishes iOS assets. The iOS build workflow merged
+  # upstream in cocoa-xu/mlx-build#2 (GenericJam:ios-metal-builds, merged
+  # 2026-05-17), but the latest release (v0.31.2) predates the workflow
+  # and has no iOS assets yet. Next upstream release that triggers
+  # `ios.yml` should produce `mlx-arm64-apple-ios-*.tar.gz` +
+  # `mlx-arm64-apple-iossimulator-*.tar.gz` assets we can consume
+  # directly, retiring our own iOS cross-compile in
+  # scripts/release/mlx/. Until then we keep self-hosting.
   @release_tag "mlx-#{@mlx_version}"
   @base_url "https://github.com/GenericJam/mob/releases/download/#{@release_tag}"
 
