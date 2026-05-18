@@ -502,9 +502,7 @@ defmodule MobDev.Enable.Igniter do
   defp inject_tflite_deps(igniter) do
     igniter
     |> Igniter.Project.Deps.add_dep({:nx, "~> 0.10"})
-    |> Igniter.Project.Deps.add_dep(
-      {:nx_tflite_mob, github: "GenericJam/nx_tflite_mob", branch: "main"}
-    )
+    |> Igniter.Project.Deps.add_dep({:nx_tflite_mob, "~> 0.0.3"})
   end
 
   defp create_tflite_init_module(igniter, app_name) do
