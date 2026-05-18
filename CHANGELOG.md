@@ -8,6 +8,24 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.5.9]
+
+### Changed
+- `mix mob.enable tflite` now injects `{:nx_tflite_mob, "~> 0.0.3"}`
+  (Hex) instead of the GitHub-branch form. `nx_tflite_mob` v0.0.3 went
+  live on Hex with 16 integration tests + a reproducible Mac host
+  build path (see
+  [its CHANGELOG](https://github.com/GenericJam/nx_tflite_mob/blob/main/CHANGELOG.md)).
+  Downstream Mob apps now get version-pinned deps + clean
+  `mix deps.tree` output, instead of a transient `github:` checkout.
+
+### Notes
+- The Mac host-build path in `nx_tflite_mob` is for that package's own
+  test suite, not for downstream consumers — production phone builds
+  via `mix mob.deploy --native` continue to use the prebuilt Android
+  AAR + iOS xcframework that mob_dev's `MobDev.TfliteDownloader`
+  fetches.
+
 ## [0.5.8]
 
 ### Added
