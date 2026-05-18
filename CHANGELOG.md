@@ -8,6 +8,36 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.5.10]
+
+### Added
+- **`mix mob.deploy --dist-port N` and `--node-suffix S` flags** — manual
+  override path for the BEAM-distribution surface. When set, all targeted
+  devices use the same value (use with `--device <id>` to be explicit).
+  Nil falls back to per-device auto-allocation
+  (`Tunnel.dist_port(idx)` + `Discovery.Android.device_node_suffix` /
+  SIMULATOR_UDID-derived suffix). Resolves the
+  `register/listen error: no_reg_reply_from_epmd` symptom seen when running
+  multiple sims/emulators of the same app concurrently for cross-platform
+  visual comparison.
+- `MobDev.Device` struct gains a `:node_suffix` field for plumbing the
+  override per-device alongside `:dist_port`. Nil keeps auto-derive.
+- `MobDev.Discovery.IOS.launch_app/3` accepts `:node_suffix` opt and
+  forwards as `SIMCTL_CHILD_MOB_NODE_SUFFIX` to the launched sim. Companion
+  to `mob 0.6.10`'s `MOB_NODE_SUFFIX` support in `mob_beam.m`.
+- `MobDev.Discovery.IOS.build_simctl_env/2` — pure helper extracted from
+  `launch_app/3` so override behaviour is unit-testable without spawning
+  `simctl`. 7 new tests cover dist_port + node_suffix override paths.
+- 3 new tests in `MobDev.DeviceTest` pin the `:node_suffix` field contract.
+
+### Changed
+- `MobDev.Connector.restart_app/1` pattern-matches `:node_suffix` from
+  `Device` in both Android + iOS-sim variants, threading the value to the
+  launchers.
+- `MobDev.Deployer.deploy_all/1` accepts top-level `:dist_port` +
+  `:node_suffix` opts; threaded through `deploy_android` and
+  `deploy_ios_simulator`.
+
 ## [0.5.9]
 
 ### Changed
