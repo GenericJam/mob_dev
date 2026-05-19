@@ -251,8 +251,10 @@ defmodule MobDev.Deployer do
               write_beam_flags_android(serial, beam_flags)
               setup_exqlite_android(serial)
               setup_app_priv_android(serial)
+
               if restart,
                 do: restart_android(serial, dist_port: dist_port, node_suffix: node_suffix)
+
               {:ok, device}
 
             {:error, reason} ->
