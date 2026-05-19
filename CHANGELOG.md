@@ -28,7 +28,6 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 - `MobDev.Discovery.IOS.build_simctl_env/2` — pure helper extracted from
   `launch_app/3` so override behaviour is unit-testable without spawning
   `simctl`. 7 new tests cover dist_port + node_suffix override paths.
-- 3 new tests in `MobDev.DeviceTest` pin the `:node_suffix` field contract.
 
 ### Changed
 - `MobDev.Connector.restart_app/1` pattern-matches `:node_suffix` from
