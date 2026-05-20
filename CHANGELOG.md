@@ -8,7 +8,7 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
-## [Unreleased]
+## [0.5.11]
 
 ### Added
 - **`mob.exs :project_swift_sources` config key** — optional list of extra Swift sources to compile into the iOS app module alongside Mob's bridge sources. Threaded into both `zig_build_binary_ios_sim` and `zig_build_binary_ios_device` as `-Dproject_swift_sources=<absolute,paths>`. Comma-containing entries are rejected at the boundary; nil/[] is a no-op. Pairs with mob_new's `project_swift_sources` build hook (mob_new#5). Originally proposed by @dl-alexandre.
