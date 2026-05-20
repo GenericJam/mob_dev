@@ -15,7 +15,7 @@ defmodule MobDev.NativeBuild do
 
     * `:mob_dir`           — mob library repo (native C/ObjC/Swift source)
     * `:elixir_lib`        — Elixir stdlib lib dir
-    * `:ios_swift_sources` — optional extra Swift sources compiled into
+    * `:project_swift_sources` — optional extra Swift sources compiled into
                              the iOS app module
   """
 
@@ -1335,7 +1335,7 @@ defmodule MobDev.NativeBuild do
       app_module = Mix.Project.config() |> Keyword.fetch!(:app) |> Atom.to_string()
       display_name = ios_display_name()
       erts_vsn = detect_erts_vsn(otp_root)
-      ios_swift_sources = ios_swift_sources_arg(cfg)
+      project_swift_sources = project_swift_sources_arg(cfg)
 
       with {:ok, sdkroot} <- xcrun_sdk_path("iphonesimulator"),
            :ok <- compile_elixir_for_ios(),
@@ -1364,7 +1364,7 @@ defmodule MobDev.NativeBuild do
                sdkroot,
                build_dir,
                display_name,
-               ios_swift_sources,
+               project_swift_sources,
                mlx_dir,
                nxeigen_archive,
                tflite_build
@@ -2145,7 +2145,7 @@ defmodule MobDev.NativeBuild do
          sdkroot,
          build_dir,
          display_name,
-         ios_swift_sources,
+         project_swift_sources,
          mlx_dir,
          nxeigen_archive,
          tflite_build
@@ -2165,7 +2165,7 @@ defmodule MobDev.NativeBuild do
       "-Denif_keepalive=#{Path.join(build_dir, "enif_keepalive.c")}",
       "-Dproject_ios_dir=#{Path.expand("ios")}",
       "-Dmodule_name=#{display_name}",
-      "-Dproject_swift_sources=#{ios_swift_sources}"
+      "-Dproject_swift_sources=#{project_swift_sources}"
     ]
 
     with {:ok, nif_args} <- project_nif_zig_args(:ios_sim) do
@@ -3353,7 +3353,7 @@ defmodule MobDev.NativeBuild do
          epmd_build_src,
          build_dir,
          display_name,
-         ios_swift_sources,
+         project_swift_sources,
          sqlite_static_lib,
          mlx_dir,
          nxeigen_archive,
@@ -3377,7 +3377,7 @@ defmodule MobDev.NativeBuild do
       "-Dmodule_name=#{display_name}",
       "-Depmd_build_src=#{epmd_build_src}",
       "-Derrno_compat=#{Path.join(build_dir, "erl_errno_id_compat.c")}",
-      "-Dproject_swift_sources=#{ios_swift_sources}"
+      "-Dproject_swift_sources=#{project_swift_sources}"
     ]
 
     with {:ok, nif_args} <- project_nif_zig_args(:ios_device) do
@@ -3615,7 +3615,7 @@ defmodule MobDev.NativeBuild do
          epmd_build_src = cfg[:ios_epmd_build_src] || otp_root,
          app_module = Mix.Project.config() |> Keyword.fetch!(:app) |> Atom.to_string(),
          display_name = ios_display_name(),
-         ios_swift_sources = ios_swift_sources_arg(cfg),
+         project_swift_sources = project_swift_sources_arg(cfg),
          build_dir =
            Path.join(System.tmp_dir!(), "mob_ios_device_#{System.unique_integer([:positive])}"),
          _ = File.mkdir_p!(build_dir),
@@ -3650,7 +3650,7 @@ defmodule MobDev.NativeBuild do
              epmd_build_src,
              build_dir,
              display_name,
-             ios_swift_sources,
+             project_swift_sources,
              sqlite_static_lib,
              mlx_dir,
              nxeigen_archive,
@@ -4763,8 +4763,8 @@ defmodule MobDev.NativeBuild do
   def __resolve_elixir_lib__(configured), do: resolve_elixir_lib(configured)
 
   @doc false
-  @spec __ios_swift_sources_arg__(keyword()) :: String.t()
-  def __ios_swift_sources_arg__(cfg), do: ios_swift_sources_arg(cfg)
+  @spec __project_swift_sources_arg__(keyword()) :: String.t()
+  def __project_swift_sources_arg__(cfg), do: project_swift_sources_arg(cfg)
 
   defp load_config do
     config_file = Path.join(File.cwd!(), "mob.exs")
@@ -4800,41 +4800,43 @@ defmodule MobDev.NativeBuild do
     :code.lib_dir(:elixir) |> to_string() |> Path.dirname()
   end
 
-  defp ios_swift_sources_arg(cfg) do
+  defp project_swift_sources_arg(cfg) do
     cfg
-    |> Keyword.get(:ios_swift_sources, [])
-    |> normalize_ios_swift_sources!()
+    |> Keyword.get(:project_swift_sources, [])
+    |> normalize_project_swift_sources!()
     |> Enum.join(",")
   end
 
-  defp normalize_ios_swift_sources!(nil), do: []
+  defp normalize_project_swift_sources!(nil), do: []
 
-  defp normalize_ios_swift_sources!(source) when is_binary(source) do
-    normalize_ios_swift_sources!([source])
+  defp normalize_project_swift_sources!(source) when is_binary(source) do
+    normalize_project_swift_sources!([source])
   end
 
-  defp normalize_ios_swift_sources!(sources) when is_list(sources) do
+  defp normalize_project_swift_sources!(sources) when is_list(sources) do
     sources
     |> Enum.map(&normalize_ios_swift_source!/1)
     |> Enum.reject(&(&1 == ""))
   end
 
-  defp normalize_ios_swift_sources!(other) do
-    Mix.raise(":ios_swift_sources must be a string or list of strings, got: #{inspect(other)}")
+  defp normalize_project_swift_sources!(other) do
+    Mix.raise(
+      ":project_swift_sources must be a string or list of strings, got: #{inspect(other)}"
+    )
   end
 
   defp normalize_ios_swift_source!(source) when is_binary(source) do
     source = String.trim(source)
 
     if String.contains?(source, ",") do
-      Mix.raise(":ios_swift_sources entries must not contain commas: #{inspect(source)}")
+      Mix.raise(":project_swift_sources entries must not contain commas: #{inspect(source)}")
     end
 
     if source == "", do: "", else: Path.expand(source)
   end
 
   defp normalize_ios_swift_source!(other) do
-    Mix.raise(":ios_swift_sources entries must be strings, got: #{inspect(other)}")
+    Mix.raise(":project_swift_sources entries must be strings, got: #{inspect(other)}")
   end
 
   # ── Helpers ──────────────────────────────────────────────────────────────────
