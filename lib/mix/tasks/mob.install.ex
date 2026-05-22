@@ -157,6 +157,14 @@ defmodule Mix.Tasks.Mob.Install do
         {:error, reason} ->
           Mix.shell().error("Warning: Android arm32 OTP download failed: #{reason}")
       end
+
+      case MobDev.OtpDownloader.ensure_android("x86_64") do
+        {:ok, path} ->
+          Mix.shell().info([:green, "* Android x86_64 OTP: #{path}", :reset])
+
+        {:error, reason} ->
+          Mix.shell().error("Warning: Android x86_64 OTP download failed: #{reason}")
+      end
     else
       Mix.shell().info([:yellow, "* Android OTP skipped — no android/ in project", :reset])
     end
@@ -298,11 +306,13 @@ defmodule Mix.Tasks.Mob.Install do
       if needs_mob_paths? or needs_sdk_dir? do
         otp_dir = MobDev.OtpDownloader.android_otp_dir("arm64-v8a")
         otp_dir_arm32 = MobDev.OtpDownloader.android_otp_dir("armeabi-v7a")
+        otp_dir_x86_64 = MobDev.OtpDownloader.android_otp_dir("x86_64")
 
         new_content =
           content
           |> replace_prop("mob.otp_release", otp_dir)
           |> replace_prop("mob.otp_release_arm32", otp_dir_arm32)
+          |> replace_prop("mob.otp_release_x86_64", otp_dir_x86_64)
           |> replace_prop("mob.mob_dir", cfg[:mob_dir])
           |> ensure_sdk_dir(detect_android_sdk())
 
