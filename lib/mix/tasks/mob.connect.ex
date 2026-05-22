@@ -157,9 +157,18 @@ defmodule Mix.Tasks.Mob.Connect do
     end)
 
     # Hand off to IEx in this process — tunnels stay alive via adb daemon.
-    # `IEx.Server.run/1` is the documented programmatic-start surface
-    # (added in 1.8.0). The old `IEx.start/0` was internal and removed
-    # in 1.20-rc.4.
-    IEx.Server.run([])
+    ensure_iex_started()
+    IEx.start()
+  end
+
+  @doc false
+  def ensure_iex_started do
+    case Application.ensure_all_started(:iex) do
+      {:ok, _apps} ->
+        :ok
+
+      {:error, {app, reason}} ->
+        Mix.raise("Failed to start #{inspect(app)} before launching IEx: #{inspect(reason)}")
+    end
   end
 end
