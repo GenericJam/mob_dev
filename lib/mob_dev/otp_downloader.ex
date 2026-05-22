@@ -11,6 +11,7 @@ defmodule MobDev.OtpDownloader do
 
   @android_name "otp-android-#{@otp_hash}"
   @android_arm32_name "otp-android-arm32-#{@otp_hash}"
+  @android_x86_64_name "otp-android-x86_64-#{@otp_hash}"
   @ios_sim_name "otp-ios-sim-#{@otp_hash}"
   @ios_device_name "otp-ios-device-#{@otp_hash}"
 
@@ -19,6 +20,7 @@ defmodule MobDev.OtpDownloader do
   def ensure_android(abi \\ "arm64-v8a") do
     case abi do
       "armeabi-v7a" -> ensure(@android_arm32_name, "#{@android_arm32_name}.tar.gz")
+      "x86_64" -> ensure(@android_x86_64_name, "#{@android_x86_64_name}.tar.gz")
       _ -> ensure(@android_name, "#{@android_name}.tar.gz")
     end
   end
@@ -40,6 +42,7 @@ defmodule MobDev.OtpDownloader do
   def android_otp_dir(abi \\ "arm64-v8a") do
     case abi do
       "armeabi-v7a" -> cache_dir(@android_arm32_name)
+      "x86_64" -> cache_dir(@android_x86_64_name)
       _ -> cache_dir(@android_name)
     end
   end

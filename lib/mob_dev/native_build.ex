@@ -121,13 +121,15 @@ defmodule MobDev.NativeBuild do
 
     with {:ok, otp_arm64} <- MobDev.OtpDownloader.ensure_android("arm64-v8a"),
          {:ok, otp_arm32} <- MobDev.OtpDownloader.ensure_android("armeabi-v7a"),
+         {:ok, otp_x86_64} <- MobDev.OtpDownloader.ensure_android("x86_64"),
          {:ok, python_android_bundle} <- maybe_ensure_python_android_bundle(),
          :ok <- ensure_jni_libs(otp_arm64, "arm64-v8a"),
          :ok <- ensure_jni_libs(otp_arm32, "armeabi-v7a"),
+         :ok <- ensure_jni_libs(otp_x86_64, "x86_64"),
          :ok <- ensure_python_android_libs(python_android_bundle),
          :ok <- install_nx_eigen_otp_lib(otp_arm64),
          :ok <- install_nx_eigen_otp_lib(otp_arm32),
-         :ok <- zig_build_android_objects(mob_dir, otp_arm64, otp_arm32),
+         :ok <- zig_build_android_objects(mob_dir, otp_arm64, otp_arm32, otp_x86_64),
          :ok <- gradle_assemble(),
          :ok <- adb_install_all(apk, bundle_id, device_id),
          :ok <-
@@ -136,6 +138,7 @@ defmodule MobDev.NativeBuild do
              cfg[:elixir_lib],
              otp_arm64,
              otp_arm32,
+             otp_x86_64,
              device_id
            ) do
       {:ok, "Android"}
@@ -152,7 +155,7 @@ defmodule MobDev.NativeBuild do
   # Skips silently if the project has no jni/build.zig (older projects from
   # before this iter still work via CMake compiling driver_tab_android.c
   # directly through the Phase 0 fallback).
-  defp zig_build_android_objects(mob_dir, otp_arm64, otp_arm32) do
+  defp zig_build_android_objects(mob_dir, otp_arm64, otp_arm32, otp_x86_64) do
     build_zig = "android/app/src/main/jni/build.zig"
 
     cond do
@@ -183,6 +186,7 @@ defmodule MobDev.NativeBuild do
         # set and links them into its `lib<app>.so`.
         with {:ok, arm64_nif_args} <- project_nif_zig_args(:android_arm64),
              {:ok, arm32_nif_args} <- project_nif_zig_args(:android_arm32),
+             {:ok, x86_64_nif_args} <- project_nif_zig_args(:android_x86_64),
              {:ok, arm64_nxeigen} <- maybe_build_nxeigen(:android_arm64),
              {:ok, arm32_nxeigen} <- maybe_build_nxeigen(:android_arm32),
              {:ok, arm64_tflite} <- maybe_build_tflite(:android_arm64),
@@ -190,7 +194,8 @@ defmodule MobDev.NativeBuild do
           Enum.reduce_while(
             [
               {otp_arm64, "arm64-v8a", arm64_nif_args, arm64_nxeigen, arm64_tflite},
-              {otp_arm32, "armeabi-v7a", arm32_nif_args, arm32_nxeigen, arm32_tflite}
+              {otp_arm32, "armeabi-v7a", arm32_nif_args, arm32_nxeigen, arm32_tflite},
+              {otp_x86_64, "x86_64", x86_64_nif_args, nil, nil}
             ],
             :ok,
             fn {otp_dir, abi, abi_nif_args, abi_nxeigen, abi_tflite}, _acc ->
@@ -1092,7 +1097,14 @@ defmodule MobDev.NativeBuild do
     end
   end
 
-  defp push_otp_release_android(bundle_id, elixir_lib, otp_arm64, otp_arm32, device_id) do
+  defp push_otp_release_android(
+         bundle_id,
+         elixir_lib,
+         otp_arm64,
+         otp_arm32,
+         otp_x86_64,
+         device_id
+       ) do
     app_data = "/data/data/#{bundle_id}/files"
 
     IO.puts("  Pushing OTP release to device(s)...")
@@ -1103,7 +1115,7 @@ defmodule MobDev.NativeBuild do
         if serials == [], do: IO.puts("  (no devices connected, skipping OTP push)")
 
         Enum.reduce_while(serials, :ok, fn serial, _ ->
-          otp_dir = device_otp_dir(serial, otp_arm64, otp_arm32)
+          otp_dir = device_otp_dir(serial, otp_arm64, otp_arm32, otp_x86_64)
 
           result =
             try do
@@ -1123,20 +1135,26 @@ defmodule MobDev.NativeBuild do
     end
   end
 
-  defp device_otp_dir(serial, otp_arm64, otp_arm32) do
+  defp device_otp_dir(serial, otp_arm64, otp_arm32, otp_x86_64) do
     {abi_out, _} =
       System.cmd("adb", ["-s", serial, "shell", "getprop", "ro.product.cpu.abi"],
         stderr_to_stdout: true
       )
 
     abi = String.trim(abi_out)
-    otp_dir_for_abi(abi, otp_arm64, otp_arm32)
+    otp_dir_for_abi(abi, otp_arm64, otp_arm32, otp_x86_64)
   end
 
   @doc "Returns the OTP directory for the given Android ABI string."
   @spec otp_dir_for_abi(String.t(), String.t(), String.t()) :: String.t()
   def otp_dir_for_abi("armeabi-v7a", _arm64, arm32), do: arm32
   def otp_dir_for_abi(_abi, arm64, _arm32), do: arm64
+
+  @doc "Returns the OTP directory for the given Android ABI string."
+  @spec otp_dir_for_abi(String.t(), String.t(), String.t(), String.t()) :: String.t()
+  def otp_dir_for_abi("armeabi-v7a", _arm64, arm32, _x86_64), do: arm32
+  def otp_dir_for_abi("x86_64", _arm64, _arm32, x86_64), do: x86_64
+  def otp_dir_for_abi(_abi, arm64, _arm32, _x86_64), do: arm64
 
   defp push_otp_to_device(serial, bundle_id, app_data, otp_dir, elixir_lib) do
     adb = fn args -> System.cmd("adb", ["-s", serial | args], stderr_to_stdout: true) end
@@ -3009,7 +3027,13 @@ defmodule MobDev.NativeBuild do
   # Build args to pass to `zig build`. Returns
   # `{:ok, ["-Dproject_c_nifs=…", "-Dproject_rust_libs=…", "-Dproject_root=…"]}`
   # or `{:error, reason}` if a Rust cross-compile fails.
-  @spec project_nif_zig_args(:ios_device | :ios_sim | :android_arm64 | :android_arm32) ::
+  @spec project_nif_zig_args(
+          :ios_device
+          | :ios_sim
+          | :android_arm64
+          | :android_arm32
+          | :android_x86_64
+        ) ::
           {:ok, [String.t()]} | {:error, String.t()}
   defp project_nif_zig_args(platform) do
     project_root = File.cwd!()
@@ -3026,6 +3050,7 @@ defmodule MobDev.NativeBuild do
         p when p in [:ios_device, :ios_sim] -> :ios
         :android_arm64 -> :android_arm64
         :android_arm32 -> :android_arm32
+        :android_x86_64 -> :android
       end
 
     entries =
@@ -3124,6 +3149,7 @@ defmodule MobDev.NativeBuild do
   defp rust_target_for(:ios_sim), do: "aarch64-apple-ios-sim"
   defp rust_target_for(:android_arm64), do: "aarch64-linux-android"
   defp rust_target_for(:android_arm32), do: "armv7-linux-androideabi"
+  defp rust_target_for(:android_x86_64), do: "x86_64-linux-android"
 
   # ── Zigler cross-compile (issue #15 final piece) ─────────────────────────
 
@@ -3167,6 +3193,7 @@ defmodule MobDev.NativeBuild do
 
   defp sdkroot_args_for(:android_arm64), do: {:ok, ["-Dandroid_sdkroot=#{ndk_sysroot()}"]}
   defp sdkroot_args_for(:android_arm32), do: {:ok, ["-Dandroid_sdkroot=#{ndk_sysroot()}"]}
+  defp sdkroot_args_for(:android_x86_64), do: {:ok, ["-Dandroid_sdkroot=#{ndk_sysroot()}"]}
 
   # Drives Zigler's build pipeline a SECOND time against the staging
   # directory (which Zigler set up during the normal `mix compile` host
@@ -3328,6 +3355,7 @@ defmodule MobDev.NativeBuild do
   # `androideabi` ABI marker matches Rust's `armv7-linux-androideabi`
   # for ELF-level compatibility when both libs land in the same .so.
   defp zig_build_target_for(:android_arm32), do: "arm-linux-androideabi"
+  defp zig_build_target_for(:android_x86_64), do: "x86_64-linux-android"
 
   @spec generate_erl_errno_compat_stub(Path.t()) :: :ok
   def generate_erl_errno_compat_stub(build_dir) do

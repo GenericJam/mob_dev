@@ -51,6 +51,7 @@ defmodule Mix.Tasks.Mob.InstallTest do
       File.write!(props_path(dir), """
       mob.otp_release=/path/to/otp-android
       mob.otp_release_arm32=/path/to/otp-android-arm32
+      mob.otp_release_x86_64=/path/to/otp-android-x86_64
       mob.mob_dir=/path/to/mob
       """)
     end
@@ -69,15 +70,25 @@ defmodule Mix.Tasks.Mob.InstallTest do
       assert content =~ "mob.otp_release_arm32=#{OtpDownloader.android_otp_dir("armeabi-v7a")}"
     end
 
-    test "arm64 and arm32 paths written are distinct", %{dir: dir} do
+    test "writes x86_64 OTP path when placeholder present", %{dir: dir} do
+      write_placeholder_props(dir)
+      Install.write_local_properties(dir, mob_dir: dir)
+      content = File.read!(props_path(dir))
+      assert content =~ "mob.otp_release_x86_64=#{OtpDownloader.android_otp_dir("x86_64")}"
+    end
+
+    test "arm64, arm32, and x86_64 paths written are distinct", %{dir: dir} do
       write_placeholder_props(dir)
       Install.write_local_properties(dir, mob_dir: dir)
       content = File.read!(props_path(dir))
       arm64 = OtpDownloader.android_otp_dir("arm64-v8a")
       arm32 = OtpDownloader.android_otp_dir("armeabi-v7a")
+      x86_64 = OtpDownloader.android_otp_dir("x86_64")
       assert content =~ arm64
       assert content =~ arm32
+      assert content =~ x86_64
       refute arm64 == arm32
+      refute arm64 == x86_64
     end
 
     test "does nothing when local.properties is fully populated", %{dir: dir} do

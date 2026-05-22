@@ -19,13 +19,21 @@ defmodule MobDev.OtpDownloaderTest do
       assert path =~ "otp-android-arm32-"
     end
 
+    test "x86_64 returns a path containing the x86_64 artifact name" do
+      path = OtpDownloader.android_otp_dir("x86_64")
+      assert path =~ "otp-android-x86_64-"
+    end
+
     test "unknown ABI falls back to arm64 path" do
       assert OtpDownloader.android_otp_dir("x86") == OtpDownloader.android_otp_dir("arm64-v8a")
     end
 
-    test "arm64 and arm32 paths are distinct" do
+    test "arm64, arm32, and x86_64 paths are distinct" do
       refute OtpDownloader.android_otp_dir("arm64-v8a") ==
                OtpDownloader.android_otp_dir("armeabi-v7a")
+
+      refute OtpDownloader.android_otp_dir("arm64-v8a") ==
+               OtpDownloader.android_otp_dir("x86_64")
     end
 
     test "arm32 path ends inside the standard cache directory" do
@@ -64,6 +72,7 @@ defmodule MobDev.OtpDownloaderTest do
       add_crypto(tmp)
       assert OtpDownloader.valid_otp_dir?(tmp, "otp-android-7721ab74")
       assert OtpDownloader.valid_otp_dir?(tmp, "otp-android-arm32-7721ab74")
+      assert OtpDownloader.valid_otp_dir?(tmp, "otp-android-x86_64-7721ab74")
     end
 
     test "Android tarball: missing crypto.a → invalid", %{tmp: tmp} do
