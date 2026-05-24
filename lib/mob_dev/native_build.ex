@@ -172,6 +172,10 @@ defmodule MobDev.NativeBuild do
 
         IO.puts("  Compiling Android C objects via zig build (per-ABI)...")
 
+        # Copy plugin Kotlin sources into the project tree so Gradle
+        # compiles them alongside the generated MobBridge.kt.
+        copy_plugin_android_kotlin_sources()
+
         # Cross-compile project Rust/Zig NIFs once per ABI. Each
         # invocation targets `aarch64-linux-android` or
         # `armv7-linux-androideabi` (Rust) / `arm-linux-androideabi`
@@ -264,11 +268,14 @@ defmodule MobDev.NativeBuild do
     # but received a list".
     nif_args_no_root = Enum.reject(nif_args, &String.starts_with?(&1, "-Dproject_root="))
 
+    plugin_sources = plugin_android_c_sources_arg()
+
     args =
       base_args ++
         nif_args_no_root ++
         nxeigen_zig_args_android(nxeigen_archive) ++
-        tflite_zig_args_android(tflite_build)
+        tflite_zig_args_android(tflite_build) ++
+        if(plugin_sources != "", do: [plugin_sources], else: [])
 
     case System.cmd("zig", args, stderr_to_stdout: true, into: IO.stream()) do
       {_, 0} -> :ok
@@ -4800,11 +4807,99 @@ defmodule MobDev.NativeBuild do
     :code.lib_dir(:elixir) |> to_string() |> Path.dirname()
   end
 
+  # ── Plugin native source auto-discovery ────────────────────────────────────
+
+  # Scans all Mix dependencies for plugin Swift sources and returns a
+  # list of absolute paths. Used by the iOS build to auto-wire plugin
+  # native bridges (e.g. MobIapBridge.swift) into the swiftc invocation.
+  defp scan_plugin_ios_swift_sources do
+    Mix.Project.deps_paths()
+    |> Enum.flat_map(fn {_name, dep_path} ->
+      swift_dir = Path.join(dep_path, "priv/native/ios")
+      if File.dir?(swift_dir) do
+        Path.wildcard(Path.join(swift_dir, "*.swift"))
+      else
+        []
+      end
+    end)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  # Scans all Mix dependencies for plugin Android C sources and returns
+  # a list of {name, path} tuples. name is the filename without extension,
+  # used as the .o basename in the zig build.
+  defp scan_plugin_android_c_sources do
+    Mix.Project.deps_paths()
+    |> Enum.flat_map(fn {_name, dep_path} ->
+      c_dir = Path.join(dep_path, "priv/native/android/jni")
+      if File.dir?(c_dir) do
+        Path.wildcard(Path.join(c_dir, "*.c"))
+        |> Enum.map(fn path ->
+          name = path |> Path.basename() |> Path.rootname()
+          {name, path}
+        end)
+      else
+        []
+      end
+    end)
+    |> Enum.reject(fn {_name, path} -> path == "" end)
+  end
+
+  # Builds the `-Dproject_plugin_sources=name1:path1,name2:path2` string
+  # for the Android zig build. Empty string when no plugin C sources found.
+  defp plugin_android_c_sources_arg do
+    case scan_plugin_android_c_sources() do
+      [] -> ""
+      sources ->
+        pairs = Enum.map(sources, fn {name, path} -> "#{name}:#{path}" end)
+        "-Dproject_plugin_sources=#{Enum.join(pairs, ",")}"
+    end
+  end
+
+  # Copies plugin Kotlin files from deps' priv/native/android/ into the
+  # project's Java source tree so Gradle compiles them. Each .kt file is
+  # placed in the same package directory as the generated MobBridge.
+  # Returns :ok.
+  defp copy_plugin_android_kotlin_sources do
+    _project_root = Path.expand(".")
+    java_pkg_dir =
+      case File.read("android/app/src/main/java/MainActivity.kt") do
+        {:ok, content} ->
+          case Regex.run(~r/package\s+([\w.]+)/, content) do
+            [_, pkg] -> Path.join(["android/app/src/main/java" | String.split(pkg, ".")])
+            _ -> nil
+          end
+        _ -> nil
+      end
+
+    if java_pkg_dir do
+      Mix.Project.deps_paths()
+      |> Enum.each(fn {_name, dep_path} ->
+        kt_dir = Path.join(dep_path, "priv/native/android")
+        if File.dir?(kt_dir) do
+          Path.wildcard(Path.join(kt_dir, "*.kt"))
+          |> Enum.each(fn src ->
+            dst = Path.join(java_pkg_dir, Path.basename(src))
+            unless File.exists?(dst) do
+              cp(src, dst)
+              IO.puts("  ✓ copied plugin Kotlin source: #{dst}")
+            end
+          end)
+        end
+      end)
+    end
+
+    :ok
+  end
+
   defp project_swift_sources_arg(cfg) do
-    cfg
-    |> Keyword.get(:project_swift_sources, [])
-    |> normalize_project_swift_sources!()
-    |> Enum.join(",")
+    user_sources =
+      cfg
+      |> Keyword.get(:project_swift_sources, [])
+      |> normalize_project_swift_sources!()
+
+    plugin_sources = scan_plugin_ios_swift_sources()
+    (user_sources ++ plugin_sources) |> Enum.join(",")
   end
 
   defp normalize_project_swift_sources!(nil), do: []
