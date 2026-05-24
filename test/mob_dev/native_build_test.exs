@@ -1061,4 +1061,62 @@ defmodule MobDev.NativeBuildTest do
       assert String.contains?(content, "iphoneos"), "patch should switch to iphoneos SDK"
     end
   end
+
+  describe "dedupe_plugin_c_sources!/1" do
+    test "empty input returns empty list" do
+      assert NativeBuild.dedupe_plugin_c_sources!([]) == []
+    end
+
+    test "drops the dep name from triples to return {name, path} pairs" do
+      assert NativeBuild.dedupe_plugin_c_sources!([
+               {"iap", "/deps/mob_iap/priv/native/android/jni/iap.c", :mob_iap}
+             ]) == [{"iap", "/deps/mob_iap/priv/native/android/jni/iap.c"}]
+    end
+
+    test "preserves order and allows distinct basenames from the same dep" do
+      sources = [
+        {"iap", "/deps/mob_iap/priv/native/android/jni/iap.c", :mob_iap},
+        {"helper", "/deps/mob_iap/priv/native/android/jni/helper.c", :mob_iap}
+      ]
+
+      assert NativeBuild.dedupe_plugin_c_sources!(sources) == [
+               {"iap", "/deps/mob_iap/priv/native/android/jni/iap.c"},
+               {"helper", "/deps/mob_iap/priv/native/android/jni/helper.c"}
+             ]
+    end
+
+    test "raises with a helpful message when two plugins ship the same basename" do
+      sources = [
+        {"iap", "/deps/mob_iap/priv/native/android/jni/iap.c", :mob_iap},
+        {"iap", "/deps/other_iap/priv/native/android/jni/iap.c", :other_iap}
+      ]
+
+      msg =
+        assert_raise Mix.Error, fn ->
+          NativeBuild.dedupe_plugin_c_sources!(sources)
+        end
+
+      assert msg.message =~ "Duplicate plugin Android C source basenames"
+      assert msg.message =~ "iap.c is provided by:"
+      assert msg.message =~ "mob_iap"
+      assert msg.message =~ "other_iap"
+    end
+
+    test "lists every collision when there are multiple" do
+      sources = [
+        {"a", "/deps/p1/priv/native/android/jni/a.c", :p1},
+        {"a", "/deps/p2/priv/native/android/jni/a.c", :p2},
+        {"b", "/deps/p1/priv/native/android/jni/b.c", :p1},
+        {"b", "/deps/p3/priv/native/android/jni/b.c", :p3}
+      ]
+
+      msg =
+        assert_raise Mix.Error, fn ->
+          NativeBuild.dedupe_plugin_c_sources!(sources)
+        end
+
+      assert msg.message =~ "a.c is provided by:"
+      assert msg.message =~ "b.c is provided by:"
+    end
+  end
 end

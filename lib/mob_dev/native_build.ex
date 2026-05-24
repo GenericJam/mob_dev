@@ -4808,6 +4808,18 @@ defmodule MobDev.NativeBuild do
   end
 
   # ── Plugin native source auto-discovery ────────────────────────────────────
+  #
+  # A "plugin" in this context is any Mix dependency that ships native
+  # bridge sources at:
+  #
+  #   <dep>/priv/native/ios/*.swift           — iOS Swift bridges
+  #   <dep>/priv/native/android/jni/*.c       — Android C sources (compiled
+  #                                             into lib<app>.so by zig)
+  #   <dep>/priv/native/android/*.kt          — Android Kotlin bridges
+  #                                             (copied into the project
+  #                                             tree; Gradle compiles them)
+  #
+  # mob_iap is the canonical example. New plugins should follow this layout.
 
   # Scans all Mix dependencies for plugin Swift sources and returns a
   # list of absolute paths. Used by the iOS build to auto-wire plugin
@@ -4816,40 +4828,81 @@ defmodule MobDev.NativeBuild do
     Mix.Project.deps_paths()
     |> Enum.flat_map(fn {_name, dep_path} ->
       swift_dir = Path.join(dep_path, "priv/native/ios")
+
       if File.dir?(swift_dir) do
         Path.wildcard(Path.join(swift_dir, "*.swift"))
       else
         []
       end
     end)
-    |> Enum.reject(&(&1 == ""))
   end
 
   # Scans all Mix dependencies for plugin Android C sources and returns
   # a list of {name, path} tuples. name is the filename without extension,
   # used as the .o basename in the zig build.
+  #
+  # Raises if two plugins ship a C file with the same basename — both
+  # would compile to the same .o and silently overwrite each other in
+  # the final .so. The fix is to rename one of them; we cannot do that
+  # automatically.
   defp scan_plugin_android_c_sources do
     Mix.Project.deps_paths()
-    |> Enum.flat_map(fn {_name, dep_path} ->
+    |> Enum.flat_map(fn {dep_name, dep_path} ->
       c_dir = Path.join(dep_path, "priv/native/android/jni")
+
       if File.dir?(c_dir) do
         Path.wildcard(Path.join(c_dir, "*.c"))
         |> Enum.map(fn path ->
           name = path |> Path.basename() |> Path.rootname()
-          {name, path}
+          {name, path, dep_name}
         end)
       else
         []
       end
     end)
-    |> Enum.reject(fn {_name, path} -> path == "" end)
+    |> dedupe_plugin_c_sources!()
+  end
+
+  @doc false
+  # Pure helper, public for testing. Takes a list of {name, path, dep}
+  # triples and returns {name, path} pairs after a collision check.
+  # Raises via Mix.raise/1 if any name appears more than once.
+  @spec dedupe_plugin_c_sources!([{String.t(), String.t(), atom()}]) :: [{String.t(), String.t()}]
+  def dedupe_plugin_c_sources!(sources) do
+    collisions =
+      sources
+      |> Enum.group_by(fn {name, _, _} -> name end)
+      |> Enum.filter(&match?({_, [_, _ | _]}, &1))
+
+    case collisions do
+      [] ->
+        Enum.map(sources, fn {name, path, _dep} -> {name, path} end)
+
+      _ ->
+        details =
+          Enum.map_join(collisions, "\n", fn {name, entries} ->
+            owners = Enum.map_join(entries, ", ", fn {_, _, dep} -> to_string(dep) end)
+            "  #{name}.c is provided by: #{owners}"
+          end)
+
+        Mix.raise("""
+        Duplicate plugin Android C source basenames — each would compile to
+        the same .o file and overwrite the other in lib<app>.so:
+
+        #{details}
+
+        Rename one of the conflicting files in its source plugin.
+        """)
+    end
   end
 
   # Builds the `-Dproject_plugin_sources=name1:path1,name2:path2` string
   # for the Android zig build. Empty string when no plugin C sources found.
   defp plugin_android_c_sources_arg do
     case scan_plugin_android_c_sources() do
-      [] -> ""
+      [] ->
+        ""
+
       sources ->
         pairs = Enum.map(sources, fn {name, path} -> "#{name}:#{path}" end)
         "-Dproject_plugin_sources=#{Enum.join(pairs, ",")}"
@@ -4860,36 +4913,69 @@ defmodule MobDev.NativeBuild do
   # project's Java source tree so Gradle compiles them. Each .kt file is
   # placed in the same package directory as the generated MobBridge.
   # Returns :ok.
+  #
+  # Always overwrites the destination. Earlier we skipped existing files,
+  # but that meant a `mix deps.update mob_iap` couldn't refresh the
+  # bridge — the first-build copy persisted and Gradle kept compiling
+  # the stale version. Forking a plugin's bridge in-tree is not
+  # supported; users who need to customize should fork the plugin
+  # itself.
   defp copy_plugin_android_kotlin_sources do
-    _project_root = Path.expand(".")
-    java_pkg_dir =
-      case File.read("android/app/src/main/java/MainActivity.kt") do
-        {:ok, content} ->
-          case Regex.run(~r/package\s+([\w.]+)/, content) do
-            [_, pkg] -> Path.join(["android/app/src/main/java" | String.split(pkg, ".")])
-            _ -> nil
-          end
-        _ -> nil
-      end
-
-    if java_pkg_dir do
+    plugin_kt_files =
       Mix.Project.deps_paths()
-      |> Enum.each(fn {_name, dep_path} ->
+      |> Enum.flat_map(fn {dep_name, dep_path} ->
         kt_dir = Path.join(dep_path, "priv/native/android")
+
         if File.dir?(kt_dir) do
           Path.wildcard(Path.join(kt_dir, "*.kt"))
-          |> Enum.each(fn src ->
-            dst = Path.join(java_pkg_dir, Path.basename(src))
-            unless File.exists?(dst) do
-              cp(src, dst)
-              IO.puts("  ✓ copied plugin Kotlin source: #{dst}")
-            end
-          end)
+          |> Enum.map(fn src -> {dep_name, src} end)
+        else
+          []
         end
       end)
-    end
 
-    :ok
+    case plugin_kt_files do
+      [] ->
+        :ok
+
+      files ->
+        java_pkg_dir = detect_android_java_pkg_dir()
+
+        if java_pkg_dir do
+          Enum.each(files, fn {_dep_name, src} ->
+            dst = Path.join(java_pkg_dir, Path.basename(src))
+            cp(src, dst)
+            IO.puts("  ✓ copied plugin Kotlin source: #{dst}")
+          end)
+        else
+          owners = files |> Enum.map_join(", ", fn {dep, _} -> to_string(dep) end)
+
+          Mix.raise("""
+          Could not determine Android Java package directory — expected to
+          read `package <name>` from android/app/src/main/java/MainActivity.kt,
+          but the file is missing or does not declare a package.
+
+          Plugins waiting on Kotlin source copy: #{owners}
+
+          If your project uses a non-standard layout, file an issue at
+          GenericJam/mob_dev with the path to your MainActivity.
+          """)
+        end
+
+        :ok
+    end
+  end
+
+  # Reads the package declaration from MainActivity.kt and converts it
+  # to a directory path under android/app/src/main/java. Returns nil if
+  # the file is missing or the package can't be parsed.
+  defp detect_android_java_pkg_dir do
+    with {:ok, content} <- File.read("android/app/src/main/java/MainActivity.kt"),
+         [_, pkg] <- Regex.run(~r/package\s+([\w.]+)/, content) do
+      Path.join(["android/app/src/main/java" | String.split(pkg, ".")])
+    else
+      _ -> nil
+    end
   end
 
   defp project_swift_sources_arg(cfg) do
