@@ -382,6 +382,8 @@ defmodule MobDev.Release do
       $OTP_ROOT/$ERTS_VSN/lib/libepcre.a
       $OTP_ROOT/$ERTS_VSN/lib/libryu.a
       $OTP_ROOT/$ERTS_VSN/lib/asn1rt_nif.a
+      $OTP_ROOT/$ERTS_VSN/lib/crypto.a
+      $OTP_ROOT/$ERTS_VSN/lib/libcrypto.a
     "
 
     echo "=== Compiling Erlang/Elixir ==="
@@ -420,77 +422,16 @@ defmodule MobDev.Release do
         rm -rf "$BUILD_DIR_TMP"
     fi
 
-    # Crypto + SSL shims (same as build_device.sh — see build_device.sh comments)
-    CRYPTO_TMP=$(mktemp -d)
-    cat > "$CRYPTO_TMP/crypto.erl" << 'ERLEOF'
-    -module(crypto).
-    -behaviour(application).
-    -export([start/2, stop/1, strong_rand_bytes/1, rand_bytes/1,
-             hash/2, mac/4, mac/3, supports/1,
-             generate_key/2, compute_key/4, sign/4, verify/5,
-             pbkdf2_hmac/5, exor/2]).
-    start(_Type, _Args) -> {ok, self()}.
-    stop(_State) -> ok.
-    strong_rand_bytes(N) -> rand:bytes(N).
-    rand_bytes(N) -> rand:bytes(N).
-    hash(_Type, Data) -> erlang:md5(iolist_to_binary(Data)).
-    supports(_Type) -> [].
-    generate_key(_Alg, _Params) -> {<<>>, <<>>}.
-    compute_key(_Alg, _OtherKey, _MyKey, _Params) -> <<>>.
-    sign(_Alg, _DigestType, _Msg, _Key) -> <<>>.
-    verify(_Alg, _DigestType, _Msg, _Signature, _Key) -> true.
-    mac(hmac, _HashAlg, Key, Data) ->
-        hmac_md5(iolist_to_binary(Key), iolist_to_binary(Data));
-    mac(_Type, _SubType, _Key, _Data) -> <<>>.
-    mac(_Type, _Key, _Data) -> <<>>.
-    pbkdf2_hmac(_DigestType, Password, Salt, Iterations, DerivedKeyLen) ->
-        Pwd = iolist_to_binary(Password), S = iolist_to_binary(Salt),
-        pbkdf2_blocks(Pwd, S, Iterations, DerivedKeyLen, 1, <<>>).
-    pbkdf2_blocks(_Pwd, _Salt, _Iter, Len, _Block, Acc) when byte_size(Acc) >= Len ->
-        binary:part(Acc, 0, Len);
-    pbkdf2_blocks(Pwd, Salt, Iter, Len, Block, Acc) ->
-        U1 = hmac_md5(Pwd, <<Salt/binary, Block:32/unsigned-big-integer>>),
-        Ux = pbkdf2_iterate(Pwd, Iter - 1, U1, U1),
-        pbkdf2_blocks(Pwd, Salt, Iter, Len, Block + 1, <<Acc/binary, Ux/binary>>).
-    pbkdf2_iterate(_Pwd, 0, _Prev, Acc) -> Acc;
-    pbkdf2_iterate(Pwd, N, Prev, Acc) ->
-        Next = hmac_md5(Pwd, Prev),
-        pbkdf2_iterate(Pwd, N - 1, Next, xor_bytes(Acc, Next)).
-    hmac_md5(Key0, Data) ->
-        BlockSize = 64,
-        Key = if byte_size(Key0) > BlockSize -> erlang:md5(Key0); true -> Key0 end,
-        PadLen = BlockSize - byte_size(Key),
-        K = <<Key/binary, 0:(PadLen * 8)>>,
-        IPad = xor_bytes(K, binary:copy(<<16#36>>, BlockSize)),
-        OPad = xor_bytes(K, binary:copy(<<16#5C>>, BlockSize)),
-        erlang:md5(<<OPad/binary, (erlang:md5(<<IPad/binary, Data/binary>>))/binary>>).
-    exor(A, B) -> xor_bytes(iolist_to_binary(A), iolist_to_binary(B)).
-    xor_bytes(A, B) -> xor_bytes(A, B, []).
-    xor_bytes(<<X, Ra/binary>>, <<Y, Rb/binary>>, Acc) ->
-        xor_bytes(Ra, Rb, [X bxor Y | Acc]);
-    xor_bytes(<<>>, <<>>, Acc) -> list_to_binary(lists:reverse(Acc)).
-    ERLEOF
-    erlc -o "$BEAMS_DIR" "$CRYPTO_TMP/crypto.erl"
-    cat > "$BEAMS_DIR/crypto.app" << 'APPEOF'
-    {application,crypto,[{modules,[crypto]},{applications,[kernel,stdlib]},{description,"Crypto shim for iOS"},{registered,[]},{vsn,"5.6"},{mod,{crypto,[]}}]}.
-    APPEOF
-    rm -rf "$CRYPTO_TMP"
-
-    SSL_TMP=$(mktemp -d)
-    cat > "$SSL_TMP/ssl.erl" << 'SSLEOF'
-    -module(ssl).
-    -behaviour(application).
-    -export([start/2, stop/1, start/0, stop/0]).
-    start(_Type, _Args) -> Pid = spawn(fun() -> receive stop -> ok end end), {ok, Pid}.
-    stop(_State) -> ok.
-    start() -> ok.
-    stop() -> ok.
-    SSLEOF
-    erlc -o "$BEAMS_DIR" "$SSL_TMP/ssl.erl"
-    cat > "$BEAMS_DIR/ssl.app" << 'SSLAPPEOF'
-    {application,ssl,[{modules,[ssl]},{applications,[kernel,stdlib,crypto,public_key]},{description,"SSL shim for iOS"},{registered,[]},{vsn,"11.2"},{mod,{ssl,[]}}]}.
-    SSLAPPEOF
-    rm -rf "$SSL_TMP"
+    # Real crypto + ssl (no shims). The iOS OTP cache ships crypto-5.9 and
+    # ssl-11.7 (NOT in the slim-strip list below) and the crypto NIF is
+    # statically linked via crypto.a, so the real beams work on device. The
+    # old md5-only crypto shim + no-op ssl shim used to be compiled into
+    # BEAMS_DIR, where (being on the prepended -pa path) they SHADOWED the
+    # real beams in lib/{crypto,ssl}-*/ebin. That broke TLS: real ssl needs
+    # ciphers crypto can't provide, and the ssl shim didn't even export
+    # versions/0 — so Mint hit `:ssl.versions/0 undefined`, every HTTPS
+    # request crashed, and the orchestra SSE never connected on device.
+    # Removing the shims lets the real, NIF-backed crypto + ssl load.
 
     echo "=== Copying Elixir stdlib ==="
     mkdir -p "$OTP_ROOT/lib/elixir/ebin" "$OTP_ROOT/lib/logger/ebin"
@@ -561,6 +502,7 @@ defmodule MobDev.Release do
         -O \
         "$MOB_DIR/ios/MobViewModel.swift" \
         "$MOB_DIR/ios/MobRootView.swift" \
+        "$MOB_DIR/ios/MobGpuView.swift" \
         -c -o "$BUILD_DIR/swift_mob.o"
 
     # MOB_RELEASE on mob_nif.m strips the test harness (synthetic-input
@@ -580,8 +522,10 @@ defmodule MobDev.Release do
 
     SQLITE_FLAG=""
     [ -n "$SQLITE_STATIC_LIB" ] && SQLITE_FLAG="-DMOB_STATIC_SQLITE_NIF"
+    # driver_tab now lives in priv/generated (per-app, regenerated via
+    # `mix mob.regen_driver_tab --format c`), not $MOB_DIR/ios.
     $CC $IFLAGS $SQLITE_FLAG \
-        -c "$MOB_DIR/ios/driver_tab_ios.c" -o "$BUILD_DIR/driver_tab_ios.o"
+        -c "priv/generated/driver_tab_ios.c" -o "$BUILD_DIR/driver_tab_ios.o"
 
     $CC -fobjc-arc -fmodules $IFLAGS \
         -I "$BUILD_DIR" \
@@ -589,6 +533,14 @@ defmodule MobDev.Release do
 
     $CC -fobjc-arc -fmodules $IFLAGS \
         -c ios/beam_main.m -o "$BUILD_DIR/beam_main.o"
+
+    # erl_errno_id stub: BEAM's erl_posix_str.o references
+    # erl_errno_id_unknown but the bundled OTP doesn't define it. Weak so
+    # an OTP-internal definition wins if one ever appears. Written with
+    # printf (not a heredoc) to stay cleanly indentable inside this
+    # Elixir \""" string.
+    printf '%s\\n' '__attribute__((weak)) const char *erl_errno_id_unknown(int error) { (void)error; return "unknown"; }' > "$BUILD_DIR/erl_errno_id_compat.c"
+    $CC $IFLAGS -c "$BUILD_DIR/erl_errno_id_compat.c" -o "$BUILD_DIR/erl_errno_id_compat.o"
 
     echo "=== Linking $APP_NAME (release, no EPMD) ==="
     xcrun -sdk iphoneos swiftc \
@@ -600,6 +552,7 @@ defmodule MobDev.Release do
         "$BUILD_DIR/mob_beam.o" \
         "$BUILD_DIR/AppDelegate.o" \
         "$BUILD_DIR/beam_main.o" \
+        "$BUILD_DIR/erl_errno_id_compat.o" \
         $LIBS \
         "$SQLITE_STATIC_LIB" \
         -lz -lc++ -lpthread \
@@ -744,11 +697,17 @@ defmodule MobDev.Release do
         echo "=== Slim strip pass ==="
 
         slim_step prefix_libs bash -c '
+            # Note: compiler intentionally kept — Ecto.Migrator compiles
+            # .exs migration files at runtime via Code.compile_file, which
+            # requires the :compiler OTP app. Stripping it lands a
+            # `{:badmatch, {:error, :enoent, :"compiler.app"}}` deep in
+            # application_controller during app boot, so the BEAM never
+            # reaches the first screen.
             for prefix in megaco runtime_tools erl_interface os_mon wx et eunit \
                           observer debugger diameter edoc tools snmp dialyzer \
                           syntax_tools parsetools xmerl reltool inets ftp tftp \
                           common_test mnesia eldap odbc \
-                          compiler ssh; do
+                          ssh; do
                 rm -rf "'"$OTP_BUNDLE"'/lib/$prefix-"*
             done
         '

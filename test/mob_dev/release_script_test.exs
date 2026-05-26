@@ -55,14 +55,13 @@ defmodule MobDev.ReleaseScriptTest do
       # If apps emerge that DO need one of these, drop it from the strip
       # set in lib/mob_dev/release.ex AND from this test list.
       #
-      # `compiler` and `ssh` were added 2026-05-06 — empirical snapshot
-      # from a running pigeon iOS-sim build showed 0 of 59 compiler
-      # modules + 0 of 43 ssh modules ever loaded. Saves ~4.4 MB.
-      # No mob app should need runtime Code.eval or SSH client/server.
+      # `ssh` stripped 2026-05-06 — empirical snapshot from a running
+      # pigeon iOS-sim build showed 0 of 43 ssh modules ever loaded.
+      # No mob app should need a runtime SSH client/server.
       for prefix <- ~w(megaco runtime_tools erl_interface os_mon wx et eunit
                        observer debugger diameter edoc tools snmp dialyzer
                        syntax_tools parsetools xmerl reltool inets ftp tftp
-                       compiler ssh) do
+                       ssh) do
         assert loop_head =~ prefix,
                "expected the OTP-strip loop to drop #{prefix}-* libs"
       end
@@ -72,6 +71,59 @@ defmodule MobDev.ReleaseScriptTest do
       # gets a [SLIM:tag] size delta), which means $OTP_BUNDLE is unquoted out
       # of the single-quoted heredoc — match either form.
       assert sh =~ ~r/rm -rf "(?:'")?\$OTP_BUNDLE(?:"')?\/lib\/\$prefix-"/
+    end
+
+    test "does NOT strip compiler — Ecto.Migrator needs it at runtime", %{sh: sh} do
+      # Regression guard for the 2026-05-21 TestFlight crash: stripping
+      # compiler-* removed :compiler, which Ecto.Migrator requires to
+      # Code.compile_file the .exs migrations. The BEAM crashed during
+      # boot with {:badmatch, {:error, :enoent, :"compiler.app"}} before
+      # the first screen rendered — splash spinner forever.
+      [_, after_for] = String.split(sh, "for prefix in ", parts: 2)
+      [loop_head, _] = String.split(after_for, "; do", parts: 2)
+
+      refute loop_head =~ ~r/\bcompiler\b/,
+             "compiler must NOT be in the OTP-strip loop — Ecto.Migrator " <>
+               "compiles .exs migrations at runtime and needs :compiler"
+    end
+  end
+
+  describe "native sources kept in sync with the framework" do
+    test "compiles MobGpuView.swift alongside the other Swift sources", %{sh: sh} do
+      # MobRootView.swift references the MobGpuView struct; omitting the
+      # file from swiftc input fails with "cannot find 'MobGpuView' in scope".
+      assert sh =~ ~s|"$MOB_DIR/ios/MobGpuView.swift"|
+    end
+
+    test "compiles the per-app generated driver_tab, not $MOB_DIR/ios", %{sh: sh} do
+      # driver_tab moved to priv/generated (regenerated per-app via
+      # `mix mob.regen_driver_tab`). The legacy $MOB_DIR/ios/driver_tab_ios.c
+      # path no longer exists.
+      assert sh =~ ~s|-c "priv/generated/driver_tab_ios.c"|
+      refute sh =~ ~s|"$MOB_DIR/ios/driver_tab_ios.c"|
+    end
+
+    test "links crypto.a + libcrypto.a (crypto_nif_init / TLS)", %{sh: sh} do
+      assert sh =~ ~s|$OTP_ROOT/$ERTS_VSN/lib/crypto.a|
+      assert sh =~ ~s|$OTP_ROOT/$ERTS_VSN/lib/libcrypto.a|
+    end
+
+    test "generates + links the erl_errno_id_unknown weak stub", %{sh: sh} do
+      # libbeam.a's erl_posix_str.o references erl_errno_id_unknown but the
+      # bundled OTP doesn't define it → undefined-symbol link error.
+      assert sh =~ "erl_errno_id_unknown"
+      assert sh =~ ~s|"$BUILD_DIR/erl_errno_id_compat.o"|
+    end
+
+    test "does NOT compile the old md5/no-op crypto+ssl shims into BEAMS_DIR", %{sh: sh} do
+      # The shims shadowed the real crypto-5.9/ssl-11.7 beams on the -pa
+      # path, breaking TLS (`:ssl.versions/0 undefined`). The runtime ships
+      # real crypto (linked via crypto.a) + ssl, so the shims must not be
+      # generated. See decisions/2026-05-25-real-crypto-ssl-on-device.md.
+      refute sh =~ "Crypto shim for iOS"
+      refute sh =~ "SSL shim for iOS"
+      refute sh =~ ~s|erlc -o "$BEAMS_DIR" "$SSL_TMP/ssl.erl"|
+      refute sh =~ ~s|erlc -o "$BEAMS_DIR" "$CRYPTO_TMP/crypto.erl"|
     end
   end
 
