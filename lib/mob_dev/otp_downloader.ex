@@ -52,23 +52,87 @@ defmodule MobDev.OtpDownloader do
   @spec ios_device_otp_dir() :: String.t()
   def ios_device_otp_dir, do: cache_dir(@ios_device_name)
 
+  @doc """
+  Warns (does not fail) when the build's Elixir minor version differs from the
+  Elixir bundled in the device OTP runtime at `otp_dir`.
+
+  This is the `Enum.__in__/2` class of breakage: the `in` operator and other
+  macros expand differently per Elixir minor, so beams compiled by 1.20 call
+  functions a 1.19.5 runtime lacks → `:undef` at boot → black screen with no
+  obvious cause. Warning (not failing) is deliberate: rc/patch transitions are
+  common and usually fine, and a hard fail would block legitimate builds — but
+  a loud warning would have turned that debugging saga into one line.
+  """
+  @spec warn_on_elixir_skew(String.t()) :: :ok
+  def warn_on_elixir_skew(otp_dir) do
+    case elixir_skew(System.version(), bundled_elixir_version(otp_dir)) do
+      :ok ->
+        :ok
+
+      {:skew, build, bundled} ->
+        IO.puts(:stderr, [
+          IO.ANSI.yellow(),
+          """
+          ⚠  Elixir version skew: building with #{build}, but the device OTP runtime ships #{bundled}.
+             Beams compiled here may not load on device (e.g. `x in list` compiles to
+             Enum.__in__/2 under 1.20, which #{bundled} lacks → :undef at boot).
+             Fix: align .tool-versions to #{bundled}, or rebuild the OTP tarball with #{build}.\
+          """,
+          IO.ANSI.reset()
+        ])
+
+        :ok
+    end
+  end
+
+  @doc false
+  @spec elixir_skew(String.t(), String.t() | nil) :: :ok | {:skew, String.t(), String.t()}
+  def elixir_skew(_build, nil), do: :ok
+
+  def elixir_skew(build, bundled) do
+    if major_minor(build) == major_minor(bundled),
+      do: :ok,
+      else: {:skew, build, bundled}
+  end
+
+  @doc "Reads the Elixir vsn from `otp_dir/lib/elixir/ebin/elixir.app`, or nil."
+  @spec bundled_elixir_version(String.t()) :: String.t() | nil
+  def bundled_elixir_version(otp_dir) do
+    app = Path.join([otp_dir, "lib", "elixir", "ebin", "elixir.app"])
+
+    with {:ok, content} <- File.read(app),
+         [_, vsn] <- Regex.run(~r/\{vsn,\s*"([^"]+)"\}/, content) do
+      vsn
+    else
+      _ -> nil
+    end
+  end
+
   # ── Private ──────────────────────────────────────────────────────────────────
+
+  # major.minor as a 2-element list, dropping any -pre/+build on the patch.
+  # "1.20.0-rc.5" -> ["1", "20"]; "1.19.5" -> ["1", "19"].
+  defp major_minor(vsn), do: vsn |> String.split(".") |> Enum.take(2)
 
   defp ensure(name, tarball) do
     dir = cache_dir(name)
 
-    if valid_otp_dir?(dir, name) do
-      {:ok, dir}
-    else
-      # Remove stale/incomplete directory before re-downloading.
-      # Two cases here:
-      #   1. previous download attempt failed mid-extraction (Nix curl, flaky net)
-      #   2. cached tarball predates a schema change — e.g. iOS device tarball
-      #      now ships EPMD source under `erts/epmd/src/`. Re-download picks up
-      #      the new asset at the same URL (same OTP hash, new revision uploaded).
-      if File.dir?(dir), do: File.rm_rf!(dir)
-      download_and_extract(name, tarball, dir)
-    end
+    result =
+      if valid_otp_dir?(dir, name) do
+        {:ok, dir}
+      else
+        # Remove stale/incomplete directory before re-downloading.
+        # Two cases here:
+        #   1. previous download attempt failed mid-extraction (Nix curl, flaky net)
+        #   2. cached tarball predates a schema change — e.g. iOS device tarball
+        #      now ships EPMD source under `erts/epmd/src/`. Re-download picks up
+        #      the new asset at the same URL (same OTP hash, new revision uploaded).
+        if File.dir?(dir), do: File.rm_rf!(dir)
+        download_and_extract(name, tarball, dir)
+      end
+
+    with {:ok, otp_dir} <- result, do: warn_on_elixir_skew(otp_dir)
+    result
   end
 
   # A valid extracted OTP dir must contain at least one erts-* subdirectory.
