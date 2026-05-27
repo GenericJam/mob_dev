@@ -20,7 +20,7 @@ defmodule Mix.Tasks.Mob.Plugins do
   *activated* — only then are its contributions merged into the build.
   """
 
-  alias MobDev.Plugin.{Manifest, Report}
+  alias MobDev.Plugin.{Manifest, Report, Validator}
 
   @impl Mix.Task
   def run(_args) do
@@ -33,6 +33,22 @@ defmodule Mix.Tasks.Mob.Plugins do
     |> Report.rows(activated)
     |> Report.render()
     |> then(&IO.puts("\n" <> &1 <> "\n"))
+
+    report_conflicts(deps, activated)
+  end
+
+  defp report_conflicts(deps, activated) do
+    activated_manifests = for {name, manifest} <- deps, name in activated, do: {name, manifest}
+
+    case Validator.cross_validate(activated_manifests) do
+      %{errors: []} ->
+        :ok
+
+      %{errors: errors} ->
+        Mix.shell().error("Plugin activation conflicts:")
+        Enum.each(errors, &Mix.shell().error("  ✗ #{&1}"))
+        IO.puts("")
+    end
   end
 
   defp load_all_manifests do
