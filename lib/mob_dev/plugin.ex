@@ -30,4 +30,47 @@ defmodule MobDev.Plugin do
       when is_atom(otp_app) and is_atom(key) do
     Application.get_env(otp_app, key, default)
   end
+
+  @doc """
+  The activated plugin names — `config :mob, :plugins` from `mob.exs`.
+
+  Activation is the second opt-in step (see `MOB_PLUGINS.md`): a plugin in
+  `deps` contributes nothing until it appears here. Falls back to the loaded
+  Application env, then `[]`.
+  """
+  @spec activated_names() :: [atom()]
+  def activated_names do
+    config_file = Path.join(File.cwd!(), "mob.exs")
+
+    if File.exists?(config_file) do
+      config_file
+      |> Config.Reader.read!()
+      |> Keyword.get(:mob, [])
+      |> Keyword.get(:plugins, [])
+    else
+      Application.get_env(:mob, :plugins, [])
+    end
+  rescue
+    _ -> Application.get_env(:mob, :plugins, [])
+  end
+
+  @doc """
+  The activated plugins as `{plugin_dir, manifest}` pairs, ready for
+  `MobDev.Plugin.Merge`.
+
+  Resolves each activated name to its dependency directory and loads its
+  manifest (nil for a tier-0 plugin). Activated names that don't resolve to a
+  dep are skipped — `mix mob.plugins` is where that mismatch surfaces to users.
+  """
+  @spec activated() :: [{Path.t(), map() | nil}]
+  def activated do
+    deps = Mix.Project.deps_paths()
+
+    for name <- activated_names(), dir = deps[name], not is_nil(dir) do
+      case MobDev.Plugin.Manifest.load(dir) do
+        {:ok, manifest} -> {dir, manifest}
+        {:error, _reason} -> {dir, nil}
+      end
+    end
+  end
 end

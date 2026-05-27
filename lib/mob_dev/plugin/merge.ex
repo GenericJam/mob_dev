@@ -1,0 +1,107 @@
+defmodule MobDev.Plugin.Merge do
+  @moduledoc """
+  Gathers the contributions of the activated plugins into combined lists the
+  build pipeline consumes.
+
+  Pure: every function takes `plugins` — a list of `{plugin_dir, manifest}` for
+  the activated plugins — and returns the merged contribution for one build
+  concern (NIFs, permissions, gradle deps, frameworks, native sources, …).
+  Path-bearing declarations are resolved to absolute paths against each
+  plugin's own directory, so contributions from different plugins don't
+  collide or get misresolved. Tier-0 (nil-manifest) plugins contribute nothing.
+
+  Discovery (deps → activated → load manifest) is the caller's job; this module
+  is the testable transform once the manifests are in hand.
+  """
+
+  @type plugin :: {Path.t(), map() | nil}
+
+  @doc """
+  Combined NIF entries across all plugins, with `:native_dir` resolved to an
+  absolute path. Shape matches `MobDev.StaticNifs` entries (`:module` plus the
+  plugin's native source dir), so the result can be fed straight into
+  `StaticNifs.resolve/1`.
+  """
+  @spec nifs([plugin()]) :: [map()]
+  def nifs(plugins) do
+    for {dir, manifest} <- with_manifests(plugins),
+        nif <- Map.get(manifest, :nifs, []),
+        is_map(nif) do
+      case nif[:native_dir] do
+        nil -> nif
+        rel -> Map.put(nif, :native_dir, Path.join(dir, rel))
+      end
+    end
+  end
+
+  @doc "Unique Android permission strings declared across plugins."
+  @spec android_permissions([plugin()]) :: [String.t()]
+  def android_permissions(plugins), do: collect_uniq(plugins, [:android, :permissions])
+
+  @doc "Unique Android gradle dependency strings across plugins."
+  @spec gradle_deps([plugin()]) :: [String.t()]
+  def gradle_deps(plugins), do: collect_uniq(plugins, [:android, :gradle_deps])
+
+  @doc "Unique iOS framework names across plugins."
+  @spec ios_frameworks([plugin()]) :: [String.t()]
+  def ios_frameworks(plugins), do: collect_uniq(plugins, [:ios, :frameworks])
+
+  @doc "Absolute paths of all plugin iOS Swift source files."
+  @spec swift_files([plugin()]) :: [String.t()]
+  def swift_files(plugins), do: collect_paths(plugins, [:ios, :swift_files])
+
+  @doc """
+  Absolute paths of all plugin Android native sources (`bridge_kt`,
+  `jni_source`) plus NIF `native_dir`s — everything the Android build must
+  compile in.
+  """
+  @spec android_sources([plugin()]) :: [String.t()]
+  def android_sources(plugins) do
+    bridge = collect_paths(plugins, [:android, :bridge_kt])
+    jni = collect_paths(plugins, [:android, :jni_source])
+    nif_dirs = for nif <- nifs(plugins), dir = nif[:native_dir], do: dir
+
+    (bridge ++ jni ++ nif_dirs) |> Enum.uniq()
+  end
+
+  @doc "Merged iOS `plist_keys` across plugins (later plugins win on conflict)."
+  @spec plist_keys([plugin()]) :: map()
+  def plist_keys(plugins) do
+    for {_dir, manifest} <- with_manifests(plugins),
+        keys = get_in(manifest, [:ios, :plist_keys]),
+        is_map(keys),
+        reduce: %{} do
+      acc -> Map.merge(acc, keys)
+    end
+  end
+
+  @doc "Combined `ui_components` entries across plugins."
+  @spec ui_components([plugin()]) :: [map()]
+  def ui_components(plugins) do
+    for {_dir, manifest} <- with_manifests(plugins),
+        c <- Map.get(manifest, :ui_components, []),
+        is_map(c),
+        do: c
+  end
+
+  # ── helpers ─────────────────────────────────────────────────────────────
+
+  defp with_manifests(plugins) do
+    for {dir, manifest} <- plugins, is_map(manifest), do: {dir, manifest}
+  end
+
+  defp collect_uniq(plugins, path) do
+    for {_dir, manifest} <- with_manifests(plugins),
+        value <- List.wrap(get_in(manifest, path)),
+        is_binary(value),
+        uniq: true,
+        do: value
+  end
+
+  defp collect_paths(plugins, path) do
+    for {dir, manifest} <- with_manifests(plugins),
+        rel <- List.wrap(get_in(manifest, path)),
+        is_binary(rel),
+        do: Path.join(dir, rel)
+  end
+end
