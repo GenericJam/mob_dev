@@ -89,10 +89,14 @@ defmodule MobDev.ReleaseScriptTest do
   end
 
   describe "native sources kept in sync with the framework" do
-    test "compiles MobGpuView.swift alongside the other Swift sources", %{sh: sh} do
-      # MobRootView.swift references the MobGpuView struct; omitting the
-      # file from swiftc input fails with "cannot find 'MobGpuView' in scope".
-      assert sh =~ ~s|"$MOB_DIR/ios/MobGpuView.swift"|
+    test "globs all mob Swift sources so new files auto-compile", %{sh: sh} do
+      # The release swiftc input globs $MOB_DIR/ios/*.swift rather than listing
+      # files by name, so a newly-added mob Swift file (e.g. MobGpuView.swift,
+      # which MobRootView references) is compiled without a release.ex edit.
+      # Listing files by name is exactly how master's iOS build broke when
+      # MobGpuView.swift landed but older builds didn't know to compile it.
+      assert sh =~ ~s|"$MOB_DIR"/ios/*.swift|
+      refute sh =~ ~s|"$MOB_DIR/ios/MobRootView.swift"|
     end
 
     test "compiles the per-app generated driver_tab, not $MOB_DIR/ios", %{sh: sh} do
