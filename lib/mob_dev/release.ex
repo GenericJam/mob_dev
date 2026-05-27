@@ -500,9 +500,7 @@ defmodule MobDev.Release do
         -I "$MOB_DIR/ios" \
         -parse-as-library -wmo \
         -O \
-        "$MOB_DIR/ios/MobViewModel.swift" \
-        "$MOB_DIR/ios/MobRootView.swift" \
-        "$MOB_DIR/ios/MobGpuView.swift" \
+        "$MOB_DIR"/ios/*.swift \
         -c -o "$BUILD_DIR/swift_mob.o"
 
     # MOB_RELEASE on mob_nif.m strips the test harness (synthetic-input
