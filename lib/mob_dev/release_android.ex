@@ -61,13 +61,36 @@ defmodule MobDev.ReleaseAndroid do
         add_app_beams!(staging, app_name)
         add_app_priv!(staging, app_name)
         add_exqlite!(staging)
-        patch_crypto_deps!(staging)
-        add_crypto_stub!(staging, app_name)
+
+        # Only stub :crypto when the OTP runtime genuinely lacks the
+        # OpenSSL NIF. When crypto.a is present (the Android CMakeLists.txt
+        # statically links crypto.a + libcrypto.a and registers
+        # crypto_nif_init in the driver table), the real :crypto works —
+        # stubbing it replaces crypto.beam with one whose supports/1
+        # returns [], making :ssl.versions/0 raise and breaking every
+        # HTTPS request (TLS handshake never starts).
+        if real_crypto_available?(otp_dir) do
+          log("  real crypto.a present — keeping OpenSSL crypto (no stub)")
+        else
+          patch_crypto_deps!(staging)
+          add_crypto_stub!(staging, app_name)
+        end
+
         {:ok, staging}
 
       {out, _} ->
         {:error, "Failed to copy OTP tree: #{out}"}
     end
+  end
+
+  # True when the OTP runtime ships the real OpenSSL crypto NIF static
+  # archive (crypto.a). The Android native build links it into the app
+  # .so, so the BEAM has working :crypto and must not get the stub.
+  # Public for testing.
+  @doc false
+  @spec real_crypto_available?(Path.t()) :: boolean()
+  def real_crypto_available?(otp_dir) do
+    Path.wildcard(Path.join(otp_dir, "erts-*/lib/crypto.a")) != []
   end
 
   # Flatten all runtime BEAMs (app + deps) into {staging}/{app_name}/.
