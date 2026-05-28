@@ -64,6 +64,29 @@ defmodule MobDev.Plugin.Merge do
     (bridge ++ jni ++ nif_dirs) |> Enum.uniq()
   end
 
+  @doc """
+  Absolute paths of each plugin NIF's primary C source.
+
+  Convention: for a manifest entry `%{module: :foo_nif, native_dir: "priv/jni"}`
+  the source is `<plugin_dir>/priv/jni/foo_nif.c`. This is the `<name>.c`
+  pattern the build.zig templates already use for project-level NIFs
+  (`c_src/<name>.c`), extended to plugins. Returned paths feed the build's
+  `-Dplugin_c_nifs` arg; build.zig derives the NIF name from the basename
+  and applies `-DSTATIC_ERLANG_NIF_LIBNAME=<name>` so ERL_NIF_INIT emits the
+  static-init symbol the driver table references.
+  """
+  @spec nif_sources([plugin()]) :: [String.t()]
+  def nif_sources(plugins) do
+    for {dir, manifest} <- with_manifests(plugins),
+        nif <- Map.get(manifest, :nifs, []),
+        is_map(nif),
+        name = nif[:module],
+        is_atom(name) do
+      native_dir = nif[:native_dir] || "priv/native/jni"
+      Path.join([dir, native_dir, "#{name}.c"])
+    end
+  end
+
   @doc "Merged iOS `plist_keys` across plugins (later plugins win on conflict)."
   @spec plist_keys([plugin()]) :: map()
   def plist_keys(plugins) do
