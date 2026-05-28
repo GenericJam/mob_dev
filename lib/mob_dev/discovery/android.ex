@@ -84,20 +84,22 @@ defmodule MobDev.Discovery.Android do
     abi = getprop(serial, "ro.product.cpu.abi")
     sdk_level = parse_int(getprop(serial, "ro.build.version.sdk"))
 
-    # Compute the node name from the device's stable hardware serial
-    # (`ro.serialno`) rather than the adb id we used to talk to it, so the
-    # node atom is the same whether we connected over USB or WiFi-adb.
-    # Falls back to Device.node_name/1 (pure, sanitizes Device.serial) if
-    # getprop fails — keeps a deterministic answer even on quirky devices.
-    node =
-      case getprop(serial, "ro.serialno") do
-        hw when is_binary(hw) and hw != "" ->
-          app = Mix.Project.config()[:app]
-          :"#{app}_android_#{node_suffix_for(hw)}@127.0.0.1"
-
-        _ ->
-          Device.node_name(d)
-      end
+    # Compute the node name to match what `Mob.Dist.ensure_started/1`
+    # actually registers on the device side. The device receives
+    # `MOB_NODE_SUFFIX` via the launch intent, set by
+    # `restart_app/4` from `device_node_suffix/1` — so we must use the
+    # same derivation here. `device_node_suffix/1` prefers the stable
+    # hardware serial (`ro.serialno`) for physical devices (USB and
+    # WiFi-adb collapse to the same atom) but short-circuits for
+    # `emulator-NNNN` adb ids because every running emulator burns in
+    # the same placeholder `EMULATOR36X5X10X0` serial — trusting that
+    # serial would put every emulator under the same node-name suffix
+    # and EPMD would collide with `eaddrinuse`. The previous
+    # implementation here bypassed that short-circuit and produced
+    # `your_app_android_emulator36x5x10x0@127.0.0.1`, which nobody
+    # could connect to.
+    app = Mix.Project.config()[:app]
+    node = :"#{app}_android_#{device_node_suffix(serial)}@127.0.0.1"
 
     # Skip IP discovery for emulators — `ip route get` returns the
     # emulator's internal NAT subnet (10.0.2.x) which isn't reachable
