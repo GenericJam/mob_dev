@@ -96,6 +96,68 @@ defmodule MobDev.Plugin.ValidatorTest do
       assert %{warnings: warns} = Validator.validate_plugin(m, dir, "0.6.20")
       assert Enum.any?(warns, &(&1 =~ "plist_keys"))
     end
+
+    test "accepts a C-token nif :module atom", %{dir: dir} do
+      File.mkdir_p!(Path.join(dir, "priv/native/jni"))
+
+      m =
+        Map.put(@base, :nifs, [
+          %{module: :mob_bluetooth_nif, native_dir: "priv/native/jni"}
+        ])
+
+      assert %{errors: []} = Validator.validate_plugin(m, dir, "0.6.20")
+    end
+
+    test "rejects an Elixir module as nif :module", %{dir: dir} do
+      File.mkdir_p!(Path.join(dir, "priv/native/jni"))
+
+      m =
+        Map.put(@base, :nifs, [
+          %{module: MyApp.Foo, native_dir: "priv/native/jni"}
+        ])
+
+      assert %{errors: errs} = Validator.validate_plugin(m, dir, "0.6.20")
+      assert Enum.any?(errs, &(&1 =~ "C-token"))
+      assert Enum.any?(errs, &(&1 =~ "MyApp.Foo"))
+      assert Enum.any?(errs, &(&1 =~ "ERL_NIF_INIT"))
+    end
+
+    test "rejects an uppercase-only atom as nif :module", %{dir: dir} do
+      File.mkdir_p!(Path.join(dir, "priv/native/jni"))
+
+      m =
+        Map.put(@base, :nifs, [
+          %{module: :ALLCAPS, native_dir: "priv/native/jni"}
+        ])
+
+      assert %{errors: errs} = Validator.validate_plugin(m, dir, "0.6.20")
+      assert Enum.any?(errs, &(&1 =~ "C-token"))
+      assert Enum.any?(errs, &(&1 =~ "ALLCAPS"))
+    end
+
+    test "rejects an atom starting with a digit as nif :module", %{dir: dir} do
+      File.mkdir_p!(Path.join(dir, "priv/native/jni"))
+
+      m =
+        Map.put(@base, :nifs, [
+          %{module: :"1bad_nif", native_dir: "priv/native/jni"}
+        ])
+
+      assert %{errors: errs} = Validator.validate_plugin(m, dir, "0.6.20")
+      assert Enum.any?(errs, &(&1 =~ "C-token"))
+    end
+
+    test "rejects an atom containing a hyphen as nif :module", %{dir: dir} do
+      File.mkdir_p!(Path.join(dir, "priv/native/jni"))
+
+      m =
+        Map.put(@base, :nifs, [
+          %{module: :"bad-nif", native_dir: "priv/native/jni"}
+        ])
+
+      assert %{errors: errs} = Validator.validate_plugin(m, dir, "0.6.20")
+      assert Enum.any?(errs, &(&1 =~ "C-token"))
+    end
   end
 
   describe "cross_validate/1" do
