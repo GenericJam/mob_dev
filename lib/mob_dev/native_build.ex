@@ -2158,6 +2158,17 @@ defmodule MobDev.NativeBuild do
        ) do
     driver_tab = resolve_driver_tab_ios(mob_dir)
 
+    # Plugin-contributed Swift sources + extra iOS frameworks gathered from
+    # activated plugin manifests. Empty strings when no plugin contributes,
+    # so the build.zig templates `orelse ""` and the flags are safe to emit
+    # unconditionally (mirrors the Android plugin_c_nifs pattern at the top
+    # of run_zig_android_objects).
+    activated_plugins = MobDev.Plugin.activated()
+    plugin_swift_files = activated_plugins |> MobDev.Plugin.Merge.swift_files() |> Enum.join(",")
+
+    plugin_frameworks =
+      activated_plugins |> MobDev.Plugin.Merge.ios_frameworks() |> Enum.join(",")
+
     base_args = [
       "build",
       "binary",
@@ -2171,7 +2182,9 @@ defmodule MobDev.NativeBuild do
       "-Denif_keepalive=#{Path.join(build_dir, "enif_keepalive.c")}",
       "-Dproject_ios_dir=#{Path.expand("ios")}",
       "-Dmodule_name=#{display_name}",
-      "-Dproject_swift_sources=#{project_swift_sources}"
+      "-Dproject_swift_sources=#{project_swift_sources}",
+      "-Dplugin_swift_files=#{plugin_swift_files}",
+      "-Dplugin_frameworks=#{plugin_frameworks}"
     ]
 
     with {:ok, nif_args} <- project_nif_zig_args(:ios_sim) do
@@ -3367,6 +3380,13 @@ defmodule MobDev.NativeBuild do
        ) do
     driver_tab = resolve_driver_tab_ios(mob_dir)
 
+    # Plugin contributions, same as the sim path above.
+    activated_plugins = MobDev.Plugin.activated()
+    plugin_swift_files = activated_plugins |> MobDev.Plugin.Merge.swift_files() |> Enum.join(",")
+
+    plugin_frameworks =
+      activated_plugins |> MobDev.Plugin.Merge.ios_frameworks() |> Enum.join(",")
+
     base_args = [
       "build",
       "binary",
@@ -3383,7 +3403,9 @@ defmodule MobDev.NativeBuild do
       "-Dmodule_name=#{display_name}",
       "-Depmd_build_src=#{epmd_build_src}",
       "-Derrno_compat=#{Path.join(build_dir, "erl_errno_id_compat.c")}",
-      "-Dproject_swift_sources=#{project_swift_sources}"
+      "-Dproject_swift_sources=#{project_swift_sources}",
+      "-Dplugin_swift_files=#{plugin_swift_files}",
+      "-Dplugin_frameworks=#{plugin_frameworks}"
     ]
 
     with {:ok, nif_args} <- project_nif_zig_args(:ios_device) do
