@@ -3550,7 +3550,9 @@ defmodule MobDev.NativeBuild do
         {:error, "ios/Info.plist not found — required for the .app bundle"}
 
       true ->
-        File.cp!("ios/Info.plist", Path.join(app_path, "Info.plist"))
+        info_plist = Path.join(app_path, "Info.plist")
+        File.cp!("ios/Info.plist", info_plist)
+        apply_plugin_plist_keys!(info_plist)
         if File.dir?("ios/Assets.xcassets/AppIcon.appiconset"), do: compile_ios_icons(app_path)
         {:ok, app_path}
     end
@@ -3741,6 +3743,7 @@ defmodule MobDev.NativeBuild do
       true ->
         info_plist = Path.join(app_path, "Info.plist")
         File.cp!("ios/Info.plist", info_plist)
+        apply_plugin_plist_keys!(info_plist)
         plist_set!(info_plist, ":CFBundleIdentifier", bundle_id)
         plist_set!(info_plist, ":CFBundleExecutable", app_name)
         plist_set!(info_plist, ":CFBundleName", app_name)
@@ -3779,6 +3782,55 @@ defmodule MobDev.NativeBuild do
       System.cmd("/usr/libexec/PlistBuddy", ["-c", "Set #{key} #{value}", plist],
         stderr_to_stdout: true
       )
+
+    :ok
+  end
+
+  # Adds plugin-declared Info.plist keys via PlistBuddy `Add`. Add fails (and is
+  # ignored) when the key is already present, giving us "project Info.plist wins
+  # on conflict; plugins fill gaps" semantics — so a plugin can ship a default
+  # NSCameraUsageDescription that the app author can override in their own
+  # Info.plist without changing the plugin. See ADR
+  # decisions/2026-05-28-plugin-plist-keys-merge.md.
+  defp apply_plugin_plist_keys!(info_plist) do
+    activated_plugins = MobDev.Plugin.activated()
+
+    for {key, value} <- MobDev.Plugin.Merge.plist_keys(activated_plugins) do
+      case plist_add_type(value) do
+        {:ok, type, str_value} ->
+          plist_add(info_plist, ":#{key}", type, str_value)
+
+        :unsupported ->
+          Mix.shell().info(
+            "  [plugin plist] skipping :#{key} — unsupported value type #{inspect(value)}"
+          )
+      end
+    end
+
+    :ok
+  end
+
+  defp plist_add_type(value) when is_binary(value), do: {:ok, "string", value}
+  defp plist_add_type(true), do: {:ok, "bool", "true"}
+  defp plist_add_type(false), do: {:ok, "bool", "false"}
+
+  defp plist_add_type(value) when is_integer(value),
+    do: {:ok, "integer", Integer.to_string(value)}
+
+  defp plist_add_type(_other), do: :unsupported
+
+  # PlistBuddy `Add` is non-zero on duplicate-key (and on a few other failure
+  # modes we'd want to know about). We swallow the duplicate-key case
+  # deliberately — that's our project-wins mechanism — and accept that other
+  # PlistBuddy errors will pass silently. The first plugin that hits a real
+  # problem here can extend this to inspect stderr and surface non-duplicate
+  # failures.
+  defp plist_add(plist, key, type, value) do
+    System.cmd(
+      "/usr/libexec/PlistBuddy",
+      ["-c", "Add #{key} #{type} #{value}", plist],
+      stderr_to_stdout: true
+    )
 
     :ok
   end
