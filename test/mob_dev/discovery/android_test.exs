@@ -146,6 +146,30 @@ defmodule MobDev.Discovery.AndroidTest do
       refute Android.device_node_suffix("emulator-5554") ==
                Android.device_node_suffix("emulator-5556")
     end
+
+    test "emulator suffix matches what Mob.Dist registers on-device" do
+      # `Mob.Dist.apply_suffix/2` on the device side reads `MOB_NODE_SUFFIX`
+      # from the launch intent (set by `restart_app/4` from this same
+      # function) and appends it to the base node name. mob_dev's
+      # `mix mob.connect` must compute the *same* suffix to construct a
+      # node atom that actually exists in EPMD — otherwise it times out
+      # waiting for a node that was never registered under that name.
+      # Regression test for the old bug where `enrich/1` derived the
+      # node from raw `ro.serialno` (= `EMULATOR36X5X10X0` placeholder)
+      # while `restart_app/4` sent `emulator_5554` to the device.
+      assert Android.device_node_suffix("emulator-5554") == "emulator_5554"
+      refute Android.device_node_suffix("emulator-5554") == "emulator36x5x10x0"
+    end
+
+    test "Device.node_name/1 agrees with device_node_suffix/1 for emulator serials" do
+      # The atom produced for `mix mob.connect`'s connection target and the
+      # suffix sent via `MOB_NODE_SUFFIX` must yield the same final node
+      # name on both sides of the EPMD lookup.
+      app = Mix.Project.config()[:app]
+      device = %Device{platform: :android, serial: "emulator-5554"}
+      expected_suffix = Android.device_node_suffix("emulator-5554")
+      assert Device.node_name(device) == :"#{app}_android_#{expected_suffix}@127.0.0.1"
+    end
   end
 
   # ── emulator detection ──────────────────────────────────────────────────────

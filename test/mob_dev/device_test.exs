@@ -61,6 +61,32 @@ defmodule MobDev.DeviceTest do
       device = %Device{platform: :ios, serial: "any"}
       assert device |> Device.node_name() |> to_string() |> String.ends_with?("@127.0.0.1")
     end
+
+    test "android emulator suffix does not match the AOSP placeholder serial" do
+      # Regression: `Discovery.Android.enrich/1` used to derive the node
+      # name from raw `getprop ro.serialno` (= `EMULATOR36X5X10X0` for
+      # every running emulator), which (a) collided across emulators and
+      # (b) didn't match what `Mob.Dist` actually registered. Both
+      # `Device.node_name/1` (this function) and `enrich/1` now route
+      # through `Discovery.Android.device_node_suffix/1`, which
+      # short-circuits emulator adb ids to the unique `emulator_NNNN`.
+      app = Mix.Project.config()[:app]
+      device = %Device{platform: :android, serial: "emulator-5554"}
+      node = Device.node_name(device)
+      refute node == :"#{app}_android_emulator36x5x10x0@127.0.0.1"
+      assert node == :"#{app}_android_emulator_5554@127.0.0.1"
+    end
+
+    test "android physical WiFi-adb serial collapses to IP-based suffix (pure path)" do
+      # `Device.node_name/1` calls `node_suffix_for/1` (pure — no adb).
+      # Without an adb-shell call there's no `ro.serialno` to consult, so
+      # the suffix is derived from the WiFi-adb id itself. This is the
+      # fallback used by call sites that don't get to query the device
+      # (e.g. quick display in `mix mob.devices` before enrich runs).
+      app = Mix.Project.config()[:app]
+      device = %Device{platform: :android, serial: "10.0.0.82:5555"}
+      assert Device.node_name(device) == :"#{app}_android_10_0_0_82@127.0.0.1"
+    end
   end
 
   # ── display_id/1 ────────────────────────────────────────────────────────────
