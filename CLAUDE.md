@@ -237,22 +237,19 @@ The cookie defaults to `:mob_secret` (set by `Mob.Dist.ensure_started`
 in your app's `on_start/0`). `--name` (long names) is required when
 the device node uses a numeric host like `@10.0.0.120`.
 
-### Multi-Android limitation (mob_dev current behaviour)
+### Multi-Android — node naming (FIXED 2026-05-28, commit `7497f4b`)
 
-`mob_dev` derives the Android dist node name from the device's IP,
-which is identical (`10.0.2.x`) for every emulator. Two emulators
-both try to register `your_app_android_emulator36x5x10x0` in EPMD
-and the second fails with `eaddrinuse`. Symptom in
-`mix mob.connect` output:
+`mob_dev` now derives the Android dist node-name suffix from the device
+**serial** (matching what `Mob.Dist` actually registers), not the IP.
+Emulators get distinct suffixes like `emulator_5554` / `emulator_5556`,
+so two emulators no longer collide in EPMD. The bug was in
+`discovery/android.ex` `enrich/1` — it had a duplicated half-implementation
+of `device_node_suffix/1` that was IP-based, while the correct serial-based
+helper already existed and was used in `restart_app/4`. See ADR
+`decisions/2026-05-28-android-node-name-by-serial.md`.
 
-```
-sdk_gphone64_arm64: timed out waiting for your_app_android_emulator36x5x10x0@127.0.0.1
-```
-
-Workarounds:
-1. Only have one emulator running.
-2. Pick the emulator you care about and verify the other side via
-   `adb logcat`.
+Physical (USB/Wi-Fi) Android is unchanged: still keyed off `ro.serialno`.
+iOS untouched.
 
 ### Fixing adb-forward port mismatch
 
