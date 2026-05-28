@@ -80,6 +80,37 @@ defmodule MobDev.Plugin.MergeTest do
     end
   end
 
+  describe "nif_sources/1" do
+    test "computes <dir>/<native_dir>/<module>.c for each NIF" do
+      plugins = [
+        {"/a",
+         base(%{
+           nifs: [
+             %{module: :foo_nif, native_dir: "priv/native/jni"},
+             %{module: :bar_nif, native_dir: "priv/native/jni"}
+           ]
+         })}
+      ]
+
+      assert Merge.nif_sources(plugins) ==
+               ["/a/priv/native/jni/foo_nif.c", "/a/priv/native/jni/bar_nif.c"]
+    end
+
+    test "defaults native_dir to priv/native/jni when omitted" do
+      plugins = [{"/a", base(%{nifs: [%{module: :foo_nif}]})}]
+      assert Merge.nif_sources(plugins) == ["/a/priv/native/jni/foo_nif.c"]
+    end
+
+    test "ignores tier-0 (nil) manifests and entries without a :module atom" do
+      plugins = [
+        {"/a", nil},
+        {"/b", base(%{nifs: [%{native_dir: "priv/jni"}]})}
+      ]
+
+      assert Merge.nif_sources(plugins) == []
+    end
+  end
+
   describe "plist_keys/1 + ui_components/1" do
     test "plist_keys merge across plugins" do
       plugins = [

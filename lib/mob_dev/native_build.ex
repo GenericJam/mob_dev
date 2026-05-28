@@ -236,6 +236,11 @@ defmodule MobDev.NativeBuild do
     jni_libs_abi = Path.join([project_root, "android/app/src/main/jniLibs", abi])
     File.mkdir_p!(jni_libs_abi)
 
+    # Activated plugins' C NIF sources (one .c per nif, named after the NIF
+    # module). Empty when no NIF-bearing plugin is activated; the build.zig
+    # template orelse's "" so the flag is always safe to emit.
+    plugin_c_nifs = MobDev.Plugin.Merge.nif_sources(MobDev.Plugin.activated()) |> Enum.join(",")
+
     base_args = [
       "build",
       "native-lib",
@@ -252,7 +257,8 @@ defmodule MobDev.NativeBuild do
       "-Dndk_sysroot=#{ndk_sysroot()}",
       "-Dapp_name=#{app_name}",
       "-Dproject_root=#{project_root}",
-      "-Dexqlite_src=#{Path.join(project_root, "deps/exqlite/c_src")}"
+      "-Dexqlite_src=#{Path.join(project_root, "deps/exqlite/c_src")}",
+      "-Dplugin_c_nifs=#{plugin_c_nifs}"
     ]
 
     # `project_nif_zig_args/1` also emits `-Dproject_root=` (since the
