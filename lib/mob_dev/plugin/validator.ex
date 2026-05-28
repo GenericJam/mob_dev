@@ -55,6 +55,7 @@ defmodule MobDev.Plugin.Validator do
     %{errors: structural_errors(manifest), warnings: []}
     |> add_path_errors(manifest, plugin_dir)
     |> add_mob_version_error(manifest, installed_mob_version)
+    |> add_nif_module_errors(manifest)
     |> add_warnings(manifest)
   end
 
@@ -114,6 +115,40 @@ defmodule MobDev.Plugin.Validator do
   end
 
   defp add_mob_version_error(result, _manifest, _installed), do: result
+
+  # `nif :module` is the Erlang module name used by ERL_NIF_INIT both as the
+  # registered module atom and as the prefix of the static-init symbol
+  # (`<module>_nif_init`). It must therefore be a valid C token shape — a
+  # lowercase ASCII atom — not an Elixir module alias. Catch this at validate
+  # time rather than at link time. See MOB_PLUGINS.md (nifs section).
+  @nif_module_pattern ~r/^[a-z][a-z0-9_]*$/
+
+  defp add_nif_module_errors(result, manifest) when is_map(manifest) do
+    errs =
+      for n <- Map.get(manifest, :nifs, []),
+          is_map(n),
+          Map.has_key?(n, :module),
+          err = nif_module_error(n[:module]),
+          do: err
+
+    %{result | errors: result.errors ++ errs}
+  end
+
+  defp add_nif_module_errors(result, _manifest), do: result
+
+  defp nif_module_error(mod) when is_atom(mod) and not is_nil(mod) do
+    if Regex.match?(@nif_module_pattern, Atom.to_string(mod)),
+      do: nil,
+      else: bad_nif_module_message(mod)
+  end
+
+  defp nif_module_error(other), do: bad_nif_module_message(other)
+
+  defp bad_nif_module_message(value) do
+    "nifs :module #{inspect(value)} must be a C-token atom matching " <>
+      "/^[a-z][a-z0-9_]*$/ (e.g. :mob_bluetooth_nif), not an Elixir module — " <>
+      "ERL_NIF_INIT uses it as the static-init symbol prefix"
+  end
 
   defp add_warnings(result, manifest) do
     %{result | warnings: result.warnings ++ warnings(manifest)}
