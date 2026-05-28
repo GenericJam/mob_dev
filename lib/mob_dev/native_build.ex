@@ -128,6 +128,8 @@ defmodule MobDev.NativeBuild do
          :ok <- install_nx_eigen_otp_lib(otp_arm64),
          :ok <- install_nx_eigen_otp_lib(otp_arm32),
          :ok <- zig_build_android_objects(mob_dir, otp_arm64, otp_arm32),
+         :ok <- apply_plugin_android_manifest!(),
+         :ok <- apply_plugin_gradle_deps!(),
          :ok <- gradle_assemble(),
          :ok <- adb_install_all(apk, bundle_id, device_id),
          :ok <-
@@ -3834,6 +3836,188 @@ defmodule MobDev.NativeBuild do
 
     :ok
   end
+
+  # ── Android plugin contributions: manifest + gradle ──────────────────────────
+
+  @android_manifest_path "android/app/src/main/AndroidManifest.xml"
+  @android_app_gradle_path "android/app/build.gradle"
+
+  # Inserts `<uses-permission android:name="..."/>` lines for each permission
+  # declared by activated plugins into `AndroidManifest.xml`. Idempotent: skips
+  # any permission name already present in the manifest (covers both the
+  # project's hand-rolled declarations and a previous run's plugin merge).
+  #
+  # No-op (with a notice) when the manifest is missing — mirrors how
+  # `MobDev.Enable.Igniter.add_android_permission/2` handles the absence at
+  # `mix mob.enable` time.
+  defp apply_plugin_android_manifest! do
+    case File.read(@android_manifest_path) do
+      {:error, :enoent} ->
+        if MobDev.Plugin.Merge.android_permissions(MobDev.Plugin.activated()) != [] do
+          IO.puts(
+            "  [plugin android] #{@android_manifest_path} not found — skipping plugin permissions."
+          )
+        end
+
+        :ok
+
+      {:ok, content} ->
+        permissions = MobDev.Plugin.Merge.android_permissions(MobDev.Plugin.activated())
+        patched = merge_android_permissions(content, permissions)
+
+        if patched != content, do: File.write!(@android_manifest_path, patched)
+
+        :ok
+    end
+  end
+
+  # Inserts `implementation "<dep>"` lines for each gradle dependency declared
+  # by activated plugins into the app-level `build.gradle`'s `dependencies { }`
+  # block. Idempotent: skips any dep string already mentioned anywhere in the
+  # file (the substring check is intentionally broad — Gradle allows several
+  # syntaxes for the same dep, and we'd rather under-add than duplicate).
+  #
+  # No-op (with a notice) when the gradle file is missing.
+  defp apply_plugin_gradle_deps! do
+    case File.read(@android_app_gradle_path) do
+      {:error, :enoent} ->
+        if MobDev.Plugin.Merge.gradle_deps(MobDev.Plugin.activated()) != [] do
+          IO.puts(
+            "  [plugin android] #{@android_app_gradle_path} not found — skipping plugin gradle_deps."
+          )
+        end
+
+        :ok
+
+      {:ok, content} ->
+        deps = MobDev.Plugin.Merge.gradle_deps(MobDev.Plugin.activated())
+        patched = merge_gradle_deps(content, deps)
+
+        if patched != content, do: File.write!(@android_app_gradle_path, patched)
+
+        :ok
+    end
+  end
+
+  @doc false
+  @spec __merge_android_permissions__(String.t(), [String.t()]) :: String.t()
+  def __merge_android_permissions__(manifest, permissions),
+    do: merge_android_permissions(manifest, permissions)
+
+  @doc false
+  @spec __merge_gradle_deps__(String.t(), [String.t()]) :: String.t()
+  def __merge_gradle_deps__(content, deps), do: merge_gradle_deps(content, deps)
+
+  # Pure transform: insert new `<uses-permission>` tags for each permission not
+  # already declared. Insertion point is right after the last existing
+  # `<uses-permission ...>` line; failing that (no permissions declared yet),
+  # right before the first `<application` tag; failing *that*, just before
+  # `</manifest>`. The four-space indent matches the template's style.
+  defp merge_android_permissions(manifest, []), do: manifest
+
+  defp merge_android_permissions(manifest, permissions) when is_binary(manifest) do
+    missing = Enum.reject(permissions, &permission_present?(manifest, &1))
+
+    case missing do
+      [] ->
+        manifest
+
+      _ ->
+        tags = Enum.map_join(missing, "\n", &~s(    <uses-permission android:name="#{&1}" />))
+        insert_uses_permissions(manifest, tags)
+    end
+  end
+
+  defp permission_present?(manifest, permission) do
+    String.contains?(manifest, ~s(android:name="#{permission}")) and
+      String.contains?(manifest, "uses-permission")
+  end
+
+  defp insert_uses_permissions(manifest, tags) do
+    matches = Regex.scan(~r/<uses-permission\b[^>]*>/, manifest, return: :index)
+
+    cond do
+      matches != [] ->
+        # After the last existing uses-permission tag — keep new ones grouped
+        # with the project's hand-rolled set.
+        [{start, len}] = List.last(matches)
+        insert_at = start + len
+        head = binary_part(manifest, 0, insert_at)
+        tail = binary_part(manifest, insert_at, byte_size(manifest) - insert_at)
+        head <> "\n#{tags}" <> tail
+
+      # No existing permissions — slot in just before <application.
+      String.contains?(manifest, "<application") ->
+        String.replace(manifest, "<application", "#{tags}\n\n    <application", global: false)
+
+      # Pathological manifest with neither — last resort, before </manifest>.
+      true ->
+        String.replace(manifest, "</manifest>", "#{tags}\n</manifest>", global: false)
+    end
+  end
+
+  # Pure transform: insert `implementation "<dep>"` for each dep not already
+  # present anywhere in the gradle content (broad substring check — see comment
+  # on apply_plugin_gradle_deps!/0). The new lines are appended at the end of
+  # the dependencies block, indented to match the template.
+  defp merge_gradle_deps(content, []), do: content
+
+  defp merge_gradle_deps(content, deps) when is_binary(content) do
+    missing = Enum.reject(deps, &String.contains?(content, &1))
+
+    case missing do
+      [] ->
+        content
+
+      _ ->
+        lines = Enum.map_join(missing, "\n", &~s(    implementation "#{&1}"))
+        insert_gradle_deps(content, lines)
+    end
+  end
+
+  defp insert_gradle_deps(content, lines) do
+    # Locate the top-level `dependencies { ... }` block, then find its matching
+    # close-brace by counting depth from the opening `{`. The mob_new template
+    # has a clean dependencies block; if a project gets exotic and the block
+    # can't be found, we fall back to appending a fresh block at end-of-file
+    # (Gradle merges multiple `dependencies { }` blocks, so this still works).
+    case Regex.run(~r/^dependencies\s*\{/m, content, return: :index) do
+      [{start_idx, len}] ->
+        open_brace_idx = start_idx + len - 1
+
+        case find_matching_close_brace(content, open_brace_idx) do
+          {:ok, close_idx} ->
+            head = binary_part(content, 0, close_idx)
+            tail = binary_part(content, close_idx, byte_size(content) - close_idx)
+            head <> "#{lines}\n" <> tail
+
+          :not_found ->
+            content <> "\ndependencies {\n#{lines}\n}\n"
+        end
+
+      nil ->
+        content <> "\ndependencies {\n#{lines}\n}\n"
+    end
+  end
+
+  # Given an index pointing at an opening `{` byte, return the index of the
+  # matching `}`. Operates on bytes — fine for Gradle files which are ASCII
+  # in practice; if a project sneaks in a UTF-8 brace-lookalike, we'd just
+  # miss it and fall back to the append path.
+  defp find_matching_close_brace(content, open_idx) do
+    scan_brace(content, open_idx + 1, 1)
+  end
+
+  defp scan_brace(content, idx, depth) when idx < byte_size(content) do
+    case binary_part(content, idx, 1) do
+      "{" -> scan_brace(content, idx + 1, depth + 1)
+      "}" when depth == 1 -> {:ok, idx}
+      "}" -> scan_brace(content, idx + 1, depth - 1)
+      _ -> scan_brace(content, idx + 1, depth)
+    end
+  end
+
+  defp scan_brace(_content, _idx, _depth), do: :not_found
 
   defp compile_ios_device_icons(app_path) do
     actool_plist =

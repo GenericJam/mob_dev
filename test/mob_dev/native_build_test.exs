@@ -93,6 +93,194 @@ defmodule MobDev.NativeBuildTest do
     end
   end
 
+  describe "__merge_android_permissions__/2" do
+    @manifest_with_perms """
+    <?xml version="1.0" encoding="utf-8"?>
+    <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+        package="com.example.app">
+        <uses-permission android:name="android.permission.INTERNET" />
+        <uses-permission android:name="android.permission.CAMERA" />
+        <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+        <application
+            android:label="App">
+        </application>
+    </manifest>
+    """
+
+    @manifest_without_perms """
+    <?xml version="1.0" encoding="utf-8"?>
+    <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+        package="com.example.app">
+        <application
+            android:label="App">
+        </application>
+    </manifest>
+    """
+
+    test "is a no-op when permission list is empty" do
+      assert NativeBuild.__merge_android_permissions__(@manifest_with_perms, []) ==
+               @manifest_with_perms
+    end
+
+    test "is a no-op when every permission is already declared" do
+      perms = ["android.permission.CAMERA", "android.permission.INTERNET"]
+
+      assert NativeBuild.__merge_android_permissions__(@manifest_with_perms, perms) ==
+               @manifest_with_perms
+    end
+
+    test "adds only missing permissions, dedup against existing" do
+      # Project has INTERNET + CAMERA + RECORD_AUDIO (3 lines). Plugin set
+      # contributes 4 of which 1 (CAMERA) is already there → expect 3 + 3 = 6
+      # uses-permission tags in the result, no duplicates.
+      perms = [
+        "android.permission.CAMERA",
+        "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.BLUETOOTH_SCAN",
+        "android.permission.POST_NOTIFICATIONS"
+      ]
+
+      result = NativeBuild.__merge_android_permissions__(@manifest_with_perms, perms)
+
+      tags = Regex.scan(~r/<uses-permission android:name="([^"]+)"/, result)
+      names = Enum.map(tags, fn [_, name] -> name end)
+
+      assert length(names) == 6
+      assert Enum.uniq(names) == names
+
+      assert "android.permission.BLUETOOTH_CONNECT" in names
+      assert "android.permission.BLUETOOTH_SCAN" in names
+      assert "android.permission.POST_NOTIFICATIONS" in names
+    end
+
+    test "inserts after the LAST existing uses-permission line" do
+      perms = ["android.permission.BLUETOOTH_CONNECT"]
+      result = NativeBuild.__merge_android_permissions__(@manifest_with_perms, perms)
+
+      # Order: INTERNET, CAMERA, RECORD_AUDIO, BLUETOOTH_CONNECT
+      offsets =
+        for tag <- [
+              "android.permission.INTERNET",
+              "android.permission.CAMERA",
+              "android.permission.RECORD_AUDIO",
+              "android.permission.BLUETOOTH_CONNECT"
+            ],
+            do: :binary.match(result, tag) |> elem(0)
+
+      assert offsets == Enum.sort(offsets)
+    end
+
+    test "inserts before <application when manifest has no existing permissions" do
+      perms = ["android.permission.CAMERA"]
+      result = NativeBuild.__merge_android_permissions__(@manifest_without_perms, perms)
+
+      assert String.contains?(
+               result,
+               ~s(<uses-permission android:name="android.permission.CAMERA" />)
+             )
+
+      perm_idx = :binary.match(result, "android.permission.CAMERA") |> elem(0)
+      app_idx = :binary.match(result, "<application") |> elem(0)
+      assert perm_idx < app_idx
+    end
+
+    test "is idempotent — running twice gives the same result" do
+      perms = ["android.permission.BLUETOOTH_CONNECT", "android.permission.BLUETOOTH_SCAN"]
+      once = NativeBuild.__merge_android_permissions__(@manifest_with_perms, perms)
+      twice = NativeBuild.__merge_android_permissions__(once, perms)
+      assert once == twice
+    end
+  end
+
+  describe "__merge_gradle_deps__/2" do
+    @gradle """
+    plugins {
+        id 'com.android.application'
+    }
+
+    android {
+        namespace 'com.example.app'
+    }
+
+    dependencies {
+        implementation 'androidx.appcompat:appcompat:1.6.1'
+        implementation 'androidx.camera:camera-camera2:1.3.4'
+    }
+    """
+
+    test "is a no-op when dep list is empty" do
+      assert NativeBuild.__merge_gradle_deps__(@gradle, []) == @gradle
+    end
+
+    test "is a no-op when every dep is already present" do
+      deps = ["androidx.appcompat:appcompat:1.6.1", "androidx.camera:camera-camera2:1.3.4"]
+      assert NativeBuild.__merge_gradle_deps__(@gradle, deps) == @gradle
+    end
+
+    test "adds only missing deps inside the dependencies block" do
+      deps = [
+        "com.github.PhilJay:MPAndroidChart:v3.1.0",
+        "androidx.appcompat:appcompat:1.6.1",
+        "com.example:foo:1.0.0"
+      ]
+
+      result = NativeBuild.__merge_gradle_deps__(@gradle, deps)
+
+      assert String.contains?(
+               result,
+               ~s(implementation "com.github.PhilJay:MPAndroidChart:v3.1.0")
+             )
+
+      assert String.contains?(result, ~s(implementation "com.example:foo:1.0.0"))
+
+      # Existing appcompat dep stays its original form — no duplicate.
+      appcompat_count =
+        Regex.scan(~r/androidx\.appcompat:appcompat:1\.6\.1/, result) |> length()
+
+      assert appcompat_count == 1
+    end
+
+    test "inserts inside the dependencies block (before its closing brace)" do
+      deps = ["com.example:foo:1.0.0"]
+      result = NativeBuild.__merge_gradle_deps__(@gradle, deps)
+
+      # The new implementation line lives between `dependencies {` and the next
+      # closing `}` — not floating at end-of-file.
+      [{deps_open, _}] = Regex.run(~r/dependencies\s*\{/, result, return: :index)
+      foo_idx = :binary.match(result, "com.example:foo:1.0.0") |> elem(0)
+      # Find the closing brace of the dependencies block (first `}` after deps_open).
+      close_idx =
+        (binary_part(result, deps_open, byte_size(result) - deps_open)
+         |> :binary.match("}")
+         |> elem(0)) + deps_open
+
+      assert deps_open < foo_idx
+      assert foo_idx < close_idx
+    end
+
+    test "is idempotent — running twice gives the same result" do
+      deps = ["com.github.PhilJay:MPAndroidChart:v3.1.0"]
+      once = NativeBuild.__merge_gradle_deps__(@gradle, deps)
+      twice = NativeBuild.__merge_gradle_deps__(once, deps)
+      assert once == twice
+    end
+
+    test "falls back to appending a fresh dependencies block when none exists" do
+      content = """
+      plugins {
+          id 'com.android.application'
+      }
+      """
+
+      result =
+        NativeBuild.__merge_gradle_deps__(content, ["com.example:foo:1.0.0"])
+
+      assert String.contains?(result, "dependencies {")
+      assert String.contains?(result, ~s(implementation "com.example:foo:1.0.0"))
+    end
+  end
+
   describe "read_sdk_dir/1" do
     setup do
       tmp =
