@@ -2182,6 +2182,12 @@ defmodule MobDev.NativeBuild do
     # of run_zig_android_objects).
     activated_plugins = MobDev.Plugin.activated()
 
+    # Capability enforcement (see MOB_PLUGIN_SECURITY.md, Layer 2): refuse to
+    # link an activated plugin whose Swift source imports a framework — or
+    # whose AndroidManifest references a permission — its manifest doesn't
+    # declare. Raises with the full list of drifts when any are found.
+    MobDev.Plugin.Validator.raise_on_capability_drift!(activated_plugins)
+
     # Generated bootstrap Swift gets compiled alongside the plugins' own
     # Swift files, so it lands in the same `-Dplugin_swift_files` arg.
     # That keeps the build.zig template surface unchanged — one flag, one
@@ -3410,6 +3416,10 @@ defmodule MobDev.NativeBuild do
     # Plugin contributions, same as the sim path above.
     activated_plugins = MobDev.Plugin.activated()
 
+    # Capability enforcement — same one-liner the sim path uses. See
+    # MOB_PLUGIN_SECURITY.md, Layer 2.
+    MobDev.Plugin.Validator.raise_on_capability_drift!(activated_plugins)
+
     # See sim build for the rationale on bundling the bootstrap into
     # `plugin_swift_files`. Keeping sim + device on the same wiring means
     # one place to debug "where did mob_register_plugins go?" if/when it
@@ -3885,9 +3895,17 @@ defmodule MobDev.NativeBuild do
   # `MobDev.Enable.Igniter.add_android_permission/2` handles the absence at
   # `mix mob.enable` time.
   defp apply_plugin_android_manifest! do
+    activated = MobDev.Plugin.activated()
+
+    # Capability enforcement — same call the iOS sim/device paths use; runs
+    # the AndroidManifest-fragment + Swift-import scans across every
+    # activated plugin and raises on drift. See MOB_PLUGIN_SECURITY.md,
+    # Layer 2.
+    MobDev.Plugin.Validator.raise_on_capability_drift!(activated)
+
     case File.read(@android_manifest_path) do
       {:error, :enoent} ->
-        if MobDev.Plugin.Merge.android_permissions(MobDev.Plugin.activated()) != [] do
+        if MobDev.Plugin.Merge.android_permissions(activated) != [] do
           IO.puts(
             "  [plugin android] #{@android_manifest_path} not found — skipping plugin permissions."
           )
@@ -3896,7 +3914,7 @@ defmodule MobDev.NativeBuild do
         :ok
 
       {:ok, content} ->
-        permissions = MobDev.Plugin.Merge.android_permissions(MobDev.Plugin.activated())
+        permissions = MobDev.Plugin.Merge.android_permissions(activated)
         patched = merge_android_permissions(content, permissions)
 
         if patched != content, do: File.write!(@android_manifest_path, patched)

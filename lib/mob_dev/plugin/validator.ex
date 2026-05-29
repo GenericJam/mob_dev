@@ -57,7 +57,129 @@ defmodule MobDev.Plugin.Validator do
     |> add_mob_version_error(manifest, installed_mob_version)
     |> add_nif_module_errors(manifest)
     |> add_swift_struct_errors(manifest)
+    |> add_swift_import_errors(manifest, plugin_dir)
+    |> add_android_permission_errors(manifest, plugin_dir)
     |> add_warnings(manifest)
+  end
+
+  # iOS frameworks the host always links — a plugin doesn't have to redeclare
+  # these in its `ios.frameworks`. Mirrors the `frameworks_base` array in
+  # mob_new's iOS build.zig.eex (UIKit/Foundation/CoreGraphics/QuartzCore/SwiftUI).
+  # Accelerate is added when MLX is active, but plugin manifests don't know
+  # about the host's MLX configuration, so we treat it as always-allowed at
+  # validate time (an undeclared import will still surface in the host's link
+  # step when MLX isn't on — the failure mode the validator can't pre-empt).
+  @ios_base_frameworks ~w(UIKit Foundation CoreGraphics QuartzCore SwiftUI Accelerate)
+
+  @doc """
+  Verifies every `import X` in the plugin's Swift sources resolves to either
+  a base iOS framework or one declared in `manifest.ios.frameworks`.
+
+  See `MOB_PLUGIN_SECURITY.md` (Layer 2 — capability enforcement at compile
+  time): the manifest is the contract; the plugin's source cannot reach for a
+  framework that isn't manifest-declared. Catches drift at validate time
+  rather than at link time, where the error points at the linker invocation
+  and not at the manifest that produced it.
+
+  Returns a list of error strings (empty when the manifest passes). Skips
+  plugins with no `ios.swift_files`. Files referenced by the manifest but
+  missing on disk are flagged by `add_path_errors/3`, not here — this check
+  only opens files that exist.
+  """
+  @spec validate_swift_imports(map() | nil, Path.t()) :: [String.t()]
+  def validate_swift_imports(nil, _plugin_dir), do: []
+
+  def validate_swift_imports(manifest, plugin_dir) when is_map(manifest) do
+    declared = MapSet.new(@ios_base_frameworks ++ declared_ios_frameworks(manifest))
+
+    for rel <- declared_swift_files(manifest),
+        abs = Path.join(plugin_dir, rel),
+        File.exists?(abs),
+        framework <- imported_frameworks(abs),
+        not MapSet.member?(declared, framework) do
+      ~s(iOS framework "#{framework}" imported by #{rel} but not declared in ) <>
+        "manifest.ios.frameworks — add it to the manifest"
+    end
+  end
+
+  @doc """
+  Activation-time capability check across every activated plugin.
+
+  `plugins` is the `MobDev.Plugin.activated/0` shape — a list of
+  `{plugin_dir, manifest}` pairs. For each plugin, runs
+  `validate_swift_imports/2` and `validate_android_permissions/2` and
+  returns the flattened error list, each entry prefixed with the
+  plugin's `:name` so the user can tell which plugin tripped.
+
+  Empty list means every activated plugin's source matches its manifest's
+  declared capability surface. The build hooks this into iOS + Android
+  builds via `raise_on_capability_drift!/1`, which raises a `Mix.raise/1`
+  with the full list when any drift is found.
+  """
+  @spec activated_capability_errors([{Path.t(), map() | nil}]) :: [String.t()]
+  def activated_capability_errors(plugins) do
+    for {dir, manifest} <- plugins,
+        is_map(manifest),
+        err <-
+          validate_swift_imports(manifest, dir) ++ validate_android_permissions(manifest, dir) do
+      prefix_with_plugin_name(manifest, err)
+    end
+  end
+
+  @doc """
+  Runs `activated_capability_errors/1` and raises a `Mix.raise/1` (with a
+  user-readable bullet list) when any plugin's source references a
+  capability not in its manifest. No-op when every plugin is clean.
+
+  Lives in the validator (not NativeBuild) so the iOS-sim and iOS-device
+  build paths can both call it as a one-liner, and so it stays unit-testable.
+  """
+  @spec raise_on_capability_drift!([{Path.t(), map() | nil}]) :: :ok
+  def raise_on_capability_drift!(plugins) do
+    case activated_capability_errors(plugins) do
+      [] ->
+        :ok
+
+      errors ->
+        bullets = Enum.map_join(errors, "\n", &"  - #{&1}")
+
+        Mix.raise(
+          "plugin capability check failed — undeclared framework or permission " <>
+            "in an activated plugin (see MOB_PLUGIN_SECURITY.md, Layer 2):\n" <> bullets
+        )
+    end
+  end
+
+  defp prefix_with_plugin_name(manifest, err) do
+    case manifest[:name] do
+      name when is_atom(name) and not is_nil(name) -> "[#{name}] #{err}"
+      _ -> err
+    end
+  end
+
+  @doc """
+  Verifies every `<uses-permission android:name="X"/>` declared in
+  AndroidManifest.xml fragments under the plugin's tree appears in
+  `manifest.android.permissions`.
+
+  Scope (deliberate): scans `priv/native/android/**/*.xml` for
+  `<uses-permission/>` entries — declarations the plugin author explicitly
+  wrote. Does not attempt to infer permissions from Kotlin/Java API usage
+  (the static-analysis rabbit hole `MOB_PLUGIN_SECURITY.md` warns against).
+  Returns `[]` when the plugin ships no AndroidManifest fragment.
+  """
+  @spec validate_android_permissions(map() | nil, Path.t()) :: [String.t()]
+  def validate_android_permissions(nil, _plugin_dir), do: []
+
+  def validate_android_permissions(manifest, plugin_dir) when is_map(manifest) do
+    declared = MapSet.new(declared_android_permissions(manifest))
+
+    for {rel, found} <- android_manifest_permissions(plugin_dir),
+        permission <- found,
+        not MapSet.member?(declared, permission) do
+      ~s(Android permission "#{permission}" referenced in #{rel} but not declared in ) <>
+        "manifest.android.permissions — add it to the manifest"
+    end
   end
 
   @doc """
@@ -185,6 +307,83 @@ defmodule MobDev.Plugin.Validator do
     "ui_components.ios.swift_struct #{inspect(value)} must be a Swift " <>
       "identifier matching /^[A-Za-z_][A-Za-z0-9_]*$/ (e.g. \"MobSignaturePadView\") — " <>
       "the iOS bootstrap codegen instantiates it as `<StructName>(props: props)`"
+  end
+
+  defp add_swift_import_errors(result, manifest, plugin_dir) do
+    %{result | errors: result.errors ++ validate_swift_imports(manifest, plugin_dir)}
+  end
+
+  defp add_android_permission_errors(result, manifest, plugin_dir) do
+    %{result | errors: result.errors ++ validate_android_permissions(manifest, plugin_dir)}
+  end
+
+  defp declared_ios_frameworks(manifest) do
+    for fw <- List.wrap(get_in(manifest, [:ios, :frameworks])), is_binary(fw), do: fw
+  end
+
+  defp declared_swift_files(manifest) do
+    for f <- List.wrap(get_in(manifest, [:ios, :swift_files])), is_binary(f), do: f
+  end
+
+  defp declared_android_permissions(manifest) do
+    for p <- List.wrap(get_in(manifest, [:android, :permissions])), is_binary(p), do: p
+  end
+
+  # Matches `import Foundation`, `import SwiftUI`, `@testable import CoreLocation`
+  # — Swift's basic module-import forms — and captures the module name. The
+  # `[A-Z][A-Za-z0-9_]*` shape matches an iOS framework / Swift module name,
+  # which always begins with an uppercase letter. Submodule imports like
+  # `import struct Foundation.URL` capture `Foundation`, which is the
+  # framework-level granularity the manifest tracks.
+  @swift_import_pattern ~r/^[\t ]*(?:@testable[\t ]+)?import(?:[\t ]+(?:struct|class|enum|protocol|func|var|let|typealias))?[\t ]+([A-Z][A-Za-z0-9_]*)/m
+
+  defp imported_frameworks(path) do
+    case File.read(path) do
+      {:ok, content} ->
+        @swift_import_pattern
+        |> Regex.scan(content, capture: :all_but_first)
+        |> Enum.map(fn [m] -> m end)
+        |> Enum.uniq()
+
+      _ ->
+        []
+    end
+  end
+
+  # Matches `<uses-permission android:name="X"/>` (and its `</uses-permission>`
+  # form) and captures the permission string. Tolerates whitespace and arbitrary
+  # extra attributes on the element.
+  @android_uses_permission_pattern ~r/<uses-permission\b[^>]*android:name\s*=\s*"([^"]+)"/
+
+  # Scans `priv/native/android/**/*.xml` (plus a few historical paths) for
+  # AndroidManifest fragments contributed by the plugin and returns a list of
+  # `{rel_path, [permission_string]}` tuples — empty when the plugin ships no
+  # such fragment.
+  defp android_manifest_permissions(plugin_dir) do
+    candidates =
+      Path.wildcard(Path.join(plugin_dir, "priv/native/android/**/*.xml")) ++
+        Path.wildcard(Path.join(plugin_dir, "priv/android/**/*.xml")) ++
+        Path.wildcard(Path.join(plugin_dir, "android/**/AndroidManifest.xml"))
+
+    for path <- Enum.uniq(candidates),
+        File.regular?(path),
+        perms = scan_android_permissions(path),
+        perms != [] do
+      {Path.relative_to(path, plugin_dir), perms}
+    end
+  end
+
+  defp scan_android_permissions(path) do
+    case File.read(path) do
+      {:ok, content} ->
+        @android_uses_permission_pattern
+        |> Regex.scan(content, capture: :all_but_first)
+        |> Enum.map(fn [p] -> p end)
+        |> Enum.uniq()
+
+      _ ->
+        []
+    end
   end
 
   defp add_warnings(result, manifest) do
