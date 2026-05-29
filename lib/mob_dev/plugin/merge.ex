@@ -65,7 +65,34 @@ defmodule MobDev.Plugin.Merge do
   end
 
   @doc """
-  Absolute paths of each plugin NIF's primary C source.
+  Absolute paths of plugin Android `jni_source` files — plain JNI-thunk C
+  (e.g. `Java_<pkg>_<Class>_nativeDeliver*`) that the build compiles into the
+  app `.so` without a NIF-init libname (unlike `nif_sources/1`). Fed to the
+  build's `-Dplugin_jni_sources` arg.
+  """
+  @spec jni_sources([plugin()]) :: [String.t()]
+  def jni_sources(plugins), do: collect_paths(plugins, [:android, :jni_source])
+
+  @doc """
+  Absolute paths of plugin Android `bridge_kt` Kotlin sources. `native_build`
+  copies each into the app source tree (at its package-derived path) before
+  `gradle assembleDebug`, so the app's Kotlin sourceSet compiles it.
+  """
+  @spec bridge_kt_sources([plugin()]) :: [String.t()]
+  def bridge_kt_sources(plugins), do: collect_paths(plugins, [:android, :bridge_kt])
+
+  @doc """
+  Fully-qualified Kotlin class names (e.g. `"io.mob.bluetooth.MobBluetoothBridge"`)
+  each activated plugin wants registered at startup. `native_build` generates a
+  `MobPluginBootstrap.registerAll/0` that calls `<class>.register()` for each, so
+  the plugin's `nativeRegister` thunk can cache its own jclass + method IDs.
+  """
+  @spec bridge_classes([plugin()]) :: [String.t()]
+  def bridge_classes(plugins), do: collect_uniq(plugins, [:android, :bridge_class])
+
+  @doc """
+  Absolute paths of each plugin **C** NIF's primary source (NIFs whose
+  manifest entry has no `:lang` or `lang: :c`).
 
   Convention: for a manifest entry `%{module: :foo_nif, native_dir: "priv/jni"}`
   the source is `<plugin_dir>/priv/jni/foo_nif.c`. This is the `<name>.c`
@@ -76,16 +103,37 @@ defmodule MobDev.Plugin.Merge do
   static-init symbol the driver table references.
   """
   @spec nif_sources([plugin()]) :: [String.t()]
-  def nif_sources(plugins) do
+  def nif_sources(plugins), do: nif_sources_for_lang(plugins, :c, "c")
+
+  @doc """
+  Absolute paths of each plugin **zig** NIF's primary source (NIFs whose
+  manifest entry has `lang: :zig`).
+
+  Same `<plugin_dir>/<native_dir>/<module>.zig` convention as the C path, but
+  fed to the build's `-Dplugin_zig_nifs` arg and compiled via `addZigObject`.
+  Unlike C, no `-DSTATIC_ERLANG_NIF_LIBNAME` is needed — the zig source names
+  its own `export fn <module>_nif_init()` directly. The plugin source reaches
+  mob-core bindings via the named imports `@import("erts")` / `@import("jni")`
+  that build.zig wires for plugin zig objects.
+  """
+  @spec zig_nif_sources([plugin()]) :: [String.t()]
+  def zig_nif_sources(plugins), do: nif_sources_for_lang(plugins, :zig, "zig")
+
+  defp nif_sources_for_lang(plugins, lang, ext) do
     for {dir, manifest} <- with_manifests(plugins),
         nif <- Map.get(manifest, :nifs, []),
         is_map(nif),
         name = nif[:module],
-        is_atom(name) do
+        is_atom(name),
+        nif_lang(nif) == lang do
       native_dir = nif[:native_dir] || "priv/native/jni"
-      Path.join([dir, native_dir, "#{name}.c"])
+      Path.join([dir, native_dir, "#{name}.#{ext}"])
     end
   end
+
+  # A NIF manifest entry defaults to C so existing (haptic) plugins are
+  # unaffected; `lang: :zig` opts into the zig compile path.
+  defp nif_lang(nif), do: nif[:lang] || :c
 
   @doc "Merged iOS `plist_keys` across plugins (later plugins win on conflict)."
   @spec plist_keys([plugin()]) :: map()

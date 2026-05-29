@@ -93,6 +93,45 @@ defmodule MobDev.NativeBuildTest do
     end
   end
 
+  describe "plugin Kotlin bootstrap helpers" do
+    test "__parse_kotlin_package__ extracts the FQ package" do
+      assert NativeBuild.__parse_kotlin_package__(
+               "package io.mob.bluetooth\n\nobject MobBluetoothBridge {}"
+             ) == "io.mob.bluetooth"
+    end
+
+    test "__parse_kotlin_package__ tolerates leading whitespace / comments before it" do
+      src = "// header\n  package io.mob.bluetooth\n"
+      assert NativeBuild.__parse_kotlin_package__(src) == "io.mob.bluetooth"
+    end
+
+    test "__parse_kotlin_package__ returns nil when there's no package line" do
+      assert NativeBuild.__parse_kotlin_package__("object Foo {}") == nil
+    end
+
+    test "__bridge_kt_dest__ maps package + basename under the java root" do
+      assert NativeBuild.__bridge_kt_dest__(
+               "android/app/src/main/java",
+               "io.mob.bluetooth",
+               "MobBluetoothBridge.kt"
+             ) == "android/app/src/main/java/io/mob/bluetooth/MobBluetoothBridge.kt"
+    end
+
+    test "__bootstrap_kotlin__ emits a register() call per bridge class" do
+      src = NativeBuild.__bootstrap_kotlin__(["io.mob.bluetooth.MobBluetoothBridge"])
+      assert src =~ "package io.mob.plugin"
+      assert src =~ "object MobPluginBootstrap"
+      assert src =~ "fun registerAll()"
+      assert src =~ "io.mob.bluetooth.MobBluetoothBridge.register()"
+    end
+
+    test "__bootstrap_kotlin__ emits an empty registerAll body when no bridge classes" do
+      src = NativeBuild.__bootstrap_kotlin__([])
+      assert src =~ "fun registerAll() {}"
+      refute src =~ ".register()"
+    end
+  end
+
   describe "__merge_android_permissions__/2" do
     @manifest_with_perms """
     <?xml version="1.0" encoding="utf-8"?>
