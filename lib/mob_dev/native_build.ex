@@ -130,6 +130,7 @@ defmodule MobDev.NativeBuild do
          :ok <- zig_build_android_objects(mob_dir, otp_arm64, otp_arm32),
          :ok <- apply_plugin_android_manifest!(),
          :ok <- apply_plugin_gradle_deps!(),
+         :ok <- apply_plugin_android_kotlin!(),
          :ok <- gradle_assemble(),
          :ok <- adb_install_all(apk, bundle_id, device_id),
          :ok <-
@@ -243,6 +244,18 @@ defmodule MobDev.NativeBuild do
     # template orelse's "" so the flag is always safe to emit.
     plugin_c_nifs = MobDev.Plugin.Merge.nif_sources(MobDev.Plugin.activated()) |> Enum.join(",")
 
+    # Activated plugins' zig NIF sources (one .zig per nif, lang: :zig). Same
+    # shape as plugin_c_nifs but compiled via addZigObject with named-module
+    # imports for mob-core bindings. Empty when no zig-NIF plugin is activated.
+    plugin_zig_nifs =
+      MobDev.Plugin.Merge.zig_nif_sources(MobDev.Plugin.activated()) |> Enum.join(",")
+
+    # Activated plugins' JNI-thunk C sources (android.jni_source). Plain C
+    # objects (no NIF-init libname) compiled + linked into the app .so so a
+    # plugin's Java_<pkg>_<Class>_* thunks resolve. Empty when none.
+    plugin_jni_sources =
+      MobDev.Plugin.Merge.jni_sources(MobDev.Plugin.activated()) |> Enum.join(",")
+
     base_args = [
       "build",
       "native-lib",
@@ -260,7 +273,9 @@ defmodule MobDev.NativeBuild do
       "-Dapp_name=#{app_name}",
       "-Dproject_root=#{project_root}",
       "-Dexqlite_src=#{Path.join(project_root, "deps/exqlite/c_src")}",
-      "-Dplugin_c_nifs=#{plugin_c_nifs}"
+      "-Dplugin_c_nifs=#{plugin_c_nifs}",
+      "-Dplugin_zig_nifs=#{plugin_zig_nifs}",
+      "-Dplugin_jni_sources=#{plugin_jni_sources}"
     ]
 
     # `project_nif_zig_args/1` also emits `-Dproject_root=` (since the
@@ -3885,6 +3900,10 @@ defmodule MobDev.NativeBuild do
 
   @android_manifest_path "android/app/src/main/AndroidManifest.xml"
   @android_app_gradle_path "android/app/build.gradle"
+  @android_java_root "android/app/src/main/java"
+  # Generated startup hook (package io.mob.plugin). MainActivity.onCreate calls
+  # io.mob.plugin.MobPluginBootstrap.registerAll().
+  @plugin_bootstrap_path "android/app/src/main/java/io/mob/plugin/MobPluginBootstrap.kt"
 
   # Inserts `<uses-permission android:name="..."/>` lines for each permission
   # declared by activated plugins into `AndroidManifest.xml`. Idempotent: skips
@@ -3949,6 +3968,92 @@ defmodule MobDev.NativeBuild do
 
         :ok
     end
+  end
+
+  # Copies each activated plugin's `bridge_kt` into the app's Kotlin sourceSet
+  # (at its own package path, read from the file's `package` line) so Gradle
+  # compiles it, and (re)generates `io.mob.plugin.MobPluginBootstrap` whose
+  # `registerAll/0` calls each `bridge_class`'s `register()`. MainActivity calls
+  # `MobPluginBootstrap.registerAll()` in `onCreate`. The bootstrap is always
+  # written (empty body when no plugin declares a bridge_class) so the
+  # MainActivity call always resolves. No-op (with a notice) when the java root
+  # is missing.
+  defp apply_plugin_android_kotlin! do
+    if File.dir?(@android_java_root) do
+      activated = MobDev.Plugin.activated()
+
+      for src <- MobDev.Plugin.Merge.bridge_kt_sources(activated) do
+        case File.read(src) do
+          {:ok, content} ->
+            case __parse_kotlin_package__(content) do
+              nil ->
+                IO.puts("  [plugin android] #{src} has no `package` line — skipping copy.")
+
+              package ->
+                dest = __bridge_kt_dest__(@android_java_root, package, Path.basename(src))
+                File.mkdir_p!(Path.dirname(dest))
+                File.write!(dest, content)
+            end
+
+          {:error, reason} ->
+            IO.puts("  [plugin android] cannot read #{src}: #{inspect(reason)} — skipping.")
+        end
+      end
+
+      bootstrap = __bootstrap_kotlin__(MobDev.Plugin.Merge.bridge_classes(activated))
+      File.mkdir_p!(Path.dirname(@plugin_bootstrap_path))
+
+      if File.read(@plugin_bootstrap_path) != {:ok, bootstrap},
+        do: File.write!(@plugin_bootstrap_path, bootstrap)
+
+      :ok
+    else
+      if MobDev.Plugin.Merge.bridge_kt_sources(MobDev.Plugin.activated()) != [] do
+        IO.puts("  [plugin android] #{@android_java_root} not found — skipping plugin Kotlin.")
+      end
+
+      :ok
+    end
+  end
+
+  # Extracts the FQ package from a Kotlin source, or nil if none.
+  @doc false
+  @spec __parse_kotlin_package__(String.t()) :: String.t() | nil
+  def __parse_kotlin_package__(content) do
+    case Regex.run(~r/^\s*package\s+([\w.]+)/m, content) do
+      [_, package] -> package
+      _ -> nil
+    end
+  end
+
+  @doc false
+  @spec __bridge_kt_dest__(String.t(), String.t(), String.t()) :: String.t()
+  def __bridge_kt_dest__(java_root, package, basename) do
+    Path.join([java_root, String.replace(package, ".", "/"), basename])
+  end
+
+  # Source for io.mob.plugin.MobPluginBootstrap, calling each bridge class's register/0.
+  @doc false
+  @spec __bootstrap_kotlin__([String.t()]) :: String.t()
+  def __bootstrap_kotlin__(bridge_classes) do
+    calls =
+      bridge_classes
+      |> Enum.map(&"        #{&1}.register()")
+      |> Enum.join("\n")
+
+    body = if calls == "", do: "", else: "\n" <> calls <> "\n    "
+
+    """
+    // Generated by mob_dev (MobDev.NativeBuild) — do not edit.
+    // Calls each activated plugin's bridge-class register() at startup;
+    // invoked from MainActivity.onCreate.
+    package io.mob.plugin
+
+    object MobPluginBootstrap {
+        @JvmStatic
+        fun registerAll() {#{body}}
+    }
+    """
   end
 
   @doc false

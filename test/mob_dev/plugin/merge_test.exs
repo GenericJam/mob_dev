@@ -109,6 +109,94 @@ defmodule MobDev.Plugin.MergeTest do
 
       assert Merge.nif_sources(plugins) == []
     end
+
+    test "treats lang: :c the same as an absent :lang" do
+      plugins = [{"/a", base(%{nifs: [%{module: :foo_nif, lang: :c}]})}]
+      assert Merge.nif_sources(plugins) == ["/a/priv/native/jni/foo_nif.c"]
+    end
+
+    test "excludes lang: :zig NIFs (they belong to zig_nif_sources/1)" do
+      plugins = [{"/a", base(%{nifs: [%{module: :foo_nif, lang: :zig}]})}]
+      assert Merge.nif_sources(plugins) == []
+    end
+  end
+
+  describe "zig_nif_sources/1" do
+    test "computes <dir>/<native_dir>/<module>.zig for lang: :zig NIFs" do
+      plugins = [
+        {"/a",
+         base(%{
+           nifs: [%{module: :mob_bluetooth_nif, native_dir: "priv/native/jni", lang: :zig}]
+         })}
+      ]
+
+      assert Merge.zig_nif_sources(plugins) == ["/a/priv/native/jni/mob_bluetooth_nif.zig"]
+    end
+
+    test "defaults native_dir to priv/native/jni when omitted" do
+      plugins = [{"/a", base(%{nifs: [%{module: :foo_nif, lang: :zig}]})}]
+      assert Merge.zig_nif_sources(plugins) == ["/a/priv/native/jni/foo_nif.zig"]
+    end
+
+    test "excludes C NIFs (absent :lang or lang: :c)" do
+      plugins = [
+        {"/a", base(%{nifs: [%{module: :c_default_nif}, %{module: :c_explicit_nif, lang: :c}]})}
+      ]
+
+      assert Merge.zig_nif_sources(plugins) == []
+    end
+
+    test "a mixed manifest splits cleanly between the C and zig source lists" do
+      plugins = [
+        {"/a",
+         base(%{
+           nifs: [
+             %{module: :c_nif},
+             %{module: :z_nif, lang: :zig}
+           ]
+         })}
+      ]
+
+      assert Merge.nif_sources(plugins) == ["/a/priv/native/jni/c_nif.c"]
+      assert Merge.zig_nif_sources(plugins) == ["/a/priv/native/jni/z_nif.zig"]
+    end
+  end
+
+  describe "jni_sources/1 + bridge_kt_sources/1 + bridge_classes/1" do
+    test "jni_sources resolves android.jni_source to absolute paths" do
+      plugins = [
+        {"/a", base(%{android: %{jni_source: "priv/native/jni/mob_bluetooth_jni.c"}})},
+        {"/b", base(%{android: %{}})}
+      ]
+
+      assert Merge.jni_sources(plugins) == ["/a/priv/native/jni/mob_bluetooth_jni.c"]
+    end
+
+    test "bridge_kt_sources resolves android.bridge_kt to absolute paths" do
+      plugins = [
+        {"/a", base(%{android: %{bridge_kt: "priv/native/android/MobBluetoothBridge.kt"}})}
+      ]
+
+      assert Merge.bridge_kt_sources(plugins) ==
+               ["/a/priv/native/android/MobBluetoothBridge.kt"]
+    end
+
+    test "bridge_classes collects the FQNs to register at startup" do
+      plugins = [
+        {"/a", base(%{android: %{bridge_class: "io.mob.bluetooth.MobBluetoothBridge"}})},
+        {"/b", base(%{android: %{}})},
+        {"/c", nil}
+      ]
+
+      assert Merge.bridge_classes(plugins) == ["io.mob.bluetooth.MobBluetoothBridge"]
+    end
+
+    test "all three ignore tier-0 (nil) manifests and absent android maps" do
+      plugins = [{"/a", nil}, {"/b", base(%{})}]
+      assert Merge.jni_sources(plugins) == []
+      assert Merge.bridge_kt_sources(plugins) == []
+      assert Merge.bridge_classes(plugins) == []
+    end
   end
 
   describe "plist_keys/1 + ui_components/1" do
