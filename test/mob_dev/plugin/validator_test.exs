@@ -215,6 +215,313 @@ defmodule MobDev.Plugin.ValidatorTest do
     end
   end
 
+  describe "validate_swift_imports/2" do
+    setup do
+      dir =
+        Path.join(System.tmp_dir!(), "mob_validator_swift_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+      {:ok, dir: dir}
+    end
+
+    test "no swift_files means no errors", %{dir: dir} do
+      assert Validator.validate_swift_imports(@base, dir) == []
+    end
+
+    test "nil manifest yields no errors", %{dir: _dir} do
+      assert Validator.validate_swift_imports(nil, "/nonexistent") == []
+    end
+
+    test "imports of base frameworks (SwiftUI, Foundation, UIKit) require no declaration",
+         %{dir: dir} do
+      swift_file = Path.join(dir, "priv/native/ios/Pad.swift")
+      File.mkdir_p!(Path.dirname(swift_file))
+
+      File.write!(swift_file, """
+      import SwiftUI
+      import Foundation
+      import UIKit
+      struct Pad: View { var body: some View { Text("hi") } }
+      """)
+
+      m = Map.put(@base, :ios, %{swift_files: ["priv/native/ios/Pad.swift"]})
+      assert Validator.validate_swift_imports(m, dir) == []
+    end
+
+    test "an undeclared non-base import is flagged", %{dir: dir} do
+      swift_file = Path.join(dir, "priv/native/ios/Loc.swift")
+      File.mkdir_p!(Path.dirname(swift_file))
+
+      File.write!(swift_file, """
+      import SwiftUI
+      import CoreLocation
+      struct Loc {}
+      """)
+
+      m = Map.put(@base, :ios, %{swift_files: ["priv/native/ios/Loc.swift"]})
+      errors = Validator.validate_swift_imports(m, dir)
+      assert Enum.any?(errors, &(&1 =~ "CoreLocation"))
+      assert Enum.any?(errors, &(&1 =~ "priv/native/ios/Loc.swift"))
+      assert Enum.any?(errors, &(&1 =~ "manifest.ios.frameworks"))
+    end
+
+    test "a declared framework satisfies the check", %{dir: dir} do
+      swift_file = Path.join(dir, "priv/native/ios/Haptics.swift")
+      File.mkdir_p!(Path.dirname(swift_file))
+
+      File.write!(swift_file, """
+      import CoreHaptics
+      import Foundation
+      class HapticEngine {}
+      """)
+
+      m =
+        Map.put(@base, :ios, %{
+          swift_files: ["priv/native/ios/Haptics.swift"],
+          frameworks: ["CoreHaptics"]
+        })
+
+      assert Validator.validate_swift_imports(m, dir) == []
+    end
+
+    test "@testable import is treated as an ordinary import", %{dir: dir} do
+      swift_file = Path.join(dir, "priv/native/ios/T.swift")
+      File.mkdir_p!(Path.dirname(swift_file))
+
+      File.write!(swift_file, """
+      @testable import CoreBluetooth
+      """)
+
+      m = Map.put(@base, :ios, %{swift_files: ["priv/native/ios/T.swift"]})
+      errors = Validator.validate_swift_imports(m, dir)
+      assert Enum.any?(errors, &(&1 =~ "CoreBluetooth"))
+    end
+
+    test "skips files declared but missing on disk (path check owns that error)",
+         %{dir: dir} do
+      m = Map.put(@base, :ios, %{swift_files: ["priv/native/ios/Missing.swift"]})
+      assert Validator.validate_swift_imports(m, dir) == []
+    end
+
+    test "mob_demo_signature_pad's swift source passes with no declared frameworks",
+         %{dir: dir} do
+      # The real demo plugin imports SwiftUI + Foundation — both base — so it
+      # should pass with no extra ios.frameworks declared. Copy the file shape
+      # rather than depending on the live plugin's filesystem location.
+      swift_file = Path.join(dir, "priv/native/ios/MobSignaturePadView.swift")
+      File.mkdir_p!(Path.dirname(swift_file))
+
+      File.write!(swift_file, """
+      import SwiftUI
+      import Foundation
+
+      struct MobSignaturePadView: View {
+          let props: [String: Any]
+          var body: some View { Text("sig") }
+      }
+      """)
+
+      m =
+        Map.put(@base, :ios, %{
+          swift_files: ["priv/native/ios/MobSignaturePadView.swift"]
+        })
+
+      assert Validator.validate_swift_imports(m, dir) == []
+    end
+
+    test "wired into validate_plugin/3 — undeclared import bubbles up as an error",
+         %{dir: dir} do
+      swift_file = Path.join(dir, "priv/native/ios/X.swift")
+      File.mkdir_p!(Path.dirname(swift_file))
+      File.write!(swift_file, "import CoreLocation\n")
+
+      m = Map.put(@base, :ios, %{swift_files: ["priv/native/ios/X.swift"]})
+      assert %{errors: errs} = Validator.validate_plugin(m, dir, "0.6.20")
+      assert Enum.any?(errs, &(&1 =~ "CoreLocation"))
+    end
+  end
+
+  describe "validate_android_permissions/2" do
+    setup do
+      dir =
+        Path.join(
+          System.tmp_dir!(),
+          "mob_validator_android_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+      {:ok, dir: dir}
+    end
+
+    test "no AndroidManifest fragment means no errors", %{dir: dir} do
+      assert Validator.validate_android_permissions(@base, dir) == []
+    end
+
+    test "nil manifest yields no errors" do
+      assert Validator.validate_android_permissions(nil, "/nonexistent") == []
+    end
+
+    test "a declared permission satisfies the check", %{dir: dir} do
+      manifest_xml = Path.join(dir, "priv/native/android/AndroidManifest.xml")
+      File.mkdir_p!(Path.dirname(manifest_xml))
+
+      File.write!(manifest_xml, """
+      <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+        <uses-permission android:name="android.permission.CAMERA"/>
+      </manifest>
+      """)
+
+      m = Map.put(@base, :android, %{permissions: ["android.permission.CAMERA"]})
+      assert Validator.validate_android_permissions(m, dir) == []
+    end
+
+    test "an undeclared permission is flagged", %{dir: dir} do
+      manifest_xml = Path.join(dir, "priv/native/android/AndroidManifest.xml")
+      File.mkdir_p!(Path.dirname(manifest_xml))
+
+      File.write!(manifest_xml, """
+      <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+        <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+      </manifest>
+      """)
+
+      m = Map.put(@base, :android, %{permissions: []})
+      errors = Validator.validate_android_permissions(m, dir)
+      assert Enum.any?(errors, &(&1 =~ "android.permission.RECORD_AUDIO"))
+      assert Enum.any?(errors, &(&1 =~ "AndroidManifest.xml"))
+      assert Enum.any?(errors, &(&1 =~ "manifest.android.permissions"))
+    end
+
+    test "tolerates extra attributes and whitespace in the element", %{dir: dir} do
+      manifest_xml = Path.join(dir, "priv/native/android/AndroidManifest.xml")
+      File.mkdir_p!(Path.dirname(manifest_xml))
+
+      File.write!(manifest_xml, """
+      <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+        <uses-permission
+            android:name="android.permission.BLUETOOTH_CONNECT"
+            android:maxSdkVersion="32"/>
+      </manifest>
+      """)
+
+      m = Map.put(@base, :android, %{permissions: []})
+      errors = Validator.validate_android_permissions(m, dir)
+      assert Enum.any?(errors, &(&1 =~ "BLUETOOTH_CONNECT"))
+    end
+
+    test "scans nested xml files under priv/native/android/", %{dir: dir} do
+      manifest_xml = Path.join(dir, "priv/native/android/manifest/MyManifest.xml")
+      File.mkdir_p!(Path.dirname(manifest_xml))
+
+      File.write!(manifest_xml, """
+      <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+        <uses-permission android:name="android.permission.INTERNET"/>
+      </manifest>
+      """)
+
+      m = Map.put(@base, :android, %{permissions: []})
+      errors = Validator.validate_android_permissions(m, dir)
+      assert Enum.any?(errors, &(&1 =~ "INTERNET"))
+    end
+
+    test "wired into validate_plugin/3 — undeclared permission bubbles up as an error",
+         %{dir: dir} do
+      manifest_xml = Path.join(dir, "priv/native/android/AndroidManifest.xml")
+      File.mkdir_p!(Path.dirname(manifest_xml))
+
+      File.write!(manifest_xml, """
+      <uses-permission android:name="android.permission.CAMERA"/>
+      """)
+
+      m = Map.put(@base, :android, %{permissions: []})
+      assert %{errors: errs} = Validator.validate_plugin(m, dir, "0.6.20")
+      assert Enum.any?(errs, &(&1 =~ "CAMERA"))
+    end
+  end
+
+  describe "activated_capability_errors/1" do
+    setup do
+      root =
+        Path.join(System.tmp_dir!(), "mob_validator_act_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(root)
+      on_exit(fn -> File.rm_rf!(root) end)
+      {:ok, root: root}
+    end
+
+    test "empty list when no plugins are activated", %{root: _root} do
+      assert Validator.activated_capability_errors([]) == []
+    end
+
+    test "ignores tier-0 (nil) manifests", %{root: root} do
+      assert Validator.activated_capability_errors([{root, nil}]) == []
+    end
+
+    test "flags drift across multiple plugins, prefixed by plugin name", %{root: root} do
+      plugin_a = Path.join(root, "plugin_a")
+      File.mkdir_p!(Path.join(plugin_a, "priv/native/ios"))
+      File.write!(Path.join(plugin_a, "priv/native/ios/A.swift"), "import CoreLocation\n")
+
+      manifest_a =
+        Map.merge(@base, %{
+          name: :plugin_a,
+          ios: %{swift_files: ["priv/native/ios/A.swift"]}
+        })
+
+      plugin_b = Path.join(root, "plugin_b")
+      File.mkdir_p!(Path.join(plugin_b, "priv/native/android"))
+
+      File.write!(Path.join(plugin_b, "priv/native/android/AndroidManifest.xml"), """
+      <uses-permission android:name="android.permission.CAMERA"/>
+      """)
+
+      manifest_b =
+        Map.merge(@base, %{
+          name: :plugin_b,
+          android: %{permissions: []}
+        })
+
+      errors =
+        Validator.activated_capability_errors([
+          {plugin_a, manifest_a},
+          {plugin_b, manifest_b}
+        ])
+
+      assert Enum.any?(errors, &(&1 =~ "[plugin_a]" and &1 =~ "CoreLocation"))
+      assert Enum.any?(errors, &(&1 =~ "[plugin_b]" and &1 =~ "CAMERA"))
+    end
+  end
+
+  describe "raise_on_capability_drift!/1" do
+    setup do
+      root =
+        Path.join(System.tmp_dir!(), "mob_validator_raise_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(root)
+      on_exit(fn -> File.rm_rf!(root) end)
+      {:ok, root: root}
+    end
+
+    test "no-op when no drift is found", %{root: root} do
+      assert Validator.raise_on_capability_drift!([{root, nil}]) == :ok
+      assert Validator.raise_on_capability_drift!([]) == :ok
+    end
+
+    test "raises with a Mix-formatted bullet list when drift is found", %{root: root} do
+      File.mkdir_p!(Path.join(root, "priv/native/ios"))
+      File.write!(Path.join(root, "priv/native/ios/X.swift"), "import CoreBluetooth\n")
+
+      manifest =
+        Map.merge(@base, %{name: :driftling, ios: %{swift_files: ["priv/native/ios/X.swift"]}})
+
+      assert_raise Mix.Error, ~r/plugin capability check failed.*CoreBluetooth/s, fn ->
+        Validator.raise_on_capability_drift!([{root, manifest}])
+      end
+    end
+  end
+
   describe "cross_validate/1" do
     test "no collisions across distinct plugins" do
       a = Map.put(@base, :ui_components, [%{atom: :chart}])
