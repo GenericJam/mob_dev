@@ -133,9 +133,18 @@ defmodule MobDev.Plugin.Validator do
 
   Lives in the validator (not NativeBuild) so the iOS-sim and iOS-device
   build paths can both call it as a one-liner, and so it stays unit-testable.
+
+  Also runs the Phase 2 signature gate
+  (`MobDev.Plugin.SignatureGate.raise_on_signature_drift!/1`) at the top
+  — fails fast on a tampered or untrusted plugin before any capability
+  analysis runs. The unsigned-plugin banner is printed afterwards so it
+  surfaces on every successful invocation.
   """
   @spec raise_on_capability_drift!([{Path.t(), map() | nil}]) :: :ok
   def raise_on_capability_drift!(plugins) do
+    MobDev.Plugin.SignatureGate.raise_on_signature_drift!(plugins)
+    MobDev.Plugin.SignatureGate.maybe_print_unsafe_banner(plugins)
+
     case activated_capability_errors(plugins) do
       [] ->
         :ok
