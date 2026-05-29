@@ -22,9 +22,9 @@
 # is bundled at deploy time instead.
 
 %{
-  active_hash: "550d7b78",
+  active_hash: "7d46fdd4",
   bundles: %{
-    "550d7b78" => %{
+    "7d46fdd4" => %{
       erts: "17.0",
       otp_release: "29",
       elixir: "1.20.0-rc.5",

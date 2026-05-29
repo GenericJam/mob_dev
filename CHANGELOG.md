@@ -8,6 +8,14 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.5.12]
+
+### Changed
+- **OTP runtime bumped to `7d46fdd4` (Elixir 1.20.0-rc.5).** `@otp_hash` now points at the `otp-7d46fdd4` release: all four platform tarballs (ios-sim, ios-device, android, android-arm32) bundle Elixir 1.20.0-rc.5 matched to the OTP-29 erts. Completes the 1.19.5 to 1.20 runtime migration the bundled-versions manifest was already staged for. Verified end-to-end on a physical iPhone and a physical Android (Moto G): `System.version` 1.20.0-rc.5, OTP 29, `Mix.install([{:short_uuid, "~> 0.1"}])` returns `:ok` with the dep compiled on-device.
+
+### Fixed
+- **iOS `{spawn, <linked-in driver>}` now works** (erts `erts_open_driver`). The iOS-build `#ifdef __IOS__` guard returned BADARG for any `open_port` whose spawn_type included the EXECUTABLE bit (i.e. plain `{spawn, Name}`), firing before the linked-in-driver name lookup. This broke `ram_file` (`{spawn, "ram_file_drv"}`), and therefore `file:open(_, [:ram])`, `erl_tar` in-memory extract, `hex_tarball.unpack`, and `Mix.install` on iOS. The guard now fires only when no linked-in driver matched the name. Bundled in the `7d46fdd4` OTP tarballs.
+
 ## [0.5.11]
 
 ### Added
