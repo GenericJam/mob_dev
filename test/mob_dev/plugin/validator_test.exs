@@ -516,6 +516,13 @@ defmodule MobDev.Plugin.ValidatorTest do
       manifest =
         Map.merge(@base, %{name: :driftling, ios: %{swift_files: ["priv/native/ios/X.swift"]}})
 
+      # raise_on_capability_drift!/1 now runs the signature gate first.
+      # Acknowledge the unsigned plugin so the test can exercise the
+      # capability check it actually targets.
+      previous = Application.get_env(:mob, :acknowledge_unsafe_plugins, [])
+      Application.put_env(:mob, :acknowledge_unsafe_plugins, [:driftling])
+      on_exit(fn -> Application.put_env(:mob, :acknowledge_unsafe_plugins, previous) end)
+
       assert_raise Mix.Error, ~r/plugin capability check failed.*CoreBluetooth/s, fn ->
         Validator.raise_on_capability_drift!([{root, manifest}])
       end
