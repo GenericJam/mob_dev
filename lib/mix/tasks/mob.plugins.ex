@@ -28,9 +28,11 @@ defmodule Mix.Tasks.Mob.Plugins do
 
     deps = load_all_manifests()
     activated = activated_plugins()
+    dep_dirs = Mix.Project.deps_paths()
 
     deps
     |> Report.rows(activated)
+    |> Report.with_vetting(dep_dirs)
     |> Report.render()
     |> then(&IO.puts("\n" <> &1 <> "\n"))
 
