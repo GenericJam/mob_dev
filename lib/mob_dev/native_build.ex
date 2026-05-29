@@ -2146,6 +2146,21 @@ defmodule MobDev.NativeBuild do
     end
   end
 
+  # Emits the iOS plugin bootstrap Swift file the build step later compiles
+  # alongside the project + plugin Swift sources. Returns the absolute path of
+  # the written file so the caller can append it to `plugin_swift_files`.
+  #
+  # The file is regenerated on every iOS build. The content is purely a
+  # function of the activated-plugin manifests, so this is cheap and keeps
+  # the build cache aligned with the manifest set (no stale registrations
+  # from a plugin that just got deactivated).
+  defp generate_ios_plugin_bootstrap(build_dir) do
+    out_path = Path.join(build_dir, "mob_plugin_bootstrap.swift")
+    source = MobDev.Plugin.IOSBootstrap.swift_source(MobDev.Plugin.activated())
+    File.write!(out_path, source)
+    out_path
+  end
+
   defp zig_build_binary_ios_sim(
          mob_dir,
          otp_root,
@@ -2166,7 +2181,17 @@ defmodule MobDev.NativeBuild do
     # unconditionally (mirrors the Android plugin_c_nifs pattern at the top
     # of run_zig_android_objects).
     activated_plugins = MobDev.Plugin.activated()
-    plugin_swift_files = activated_plugins |> MobDev.Plugin.Merge.swift_files() |> Enum.join(",")
+
+    # Generated bootstrap Swift gets compiled alongside the plugins' own
+    # Swift files, so it lands in the same `-Dplugin_swift_files` arg.
+    # That keeps the build.zig template surface unchanged — one flag, one
+    # split-and-compile loop — and means the bootstrap function ends up in
+    # MobApp-Swift.h's module the same way plugin views do.
+    bootstrap_path = generate_ios_plugin_bootstrap(build_dir)
+
+    plugin_swift_files =
+      (MobDev.Plugin.Merge.swift_files(activated_plugins) ++ [bootstrap_path])
+      |> Enum.join(",")
 
     plugin_frameworks =
       activated_plugins |> MobDev.Plugin.Merge.ios_frameworks() |> Enum.join(",")
@@ -3384,7 +3409,16 @@ defmodule MobDev.NativeBuild do
 
     # Plugin contributions, same as the sim path above.
     activated_plugins = MobDev.Plugin.activated()
-    plugin_swift_files = activated_plugins |> MobDev.Plugin.Merge.swift_files() |> Enum.join(",")
+
+    # See sim build for the rationale on bundling the bootstrap into
+    # `plugin_swift_files`. Keeping sim + device on the same wiring means
+    # one place to debug "where did mob_register_plugins go?" if/when it
+    # comes up.
+    bootstrap_path = generate_ios_plugin_bootstrap(build_dir)
+
+    plugin_swift_files =
+      (MobDev.Plugin.Merge.swift_files(activated_plugins) ++ [bootstrap_path])
+      |> Enum.join(",")
 
     plugin_frameworks =
       activated_plugins |> MobDev.Plugin.Merge.ios_frameworks() |> Enum.join(",")

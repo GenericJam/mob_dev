@@ -56,6 +56,7 @@ defmodule MobDev.Plugin.Validator do
     |> add_path_errors(manifest, plugin_dir)
     |> add_mob_version_error(manifest, installed_mob_version)
     |> add_nif_module_errors(manifest)
+    |> add_swift_struct_errors(manifest)
     |> add_warnings(manifest)
   end
 
@@ -148,6 +149,42 @@ defmodule MobDev.Plugin.Validator do
     "nifs :module #{inspect(value)} must be a C-token atom matching " <>
       "/^[a-z][a-z0-9_]*$/ (e.g. :mob_bluetooth_nif), not an Elixir module — " <>
       "ERL_NIF_INIT uses it as the static-init symbol prefix"
+  end
+
+  # ui_components.ios.swift_struct names the SwiftUI struct the iOS bootstrap
+  # codegen instantiates (`StructName(props: props)`). It must therefore be a
+  # valid Swift identifier — the codegen pastes it straight into source.
+  # Catch a bad value at validate time rather than at swiftc time, where the
+  # error is far from the manifest that produced it.
+  @swift_identifier_pattern ~r/^[A-Za-z_][A-Za-z0-9_]*$/
+
+  defp add_swift_struct_errors(result, manifest) when is_map(manifest) do
+    errs =
+      for c <- Map.get(manifest, :ui_components, []),
+          is_map(c),
+          ios = c[:ios],
+          is_map(ios),
+          Map.has_key?(ios, :swift_struct),
+          err = swift_struct_error(ios[:swift_struct]),
+          do: err
+
+    %{result | errors: result.errors ++ errs}
+  end
+
+  defp add_swift_struct_errors(result, _manifest), do: result
+
+  defp swift_struct_error(value) when is_binary(value) do
+    if Regex.match?(@swift_identifier_pattern, value),
+      do: nil,
+      else: bad_swift_struct_message(value)
+  end
+
+  defp swift_struct_error(other), do: bad_swift_struct_message(other)
+
+  defp bad_swift_struct_message(value) do
+    "ui_components.ios.swift_struct #{inspect(value)} must be a Swift " <>
+      "identifier matching /^[A-Za-z_][A-Za-z0-9_]*$/ (e.g. \"MobSignaturePadView\") — " <>
+      "the iOS bootstrap codegen instantiates it as `<StructName>(props: props)`"
   end
 
   defp add_warnings(result, manifest) do

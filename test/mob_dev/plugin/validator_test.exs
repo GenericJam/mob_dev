@@ -158,6 +158,61 @@ defmodule MobDev.Plugin.ValidatorTest do
       assert %{errors: errs} = Validator.validate_plugin(m, dir, "0.6.20")
       assert Enum.any?(errs, &(&1 =~ "C-token"))
     end
+
+    test "accepts a Swift-identifier ios.swift_struct", %{dir: dir} do
+      m =
+        Map.put(@base, :ui_components, [
+          %{
+            atom: :sig,
+            ios: %{view_module: "Demo_SigPad_View", swift_struct: "MobSignaturePadView"},
+            android: %{composable: "Demo_SigPad_View"}
+          }
+        ])
+
+      assert %{errors: []} = Validator.validate_plugin(m, dir, "0.6.20")
+    end
+
+    test "rejects a non-binary ios.swift_struct", %{dir: dir} do
+      m =
+        Map.put(@base, :ui_components, [
+          %{
+            atom: :sig,
+            ios: %{view_module: "Demo_SigPad_View", swift_struct: MobSignaturePadView},
+            android: %{composable: "Demo_SigPad_View"}
+          }
+        ])
+
+      assert %{errors: errs} = Validator.validate_plugin(m, dir, "0.6.20")
+      assert Enum.any?(errs, &(&1 =~ "swift_struct"))
+      assert Enum.any?(errs, &(&1 =~ "Swift identifier"))
+    end
+
+    test "rejects a swift_struct containing a hyphen", %{dir: dir} do
+      m =
+        Map.put(@base, :ui_components, [
+          %{
+            atom: :sig,
+            ios: %{view_module: "Demo_SigPad_View", swift_struct: "Mob-Bad-View"},
+            android: %{composable: "Demo_SigPad_View"}
+          }
+        ])
+
+      assert %{errors: errs} = Validator.validate_plugin(m, dir, "0.6.20")
+      assert Enum.any?(errs, &(&1 =~ "swift_struct"))
+    end
+
+    test "does not complain when ios.swift_struct is absent (optional field)", %{dir: dir} do
+      m =
+        Map.put(@base, :ui_components, [
+          %{
+            atom: :sig,
+            ios: %{view_module: "Demo_SigPad_View"},
+            android: %{composable: "Demo_SigPad_View"}
+          }
+        ])
+
+      assert %{errors: []} = Validator.validate_plugin(m, dir, "0.6.20")
+    end
   end
 
   describe "cross_validate/1" do
