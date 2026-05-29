@@ -12,6 +12,12 @@ defmodule MobDev.Plugin.Report do
   @typedoc "An app and its loaded manifest (nil = no manifest / tier 0)."
   @type dep :: {atom(), map() | nil}
 
+  @typedoc "Vetting summary attached to a row by `with_vetting/2`."
+  @type vetting :: %{
+          audit: %{high: non_neg_integer(), medium: non_neg_integer(), low: non_neg_integer()},
+          capability_errors: non_neg_integer()
+        }
+
   @typedoc "One row of `mix mob.plugins` output."
   @type row :: %{
           name: atom(),
@@ -19,7 +25,8 @@ defmodule MobDev.Plugin.Report do
           hot_pushable: true | false | :partial,
           status: :activated | :installed,
           manifest?: boolean(),
-          description: String.t() | nil
+          description: String.t() | nil,
+          vetting: vetting() | nil
         }
 
   @doc """
@@ -42,10 +49,82 @@ defmodule MobDev.Plugin.Report do
         hot_pushable: Manifest.hot_pushable(manifest),
         status: if(name in activated, do: :activated, else: :installed),
         manifest?: manifest != nil,
-        description: manifest && Map.get(manifest, :description)
+        description: manifest && Map.get(manifest, :description),
+        vetting: nil
       }
     end)
     |> Enum.sort_by(& &1.name)
+  end
+
+  @doc """
+  Adds a `:vetting` summary to each activated row by running the static-analysis
+  audit (`MobDev.Plugin.Audit.audit_plugin/2`) and the capability checks
+  (`MobDev.Plugin.Validator.activated_capability_errors/1`) over the plugin's
+  source tree.
+
+  `dep_dirs` is a map of `plugin_name => plugin_dir` (absolute path). Rows
+  whose plugin is not in `dep_dirs` (or which are `:installed` only — not
+  activated) get `vetting: nil` and render as a dash. This function performs
+  IO; pure rendering stays in `render/1`.
+  """
+  @spec with_vetting([row()], %{atom() => Path.t()}) :: [row()]
+  def with_vetting(rows, dep_dirs) when is_map(dep_dirs) do
+    activated_with_manifests =
+      for row <- rows,
+          row.status == :activated,
+          row.manifest?,
+          dir = Map.get(dep_dirs, row.name),
+          is_binary(dir),
+          do: row.name
+
+    capability_errors_by_plugin =
+      compute_capability_errors_by_plugin(rows, dep_dirs, activated_with_manifests)
+
+    Enum.map(rows, fn row ->
+      case Map.get(dep_dirs, row.name) do
+        nil ->
+          row
+
+        dir when row.status == :activated and row.manifest? ->
+          manifest = load_manifest(dir)
+
+          audit = MobDev.Plugin.Audit.audit_plugin(dir, manifest).summary
+
+          %{
+            row
+            | vetting: %{
+                audit: audit,
+                capability_errors: Map.get(capability_errors_by_plugin, row.name, 0)
+              }
+          }
+
+        _ ->
+          row
+      end
+    end)
+  end
+
+  defp compute_capability_errors_by_plugin(rows, dep_dirs, activated_with_manifests) do
+    plugins =
+      for name <- activated_with_manifests,
+          dir = Map.fetch!(dep_dirs, name),
+          manifest = load_manifest(dir),
+          do: {dir, manifest, find_row_name(rows, name)}
+
+    Enum.into(plugins, %{}, fn {dir, manifest, name} ->
+      errors = MobDev.Plugin.Validator.validate_swift_imports(dir, manifest)
+      errors = errors ++ MobDev.Plugin.Validator.validate_android_permissions(dir, manifest)
+      {name, length(errors)}
+    end)
+  end
+
+  defp find_row_name(rows, name), do: Enum.find_value(rows, name, &(&1.name == name && name))
+
+  defp load_manifest(dir) do
+    case MobDev.Plugin.Manifest.load(dir) do
+      {:ok, manifest} -> manifest
+      _ -> %{}
+    end
   end
 
   @doc """
@@ -59,14 +138,24 @@ defmodule MobDev.Plugin.Report do
   end
 
   def render(rows) do
-    header = "  " <> pad("PLUGIN", 26) <> pad("TIER", 8) <> pad("HOT-PUSH", 10) <> "STATUS"
-    lines = Enum.map(rows, &render_row/1)
+    with_vetting? = Enum.any?(rows, &(&1.vetting != nil))
 
-    ([header, "  " <> String.duplicate("─", 58)] ++ lines ++ ["", legend(rows)])
+    header =
+      "  " <>
+        pad("PLUGIN", 26) <>
+        pad("TIER", 8) <>
+        pad("HOT-PUSH", 10) <>
+        if(with_vetting?, do: pad("VETTING", 16), else: "") <>
+        "STATUS"
+
+    rule_width = if with_vetting?, do: 74, else: 58
+    lines = Enum.map(rows, &render_row(&1, with_vetting?))
+
+    ([header, "  " <> String.duplicate("─", rule_width)] ++ lines ++ ["", legend(rows)])
     |> Enum.join("\n")
   end
 
-  defp render_row(row) do
+  defp render_row(row, with_vetting?) do
     status =
       case row.status do
         :activated -> "activated"
@@ -79,7 +168,27 @@ defmodule MobDev.Plugin.Report do
       pad(to_string(row.name), 26) <>
       pad("tier #{row.tier}", 8) <>
       pad(hot_push(row.hot_pushable), 10) <>
+      if(with_vetting?, do: pad(render_vetting(row.vetting), 16), else: "") <>
       status <> note
+  end
+
+  defp render_vetting(nil), do: "—"
+
+  defp render_vetting(%{audit: %{high: 0, medium: 0, low: 0}, capability_errors: 0}),
+    do: "clean"
+
+  defp render_vetting(%{audit: audit, capability_errors: caps}) do
+    audit_part =
+      [{audit.high, "H"}, {audit.medium, "M"}, {audit.low, "L"}]
+      |> Enum.filter(fn {n, _} -> n > 0 end)
+      |> Enum.map_join(" ", fn {n, code} -> "#{n}#{code}" end)
+
+    case {audit_part, caps} do
+      {"", 0} -> "clean"
+      {"", n} -> "caps:#{n}"
+      {a, 0} -> a
+      {a, n} -> "caps:#{n} #{a}"
+    end
   end
 
   defp hot_push(true), do: "yes"

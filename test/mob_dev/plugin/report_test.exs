@@ -73,5 +73,72 @@ defmodule MobDev.Plugin.ReportTest do
       out = Report.rows([{:mob_haptic, @nif}], []) |> Report.render()
       assert out =~ "not activated"
     end
+
+    test "omits the VETTING column when no row carries vetting" do
+      out = Report.rows([{:mob_haptic, @nif}], [:mob_haptic]) |> Report.render()
+      refute out =~ "VETTING"
+    end
+
+    test "adds the VETTING column and renders 'clean' for a spotless row" do
+      rows = [
+        %{
+          name: :mob_palette_demo,
+          tier: 0,
+          hot_pushable: true,
+          status: :activated,
+          manifest?: true,
+          description: nil,
+          vetting: %{
+            audit: %{high: 0, medium: 0, low: 0},
+            capability_errors: 0
+          }
+        }
+      ]
+
+      out = Report.render(rows)
+      assert out =~ "VETTING"
+      assert out =~ "clean"
+    end
+
+    test "renders capability error count when present" do
+      rows = [
+        %{
+          name: :leaky_plugin,
+          tier: 2,
+          hot_pushable: false,
+          status: :activated,
+          manifest?: true,
+          description: nil,
+          vetting: %{
+            audit: %{high: 0, medium: 0, low: 0},
+            capability_errors: 2
+          }
+        }
+      ]
+
+      assert Report.render(rows) =~ "caps:2"
+    end
+
+    test "renders compact audit summary, omitting zero categories" do
+      rows = [
+        %{
+          name: :risky_plugin,
+          tier: 1,
+          hot_pushable: false,
+          status: :activated,
+          manifest?: true,
+          description: nil,
+          vetting: %{
+            audit: %{high: 1, medium: 2, low: 0},
+            capability_errors: 0
+          }
+        }
+      ]
+
+      out = Report.render(rows)
+      assert out =~ "1H"
+      assert out =~ "2M"
+      refute out =~ "0L"
+    end
   end
 end
