@@ -102,4 +102,96 @@ defmodule MobDev.Plugin.Report do
   end
 
   defp pad(s, n), do: String.pad_trailing(s, n)
+
+  # ── audit rendering ───────────────────────────────────────────────────────
+
+  @doc """
+  Renders the output of `MobDev.Plugin.Audit.audit_plugin/2` (one or more)
+  for `mix mob.audit_plugins`. Pure.
+
+  `reports` is a list of `MobDev.Plugin.Audit.report()` maps. Output is
+  ordered by plugin name; findings within a plugin are already sorted by
+  severity → file → line by `audit_plugin/2`. A trailing summary line tallies
+  every severity across all reports.
+  """
+  @spec render_audit([map()]) :: String.t()
+  def render_audit([]) do
+    "No plugins audited.\n\n" <>
+      "A plugin appears here once activated in `config :mob, :plugins`."
+  end
+
+  def render_audit(reports) do
+    sections =
+      reports
+      |> Enum.sort_by(fn r -> r.plugin || :"" end)
+      |> Enum.map(&render_audit_section/1)
+
+    roll_up = render_audit_summary(reports)
+
+    Enum.join(sections ++ ["", roll_up], "\n")
+  end
+
+  defp render_audit_section(%{plugin: plugin, findings: [], kotlin_or_swift_skipped: skipped}) do
+    base = "  #{plugin_label(plugin)} — no findings"
+
+    if skipped do
+      base <> "\n    (Kotlin/Swift sources present but not yet audited.)"
+    else
+      base
+    end
+  end
+
+  defp render_audit_section(%{
+         plugin: plugin,
+         findings: findings,
+         kotlin_or_swift_skipped: skipped
+       }) do
+    header = "  #{plugin_label(plugin)}"
+    lines = Enum.map(findings, &render_finding/1)
+
+    tail =
+      if skipped do
+        ["    (Kotlin/Swift sources present but not yet audited.)"]
+      else
+        []
+      end
+
+    Enum.join([header] ++ lines ++ tail, "\n")
+  end
+
+  defp render_finding(f) do
+    badge =
+      case f.severity do
+        :high -> "✗ HIGH  "
+        :medium -> "⚠ MED   "
+        :low -> "· LOW   "
+      end
+
+    loc =
+      case f.line do
+        nil -> f.file
+        ln -> "#{f.file}:#{ln}"
+      end
+
+    snippet = if f.snippet == "", do: "", else: "  — #{f.snippet}"
+
+    "    #{badge}[#{f.rule}]  #{loc}#{snippet}\n             #{f.hint}"
+  end
+
+  defp render_audit_summary(reports) do
+    totals =
+      Enum.reduce(reports, %{high: 0, medium: 0, low: 0}, fn r, acc ->
+        Map.merge(acc, r.summary, fn _k, a, b -> a + b end)
+      end)
+
+    count = length(reports)
+    plural = if count == 1, do: "plugin", else: "plugins"
+
+    "  ── Audit summary ─────────────────────────────────────────────────\n" <>
+      "  #{count} #{plural} scanned · " <>
+      "#{totals.high} high · #{totals.medium} medium · #{totals.low} low"
+  end
+
+  defp plugin_label(nil), do: "(unnamed plugin)"
+  defp plugin_label(name) when is_atom(name), do: to_string(name)
 end
