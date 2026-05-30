@@ -141,4 +141,27 @@ defmodule MobDev.Plugin.ReportTest do
       refute out =~ "0L"
     end
   end
+
+  describe "capability_errors_for/1" do
+    # Regression: the call site passed (dir, manifest) but the Validator expects
+    # (manifest, dir) — a string first arg matches no clause and raises
+    # FunctionClauseError, crashing `mix mob.plugins` on any manifest-bearing
+    # activated plugin (e.g. tier-1 mob_bluetooth).
+    test "passes (manifest, dir) to the validators — bt-shaped manifest yields 0, no crash" do
+      manifest = %{
+        name: :mob_bluetooth,
+        mob_version: "~> 0.6",
+        plugin_spec_version: 1,
+        android: %{permissions: ["android.permission.BLUETOOTH_CONNECT"]},
+        ios: %{plist_keys: %{NSBluetoothAlwaysUsageDescription: "x"}}
+      }
+
+      assert Report.capability_errors_for([{"/tmp/mob_no_such_dir", manifest, :mob_bluetooth}]) ==
+               %{mob_bluetooth: 0}
+    end
+
+    test "tolerates a nil manifest (tier-0)" do
+      assert Report.capability_errors_for([{"/tmp/x", nil, :palette}]) == %{palette: 0}
+    end
+  end
 end
