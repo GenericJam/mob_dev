@@ -37,6 +37,48 @@ If the task is trivially small (single-file doc edit, one-line config change)
 and clearly won't conflict with anything, working in-place is acceptable —
 but if in doubt, ask.
 
+## Recurring gotchas — read these before debugging device issues
+
+**iOS sim launches, BEAM dies fast, sim returns to home screen.** Almost
+always a host-port collision with `adb`, not a BEAM bug. When an Android
+device is connected, `adb forward tcp:9100 tcp:9100` binds `127.0.0.1:9100`
+on the Mac. iOS sims share the Mac's network stack, so `MobDev.Tunnel.dist_port(0)
+= 9100` is already taken. The OTP boot exits cleanly on `eaddrinuse` and there
+is no crash report. First diagnostic:
+
+```bash
+lsof -nP -iTCP:9100-9199 -sTCP:LISTEN | grep adb
+```
+
+…and read `Documents/beam_stdout.log` inside the sim's app container — look
+for `Protocol 'inet_tcp': register/listen error: eaddrinuse`. Workaround:
+`mix mob.deploy --device <sim-udid> --dist-port 9200`. Full writeup in
+`guides/troubleshooting.md` ("iOS simulator: BEAM dies silently…"). This
+trap has bitten the iOS sim path several times — Android tooling and iOS
+sims compete for the same `127.0.0.1` namespace; check host-port collisions
+before suspecting sim or BEAM bugs.
+
+**iOS sim stuck on "Starting BEAM…" forever.** Read
+`beam_stdout.log` inside the sim's Documents dir. If you see:
+
+```
+step 2 => {error,{"no such file or directory","elixir.app"}}
+step 5 => {error,undef}
+```
+
+…it's a runtime-path mismatch. `MobDev.Paths.sim_runtime_dir/0` falls back
+to `/tmp/otp-ios-sim` when `ios/build.sh` is missing (zig-based iOS builds),
+but the build syncs OTP + Elixir stdlib to `~/.mob/runtime/ios-sim`. Workaround
+when launching manually:
+
+```bash
+SIMCTL_CHILD_MOB_SIM_RUNTIME_DIR="$HOME/.mob/runtime/ios-sim" \
+  xcrun simctl launch <udid> com.example.<app>
+```
+
+Real fix: `sim_runtime_dir/0` should detect `ios/build.zig` and use
+`default_runtime_dir()` for it, so build and launch agree.
+
 ## TDD is the practice here
 
 Write tests before or alongside new code. Every new function should have
@@ -310,3 +352,27 @@ Write small named functions in `<your_app>.IexHelpers`, push with
 `mix mob.deploy`, call by RPC. That keeps the Mac-side script
 minimal and debuggable, and the helpers double as documentation
 of the operations you actually need.
+
+---
+
+## Decision log
+
+Non-obvious decisions — tradeoffs, workarounds, conventions, "why we chose X
+over Y" — go in `decisions/`, **one file per decision**:
+
+    decisions/YYYY-MM-DD-short-slug.md
+
+Each file is a lightweight ADR:
+
+    # <Title>
+    - Date: YYYY-MM-DD
+    - Status: accepted | superseded by <file> | proposed
+    ## Context        — what prompted this
+    ## Decision       — what we chose
+    ## Consequences   — tradeoffs, follow-ups
+
+**Append new files; never edit existing ones.** If a decision changes, add a
+new file and mark the old one `Status: superseded by <new-file>`. One file per
+decision keeps the log conflict-free across parallel agents/worktrees — the
+date-sorted directory listing is the index. Record a decision the moment you
+make a non-obvious call, not later.
