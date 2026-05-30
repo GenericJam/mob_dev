@@ -105,15 +105,28 @@ defmodule MobDev.Plugin.Report do
   end
 
   defp compute_capability_errors_by_plugin(rows, dep_dirs, activated_with_manifests) do
-    plugins =
-      for name <- activated_with_manifests,
-          dir = Map.fetch!(dep_dirs, name),
-          manifest = load_manifest(dir),
-          do: {dir, manifest, find_row_name(rows, name)}
+    for(
+      name <- activated_with_manifests,
+      dir = Map.fetch!(dep_dirs, name),
+      manifest = load_manifest(dir),
+      do: {dir, manifest, find_row_name(rows, name)}
+    )
+    |> capability_errors_for()
+  end
 
+  @doc false
+  # Pure kernel: counts capability errors per plugin from {dir, manifest, name}
+  # tuples. Extracted so the Validator arg order — `(manifest, dir)`, NOT
+  # `(dir, manifest)` — is regression-tested without the dep-dir/filesystem
+  # discovery above. Passing them swapped raises FunctionClauseError.
+  @spec capability_errors_for([{Path.t(), map(), term()}]) ::
+          %{optional(term()) => non_neg_integer()}
+  def capability_errors_for(plugins) do
     Enum.into(plugins, %{}, fn {dir, manifest, name} ->
-      errors = MobDev.Plugin.Validator.validate_swift_imports(dir, manifest)
-      errors = errors ++ MobDev.Plugin.Validator.validate_android_permissions(dir, manifest)
+      errors =
+        MobDev.Plugin.Validator.validate_swift_imports(manifest, dir) ++
+          MobDev.Plugin.Validator.validate_android_permissions(manifest, dir)
+
       {name, length(errors)}
     end)
   end
