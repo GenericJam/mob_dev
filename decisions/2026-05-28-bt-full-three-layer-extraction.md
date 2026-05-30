@@ -51,10 +51,16 @@ This depends on two new capabilities, each with its own ADR:
   registration + plugin JNI/Kotlin compilation) ships before the bt move — a
   larger effort than a code relocation, but it generalizes beyond bt.
 - mob core's shared zig helpers (`binToCString`, `pidToJlong`,
-  `callBridgePidStr*`, `get_jenv`, …) stay in core; bt-only ones move; the
-  plugin duplicates the few tiny pure helpers it needs and extern-links the
-  exported `get_jenv`. (`pidToJlong`/`pidFromLong`/`callBridgePidStr*` are
-  bt-only and move wholesale.)
+  `callBridgePidStr*`, `get_jenv`, …) stay in core; the plugin duplicates the
+  small pure helpers it needs and extern-links the exported `get_jenv` + `g_jvm`.
+  **Correction (2026-05-30, found during extraction):** `pidToJlong` /
+  `pidFromLong` / `callBridgePidStr*` are NOT bt-only — core keeps using them
+  for location/camera/audio/vendor_usb (`pidFromLong` 17×, `callBridgePidStr`
+  24× post-strip). They are DUPLICATED into the plugin, not moved. The plugin's
+  bt method-id cache is its own `g_bt` struct + `g_bt_cls`, not core's exported
+  `Bridge`. The 32 (not 25) JNI delivery thunks ship as a verbatim-copied
+  `jni_source` C file with only the symbol prefix renamed to
+  `Java_io_mob_bluetooth_MobBluetoothBridge_*`.
 - bt is Android-only (Apple MFi gates it; mob returns `:unsupported` on iOS), so
   the iOS plugin-bridge path is out of scope for this wave.
 - Discipline: prove each capability with a trivial prototype on device (the
