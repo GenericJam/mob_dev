@@ -8,6 +8,11 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.5.13]
+
+### Fixed
+- **iOS deploy now ships the whole `priv/`, not just `priv/repo/migrations` + `priv/static`.** `MobDev.Release`'s iOS bundler copied only migrations and `priv/static`, so apps that bundle extra runtime assets under `priv/` — `:mix`/`:hex` ebins for on-device `Mix.install`, or a vendored library's own `priv/` (e.g. Livebook's `priv/static` + `priv/livebook`) — silently never reached the device. Now rsyncs all of `priv/`, matching the Android deployer. Unblocks on-device `Mix.install` and embedded Livebook on iOS. Verified on a physical iPhone: `priv/mix/ebin` (103 beams) and `priv/livebook/static` present on device, embedded Livebook serves, and `Mix.install([{:short_uuid, "~> 0.1"}])` returns `:ok`.
+
 ## [0.5.12]
 
 ### Changed
