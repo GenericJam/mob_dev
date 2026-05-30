@@ -458,17 +458,19 @@ defmodule MobDev.Release do
     copy_otp_lib asn1
     copy_otp_lib public_key
 
-    echo "=== Copying migrations + assets ==="
-    mkdir -p "$BEAMS_DIR/priv/repo/migrations"
-    if ls priv/repo/migrations/*.exs >/dev/null 2>&1; then
-        cp priv/repo/migrations/*.exs "$BEAMS_DIR/priv/repo/migrations/"
-    fi
+    echo "=== Copying priv (migrations, assets, bundled ebins, app priv) ==="
     if [ -d "assets" ]; then
         mix assets.build
-        if [ -d "priv/static" ]; then
-            mkdir -p "$BEAMS_DIR/priv/static"
-            rsync -a "priv/static/" "$BEAMS_DIR/priv/static/"
-        fi
+    fi
+    # Ship the WHOLE priv/ to the device, not just repo/migrations + static.
+    # Apps that bundle extra runtime assets under priv/ — e.g. :mix/:hex ebins
+    # for on-device Mix.install, or a vendored library's priv/static (Livebook) —
+    # need those on device too. Mirrors the Android deployer, which pushes all
+    # of priv/. (Previously only priv/repo/migrations and priv/static shipped,
+    # so priv/mix, priv/hex, priv/<lib>/... silently never reached the device.)
+    if [ -d "priv" ]; then
+        mkdir -p "$BEAMS_DIR/priv"
+        rsync -a "priv/" "$BEAMS_DIR/priv/"
     fi
 
     APP_VSN=$(grep -o '{vsn,"[^"]*"}' "$BEAMS_DIR/${APP_MODULE}.app" | grep -o '"[^"]*"' | tr -d '"')
