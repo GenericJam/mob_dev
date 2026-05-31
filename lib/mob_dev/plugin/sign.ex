@@ -92,6 +92,14 @@ defmodule MobDev.Plugin.Sign do
     }
   end
 
+  # CAVEAT — atom keys in the signed terms (this payload + the sig envelope in
+  # `sign_plugin/2`) must also appear in `MobDev.Plugin.Verify`'s
+  # `@envelope_atoms`. Verify decodes the .sig with binary_to_term(_, [:safe]),
+  # which won't *create* atoms — any atom key it hasn't interned at load time
+  # makes a valid signature decode as :corrupt, intermittently (depends on what
+  # else loaded first). Adding a key here without updating @envelope_atoms
+  # reintroduces that bug. See decisions/2026-05-31-verify-safe-atom-intern.md.
+
   @doc """
   Signs `plugin_dir` and writes `priv/mob_plugin.sig`.
 

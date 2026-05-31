@@ -28,6 +28,21 @@ defmodule MobDev.Plugin.Verify do
   @signature_file "priv/mob_plugin.sig"
   @pubkey_file "priv/mob_plugin.pub"
 
+  # Atom keys that appear in the signed envelope term (see `Sign.sign_plugin/2`).
+  # `load_signature/1` decodes the envelope with `binary_to_term(_, [:safe])`,
+  # which refuses to *create* atoms — every atom in the encoded term must
+  # already exist in the runtime atom table or the decode raises `badarg` and a
+  # valid signature is misreported as `:corrupt`. `Verify` matches `:signature`
+  # directly, but nothing here references `:envelope_version`; only `Sign` did.
+  # Because `verify_plugin/2` calls `load_signature/1` *before* it ever touches
+  # `Sign`, decoding succeeded or failed depending on whether `Sign` happened to
+  # be loaded earlier in the BEAM — a load-order-dependent intermittent
+  # "invalid signature" across builds. Naming the atoms in this module-level
+  # literal interns them at `Verify`-load (guaranteed before any decode), making
+  # the decode deterministic while keeping `:safe` (sig files are
+  # attacker-controlled). See decisions/2026-05-31-verify-safe-atom-intern.md.
+  @envelope_atoms [:signature, :envelope_version]
+
   @typedoc "Errors `load_signature/1` can return."
   @type sig_error :: :missing | :corrupt
 
@@ -62,11 +77,21 @@ defmodule MobDev.Plugin.Verify do
   end
 
   defp decode_envelope_term!(bytes) do
+    # Touch the literal so the envelope atoms are guaranteed interned before the
+    # :safe decode runs (see @envelope_atoms above).
+    _ = @envelope_atoms
+
     case :erlang.binary_to_term(bytes, [:safe]) do
       %{signature: sig} when is_binary(sig) and byte_size(sig) == 64 -> sig
       _ -> raise "corrupt"
     end
   end
+
+  @doc false
+  # Atoms the signed envelope can contain; exposed so the interning guarantee is
+  # regression-testable (see verify_test.exs).
+  @spec envelope_atoms() :: [atom()]
+  def envelope_atoms, do: @envelope_atoms
 
   @doc """
   Loads the raw 32-byte public key from `priv/mob_plugin.pub`.
