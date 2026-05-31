@@ -45,6 +45,28 @@ defmodule MobDev.Plugin.VerifyTest do
       File.write!(Sign.signature_path(dir), "garbage")
       assert {:error, :corrupt} = Verify.load_signature(dir)
     end
+
+    # Regression: the envelope is decoded with binary_to_term(_, [:safe]), which
+    # will not *create* atoms. The envelope contains :envelope_version, an atom
+    # Verify must intern at load time (via @envelope_atoms) — otherwise, in any
+    # BEAM where Sign (the only other interner) hadn't loaded yet, the :safe
+    # decode raised and a *valid* signature was misreported as :corrupt. That
+    # load-order dependence made the build signature gate intermittently reject
+    # good plugins. The true cold-VM repro is cross-process (atoms can't be
+    # un-interned in a live VM); these guard the fix's mechanism in-process.
+    # See decisions/2026-05-31-verify-safe-atom-intern.md.
+    test "interns the envelope atoms at module load (safe-decode guard)" do
+      assert :signature in Verify.envelope_atoms()
+      assert :envelope_version in Verify.envelope_atoms()
+    end
+
+    test "decodes an envelope whose term includes the :envelope_version key",
+         %{dir: dir} do
+      raw = File.read!(Sign.signature_path(dir))
+      assert %{signature: _, envelope_version: 1} = :erlang.binary_to_term(raw, [:safe])
+      assert {:ok, sig} = Verify.load_signature(dir)
+      assert byte_size(sig) == 64
+    end
   end
 
   describe "load_pubkey/1" do
