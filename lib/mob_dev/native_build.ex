@@ -128,6 +128,9 @@ defmodule MobDev.NativeBuild do
          :ok <- install_nx_eigen_otp_lib(otp_arm64),
          :ok <- install_nx_eigen_otp_lib(otp_arm32),
          :ok <- zig_build_android_objects(mob_dir, otp_arm64, otp_arm32),
+         :ok <- apply_plugin_android_manifest!(),
+         :ok <- apply_plugin_gradle_deps!(),
+         :ok <- apply_plugin_android_kotlin!(),
          :ok <- gradle_assemble(),
          :ok <- adb_install_all(apk, bundle_id, device_id),
          :ok <-
@@ -236,6 +239,23 @@ defmodule MobDev.NativeBuild do
     jni_libs_abi = Path.join([project_root, "android/app/src/main/jniLibs", abi])
     File.mkdir_p!(jni_libs_abi)
 
+    # Activated plugins' C NIF sources (one .c per nif, named after the NIF
+    # module). Empty when no NIF-bearing plugin is activated; the build.zig
+    # template orelse's "" so the flag is always safe to emit.
+    plugin_c_nifs = MobDev.Plugin.Merge.nif_sources(MobDev.Plugin.activated()) |> Enum.join(",")
+
+    # Activated plugins' zig NIF sources (one .zig per nif, lang: :zig). Same
+    # shape as plugin_c_nifs but compiled via addZigObject with named-module
+    # imports for mob-core bindings. Empty when no zig-NIF plugin is activated.
+    plugin_zig_nifs =
+      MobDev.Plugin.Merge.zig_nif_sources(MobDev.Plugin.activated()) |> Enum.join(",")
+
+    # Activated plugins' JNI-thunk C sources (android.jni_source). Plain C
+    # objects (no NIF-init libname) compiled + linked into the app .so so a
+    # plugin's Java_<pkg>_<Class>_* thunks resolve. Empty when none.
+    plugin_jni_sources =
+      MobDev.Plugin.Merge.jni_sources(MobDev.Plugin.activated()) |> Enum.join(",")
+
     base_args = [
       "build",
       "native-lib",
@@ -252,7 +272,10 @@ defmodule MobDev.NativeBuild do
       "-Dndk_sysroot=#{ndk_sysroot()}",
       "-Dapp_name=#{app_name}",
       "-Dproject_root=#{project_root}",
-      "-Dexqlite_src=#{Path.join(project_root, "deps/exqlite/c_src")}"
+      "-Dexqlite_src=#{Path.join(project_root, "deps/exqlite/c_src")}",
+      "-Dplugin_c_nifs=#{plugin_c_nifs}",
+      "-Dplugin_zig_nifs=#{plugin_zig_nifs}",
+      "-Dplugin_jni_sources=#{plugin_jni_sources}"
     ]
 
     # `project_nif_zig_args/1` also emits `-Dproject_root=` (since the
@@ -2138,6 +2161,21 @@ defmodule MobDev.NativeBuild do
     end
   end
 
+  # Emits the iOS plugin bootstrap Swift file the build step later compiles
+  # alongside the project + plugin Swift sources. Returns the absolute path of
+  # the written file so the caller can append it to `plugin_swift_files`.
+  #
+  # The file is regenerated on every iOS build. The content is purely a
+  # function of the activated-plugin manifests, so this is cheap and keeps
+  # the build cache aligned with the manifest set (no stale registrations
+  # from a plugin that just got deactivated).
+  defp generate_ios_plugin_bootstrap(build_dir) do
+    out_path = Path.join(build_dir, "mob_plugin_bootstrap.swift")
+    source = MobDev.Plugin.IOSBootstrap.swift_source(MobDev.Plugin.activated())
+    File.write!(out_path, source)
+    out_path
+  end
+
   defp zig_build_binary_ios_sim(
          mob_dir,
          otp_root,
@@ -2152,6 +2190,33 @@ defmodule MobDev.NativeBuild do
        ) do
     driver_tab = resolve_driver_tab_ios(mob_dir)
 
+    # Plugin-contributed Swift sources + extra iOS frameworks gathered from
+    # activated plugin manifests. Empty strings when no plugin contributes,
+    # so the build.zig templates `orelse ""` and the flags are safe to emit
+    # unconditionally (mirrors the Android plugin_c_nifs pattern at the top
+    # of run_zig_android_objects).
+    activated_plugins = MobDev.Plugin.activated()
+
+    # Capability enforcement (see MOB_PLUGIN_SECURITY.md, Layer 2): refuse to
+    # link an activated plugin whose Swift source imports a framework — or
+    # whose AndroidManifest references a permission — its manifest doesn't
+    # declare. Raises with the full list of drifts when any are found.
+    MobDev.Plugin.Validator.raise_on_capability_drift!(activated_plugins)
+
+    # Generated bootstrap Swift gets compiled alongside the plugins' own
+    # Swift files, so it lands in the same `-Dplugin_swift_files` arg.
+    # That keeps the build.zig template surface unchanged — one flag, one
+    # split-and-compile loop — and means the bootstrap function ends up in
+    # MobApp-Swift.h's module the same way plugin views do.
+    bootstrap_path = generate_ios_plugin_bootstrap(build_dir)
+
+    plugin_swift_files =
+      (MobDev.Plugin.Merge.swift_files(activated_plugins) ++ [bootstrap_path])
+      |> Enum.join(",")
+
+    plugin_frameworks =
+      activated_plugins |> MobDev.Plugin.Merge.ios_frameworks() |> Enum.join(",")
+
     base_args = [
       "build",
       "binary",
@@ -2165,7 +2230,9 @@ defmodule MobDev.NativeBuild do
       "-Denif_keepalive=#{Path.join(build_dir, "enif_keepalive.c")}",
       "-Dproject_ios_dir=#{Path.expand("ios")}",
       "-Dmodule_name=#{display_name}",
-      "-Dproject_swift_sources=#{project_swift_sources}"
+      "-Dproject_swift_sources=#{project_swift_sources}",
+      "-Dplugin_swift_files=#{plugin_swift_files}",
+      "-Dplugin_frameworks=#{plugin_frameworks}"
     ]
 
     with {:ok, nif_args} <- project_nif_zig_args(:ios_sim) do
@@ -3361,6 +3428,26 @@ defmodule MobDev.NativeBuild do
        ) do
     driver_tab = resolve_driver_tab_ios(mob_dir)
 
+    # Plugin contributions, same as the sim path above.
+    activated_plugins = MobDev.Plugin.activated()
+
+    # Capability enforcement — same one-liner the sim path uses. See
+    # MOB_PLUGIN_SECURITY.md, Layer 2.
+    MobDev.Plugin.Validator.raise_on_capability_drift!(activated_plugins)
+
+    # See sim build for the rationale on bundling the bootstrap into
+    # `plugin_swift_files`. Keeping sim + device on the same wiring means
+    # one place to debug "where did mob_register_plugins go?" if/when it
+    # comes up.
+    bootstrap_path = generate_ios_plugin_bootstrap(build_dir)
+
+    plugin_swift_files =
+      (MobDev.Plugin.Merge.swift_files(activated_plugins) ++ [bootstrap_path])
+      |> Enum.join(",")
+
+    plugin_frameworks =
+      activated_plugins |> MobDev.Plugin.Merge.ios_frameworks() |> Enum.join(",")
+
     base_args = [
       "build",
       "binary",
@@ -3377,7 +3464,9 @@ defmodule MobDev.NativeBuild do
       "-Dmodule_name=#{display_name}",
       "-Depmd_build_src=#{epmd_build_src}",
       "-Derrno_compat=#{Path.join(build_dir, "erl_errno_id_compat.c")}",
-      "-Dproject_swift_sources=#{project_swift_sources}"
+      "-Dproject_swift_sources=#{project_swift_sources}",
+      "-Dplugin_swift_files=#{plugin_swift_files}",
+      "-Dplugin_frameworks=#{plugin_frameworks}"
     ]
 
     with {:ok, nif_args} <- project_nif_zig_args(:ios_device) do
@@ -3522,7 +3611,9 @@ defmodule MobDev.NativeBuild do
         {:error, "ios/Info.plist not found — required for the .app bundle"}
 
       true ->
-        File.cp!("ios/Info.plist", Path.join(app_path, "Info.plist"))
+        info_plist = Path.join(app_path, "Info.plist")
+        File.cp!("ios/Info.plist", info_plist)
+        apply_plugin_plist_keys!(info_plist)
         if File.dir?("ios/Assets.xcassets/AppIcon.appiconset"), do: compile_ios_icons(app_path)
         {:ok, app_path}
     end
@@ -3713,6 +3804,7 @@ defmodule MobDev.NativeBuild do
       true ->
         info_plist = Path.join(app_path, "Info.plist")
         File.cp!("ios/Info.plist", info_plist)
+        apply_plugin_plist_keys!(info_plist)
         plist_set!(info_plist, ":CFBundleIdentifier", bundle_id)
         plist_set!(info_plist, ":CFBundleExecutable", app_name)
         plist_set!(info_plist, ":CFBundleName", app_name)
@@ -3754,6 +3846,389 @@ defmodule MobDev.NativeBuild do
 
     :ok
   end
+
+  # Adds plugin-declared Info.plist keys via PlistBuddy `Add`. Add fails (and is
+  # ignored) when the key is already present, giving us "project Info.plist wins
+  # on conflict; plugins fill gaps" semantics — so a plugin can ship a default
+  # NSCameraUsageDescription that the app author can override in their own
+  # Info.plist without changing the plugin. See ADR
+  # decisions/2026-05-28-plugin-plist-keys-merge.md.
+  defp apply_plugin_plist_keys!(info_plist) do
+    activated_plugins = MobDev.Plugin.activated()
+
+    for {key, value} <- MobDev.Plugin.Merge.plist_keys(activated_plugins) do
+      case plist_add_type(value) do
+        {:ok, type, str_value} ->
+          plist_add(info_plist, ":#{key}", type, str_value)
+
+        :unsupported ->
+          Mix.shell().info(
+            "  [plugin plist] skipping :#{key} — unsupported value type #{inspect(value)}"
+          )
+      end
+    end
+
+    :ok
+  end
+
+  defp plist_add_type(value) when is_binary(value), do: {:ok, "string", value}
+  defp plist_add_type(true), do: {:ok, "bool", "true"}
+  defp plist_add_type(false), do: {:ok, "bool", "false"}
+
+  defp plist_add_type(value) when is_integer(value),
+    do: {:ok, "integer", Integer.to_string(value)}
+
+  defp plist_add_type(_other), do: :unsupported
+
+  # PlistBuddy `Add` is non-zero on duplicate-key (and on a few other failure
+  # modes we'd want to know about). We swallow the duplicate-key case
+  # deliberately — that's our project-wins mechanism — and accept that other
+  # PlistBuddy errors will pass silently. The first plugin that hits a real
+  # problem here can extend this to inspect stderr and surface non-duplicate
+  # failures.
+  defp plist_add(plist, key, type, value) do
+    System.cmd(
+      "/usr/libexec/PlistBuddy",
+      ["-c", "Add #{key} #{type} #{value}", plist],
+      stderr_to_stdout: true
+    )
+
+    :ok
+  end
+
+  # ── Android plugin contributions: manifest + gradle ──────────────────────────
+
+  @android_manifest_path "android/app/src/main/AndroidManifest.xml"
+  @android_app_gradle_path "android/app/build.gradle"
+  @android_java_root "android/app/src/main/java"
+  # Generated startup hook (package io.mob.plugin). MainActivity.onCreate calls
+  # io.mob.plugin.MobPluginBootstrap.registerAll(this).
+  @plugin_bootstrap_path "android/app/src/main/java/io/mob/plugin/MobPluginBootstrap.kt"
+  # Generated stable contract: a bridge class implements MobActivityAware to be
+  # handed the host Activity by registerAll. Always written next to the bootstrap.
+  @plugin_activity_aware_path "android/app/src/main/java/io/mob/plugin/MobActivityAware.kt"
+
+  # Inserts `<uses-permission android:name="..."/>` lines for each permission
+  # declared by activated plugins into `AndroidManifest.xml`. Idempotent: skips
+  # any permission name already present in the manifest (covers both the
+  # project's hand-rolled declarations and a previous run's plugin merge).
+  #
+  # No-op (with a notice) when the manifest is missing — mirrors how
+  # `MobDev.Enable.Igniter.add_android_permission/2` handles the absence at
+  # `mix mob.enable` time.
+  defp apply_plugin_android_manifest! do
+    activated = MobDev.Plugin.activated()
+
+    # Capability enforcement — same call the iOS sim/device paths use; runs
+    # the AndroidManifest-fragment + Swift-import scans across every
+    # activated plugin and raises on drift. See MOB_PLUGIN_SECURITY.md,
+    # Layer 2.
+    MobDev.Plugin.Validator.raise_on_capability_drift!(activated)
+
+    case File.read(@android_manifest_path) do
+      {:error, :enoent} ->
+        if MobDev.Plugin.Merge.android_permissions(activated) != [] do
+          IO.puts(
+            "  [plugin android] #{@android_manifest_path} not found — skipping plugin permissions."
+          )
+        end
+
+        :ok
+
+      {:ok, content} ->
+        permissions = MobDev.Plugin.Merge.android_permissions(activated)
+        patched = merge_android_permissions(content, permissions)
+
+        if patched != content, do: File.write!(@android_manifest_path, patched)
+
+        :ok
+    end
+  end
+
+  # Inserts `implementation "<dep>"` lines for each gradle dependency declared
+  # by activated plugins into the app-level `build.gradle`'s `dependencies { }`
+  # block. Idempotent: skips any dep string already mentioned anywhere in the
+  # file (the substring check is intentionally broad — Gradle allows several
+  # syntaxes for the same dep, and we'd rather under-add than duplicate).
+  #
+  # No-op (with a notice) when the gradle file is missing.
+  defp apply_plugin_gradle_deps! do
+    case File.read(@android_app_gradle_path) do
+      {:error, :enoent} ->
+        if MobDev.Plugin.Merge.gradle_deps(MobDev.Plugin.activated()) != [] do
+          IO.puts(
+            "  [plugin android] #{@android_app_gradle_path} not found — skipping plugin gradle_deps."
+          )
+        end
+
+        :ok
+
+      {:ok, content} ->
+        deps = MobDev.Plugin.Merge.gradle_deps(MobDev.Plugin.activated())
+        patched = merge_gradle_deps(content, deps)
+
+        if patched != content, do: File.write!(@android_app_gradle_path, patched)
+
+        :ok
+    end
+  end
+
+  # Copies each activated plugin's `bridge_kt` into the app's Kotlin sourceSet
+  # (at its own package path, read from the file's `package` line) so Gradle
+  # compiles it, and (re)generates `io.mob.plugin.MobPluginBootstrap` whose
+  # `registerAll(activity)` calls each `bridge_class`'s `register()` and then
+  # hands the Activity to any bridge implementing `MobActivityAware`.
+  # MainActivity calls `MobPluginBootstrap.registerAll(this)` in `onCreate`.
+  # The `MobActivityAware` contract is written alongside the bootstrap, and
+  # both are always written (empty registerAll body when no plugin declares a
+  # bridge_class) so the MainActivity call always resolves. No-op (with a
+  # notice) when the java root is missing.
+  defp apply_plugin_android_kotlin! do
+    if File.dir?(@android_java_root) do
+      activated = MobDev.Plugin.activated()
+
+      for src <- MobDev.Plugin.Merge.bridge_kt_sources(activated) do
+        case File.read(src) do
+          {:ok, content} ->
+            case __parse_kotlin_package__(content) do
+              nil ->
+                IO.puts("  [plugin android] #{src} has no `package` line — skipping copy.")
+
+              package ->
+                dest = __bridge_kt_dest__(@android_java_root, package, Path.basename(src))
+                File.mkdir_p!(Path.dirname(dest))
+                File.write!(dest, content)
+            end
+
+          {:error, reason} ->
+            IO.puts("  [plugin android] cannot read #{src}: #{inspect(reason)} — skipping.")
+        end
+      end
+
+      write_generated_kotlin!(@plugin_activity_aware_path, __activity_aware_kotlin__())
+
+      write_generated_kotlin!(
+        @plugin_bootstrap_path,
+        __bootstrap_kotlin__(MobDev.Plugin.Merge.bridge_classes(activated))
+      )
+
+      :ok
+    else
+      if MobDev.Plugin.Merge.bridge_kt_sources(MobDev.Plugin.activated()) != [] do
+        IO.puts("  [plugin android] #{@android_java_root} not found — skipping plugin Kotlin.")
+      end
+
+      :ok
+    end
+  end
+
+  # Extracts the FQ package from a Kotlin source, or nil if none.
+  @doc false
+  @spec __parse_kotlin_package__(String.t()) :: String.t() | nil
+  def __parse_kotlin_package__(content) do
+    case Regex.run(~r/^\s*package\s+([\w.]+)/m, content) do
+      [_, package] -> package
+      _ -> nil
+    end
+  end
+
+  @doc false
+  @spec __bridge_kt_dest__(String.t(), String.t(), String.t()) :: String.t()
+  def __bridge_kt_dest__(java_root, package, basename) do
+    Path.join([java_root, String.replace(package, ".", "/"), basename])
+  end
+
+  # Writes a generated Kotlin file, creating its dir and skipping the write
+  # when the content is byte-identical (keeps Gradle's up-to-date checks happy).
+  defp write_generated_kotlin!(path, content) do
+    File.mkdir_p!(Path.dirname(path))
+    if File.read(path) != {:ok, content}, do: File.write!(path, content)
+    :ok
+  end
+
+  # Source for io.mob.plugin.MobPluginBootstrap. registerAll(activity) calls each
+  # bridge class's register(), then hands the Activity to any bridge implementing
+  # MobActivityAware via the handOff helper. The body is uniform per bridge, so
+  # the generator needs no per-plugin knowledge. handOff takes `Any` so the
+  # `as?` runtime check is valid for every bridge type — a direct
+  # `(SomeFinalObject as? MobActivityAware)` would draw a "cast can never
+  # succeed" warning for bridges that don't opt in.
+  @doc false
+  @spec __bootstrap_kotlin__([String.t()]) :: String.t()
+  def __bootstrap_kotlin__(bridge_classes) do
+    calls =
+      bridge_classes
+      |> Enum.map(fn cls -> "        #{cls}.register()\n        handOff(#{cls}, activity)" end)
+      |> Enum.join("\n")
+
+    {body, helper} =
+      if calls == "" do
+        {"", ""}
+      else
+        {"\n" <> calls <> "\n    ",
+         "\n\n    // Hands the Activity to a bridge that opts in via" <>
+           " MobActivityAware.\n" <>
+           "    private fun handOff(bridge: Any, activity: Activity) {\n" <>
+           "        (bridge as? MobActivityAware)?.setActivity(activity)\n" <>
+           "    }"}
+      end
+
+    """
+    // Generated by mob_dev (MobDev.NativeBuild) — do not edit.
+    // Calls each activated plugin's bridge-class register() at startup, then
+    // hands the Activity to any bridge implementing MobActivityAware;
+    // invoked from MainActivity.onCreate as registerAll(this).
+    package io.mob.plugin
+
+    import android.app.Activity
+
+    object MobPluginBootstrap {
+        @JvmStatic
+        fun registerAll(activity: Activity) {#{body}}#{helper}
+    }
+    """
+  end
+
+  # Source for io.mob.plugin.MobActivityAware — the stable opt-in contract a
+  # plugin bridge class implements to be handed the host Activity. Generated
+  # (never changes) so existing apps and mob_new projects get it without a
+  # template edit.
+  @doc false
+  @spec __activity_aware_kotlin__() :: String.t()
+  def __activity_aware_kotlin__ do
+    """
+    // Generated by mob_dev (MobDev.NativeBuild) — do not edit.
+    // A plugin bridge class implements this to receive the host Activity from
+    // MobPluginBootstrap.registerAll, right after register().
+    package io.mob.plugin
+
+    import android.app.Activity
+
+    interface MobActivityAware {
+        fun setActivity(activity: Activity)
+    }
+    """
+  end
+
+  @doc false
+  @spec __merge_android_permissions__(String.t(), [String.t()]) :: String.t()
+  def __merge_android_permissions__(manifest, permissions),
+    do: merge_android_permissions(manifest, permissions)
+
+  @doc false
+  @spec __merge_gradle_deps__(String.t(), [String.t()]) :: String.t()
+  def __merge_gradle_deps__(content, deps), do: merge_gradle_deps(content, deps)
+
+  # Pure transform: insert new `<uses-permission>` tags for each permission not
+  # already declared. Insertion point is right after the last existing
+  # `<uses-permission ...>` line; failing that (no permissions declared yet),
+  # right before the first `<application` tag; failing *that*, just before
+  # `</manifest>`. The four-space indent matches the template's style.
+  defp merge_android_permissions(manifest, []), do: manifest
+
+  defp merge_android_permissions(manifest, permissions) when is_binary(manifest) do
+    missing = Enum.reject(permissions, &permission_present?(manifest, &1))
+
+    case missing do
+      [] ->
+        manifest
+
+      _ ->
+        tags = Enum.map_join(missing, "\n", &~s(    <uses-permission android:name="#{&1}" />))
+        insert_uses_permissions(manifest, tags)
+    end
+  end
+
+  defp permission_present?(manifest, permission) do
+    String.contains?(manifest, ~s(android:name="#{permission}")) and
+      String.contains?(manifest, "uses-permission")
+  end
+
+  defp insert_uses_permissions(manifest, tags) do
+    matches = Regex.scan(~r/<uses-permission\b[^>]*>/, manifest, return: :index)
+
+    cond do
+      matches != [] ->
+        # After the last existing uses-permission tag — keep new ones grouped
+        # with the project's hand-rolled set.
+        [{start, len}] = List.last(matches)
+        insert_at = start + len
+        head = binary_part(manifest, 0, insert_at)
+        tail = binary_part(manifest, insert_at, byte_size(manifest) - insert_at)
+        head <> "\n#{tags}" <> tail
+
+      # No existing permissions — slot in just before <application.
+      String.contains?(manifest, "<application") ->
+        String.replace(manifest, "<application", "#{tags}\n\n    <application", global: false)
+
+      # Pathological manifest with neither — last resort, before </manifest>.
+      true ->
+        String.replace(manifest, "</manifest>", "#{tags}\n</manifest>", global: false)
+    end
+  end
+
+  # Pure transform: insert `implementation "<dep>"` for each dep not already
+  # present anywhere in the gradle content (broad substring check — see comment
+  # on apply_plugin_gradle_deps!/0). The new lines are appended at the end of
+  # the dependencies block, indented to match the template.
+  defp merge_gradle_deps(content, []), do: content
+
+  defp merge_gradle_deps(content, deps) when is_binary(content) do
+    missing = Enum.reject(deps, &String.contains?(content, &1))
+
+    case missing do
+      [] ->
+        content
+
+      _ ->
+        lines = Enum.map_join(missing, "\n", &~s(    implementation "#{&1}"))
+        insert_gradle_deps(content, lines)
+    end
+  end
+
+  defp insert_gradle_deps(content, lines) do
+    # Locate the top-level `dependencies { ... }` block, then find its matching
+    # close-brace by counting depth from the opening `{`. The mob_new template
+    # has a clean dependencies block; if a project gets exotic and the block
+    # can't be found, we fall back to appending a fresh block at end-of-file
+    # (Gradle merges multiple `dependencies { }` blocks, so this still works).
+    case Regex.run(~r/^dependencies\s*\{/m, content, return: :index) do
+      [{start_idx, len}] ->
+        open_brace_idx = start_idx + len - 1
+
+        case find_matching_close_brace(content, open_brace_idx) do
+          {:ok, close_idx} ->
+            head = binary_part(content, 0, close_idx)
+            tail = binary_part(content, close_idx, byte_size(content) - close_idx)
+            head <> "#{lines}\n" <> tail
+
+          :not_found ->
+            content <> "\ndependencies {\n#{lines}\n}\n"
+        end
+
+      nil ->
+        content <> "\ndependencies {\n#{lines}\n}\n"
+    end
+  end
+
+  # Given an index pointing at an opening `{` byte, return the index of the
+  # matching `}`. Operates on bytes — fine for Gradle files which are ASCII
+  # in practice; if a project sneaks in a UTF-8 brace-lookalike, we'd just
+  # miss it and fall back to the append path.
+  defp find_matching_close_brace(content, open_idx) do
+    scan_brace(content, open_idx + 1, 1)
+  end
+
+  defp scan_brace(content, idx, depth) when idx < byte_size(content) do
+    case binary_part(content, idx, 1) do
+      "{" -> scan_brace(content, idx + 1, depth + 1)
+      "}" when depth == 1 -> {:ok, idx}
+      "}" -> scan_brace(content, idx + 1, depth - 1)
+      _ -> scan_brace(content, idx + 1, depth)
+    end
+  end
+
+  defp scan_brace(_content, _idx, _depth), do: :not_found
 
   defp compile_ios_device_icons(app_path) do
     actool_plist =
