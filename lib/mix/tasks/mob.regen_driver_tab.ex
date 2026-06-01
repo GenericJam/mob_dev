@@ -129,7 +129,12 @@ defmodule Mix.Tasks.Mob.RegenDriverTab do
       MobDev.Config.load_mob_config()
       |> Keyword.get(:static_nifs, Application.get_env(:mob_dev, :static_nifs, []))
 
-    StaticNifs.resolve(user)
+    # Activated plugins contribute their NIFs to the static-NIF table. The
+    # plugin's native source still has to be compiled into the binary by the
+    # build (see android_sources/swift_files); this only adds the table entry.
+    plugin_nifs = MobDev.Plugin.Merge.nifs(MobDev.Plugin.activated())
+
+    StaticNifs.resolve(user ++ plugin_nifs)
   end
 
   @doc false
