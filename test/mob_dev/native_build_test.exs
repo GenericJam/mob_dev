@@ -117,18 +117,47 @@ defmodule MobDev.NativeBuildTest do
              ) == "android/app/src/main/java/io/mob/bluetooth/MobBluetoothBridge.kt"
     end
 
-    test "__bootstrap_kotlin__ emits a register() call per bridge class" do
+    test "__bootstrap_kotlin__ emits register() + activity handoff per bridge class" do
       src = NativeBuild.__bootstrap_kotlin__(["io.mob.bluetooth.MobBluetoothBridge"])
       assert src =~ "package io.mob.plugin"
+      assert src =~ "import android.app.Activity"
       assert src =~ "object MobPluginBootstrap"
-      assert src =~ "fun registerAll()"
+      assert src =~ "fun registerAll(activity: Activity)"
       assert src =~ "io.mob.bluetooth.MobBluetoothBridge.register()"
+      assert src =~ "handOff(io.mob.bluetooth.MobBluetoothBridge, activity)"
+      # The cast lives in the Any-typed helper, never inline against a final object.
+      assert src =~ "private fun handOff(bridge: Any, activity: Activity)"
+      assert src =~ "(bridge as? MobActivityAware)?.setActivity(activity)"
+      refute src =~ "MobBluetoothBridge as? MobActivityAware"
     end
 
-    test "__bootstrap_kotlin__ emits an empty registerAll body when no bridge classes" do
+    test "__bootstrap_kotlin__ hands the activity to every bridge uniformly" do
+      src =
+        NativeBuild.__bootstrap_kotlin__([
+          "io.mob.bluetooth.MobBluetoothBridge",
+          "io.mob.zigextras.MobZigExtrasBridge"
+        ])
+
+      # One register() + one handOff() per class, no per-plugin branching, and
+      # exactly one shared helper holding the single cast.
+      assert length(Regex.scan(~r/\.register\(\)/, src)) == 2
+      assert length(Regex.scan(~r/handOff\([\w.]+, activity\)/, src)) == 2
+      assert length(Regex.scan(~r/as\? MobActivityAware/, src)) == 1
+    end
+
+    test "__bootstrap_kotlin__ emits an empty registerAll body and no helper when no bridges" do
       src = NativeBuild.__bootstrap_kotlin__([])
-      assert src =~ "fun registerAll() {}"
+      assert src =~ "fun registerAll(activity: Activity) {}"
       refute src =~ ".register()"
+      refute src =~ "handOff"
+    end
+
+    test "__activity_aware_kotlin__ emits the stable MobActivityAware contract" do
+      src = NativeBuild.__activity_aware_kotlin__()
+      assert src =~ "package io.mob.plugin"
+      assert src =~ "import android.app.Activity"
+      assert src =~ "interface MobActivityAware {"
+      assert src =~ "fun setActivity(activity: Activity)"
     end
   end
 
