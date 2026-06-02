@@ -8,6 +8,12 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.5.14]
+
+### Fixed
+- **iOS release: `erl_errno_id_unknown` shim written with a literal `\n`.** The weak-stub line in `release_device.sh` used `printf '%s\\n'` inside the `~S` (raw) heredoc, so bash received both backslashes and `printf` wrote a literal backslash-`n` into `erl_errno_id_compat.c` — clang then rejected the trailing `}\n` and `mix mob.release --ios` failed. Now `printf '%s\n'` (one backslash) emits a real newline. Regression guard added to `release_script_test`.
+- **iOS release: clear preflight when `priv/generated/driver_tab_ios.c` is missing.** The release links a per-app static-NIF driver table, but the dev build uses the built-in Zig table and `mix mob.regen_driver_tab` defaults to Zig, so a project that never ran it with `--format c` died deep in `release_device.sh` with a cryptic `cc: no such file`. `build_ipa` now fails early with the exact command to run (`mix mob.regen_driver_tab --format c`).
+
 ## [0.5.13]
 
 ### Fixed
