@@ -3464,18 +3464,26 @@ defmodule MobDev.NativeBuild do
     # MOB_PLUGIN_SECURITY.md, Layer 2.
     MobDev.Plugin.Validator.raise_on_capability_drift!(activated_plugins)
 
-    # See sim build for the rationale on bundling the bootstrap into
-    # `plugin_swift_files`. Keeping sim + device on the same wiring means
-    # one place to debug "where did mob_register_plugins go?" if/when it
-    # comes up.
-    bootstrap_path = generate_ios_plugin_bootstrap(build_dir)
+    # See sim build for the rationale. Only generate the bootstrap + emit the
+    # -Dplugin_* flags when plugins are activated; an app scaffolded before the
+    # plugin system has no plugin_swift_files/plugin_frameworks option in
+    # ios/build_device.zig, and the bootstrap would otherwise make
+    # plugin_swift_files always non-empty.
+    {plugin_swift_files, plugin_frameworks} =
+      if activated_plugins == [] do
+        {"", ""}
+      else
+        bootstrap_path = generate_ios_plugin_bootstrap(build_dir)
 
-    plugin_swift_files =
-      (MobDev.Plugin.Merge.swift_files(activated_plugins) ++ [bootstrap_path])
-      |> Enum.join(",")
+        swift =
+          (MobDev.Plugin.Merge.swift_files(activated_plugins) ++ [bootstrap_path])
+          |> Enum.join(",")
 
-    plugin_frameworks =
-      activated_plugins |> MobDev.Plugin.Merge.ios_frameworks() |> Enum.join(",")
+        frameworks =
+          activated_plugins |> MobDev.Plugin.Merge.ios_frameworks() |> Enum.join(",")
+
+        {swift, frameworks}
+      end
 
     base_args = [
       "build",
@@ -3493,10 +3501,16 @@ defmodule MobDev.NativeBuild do
       "-Dmodule_name=#{display_name}",
       "-Depmd_build_src=#{epmd_build_src}",
       "-Derrno_compat=#{Path.join(build_dir, "erl_errno_id_compat.c")}",
-      "-Dproject_swift_sources=#{project_swift_sources}",
-      "-Dplugin_swift_files=#{plugin_swift_files}",
-      "-Dplugin_frameworks=#{plugin_frameworks}"
+      "-Dproject_swift_sources=#{project_swift_sources}"
     ]
+
+    plugin_args =
+      for {name, val} <- [
+            {"plugin_swift_files", plugin_swift_files},
+            {"plugin_frameworks", plugin_frameworks}
+          ],
+          val != "",
+          do: "-D#{name}=#{val}"
 
     with {:ok, nif_args} <- project_nif_zig_args(:ios_device) do
       sqlite_args =
@@ -3507,6 +3521,7 @@ defmodule MobDev.NativeBuild do
 
       args =
         base_args ++
+          plugin_args ++
           nif_args ++
           sqlite_args ++
           mlx_zig_args(mlx_dir) ++
