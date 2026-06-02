@@ -80,6 +80,27 @@ defmodule MobDev.OtpAssetBundleTest do
       end
     end
 
+    test "slim: false ships the OTP tree untouched (no lib stripping)" do
+      source = build_fake_otp_tree()
+
+      target_zip =
+        Path.join(System.tmp_dir!(), "mob_otp_test_noslim_#{:rand.uniform(999_999)}.zip")
+
+      try do
+        assert {:ok, _} = OtpAssetBundle.build(source, target_zip, slim: false)
+        {listing, 0} = System.cmd("unzip", ["-l", target_zip], stderr_to_stdout: true)
+
+        # With slim: false, libs that the default strip would remove survive —
+        # required for apps running arbitrary user code (Mix.install) where any
+        # OTP lib (inets, ssl, runtime_tools, …) might be needed at runtime.
+        assert listing =~ "lib/megaco-1.0.0/"
+        assert listing =~ "lib/wx-1.0.0/"
+      after
+        File.rm_rf!(source)
+        File.rm(target_zip)
+      end
+    end
+
     test "respects :keep_prefixes — opts can re-add a stripped lib" do
       source = build_fake_otp_tree()
       target_zip = Path.join(System.tmp_dir!(), "mob_otp_test_keep_#{:rand.uniform(999_999)}.zip")

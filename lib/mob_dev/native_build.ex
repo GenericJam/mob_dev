@@ -272,11 +272,21 @@ defmodule MobDev.NativeBuild do
       "-Dndk_sysroot=#{ndk_sysroot()}",
       "-Dapp_name=#{app_name}",
       "-Dproject_root=#{project_root}",
-      "-Dexqlite_src=#{Path.join(project_root, "deps/exqlite/c_src")}",
-      "-Dplugin_c_nifs=#{plugin_c_nifs}",
-      "-Dplugin_zig_nifs=#{plugin_zig_nifs}",
-      "-Dplugin_jni_sources=#{plugin_jni_sources}"
+      "-Dexqlite_src=#{Path.join(project_root, "deps/exqlite/c_src")}"
     ]
+
+    # Only emit -Dplugin_* when non-empty. A plugin-aware build.zig defaults
+    # these to "" (so omitting them is equivalent there), but an app scaffolded
+    # before the plugin system has no such option and Zig rejects the unknown
+    # -D flag. Gating keeps non-plugin apps on older mob scaffolding building.
+    plugin_args =
+      for {name, val} <- [
+            {"plugin_c_nifs", plugin_c_nifs},
+            {"plugin_zig_nifs", plugin_zig_nifs},
+            {"plugin_jni_sources", plugin_jni_sources}
+          ],
+          val != "",
+          do: "-D#{name}=#{val}"
 
     # `project_nif_zig_args/1` also emits `-Dproject_root=` (since the
     # iOS templates need it and don't have a baseline equivalent). The
@@ -289,6 +299,7 @@ defmodule MobDev.NativeBuild do
 
     args =
       base_args ++
+        plugin_args ++
         nif_args_no_root ++
         nxeigen_zig_args_android(nxeigen_archive) ++
         tflite_zig_args_android(tflite_build)
@@ -2203,19 +2214,28 @@ defmodule MobDev.NativeBuild do
     # declare. Raises with the full list of drifts when any are found.
     MobDev.Plugin.Validator.raise_on_capability_drift!(activated_plugins)
 
-    # Generated bootstrap Swift gets compiled alongside the plugins' own
-    # Swift files, so it lands in the same `-Dplugin_swift_files` arg.
-    # That keeps the build.zig template surface unchanged — one flag, one
-    # split-and-compile loop — and means the bootstrap function ends up in
-    # MobApp-Swift.h's module the same way plugin views do.
-    bootstrap_path = generate_ios_plugin_bootstrap(build_dir)
+    # Generated bootstrap Swift gets compiled alongside the plugins' own Swift
+    # files via -Dplugin_swift_files. But that flag (and the bootstrap, which
+    # makes it always non-empty) only matters when plugins are activated: an app
+    # scaffolded before the plugin system has no plugin_swift_files option in
+    # ios/build.zig, and mob's pre-plugin Swift never calls the bootstrap. So
+    # when nothing is activated, skip the bootstrap and leave the flags empty
+    # (omitted below) — keeping non-plugin apps on older mob building.
+    {plugin_swift_files, plugin_frameworks} =
+      if activated_plugins == [] do
+        {"", ""}
+      else
+        bootstrap_path = generate_ios_plugin_bootstrap(build_dir)
 
-    plugin_swift_files =
-      (MobDev.Plugin.Merge.swift_files(activated_plugins) ++ [bootstrap_path])
-      |> Enum.join(",")
+        swift =
+          (MobDev.Plugin.Merge.swift_files(activated_plugins) ++ [bootstrap_path])
+          |> Enum.join(",")
 
-    plugin_frameworks =
-      activated_plugins |> MobDev.Plugin.Merge.ios_frameworks() |> Enum.join(",")
+        frameworks =
+          activated_plugins |> MobDev.Plugin.Merge.ios_frameworks() |> Enum.join(",")
+
+        {swift, frameworks}
+      end
 
     base_args = [
       "build",
@@ -2230,14 +2250,23 @@ defmodule MobDev.NativeBuild do
       "-Denif_keepalive=#{Path.join(build_dir, "enif_keepalive.c")}",
       "-Dproject_ios_dir=#{Path.expand("ios")}",
       "-Dmodule_name=#{display_name}",
-      "-Dproject_swift_sources=#{project_swift_sources}",
-      "-Dplugin_swift_files=#{plugin_swift_files}",
-      "-Dplugin_frameworks=#{plugin_frameworks}"
+      "-Dproject_swift_sources=#{project_swift_sources}"
     ]
+
+    # Omit -Dplugin_* when empty (no plugins) so apps on pre-plugin ios/build.zig
+    # don't choke on unknown options; a plugin-aware build.zig defaults them to "".
+    plugin_args =
+      for {name, val} <- [
+            {"plugin_swift_files", plugin_swift_files},
+            {"plugin_frameworks", plugin_frameworks}
+          ],
+          val != "",
+          do: "-D#{name}=#{val}"
 
     with {:ok, nif_args} <- project_nif_zig_args(:ios_sim) do
       args =
         base_args ++
+          plugin_args ++
           nif_args ++
           mlx_zig_args(mlx_dir) ++
           nxeigen_zig_args_ios(nxeigen_archive) ++

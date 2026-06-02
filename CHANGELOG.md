@@ -8,6 +8,13 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.5.15]
+
+### Fixed
+- **`mix mob.release --android --no-slim` now actually ships the full OTP tree.** The Android release stripped OTP libs unconditionally (`OtpAssetBundle.build/2` was called with no opts), so `--no-slim` was silently ignored on Android. `slim` is now threaded `build_aab → OtpAssetBundle.build(slim:)`; with `slim: false` the OTP tree ships untouched. Required for apps that run arbitrary user code at runtime (e.g. an embedded Livebook host doing `Mix.install`) — stripping any OTP lib (`inets`, `ssl`, `xmerl`, `runtime_tools`, …) is a latent crash when a user's deps need it. Default stays `slim: true`.
+- **iOS `--no-slim` release passes App Store validation.** The always-on Apple-policy strip cleared `erts-*/bin` and `priv/bin` but missed standalone executables inside OTP libs (e.g. `erl_interface/bin/erl_call`), which App Store validation rejects (90171). Now `lib/*/bin/*` executables are stripped too (always on), keeping every lib's `.beam`/`.app` — so a full-OTP `--no-slim` bundle is still Apple-compliant.
+- **Native builds no longer break on pre-plugin app scaffolding.** `native_build.ex` emitted `-Dplugin_c_nifs`/`-Dplugin_zig_nifs`/`-Dplugin_jni_sources` (Android) and `-Dplugin_swift_files`/`-Dplugin_frameworks` (iOS) unconditionally, but an app scaffolded before the plugin system has no such options in its `build.zig` and Zig rejects the unknown `-D` flag. These flags (and the iOS plugin bootstrap) are now emitted only when plugins are activated; a plugin-aware `build.zig` defaults them to `""` so behaviour is unchanged there.
+
 ## [0.5.14]
 
 ### Fixed
