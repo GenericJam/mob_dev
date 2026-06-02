@@ -110,12 +110,19 @@ defmodule MobDev.OtpAssetBundle do
 
     case System.cmd("cp", ["-R", source <> "/.", staging], stderr_to_stdout: true) do
       {_, 0} ->
-        prefixes = compute_strip_set(opts)
-        strip_otp_libs(staging, prefixes)
-        strip_standalone_execs(staging)
-        strip_static_archives(staging)
-        strip_source_and_headers(staging)
-        strip_beam_chunks(staging)
+        # slim: false ships the OTP tree untouched. Required for apps that run
+        # arbitrary user code at runtime (e.g. an embedded Livebook host doing
+        # Mix.install) — we can't know which OTP libs (inets, ssl, xmerl,
+        # runtime_tools, …) a user's deps will need, so stripping any is unsafe.
+        if Keyword.get(opts, :slim, true) do
+          prefixes = compute_strip_set(opts)
+          strip_otp_libs(staging, prefixes)
+          strip_standalone_execs(staging)
+          strip_static_archives(staging)
+          strip_source_and_headers(staging)
+          strip_beam_chunks(staging)
+        end
+
         {:ok, staging}
 
       {out, _} ->
