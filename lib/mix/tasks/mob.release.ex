@@ -120,7 +120,7 @@ defmodule Mix.Tasks.Mob.Release do
 
     Mix.Task.run("compile")
 
-    case MobDev.ReleaseAndroid.build_aab() do
+    case MobDev.ReleaseAndroid.build_aab(slim: Keyword.get(opts, :slim, true)) do
       {:ok, path} ->
         Mix.shell().info("")
         Mix.shell().info("#{green()}✓ Release build complete#{reset()}")

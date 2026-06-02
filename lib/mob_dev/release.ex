@@ -708,6 +708,12 @@ defmodule MobDev.Release do
     find "$OTP_BUNDLE" -type f \( -name "*.so" -o -name "*.a" \) -delete
     find "$OTP_BUNDLE" -path "*/priv/bin/*" -type f -delete
     find "$OTP_BUNDLE/$ERTS_VSN/bin" -type f -delete 2>/dev/null || true
+    # Standalone executables inside OTP libs (e.g. erl_interface/bin/erl_call)
+    # are also rejected by App Store validation (90171) and can't exec on iOS
+    # anyway. Remove every lib/*/bin/* executable while keeping the libs'
+    # .beam/.app — so a --no-slim full-OTP bundle (needed for runtime Mix.install)
+    # still passes Apple's "no standalone executables" rule.
+    find "$OTP_BUNDLE/lib" -path "*/bin/*" -type f -delete 2>/dev/null || true
 
     # ── Slim strips (gated; opt out with `mix mob.release --no-slim`) ──
     # Each step echoes a tagged header AND the bundle size delta so a

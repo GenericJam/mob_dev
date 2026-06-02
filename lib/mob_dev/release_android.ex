@@ -27,8 +27,9 @@ defmodule MobDev.ReleaseAndroid do
   `{:error, reason}`.
   """
   @spec build_aab(keyword()) :: {:ok, Path.t()} | {:error, String.t()}
-  def build_aab(_opts \\ []) do
+  def build_aab(opts \\ []) do
     app_name = Mix.Project.config()[:app] |> to_string()
+    slim = Keyword.get(opts, :slim, true)
 
     with :ok <- check_android_project(),
          log("Ensuring Android OTP runtime..."),
@@ -36,7 +37,7 @@ defmodule MobDev.ReleaseAndroid do
          log("Staging OTP tree + app BEAMs..."),
          {:ok, staging} <- stage_otp_tree(otp_arm64, app_name),
          log("Building otp.zip (stripping unused OTP libs)..."),
-         {:ok, info} <- build_zip(staging),
+         {:ok, info} <- build_zip(staging, slim),
          _ = File.rm_rf!(staging),
          log(
            "  #{info.zipped_files} files, " <>
@@ -228,10 +229,10 @@ defmodule MobDev.ReleaseAndroid do
 
   # ── otp.zip ──────────────────────────────────────────────────────────────────
 
-  defp build_zip(staging) do
+  defp build_zip(staging, slim) do
     zip_path = Path.expand(Path.join(@app_assets, "otp.zip"))
     File.mkdir_p!(Path.dirname(zip_path))
-    MobDev.OtpAssetBundle.build(staging, zip_path)
+    MobDev.OtpAssetBundle.build(staging, zip_path, slim: slim)
   end
 
   # ── Gradle ───────────────────────────────────────────────────────────────────
