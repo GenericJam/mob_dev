@@ -117,6 +117,13 @@ defmodule MobDev.ReleaseScriptTest do
       # bundled OTP doesn't define it → undefined-symbol link error.
       assert sh =~ "erl_errno_id_unknown"
       assert sh =~ ~s|"$BUILD_DIR/erl_errno_id_compat.o"|
+
+      # The shim must be written with a real newline: this is a ~S (raw) heredoc,
+      # so `printf '%s\\n'` reaches bash verbatim and emits a literal backslash-n
+      # into the C file (clang rejects the trailing `}\n`). `printf '%s\n'` (one
+      # backslash) emits a newline. Regression guard for that escaping bug.
+      assert sh =~ ~S|printf '%s\n' '__attribute__((weak))|
+      refute sh =~ ~S|printf '%s\\n'|
     end
 
     test "does NOT compile the old md5/no-op crypto+ssl shims into BEAMS_DIR", %{sh: sh} do
