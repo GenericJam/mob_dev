@@ -8,6 +8,11 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.5.16]
+
+### Fixed
+- **Gate the plugin flags on the iOS *device* build path too.** 0.5.15 gated the plugin-flag emission for Android and the iOS *simulator* build, but `zig_build_binary_ios_device` still emitted `-Dplugin_swift_files`/`-Dplugin_frameworks` (and generated the bootstrap, making `plugin_swift_files` always non-empty) unconditionally — so `mix mob.deploy --native` to a physical iPhone broke on an app scaffolded before the plugin system (`invalid option: -Dplugin_swift_files`). The device path now mirrors the sim path: bootstrap + flags only when plugins are activated. Verified `mix mob.deploy --native` to a physical iPhone — full OTP, Phoenix endpoint up, LiveView connected, embedded Livebook home rendered.
+
 ## [0.5.15]
 
 ### Fixed
