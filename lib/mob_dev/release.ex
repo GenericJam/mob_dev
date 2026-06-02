@@ -35,6 +35,7 @@ defmodule MobDev.Release do
 
     with :ok <- check_macos(),
          :ok <- check_xcrun(),
+         :ok <- check_driver_table(),
          {:ok, cfg} <- resolve_distribution_signing(cfg),
          {:ok, otp_root} <- MobDev.OtpDownloader.ensure_ios_device() do
       script_path = "ios/release_device.sh"
@@ -64,6 +65,34 @@ defmodule MobDev.Release do
         {_, _} ->
           {:error, "release_device.sh failed — check output above"}
       end
+    end
+  end
+
+  # The iOS release links a per-app static-NIF driver table compiled from
+  # priv/generated/driver_tab_ios.c. The dev build uses Mob's built-in Zig table,
+  # so a project that has only ever done dev builds never generates the C file —
+  # and `mix mob.regen_driver_tab` defaults to Zig, so the table must be emitted
+  # with `--format c`. Without this preflight the build dies deep in release_device.sh
+  # with a cryptic `cc: no such file or directory: 'priv/generated/driver_tab_ios.c'`.
+  defp check_driver_table do
+    path = "priv/generated/driver_tab_ios.c"
+
+    if File.exists?(path) do
+      :ok
+    else
+      {:error,
+       """
+       #{path} not found.
+
+       The iOS release links a per-app static-NIF driver table. Generate it once:
+
+           mix mob.regen_driver_tab --format c
+
+       then commit priv/generated/driver_tab_{ios,android}.c so release builds are
+       reproducible. (The dev build uses Mob's built-in Zig table, so this file is
+       only needed for release; `mob.regen_driver_tab` without --format c emits Zig,
+       which the release path does not compile.)
+       """}
     end
   end
 
@@ -538,8 +567,11 @@ defmodule MobDev.Release do
     # erl_errno_id_unknown but the bundled OTP doesn't define it. Weak so
     # an OTP-internal definition wins if one ever appears. Written with
     # printf (not a heredoc) to stay cleanly indentable inside this
-    # Elixir \""" string.
-    printf '%s\\n' '__attribute__((weak)) const char *erl_errno_id_unknown(int error) { (void)error; return "unknown"; }' > "$BUILD_DIR/erl_errno_id_compat.c"
+    # Elixir \""" string. NOTE the single backslash: this is a ~S (raw) heredoc,
+    # so '%s\\n' would reach bash verbatim and printf would emit a literal
+    # backslash-n into the C file (clang then rejects `}\n`). '%s\n' emits a real
+    # newline.
+    printf '%s\n' '__attribute__((weak)) const char *erl_errno_id_unknown(int error) { (void)error; return "unknown"; }' > "$BUILD_DIR/erl_errno_id_compat.c"
     $CC $IFLAGS -c "$BUILD_DIR/erl_errno_id_compat.c" -o "$BUILD_DIR/erl_errno_id_compat.o"
 
     echo "=== Linking $APP_NAME (release, no EPMD) ==="
