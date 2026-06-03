@@ -39,9 +39,22 @@ defmodule MobDev.Paths do
       build_sh_aware?(project_dir) ->
         default_runtime_dir()
 
+      build_zig?(project_dir) ->
+        # Zig-based iOS builds (ios/build.zig, no ios/build.sh) sync the runtime
+        # to default_runtime_dir() in sync_otp_runtime_sim. The launcher must
+        # agree, or the sim looks in /tmp/otp-ios-sim and boots a non-existent
+        # runtime ("elixir.app not found"). Match the staging path.
+        default_runtime_dir()
+
       true ->
         legacy_tmp_path()
     end
+  end
+
+  @doc false
+  @spec build_zig?(String.t()) :: boolean()
+  def build_zig?(project_dir) do
+    File.exists?(Path.join([project_dir, "ios", "build.zig"]))
   end
 
   @doc """
