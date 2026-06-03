@@ -8,6 +8,15 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.5.17]
+
+### Fixed
+- **iOS simulator deploy now boots from a clean `mix mob.deploy --native`** (was device-only). Three gaps made the sim deploy incomplete vs the device path, so the sim crashed on boot even though the device worked:
+  - The Elixir-distribution apps `elixir`/`logger` were staged only under `lib/<app>/ebin`, which the sim's `mob_beam.m` doesn't add to the code path — boot failed at `ensure_all_started(:elixir)` with "elixir.app not found". They're now flattened into the flat BEAMS_DIR alongside `eex` (which already needed this), where the path resolves.
+  - `priv/` was only partially staged (`repo/migrations`), so `Application.app_dir(:<app>, "priv/cacerts.pem")` was `:enoent` and `Mob.Certs.load_cacerts!` crashed the boot. The whole `priv/` is now rsynced into the flat dir (cacerts, `mix`/`hex` ebins, vendored static, …), matching the device release.
+  - `Paths.sim_runtime_dir/0` fell back to `/tmp/otp-ios-sim` for zig-based projects (no `ios/build.sh`), but the runtime is synced to `~/.mob/runtime/ios-sim` — so the launcher and staging disagreed. It now recognizes `ios/build.zig` and returns the default runtime dir.
+  Verified: a clean `mob.deploy --native` to an iPhone 11 Pro Max sim boots Io, Phoenix endpoint up, embedded Livebook home renders — no manual runtime fixups.
+
 ## [0.5.16]
 
 ### Fixed
