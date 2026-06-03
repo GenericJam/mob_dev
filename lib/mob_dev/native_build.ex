@@ -1988,15 +1988,22 @@ defmodule MobDev.NativeBuild do
   end
 
   defp copy_priv_repo_assets(otp_root, app_module) do
-    src = "priv/repo/migrations"
-
-    if File.dir?(src) do
-      IO.puts("  === Copying priv/repo assets")
-      dst = Path.join([otp_root, app_module, "priv/repo/migrations"])
+    # Copy the WHOLE priv/ into BEAMS_DIR/priv (not just repo/migrations), so
+    # Application.app_dir(:<app>, "priv/...") resolves on device/sim — e.g.
+    # priv/cacerts.pem (Mob.Certs.load_cacerts!), priv/mix + priv/hex ebins
+    # (on-device Mix.install), a vendored lib's priv/ (Livebook's static), etc.
+    # Mirrors the device release's full-priv rsync; without it the sim boot
+    # crashed at Mob.Certs.load_cacerts! with :enoent on priv/cacerts.pem.
+    if File.dir?("priv") do
+      IO.puts("  === Copying priv/ (full)")
+      dst = Path.join([otp_root, app_module, "priv"])
       File.mkdir_p!(dst)
+      chmod_writable(dst)
 
-      Path.wildcard("#{src}/*.exs")
-      |> Enum.each(&File.cp!(&1, Path.join(dst, Path.basename(&1))))
+      {_, status} =
+        System.cmd("rsync", ["-a", "--no-perms", "priv/", "#{dst}/"], stderr_to_stdout: true)
+
+      if status != 0, do: raise("rsync priv/ -> #{dst} failed")
     end
 
     :ok
@@ -2027,20 +2034,27 @@ defmodule MobDev.NativeBuild do
   end
 
   defp copy_eex_stdlib_to_app(elixir_lib, otp_root, app_module) do
-    # EEx is part of Elixir but mob_beam.m doesn't add it to the code path.
-    # Drop it into BEAMS_DIR (flat) so code:where_is_file("eex.app") resolves
-    # — Ecto's startup needs it.
-    IO.puts("  === Copying EEx stdlib")
+    # The iOS sim's mob_beam.m doesn't add lib/<app>/ebin to the code path, so
+    # the Elixir-distribution apps that copy_elixir_stdlib_to_otp drops under
+    # lib/ (elixir, logger) — plus eex — are invisible there: boot fails at
+    # `ensure_all_started(:elixir)` with "elixir.app not found". Drop their .app
+    # + beams into BEAMS_DIR (flat), which IS on the path, so they resolve.
+    # (eex was already needed for Ecto's startup; elixir/logger are needed for
+    # the sim to boot at all. Harmless on device, which also has them in lib/.)
+    IO.puts("  === Copying Elixir-distribution apps (elixir, logger, eex) to BEAMS_DIR")
     dst = Path.join(otp_root, app_module)
     File.mkdir_p!(dst)
-    src_ebin = Path.join([elixir_lib, "eex", "ebin"])
 
-    if File.dir?(src_ebin) do
-      Path.wildcard("#{src_ebin}/*.beam")
-      |> Enum.each(&File.cp!(&1, Path.join(dst, Path.basename(&1))))
+    for app <- ~w(elixir logger eex) do
+      src_ebin = Path.join([elixir_lib, app, "ebin"])
 
-      app_file = Path.join(src_ebin, "eex.app")
-      if File.exists?(app_file), do: File.cp!(app_file, Path.join(dst, "eex.app"))
+      if File.dir?(src_ebin) do
+        Path.wildcard("#{src_ebin}/*.beam")
+        |> Enum.each(&File.cp!(&1, Path.join(dst, Path.basename(&1))))
+
+        app_file = Path.join(src_ebin, "#{app}.app")
+        if File.exists?(app_file), do: File.cp!(app_file, Path.join(dst, "#{app}.app"))
+      end
     end
 
     :ok

@@ -79,5 +79,12 @@ defmodule MobDev.PathsTest do
       File.write!(Path.join([project, "ios", "build.sh"]), "echo old\n")
       assert Paths.sim_runtime_dir(project_dir: project) == Paths.legacy_tmp_path()
     end
+
+    test "new default for zig-based iOS projects (ios/build.zig, no build.sh)",
+         %{project: project} do
+      System.delete_env("MOB_SIM_RUNTIME_DIR")
+      File.write!(Path.join([project, "ios", "build.zig"]), "// zig build\n")
+      assert Paths.sim_runtime_dir(project_dir: project) == Paths.default_runtime_dir()
+    end
   end
 end
