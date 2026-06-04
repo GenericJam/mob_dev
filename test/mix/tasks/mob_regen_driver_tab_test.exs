@@ -167,4 +167,25 @@ defmodule Mix.Tasks.Mob.RegenDriverTabTest do
   defp capture_run(args) do
     ExUnit.CaptureIO.capture_io(fn -> RegenDriverTab.run(args) end)
   end
+
+  describe "reject_uncompiled_plugin_nifs/2" do
+    @c_nif %{module: :mob_location_nif, native_dir: "/x", lang: :c}
+    # a plugin NIF with no :lang defaults to C
+    @default_nif %{module: :mob_photos_nif, native_dir: "/y"}
+    @zig_nif %{module: :mob_bluetooth_nif, native_dir: "/z", lang: :zig}
+
+    test ":ios drops zig plugin NIFs (no iOS zig compile path) but keeps C ones" do
+      nifs = [@c_nif, @default_nif, @zig_nif]
+      kept = RegenDriverTab.reject_uncompiled_plugin_nifs(nifs, :ios)
+      assert @c_nif in kept
+      assert @default_nif in kept
+      refute @zig_nif in kept
+    end
+
+    test ":android and :all keep every plugin NIF (both langs compile there)" do
+      nifs = [@c_nif, @default_nif, @zig_nif]
+      assert RegenDriverTab.reject_uncompiled_plugin_nifs(nifs, :android) == nifs
+      assert RegenDriverTab.reject_uncompiled_plugin_nifs(nifs, :all) == nifs
+    end
+  end
 end

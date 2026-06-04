@@ -2251,6 +2251,16 @@ defmodule MobDev.NativeBuild do
         {swift, frameworks}
       end
 
+    # Activated plugins' C NIF sources (tier-1 plugins). Mirrors the Android
+    # plugin_c_nifs path and the iOS project_c_nifs path: each .c is compiled +
+    # linked into the app so the plugin's <module>_nif_init symbol (referenced
+    # by the generated driver_tab_ios, which resolved_nifs/0 already populates)
+    # resolves at link time. Empty when no NIF-bearing plugin is activated.
+    # (zig plugin NIFs on iOS aren't wired yet — no current plugin needs one;
+    # bt's zig NIF was Android-only. Add a plugin_zig_nifs path here + in
+    # ios/build.zig if a future plugin ships an iOS zig NIF.)
+    plugin_c_nifs = MobDev.Plugin.Merge.nif_sources(activated_plugins) |> Enum.join(",")
+
     base_args = [
       "build",
       "binary",
@@ -2272,7 +2282,8 @@ defmodule MobDev.NativeBuild do
     plugin_args =
       for {name, val} <- [
             {"plugin_swift_files", plugin_swift_files},
-            {"plugin_frameworks", plugin_frameworks}
+            {"plugin_frameworks", plugin_frameworks},
+            {"plugin_c_nifs", plugin_c_nifs}
           ],
           val != "",
           do: "-D#{name}=#{val}"
@@ -3499,6 +3510,10 @@ defmodule MobDev.NativeBuild do
         {swift, frameworks}
       end
 
+    # Activated plugins' C NIF sources — see the sim build for the full
+    # rationale. Same path on device; the iPhone uses build_device.zig.
+    plugin_c_nifs = MobDev.Plugin.Merge.nif_sources(activated_plugins) |> Enum.join(",")
+
     base_args = [
       "build",
       "binary",
@@ -3521,7 +3536,8 @@ defmodule MobDev.NativeBuild do
     plugin_args =
       for {name, val} <- [
             {"plugin_swift_files", plugin_swift_files},
-            {"plugin_frameworks", plugin_frameworks}
+            {"plugin_frameworks", plugin_frameworks},
+            {"plugin_c_nifs", plugin_c_nifs}
           ],
           val != "",
           do: "-D#{name}=#{val}"
