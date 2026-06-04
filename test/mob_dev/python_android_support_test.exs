@@ -1,5 +1,8 @@
 defmodule MobDev.PythonAndroidSupportTest do
-  use ExUnit.Case, async: true
+  # async: false — these tests mutate the global MOB_CACHE_DIR env var, which
+  # races other modules that read/write it (python_apple_support, the *_downloader
+  # tests). Matches the async: false convention of every other MOB_CACHE_DIR test.
+  use ExUnit.Case, async: false
 
   alias MobDev.PythonAndroidSupport
 
