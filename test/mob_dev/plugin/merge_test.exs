@@ -162,6 +162,55 @@ defmodule MobDev.Plugin.MergeTest do
     end
   end
 
+  describe "per-platform NIF source filtering" do
+    # A cross-platform plugin ships a separate iOS + Android source for the same
+    # module; each platform compiles only its own (the other may reference
+    # platform-only symbols). No :platform = compiled everywhere.
+    setup do
+      plugins = [
+        {"/loc",
+         base(%{
+           nifs: [
+             %{module: :mob_location_nif, native_dir: "priv/native/ios", platform: :ios},
+             %{
+               module: :mob_location_nif,
+               native_dir: "priv/native/jni",
+               lang: :zig,
+               platform: :android
+             },
+             %{module: :shared_nif}
+           ]
+         })}
+      ]
+
+      %{plugins: plugins}
+    end
+
+    test "iOS C sources include ios-tagged + untagged, exclude android-tagged", %{plugins: p} do
+      assert Merge.nif_sources(p, :ios) == [
+               "/loc/priv/native/ios/mob_location_nif.c",
+               "/loc/priv/native/jni/shared_nif.c"
+             ]
+    end
+
+    test "Android C sources exclude ios-tagged (the android one is zig)", %{plugins: p} do
+      assert Merge.nif_sources(p, :android) == ["/loc/priv/native/jni/shared_nif.c"]
+    end
+
+    test "Android zig sources include android-tagged zig only", %{plugins: p} do
+      assert Merge.zig_nif_sources(p, :android) == ["/loc/priv/native/jni/mob_location_nif.zig"]
+    end
+
+    test "iOS zig sources exclude android-tagged", %{plugins: p} do
+      assert Merge.zig_nif_sources(p, :ios) == []
+    end
+
+    test ":all (arity-1) keeps every entry", %{plugins: p} do
+      assert length(Merge.nif_sources(p)) == 2
+      assert length(Merge.zig_nif_sources(p)) == 1
+    end
+  end
+
   describe "jni_sources/1 + bridge_kt_sources/1 + bridge_classes/1" do
     test "jni_sources resolves android.jni_source to absolute paths" do
       plugins = [
