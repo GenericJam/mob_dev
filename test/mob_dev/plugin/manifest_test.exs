@@ -73,6 +73,32 @@ defmodule MobDev.Plugin.ManifestTest do
     test "rejects a non-map manifest" do
       assert {:error, _} = Manifest.validate("nope")
     end
+
+    test "accepts a permissions list with capability + optional ios handler" do
+      m =
+        Map.put(@valid, :permissions, [
+          %{capability: :location, ios: %{handler: "mob_location_request_permission"}},
+          %{capability: :sensors}
+        ])
+
+      assert {:ok, _} = Manifest.validate(m)
+    end
+
+    test "rejects permissions that isn't a list" do
+      assert {:error, errs} = Manifest.validate(Map.put(@valid, :permissions, %{capability: :x}))
+      assert Enum.any?(errs, &(&1 =~ "permissions must be a list"))
+    end
+
+    test "rejects a permissions entry without a :capability atom" do
+      assert {:error, errs} = Manifest.validate(Map.put(@valid, :permissions, [%{ios: %{}}]))
+      assert Enum.any?(errs, &(&1 =~ ":capability"))
+    end
+
+    test "rejects a permissions entry whose :ios lacks a :handler string" do
+      m = Map.put(@valid, :permissions, [%{capability: :location, ios: %{}}])
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ ":handler"))
+    end
   end
 
   describe "tier/1" do
@@ -90,6 +116,10 @@ defmodule MobDev.Plugin.ManifestTest do
 
     test "ui_components are tier 2" do
       assert Manifest.tier(Map.put(@valid, :ui_components, [])) == 2
+    end
+
+    test "permissions are tier 1 (native capability)" do
+      assert Manifest.tier(Map.put(@valid, :permissions, [%{capability: :location}])) == 1
     end
 
     test "screens are tier 3" do

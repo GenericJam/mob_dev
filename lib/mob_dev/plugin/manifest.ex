@@ -23,13 +23,14 @@ defmodule MobDev.Plugin.Manifest do
     :nifs_generator,
     :android,
     :ios,
+    :permissions,
     :ui_components,
     :ui_components_generator
   ]
   @screen_sections [:screens, :screens_generator, :migrations, :assets]
   @subapp_sections [:lifecycle, :settings, :notifications]
   @visual_sections [:ui_components, :ui_components_generator]
-  @tier1_sections [:nifs, :nifs_generator, :android, :ios]
+  @tier1_sections [:nifs, :nifs_generator, :android, :ios, :permissions]
   # Sections whose Elixir half can still hot-push even when the plugin has
   # native code (the partial case).
   @pushable_sections [:screens, :screens_generator, :lifecycle, :migrations]
@@ -81,6 +82,7 @@ defmodule MobDev.Plugin.Manifest do
       |> check_name(manifest)
       |> check_mob_version(manifest)
       |> check_spec_version(manifest)
+      |> check_permissions(manifest)
 
     case errors do
       [] -> {:ok, manifest}
@@ -121,6 +123,44 @@ defmodule MobDev.Plugin.Manifest do
 
   defp check_spec_version(errors, _),
     do: [":plugin_spec_version is required and must be an integer" | errors]
+
+  # `:permissions` is optional. When present it must be a list of maps, each with
+  # a `:capability` atom (the value `Mob.Permissions.request/2` accepts) and an
+  # optional `:ios` map carrying a `:handler` string (the cdecl symbol the
+  # plugin self-registers). Android needs nothing here — its provider is
+  # auto-discovered by interface at bootstrap (see the permission-registry ADR).
+  defp check_permissions(errors, %{permissions: perms}) when is_list(perms) do
+    perms
+    |> Enum.with_index()
+    |> Enum.reduce(errors, fn {entry, i}, acc -> check_permission_entry(acc, entry, i) end)
+  end
+
+  defp check_permissions(errors, %{permissions: other}),
+    do: ["permissions must be a list, got: #{inspect(other)}" | errors]
+
+  defp check_permissions(errors, _), do: errors
+
+  defp check_permission_entry(errors, %{capability: cap} = entry, _i) when is_atom(cap) do
+    case entry[:ios] do
+      nil ->
+        errors
+
+      %{handler: h} when is_binary(h) ->
+        errors
+
+      %{} ->
+        ["permissions entry #{inspect(cap)}: ios must declare a :handler string" | errors]
+
+      other ->
+        ["permissions entry #{inspect(cap)}: :ios must be a map, got: #{inspect(other)}" | errors]
+    end
+  end
+
+  defp check_permission_entry(errors, %{} = entry, i),
+    do: ["permissions entry ##{i} requires a :capability atom, got: #{inspect(entry)}" | errors]
+
+  defp check_permission_entry(errors, other, i),
+    do: ["permissions entry ##{i} must be a map, got: #{inspect(other)}" | errors]
 
   @doc """
   Classifies the plugin tier (0–4) from which capability sections are present.
