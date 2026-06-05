@@ -83,6 +83,7 @@ defmodule MobDev.Plugin.Manifest do
       |> check_mob_version(manifest)
       |> check_spec_version(manifest)
       |> check_permissions(manifest)
+      |> check_nifs(manifest)
 
     case errors do
       [] -> {:ok, manifest}
@@ -161,6 +162,26 @@ defmodule MobDev.Plugin.Manifest do
 
   defp check_permission_entry(errors, other, i),
     do: ["permissions entry ##{i} must be a map, got: #{inspect(other)}" | errors]
+
+  # `:nifs` is optional. When present, each entry's optional `:platform` (used by
+  # cross-platform plugins that ship a separate iOS + Android source for the same
+  # module) must be `:ios` or `:android`. Other fields are validated at build /
+  # link time, not here.
+  defp check_nifs(errors, %{nifs: nifs}) when is_list(nifs) do
+    nifs
+    |> Enum.with_index()
+    |> Enum.reduce(errors, fn {nif, i}, acc -> check_nif_platform(acc, nif, i) end)
+  end
+
+  defp check_nifs(errors, %{nifs: other}),
+    do: ["nifs must be a list, got: #{inspect(other)}" | errors]
+
+  defp check_nifs(errors, _), do: errors
+
+  defp check_nif_platform(errors, %{platform: p}, i) when p not in [:ios, :android],
+    do: ["nifs entry ##{i}: :platform must be :ios or :android, got: #{inspect(p)}" | errors]
+
+  defp check_nif_platform(errors, _nif, _i), do: errors
 
   @doc """
   Classifies the plugin tier (0–4) from which capability sections are present.

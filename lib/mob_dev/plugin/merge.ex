@@ -103,7 +103,19 @@ defmodule MobDev.Plugin.Merge do
   static-init symbol the driver table references.
   """
   @spec nif_sources([plugin()]) :: [String.t()]
-  def nif_sources(plugins), do: nif_sources_for_lang(plugins, :c, "c")
+  def nif_sources(plugins), do: nif_sources(plugins, :all)
+
+  @doc """
+  Like `nif_sources/1` but restricted to NIFs the given platform compiles.
+
+  A NIF entry with `platform: :ios | :android` is only compiled on that
+  platform; an entry with no `:platform` is compiled everywhere. Lets a
+  cross-platform plugin ship an iOS C/ObjC NIF and an Android NIF for the same
+  module without the iOS source (which may reference iOS-only symbols) ending up
+  in the Android build, and vice-versa. `:all` keeps every entry.
+  """
+  @spec nif_sources([plugin()], :ios | :android | :all) :: [String.t()]
+  def nif_sources(plugins, platform), do: nif_sources_for_lang(plugins, :c, "c", platform)
 
   @doc """
   Absolute paths of each plugin **zig** NIF's primary source (NIFs whose
@@ -117,15 +129,20 @@ defmodule MobDev.Plugin.Merge do
   that build.zig wires for plugin zig objects.
   """
   @spec zig_nif_sources([plugin()]) :: [String.t()]
-  def zig_nif_sources(plugins), do: nif_sources_for_lang(plugins, :zig, "zig")
+  def zig_nif_sources(plugins), do: zig_nif_sources(plugins, :all)
 
-  defp nif_sources_for_lang(plugins, lang, ext) do
+  @doc "Like `zig_nif_sources/1` but restricted to the given platform (see `nif_sources/2`)."
+  @spec zig_nif_sources([plugin()], :ios | :android | :all) :: [String.t()]
+  def zig_nif_sources(plugins, platform), do: nif_sources_for_lang(plugins, :zig, "zig", platform)
+
+  defp nif_sources_for_lang(plugins, lang, ext, platform) do
     for {dir, manifest} <- with_manifests(plugins),
         nif <- Map.get(manifest, :nifs, []),
         is_map(nif),
         name = nif[:module],
         is_atom(name),
-        nif_lang(nif) == lang do
+        nif_lang(nif) == lang,
+        nif_for_platform?(nif, platform) do
       native_dir = nif[:native_dir] || "priv/native/jni"
       Path.join([dir, native_dir, "#{name}.#{ext}"])
     end
@@ -134,6 +151,11 @@ defmodule MobDev.Plugin.Merge do
   # A NIF manifest entry defaults to C so existing (haptic) plugins are
   # unaffected; `lang: :zig` opts into the zig compile path.
   defp nif_lang(nif), do: nif[:lang] || :c
+
+  # An entry with no `:platform` is compiled on every platform; one tagged
+  # `:ios`/`:android` only on that platform. `:all` keeps everything.
+  defp nif_for_platform?(_nif, :all), do: true
+  defp nif_for_platform?(nif, platform), do: nif[:platform] in [nil, platform]
 
   @doc "Merged iOS `plist_keys` across plugins (later plugins win on conflict)."
   @spec plist_keys([plugin()]) :: map()

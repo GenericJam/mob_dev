@@ -187,5 +187,24 @@ defmodule Mix.Tasks.Mob.RegenDriverTabTest do
       assert RegenDriverTab.reject_uncompiled_plugin_nifs(nifs, :android) == nifs
       assert RegenDriverTab.reject_uncompiled_plugin_nifs(nifs, :all) == nifs
     end
+
+    @ios_only %{module: :mob_location_nif, native_dir: "/i", lang: :c, platform: :ios}
+    @android_only %{module: :mob_location_nif, native_dir: "/a", lang: :zig, platform: :android}
+
+    test "platform-tagged NIFs only survive on their own platform" do
+      nifs = [@ios_only, @android_only, @default_nif]
+
+      ios = RegenDriverTab.reject_uncompiled_plugin_nifs(nifs, :ios)
+      assert @ios_only in ios
+      assert @default_nif in ios
+      refute @android_only in ios
+
+      android = RegenDriverTab.reject_uncompiled_plugin_nifs(nifs, :android)
+      assert @android_only in android
+      assert @default_nif in android
+      refute @ios_only in android
+
+      assert RegenDriverTab.reject_uncompiled_plugin_nifs(nifs, :all) == nifs
+    end
   end
 end

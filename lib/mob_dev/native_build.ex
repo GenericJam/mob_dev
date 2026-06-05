@@ -242,13 +242,14 @@ defmodule MobDev.NativeBuild do
     # Activated plugins' C NIF sources (one .c per nif, named after the NIF
     # module). Empty when no NIF-bearing plugin is activated; the build.zig
     # template orelse's "" so the flag is always safe to emit.
-    plugin_c_nifs = MobDev.Plugin.Merge.nif_sources(MobDev.Plugin.activated()) |> Enum.join(",")
+    plugin_c_nifs =
+      MobDev.Plugin.Merge.nif_sources(MobDev.Plugin.activated(), :android) |> Enum.join(",")
 
     # Activated plugins' zig NIF sources (one .zig per nif, lang: :zig). Same
     # shape as plugin_c_nifs but compiled via addZigObject with named-module
     # imports for mob-core bindings. Empty when no zig-NIF plugin is activated.
     plugin_zig_nifs =
-      MobDev.Plugin.Merge.zig_nif_sources(MobDev.Plugin.activated()) |> Enum.join(",")
+      MobDev.Plugin.Merge.zig_nif_sources(MobDev.Plugin.activated(), :android) |> Enum.join(",")
 
     # Activated plugins' JNI-thunk C sources (android.jni_source). Plain C
     # objects (no NIF-init libname) compiled + linked into the app .so so a
@@ -2259,7 +2260,7 @@ defmodule MobDev.NativeBuild do
     # (zig plugin NIFs on iOS aren't wired yet — no current plugin needs one;
     # bt's zig NIF was Android-only. Add a plugin_zig_nifs path here + in
     # ios/build.zig if a future plugin ships an iOS zig NIF.)
-    plugin_c_nifs = MobDev.Plugin.Merge.nif_sources(activated_plugins) |> Enum.join(",")
+    plugin_c_nifs = MobDev.Plugin.Merge.nif_sources(activated_plugins, :ios) |> Enum.join(",")
 
     base_args = [
       "build",
@@ -3512,7 +3513,7 @@ defmodule MobDev.NativeBuild do
 
     # Activated plugins' C NIF sources — see the sim build for the full
     # rationale. Same path on device; the iPhone uses build_device.zig.
-    plugin_c_nifs = MobDev.Plugin.Merge.nif_sources(activated_plugins) |> Enum.join(",")
+    plugin_c_nifs = MobDev.Plugin.Merge.nif_sources(activated_plugins, :ios) |> Enum.join(",")
 
     base_args = [
       "build",

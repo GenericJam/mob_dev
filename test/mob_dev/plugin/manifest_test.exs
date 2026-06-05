@@ -99,6 +99,28 @@ defmodule MobDev.Plugin.ManifestTest do
       assert {:error, errs} = Manifest.validate(m)
       assert Enum.any?(errs, &(&1 =~ ":handler"))
     end
+
+    test "accepts nif entries with a valid :platform (cross-platform plugin)" do
+      m =
+        Map.put(@valid, :nifs, [
+          %{module: :mob_location_nif, native_dir: "priv/native/ios", platform: :ios},
+          %{
+            module: :mob_location_nif,
+            native_dir: "priv/native/jni",
+            lang: :zig,
+            platform: :android
+          },
+          %{module: :shared_nif}
+        ])
+
+      assert {:ok, _} = Manifest.validate(m)
+    end
+
+    test "rejects a nif entry with an invalid :platform" do
+      m = Map.put(@valid, :nifs, [%{module: :x, platform: :windows}])
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ ":platform must be :ios or :android"))
+    end
   end
 
   describe "tier/1" do
