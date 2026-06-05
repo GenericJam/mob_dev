@@ -91,16 +91,18 @@ defmodule MobDev.Plugin.Merge do
   def bridge_classes(plugins), do: collect_uniq(plugins, [:android, :bridge_class])
 
   @doc """
-  Absolute paths of each plugin **C** NIF's primary source (NIFs whose
-  manifest entry has no `:lang` or `lang: :c`).
+  Absolute paths of each plugin **C-family** NIF's primary source — entries with
+  no `:lang`, `lang: :c` (`<module>.c`), or `lang: :objc` (`<module>.m`, compiled
+  as Objective-C so iOS plugins can drive Apple frameworks like CoreLocation).
 
   Convention: for a manifest entry `%{module: :foo_nif, native_dir: "priv/jni"}`
-  the source is `<plugin_dir>/priv/jni/foo_nif.c`. This is the `<name>.c`
-  pattern the build.zig templates already use for project-level NIFs
-  (`c_src/<name>.c`), extended to plugins. Returned paths feed the build's
-  `-Dplugin_c_nifs` arg; build.zig derives the NIF name from the basename
-  and applies `-DSTATIC_ERLANG_NIF_LIBNAME=<name>` so ERL_NIF_INIT emits the
-  static-init symbol the driver table references.
+  the source is `<plugin_dir>/priv/jni/foo_nif.c` (or `.m` for `lang: :objc`).
+  This is the `<name>.c` pattern the build.zig templates already use for
+  project-level NIFs (`c_src/<name>.c`), extended to plugins. Returned paths feed
+  the build's `-Dplugin_c_nifs` arg; build.zig derives the NIF name from the
+  basename and applies `-DSTATIC_ERLANG_NIF_LIBNAME=<name>` so ERL_NIF_INIT emits
+  the static-init symbol the driver table references (and adds `-fobjc-arc` for
+  `.m` sources).
   """
   @spec nif_sources([plugin()]) :: [String.t()]
   def nif_sources(plugins), do: nif_sources(plugins, :all)
@@ -115,7 +117,19 @@ defmodule MobDev.Plugin.Merge do
   in the Android build, and vice-versa. `:all` keeps every entry.
   """
   @spec nif_sources([plugin()], :ios | :android | :all) :: [String.t()]
-  def nif_sources(plugins, platform), do: nif_sources_for_lang(plugins, :c, "c", platform)
+  def nif_sources(plugins, platform) do
+    for {dir, manifest} <- with_manifests(plugins),
+        nif <- Map.get(manifest, :nifs, []),
+        is_map(nif),
+        name = nif[:module],
+        is_atom(name),
+        nif_lang(nif) in [:c, :objc],
+        nif_for_platform?(nif, platform) do
+      ext = if nif_lang(nif) == :objc, do: "m", else: "c"
+      native_dir = nif[:native_dir] || "priv/native/jni"
+      Path.join([dir, native_dir, "#{name}.#{ext}"])
+    end
+  end
 
   @doc """
   Absolute paths of each plugin **zig** NIF's primary source (NIFs whose

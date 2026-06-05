@@ -209,6 +209,26 @@ defmodule MobDev.Plugin.MergeTest do
       assert length(Merge.nif_sources(p)) == 2
       assert length(Merge.zig_nif_sources(p)) == 1
     end
+
+    test "lang: :objc routes through the C path with a .m extension" do
+      plugins = [
+        {"/loc",
+         base(%{
+           nifs: [
+             %{
+               module: :mob_location_nif,
+               native_dir: "priv/native/ios",
+               lang: :objc,
+               platform: :ios
+             }
+           ]
+         })}
+      ]
+
+      assert Merge.nif_sources(plugins, :ios) == ["/loc/priv/native/ios/mob_location_nif.m"]
+      # objc is C-family, not a zig source.
+      assert Merge.zig_nif_sources(plugins, :ios) == []
+    end
   end
 
   describe "jni_sources/1 + bridge_kt_sources/1 + bridge_classes/1" do
