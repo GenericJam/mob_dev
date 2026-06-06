@@ -16,6 +16,17 @@ defmodule MobDev.Plugin.RuntimeManifestTest do
       MobDev.Plugin.host_config(:demo_app, :secret_key, nil)
       []
     end
+
+    # Emits a screen missing :default_route (e.g. a typo'd key) — must be
+    # rejected at build time, not silently dropped on device.
+    def malformed do
+      [%{module: Gen.Ok, default_route: "/ok"}, %{module: Gen.Bad}]
+    end
+
+    # Emits a non-map (wrong shape) among otherwise-valid specs.
+    def non_map do
+      [%{module: Gen.Ok, default_route: "/ok"}, "not a screen"]
+    end
   end
 
   defp base(extra),
@@ -58,6 +69,38 @@ defmodule MobDev.Plugin.RuntimeManifestTest do
       end
     end
 
+    test "a generator emitting a screen missing :default_route fails the build" do
+      plugins = [
+        {"/g",
+         base(%{
+           name: :g,
+           plugin_spec_version: 2,
+           screens_generator: {FakeGen, :malformed, []},
+           host_config_keys: []
+         })}
+      ]
+
+      assert_raise ArgumentError, ~r/produced an invalid screen at index 1/, fn ->
+        RuntimeManifest.build(plugins)
+      end
+    end
+
+    test "a generator emitting a non-map screen spec fails the build" do
+      plugins = [
+        {"/g",
+         base(%{
+           name: :g,
+           plugin_spec_version: 2,
+           screens_generator: {FakeGen, :non_map, []},
+           host_config_keys: []
+         })}
+      ]
+
+      assert_raise ArgumentError, ~r/produced an invalid screen/, fn ->
+        RuntimeManifest.build(plugins)
+      end
+    end
+
     test "collects lifecycle, settings, and notification_handlers" do
       plugins = [
         {"/p",
@@ -73,6 +116,48 @@ defmodule MobDev.Plugin.RuntimeManifestTest do
       assert [%{plugin: :p, on_start: {P, :start, []}}] = manifest.lifecycle
       assert [%{plugin: :p}] = manifest.settings
       assert [%{plugin: :p, handler: {P, :h, 1}}] = manifest.notification_handlers
+    end
+  end
+
+  describe "validate_generated_screens/2" do
+    test "passes a list of valid screen specs through unchanged" do
+      screens = [%{module: A, default_route: "/a"}, %{module: B, default_route: "/b"}]
+      assert RuntimeManifest.validate_generated_screens(screens, :p) == screens
+    end
+
+    test "wraps a single bare map" do
+      screen = %{module: A, default_route: "/a"}
+      assert RuntimeManifest.validate_generated_screens(screen, :p) == [screen]
+    end
+
+    test "raises on a map missing :module" do
+      assert_raise ArgumentError, ~r/invalid screen at index 0/, fn ->
+        RuntimeManifest.validate_generated_screens([%{default_route: "/a"}], :p)
+      end
+    end
+
+    test "raises on a map missing :default_route" do
+      assert_raise ArgumentError, fn ->
+        RuntimeManifest.validate_generated_screens([%{module: A}], :p)
+      end
+    end
+
+    test "raises when :default_route is not a binary" do
+      assert_raise ArgumentError, fn ->
+        RuntimeManifest.validate_generated_screens([%{module: A, default_route: :x}], :p)
+      end
+    end
+
+    test "raises when :module is nil" do
+      assert_raise ArgumentError, fn ->
+        RuntimeManifest.validate_generated_screens([%{module: nil, default_route: "/a"}], :p)
+      end
+    end
+
+    test "raises on a non-map entry" do
+      assert_raise ArgumentError, fn ->
+        RuntimeManifest.validate_generated_screens(["nope"], :p)
+      end
     end
   end
 

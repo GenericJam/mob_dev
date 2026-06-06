@@ -323,6 +323,24 @@ defmodule MobDev.Plugin.MergeTest do
       assert [%{plugin: :p, fonts: ["/abs/p/priv/a.ttf"], images: []}] = Merge.assets(plugins)
     end
 
+    test "migrations/1 skips a :migrations map missing a string :migrations_dir (no crash)" do
+      # `activated/0` feeds Merge unvalidated manifests; a malformed :migrations
+      # (no :migrations_dir) must not crash with an opaque Path.join error.
+      plugins = [{"/abs/p", base(%{name: :p, migrations: %{repo_namespace: "p_"}})}]
+      assert Merge.migrations(plugins) == []
+
+      plugins = [
+        {"/abs/p", base(%{name: :p, migrations: %{repo_namespace: "p_", migrations_dir: 123}})}
+      ]
+
+      assert Merge.migrations(plugins) == []
+    end
+
+    test "assets/1 treats a non-list :fonts/:images as empty (no crash)" do
+      plugins = [{"/abs/p", base(%{name: :p, assets: %{fonts: "single.ttf", images: 0}})}]
+      assert [%{plugin: :p, fonts: [], images: []}] = Merge.assets(plugins)
+    end
+
     test "lifecycle/1 and settings/1 tag with plugin name" do
       lc = %{on_start: {P, :start, []}, supervised: [P.Worker]}
       settings = %{schema: [%{key: :x, type: :boolean, default: true}], editor_screen: P.Edit}

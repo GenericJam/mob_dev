@@ -223,7 +223,8 @@ defmodule MobDev.Plugin.Merge do
   def migrations(plugins) do
     for {dir, manifest} <- with_manifests(plugins),
         m = Map.get(manifest, :migrations),
-        is_map(m) do
+        is_map(m),
+        is_binary(m[:migrations_dir]) do
       %{
         plugin: manifest[:name],
         repo_namespace: m[:repo_namespace],
@@ -282,10 +283,13 @@ defmodule MobDev.Plugin.Merge do
         do: Map.put(h, :plugin, manifest[:name])
   end
 
-  defp abs_paths(_dir, nil), do: []
-
   defp abs_paths(dir, paths) when is_list(paths),
     do: for(p <- paths, is_binary(p), do: Path.join(dir, p))
+
+  # A malformed (non-list) :fonts/:images declaration contributes no paths
+  # rather than crashing the merge — the manifest validator is the place that
+  # reports the shape error, but `activated/0` feeds Merge unvalidated maps.
+  defp abs_paths(_dir, _paths), do: []
 
   # ── helpers ─────────────────────────────────────────────────────────────
 

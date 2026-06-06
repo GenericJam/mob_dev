@@ -79,5 +79,19 @@ defmodule MobDev.Plugin.AssetsTest do
       out = Assets.merge_ui_app_fonts(with_array, ["a.ttf", "b.ttf"])
       assert Assets.parse_ui_app_fonts(out) == ["a.ttf", "b.ttf"]
     end
+
+    test "a font basename containing a regex backreference is emitted verbatim (create path)" do
+      out = Assets.merge_ui_app_fonts(@plist, ["x\\1y.ttf"])
+      # The \1 must NOT be expanded into the captured </dict></plist> closing.
+      assert Assets.parse_ui_app_fonts(out) == ["x\\1y.ttf"]
+      assert out =~ "</dict>\n</plist>"
+      refute out =~ "<string>x\n"
+    end
+
+    test "a font basename containing a regex backreference is emitted verbatim (replace path)" do
+      with_array = Assets.merge_ui_app_fonts(@plist, ["a.ttf"])
+      out = Assets.merge_ui_app_fonts(with_array, ["b\\1c.ttf"])
+      assert Assets.parse_ui_app_fonts(out) == ["a.ttf", "b\\1c.ttf"]
+    end
   end
 end
