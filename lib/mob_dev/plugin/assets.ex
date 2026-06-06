@@ -48,6 +48,25 @@ defmodule MobDev.Plugin.Assets do
   end
 
   @doc """
+  The Android `res/font/` resource name for a font file: lowercase, the
+  extension dropped, and any character outside `[a-z0-9_]` replaced with `_`
+  (Android resource-name rules). `"Georgia.ttf"` → `"georgia"`,
+  `"Inter-Regular.ttf"` → `"inter_regular"`. The renderer normalises the `font:`
+  prop the same way to find the resource. A leading non-letter is prefixed with
+  `f_` so the name is a valid resource identifier.
+  """
+  @spec android_font_resource_name(String.t()) :: String.t()
+  def android_font_resource_name(filename) do
+    base =
+      filename
+      |> Path.basename(Path.extname(filename))
+      |> String.downcase()
+      |> String.replace(~r/[^a-z0-9_]/, "_")
+
+    if base =~ ~r/^[a-z]/, do: base, else: "f_" <> base
+  end
+
+  @doc """
   The on-device bundle path a `plugin://<plugin>/<file>` reference resolves to.
   Plugin images are copied here at build time; the core `plugin://` resolver
   maps to the same convention. Returns a path relative to the app bundle root.

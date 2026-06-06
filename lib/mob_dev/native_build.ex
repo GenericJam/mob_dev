@@ -138,6 +138,7 @@ defmodule MobDev.NativeBuild do
          :ok <- apply_plugin_android_manifest!(),
          :ok <- apply_plugin_gradle_deps!(),
          :ok <- apply_plugin_android_kotlin!(),
+         :ok <- apply_fonts_to_android!(),
          :ok <- gradle_assemble(),
          :ok <- adb_install_all(apk, bundle_id, device_id),
          :ok <-
@@ -3696,6 +3697,7 @@ defmodule MobDev.NativeBuild do
         info_plist = Path.join(app_path, "Info.plist")
         File.cp!("ios/Info.plist", info_plist)
         apply_plugin_plist_keys!(info_plist)
+        apply_fonts_to_ios_bundle!(info_plist, app_path)
         if File.dir?("ios/Assets.xcassets/AppIcon.appiconset"), do: compile_ios_icons(app_path)
         {:ok, app_path}
     end
@@ -3887,6 +3889,7 @@ defmodule MobDev.NativeBuild do
         info_plist = Path.join(app_path, "Info.plist")
         File.cp!("ios/Info.plist", info_plist)
         apply_plugin_plist_keys!(info_plist)
+        apply_fonts_to_ios_bundle!(info_plist, app_path)
         plist_set!(info_plist, ":CFBundleIdentifier", bundle_id)
         plist_set!(info_plist, ":CFBundleExecutable", app_name)
         plist_set!(info_plist, ":CFBundleName", app_name)
@@ -4101,6 +4104,61 @@ defmodule MobDev.NativeBuild do
       File.mkdir_p!(Path.dirname(dest))
       File.cp!(src, dest)
       IO.puts("  ✓ plugin image → #{Path.relative_to_cwd(dest)}")
+    end
+
+    :ok
+  end
+
+  @android_res_font "android/app/src/main/res/font"
+
+  # App-level (`priv/fonts/*.ttf|otf`) + plugin (`assets.fonts`) custom fonts.
+  defp collect_all_fonts do
+    app_fonts = Path.wildcard("priv/fonts/*.{ttf,otf,TTF,OTF}")
+
+    plugin_fonts =
+      for %{fonts: fonts} <- MobDev.Plugin.Merge.assets(MobDev.Plugin.activated()),
+          f <- fonts,
+          do: f
+
+    Enum.uniq(app_fonts ++ plugin_fonts)
+  end
+
+  # Copies the app's + plugins' fonts into the iOS `.app` bundle root and lists
+  # them in `Info.plist` UIAppFonts so iOS registers them at launch (the SwiftUI
+  # `Font.custom(name, …)` path in MobRootView then resolves them by name). No-op
+  # when there are no fonts.
+  defp apply_fonts_to_ios_bundle!(info_plist, app_path) do
+    fonts = collect_all_fonts()
+
+    if fonts != [] do
+      for src <- fonts, do: File.cp!(src, Path.join(app_path, Path.basename(src)))
+      basenames = Enum.map(fonts, &Path.basename/1)
+      plist = File.read!(info_plist)
+      File.write!(info_plist, MobDev.Plugin.Assets.merge_ui_app_fonts(plist, basenames))
+      IO.puts("  ✓ bundled #{length(fonts)} font(s) + UIAppFonts")
+    end
+
+    :ok
+  end
+
+  # Copies the app's + plugins' fonts into the Android `res/font/` dir under a
+  # normalised resource name (lowercase + underscores; the renderer normalises
+  # the `font:` prop the same way to look them up via `getIdentifier`). Unlike
+  # `assets/`, `res/font/` entries are stored uncompressed, which Android's font
+  # loader requires. No-op when there are no fonts.
+  defp apply_fonts_to_android! do
+    fonts = collect_all_fonts()
+
+    if fonts != [] do
+      File.mkdir_p!(@android_res_font)
+
+      for src <- fonts do
+        ext = Path.extname(src) |> String.downcase()
+        res_name = MobDev.Plugin.Assets.android_font_resource_name(Path.basename(src))
+        dest = Path.join(@android_res_font, res_name <> ext)
+        File.cp!(src, dest)
+        IO.puts("  ✓ android font → #{Path.relative_to_cwd(dest)}")
+      end
     end
 
     :ok
