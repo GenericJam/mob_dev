@@ -188,4 +188,154 @@ defmodule MobDev.Plugin.ManifestTest do
       assert Manifest.hot_pushable(Map.put(@valid, :screens, [])) == true
     end
   end
+
+  describe "validate/1 — tier 3 sections" do
+    @v2 %{name: :p, mob_version: "~> 0.6", plugin_spec_version: 2}
+
+    test "accepts a valid static screens list" do
+      m = Map.put(@valid, :screens, [%{module: MyPlugin.ListScreen, default_route: "/p/list"}])
+      assert {:ok, _} = Manifest.validate(m)
+    end
+
+    test "rejects a screen entry missing module or default_route" do
+      m = Map.put(@valid, :screens, [%{module: MyPlugin.ListScreen}])
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "screens entry"))
+    end
+
+    test "rejects screens that is not a list" do
+      assert {:error, errs} = Manifest.validate(Map.put(@valid, :screens, :nope))
+      assert Enum.any?(errs, &(&1 =~ "screens must be a list"))
+    end
+
+    test "accepts a screens_generator MFA on spec v2" do
+      m = Map.put(@v2, :screens_generator, {MyPlugin.Gen, :generate, []})
+      assert {:ok, _} = Manifest.validate(m)
+    end
+
+    test "rejects screens_generator on spec v1 (needs v2)" do
+      m = Map.put(@valid, :screens_generator, {MyPlugin.Gen, :generate, []})
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "requires plugin_spec_version: 2"))
+    end
+
+    test "rejects declaring both static screens and a generator" do
+      m =
+        @v2
+        |> Map.put(:screens, [%{module: A, default_route: "/a"}])
+        |> Map.put(:screens_generator, {G, :g, []})
+
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "mutually exclusive"))
+    end
+
+    test "rejects a malformed screens_generator (not an MFA)" do
+      m = Map.put(@v2, :screens_generator, "Gen.generate")
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "must be an {Module, :function, args} tuple"))
+    end
+
+    test "accepts valid migrations" do
+      m =
+        Map.put(@valid, :migrations, %{
+          repo_namespace: "p_",
+          migrations_dir: "priv/repo/migrations"
+        })
+
+      assert {:ok, _} = Manifest.validate(m)
+    end
+
+    test "rejects migrations missing keys" do
+      m = Map.put(@valid, :migrations, %{repo_namespace: "p_"})
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "migrations must be a map"))
+    end
+
+    test "accepts assets with font and image path lists" do
+      m = Map.put(@valid, :assets, %{fonts: ["priv/assets/x.ttf"], images: ["priv/assets/y.png"]})
+      assert {:ok, _} = Manifest.validate(m)
+    end
+
+    test "rejects assets with a non-string path" do
+      m = Map.put(@valid, :assets, %{fonts: [:not_a_path]})
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "assets.fonts must be a list of path strings"))
+    end
+  end
+
+  describe "validate/1 — tier 4 sections" do
+    test "accepts a full lifecycle map" do
+      lc = %{
+        on_start: {P, :start, []},
+        supervised: [P.Worker, {P.Other, []}],
+        on_resume: {P, :on_resume, []},
+        on_background: {P, :on_background, []}
+      }
+
+      assert {:ok, _} = Manifest.validate(Map.put(@valid, :lifecycle, lc))
+    end
+
+    test "rejects a non-MFA lifecycle.on_start" do
+      m = Map.put(@valid, :lifecycle, %{on_start: :start})
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "lifecycle.on_start"))
+    end
+
+    test "rejects a non-list lifecycle.supervised" do
+      m = Map.put(@valid, :lifecycle, %{supervised: P.Worker})
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "lifecycle.supervised must be a list"))
+    end
+
+    test "accepts a valid settings schema with editor screen" do
+      settings = %{
+        schema: [
+          %{key: :sound, type: :boolean, default: true},
+          %{key: :channel, type: :string, default: "#general"}
+        ],
+        editor_screen: P.SettingsScreen
+      }
+
+      assert {:ok, _} = Manifest.validate(Map.put(@valid, :settings, settings))
+    end
+
+    test "rejects an unsupported setting type" do
+      settings = %{schema: [%{key: :x, type: :float, default: 1.0}]}
+      assert {:error, errs} = Manifest.validate(Map.put(@valid, :settings, settings))
+      assert Enum.any?(errs, &(&1 =~ ":type must be one of"))
+    end
+
+    test "rejects a setting entry without a default" do
+      settings = %{schema: [%{key: :x, type: :integer}]}
+      assert {:error, errs} = Manifest.validate(Map.put(@valid, :settings, settings))
+      assert Enum.any?(errs, &(&1 =~ "requires a :default"))
+    end
+
+    test "accepts notification handlers with map and predicate-MFA matches" do
+      notes = %{
+        handlers: [
+          %{match: %{type: "chat"}, handler: {P.Notif, :handle, 1}},
+          %{match: {P.Notif, :matches?, 1}, handler: {P.Notif, :catch_all, 1}}
+        ]
+      }
+
+      assert {:ok, _} = Manifest.validate(Map.put(@valid, :notifications, notes))
+    end
+
+    test "rejects a notification handler whose handler is an args-MFA not arity" do
+      notes = %{handlers: [%{match: %{type: "x"}, handler: {P, :h, []}}]}
+      assert {:error, errs} = Manifest.validate(Map.put(@valid, :notifications, notes))
+      assert Enum.any?(errs, &(&1 =~ ":handler must be a {Module, :function, arity} tuple"))
+    end
+
+    test "rejects a notification handler with a bad match" do
+      notes = %{handlers: [%{match: "chat", handler: {P, :h, 1}}]}
+      assert {:error, errs} = Manifest.validate(Map.put(@valid, :notifications, notes))
+
+      assert Enum.any?(
+               errs,
+               &(&1 =~ ":match must be a map or a {Module, :function, arity} predicate")
+             )
+    end
+  end
 end

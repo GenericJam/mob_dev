@@ -10,10 +10,15 @@ defmodule MobDev.Plugin do
   what later lets the plugin audit (see `MOB_PLUGINS.md` and
   `MOB_PLUGIN_SECURITY.md`) verify exactly which keys a generator touches.
 
-  This is currently a thin wrapper over `Application.get_env/3`; the audit
-  enforcement (`:host_config_keys` manifest declarations checked against
-  actual reads) lands in Phase 2 of the plugin extraction plan.
+  When a generator runs under `with_host_config_audit/3` (which the
+  build-time generator runner uses), every read is checked against the
+  plugin's declared `:host_config_keys` and recorded; an undeclared read
+  fails the build loudly. Outside an audit scope (e.g. in tests) it is a
+  plain `Application.get_env/3`.
   """
+
+  # Process-dictionary key holding the active host-config audit scope, if any.
+  @audit_key :"$mob_plugin_host_config_audit"
 
   @doc """
   Reads `key` from the host application's environment, returning `default`
@@ -24,11 +29,51 @@ defmodule MobDev.Plugin do
   the compile step:
 
       domains = MobDev.Plugin.host_config(:my_app, :ash_domains, [])
+
+  Under an audit scope, reading a key the plugin didn't declare in its
+  manifest `:host_config_keys` raises — the generator must declare what it
+  touches so `mix mob.audit_plugins` can verify it.
   """
   @spec host_config(atom(), atom(), term()) :: term()
   def host_config(otp_app, key, default \\ nil)
       when is_atom(otp_app) and is_atom(key) do
+    case Process.get(@audit_key) do
+      nil ->
+        :ok
+
+      %{plugin: plugin, allowed: allowed} = ctx ->
+        unless key in allowed do
+          raise ArgumentError,
+                "plugin #{inspect(plugin)} read host config key #{inspect(key)} not declared in its " <>
+                  "manifest :host_config_keys (declared: #{inspect(allowed)}). Add it to the manifest."
+        end
+
+        Process.put(@audit_key, %{ctx | reads: [{otp_app, key} | ctx.reads]})
+    end
+
     Application.get_env(otp_app, key, default)
+  end
+
+  @doc """
+  Runs `fun` with host-config auditing scoped to `plugin` (allowing only the
+  keys in `allowed`, the plugin's manifest `:host_config_keys`). Returns
+  `{result, reads}` where `reads` is the ordered list of `{otp_app, key}` the
+  generator actually touched. Nested scopes restore the prior one on exit.
+  """
+  @spec with_host_config_audit(atom(), [atom()], (-> result)) :: {result, [{atom(), atom()}]}
+        when result: term()
+  def with_host_config_audit(plugin, allowed, fun)
+      when is_atom(plugin) and is_list(allowed) and is_function(fun, 0) do
+    prev = Process.get(@audit_key)
+    Process.put(@audit_key, %{plugin: plugin, allowed: allowed, reads: []})
+
+    try do
+      result = fun.()
+      %{reads: reads} = Process.get(@audit_key)
+      {result, Enum.reverse(reads)}
+    after
+      if prev, do: Process.put(@audit_key, prev), else: Process.delete(@audit_key)
+    end
   end
 
   @doc """
