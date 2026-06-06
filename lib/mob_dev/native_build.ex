@@ -5504,16 +5504,87 @@ defmodule MobDev.NativeBuild do
     |> Keyword.put_new(:bundle_id, bundle_id)
   end
 
-  # Use the mob.exs value if it exists on disk; otherwise detect from the running BEAM.
+  # Use the mob.exs value if it exists on disk AND its Elixir version matches the
+  # running toolchain; otherwise detect from the running BEAM.
+  #
+  # WHY the version check: the app's .beam files are compiled by the toolchain
+  # that runs `mix` (System.version()). The bundled Elixir stdlib must be the
+  # SAME version, because macros baked into those BEAMs (Ecto.Migration, regex
+  # literals, …) emit calls into compiler internals that move between versions —
+  # e.g. `:elixir_quote.validate_quote/1` exists in 1.20.0 final but not in
+  # 1.20.0-rc.5. A stale mob.exs `elixir_lib` (rc.5) that still exists on disk
+  # would silently ship a mismatched stdlib; the skew is invisible until the app
+  # compiles an .exs at runtime on-device (a migration) and dies with `undef`.
+  # Android dodged this because its runtime sync auto-detects from the running
+  # BEAM; the iOS bundle path trusted the config. Prefer a correct build over an
+  # honored-but-stale config, and warn so the user fixes mob.exs.
   defp resolve_elixir_lib(configured) when is_binary(configured) do
     expanded = Path.expand(configured)
-    if File.exists?(expanded), do: configured, else: detect_elixir_lib()
+    exists? = File.exists?(expanded)
+
+    configured_vsn =
+      if exists? do
+        MobDev.AppFile.vsn_from_path(Path.join(expanded, "elixir/ebin/elixir.app"))
+      end
+
+    toolchain_vsn = System.version()
+
+    case __elixir_lib_decision__(exists?, configured_vsn, toolchain_vsn) do
+      {:use_configured} ->
+        configured
+
+      {:use_detected, reason} ->
+        detected = detect_elixir_lib()
+
+        if reason == :version_skew do
+          Mix.shell().info([
+            :yellow,
+            __elixir_lib_skew_warning__(configured, configured_vsn, toolchain_vsn, detected),
+            :reset
+          ])
+        end
+
+        detected
+    end
   end
 
   defp resolve_elixir_lib(_), do: detect_elixir_lib()
 
   defp detect_elixir_lib do
     :code.lib_dir(:elixir) |> to_string() |> Path.dirname()
+  end
+
+  @doc false
+  # Pure decision kernel for resolve_elixir_lib/1 — which lib dir to bundle.
+  #   exists?        — configured path present on disk
+  #   configured_vsn — Elixir version read from <lib>/elixir/ebin/elixir.app (nil if unreadable)
+  #   toolchain_vsn  — System.version(), the compiler that built the app's BEAMs
+  # Falls back to the auto-detected (running-BEAM) lib on a missing path or a
+  # version skew; honors an unreadable-but-present config (can't prove it wrong).
+  @spec __elixir_lib_decision__(boolean(), String.t() | nil, String.t()) ::
+          {:use_configured} | {:use_detected, :missing | :version_skew}
+  def __elixir_lib_decision__(false, _configured_vsn, _toolchain_vsn),
+    do: {:use_detected, :missing}
+
+  def __elixir_lib_decision__(true, nil, _toolchain_vsn), do: {:use_configured}
+  def __elixir_lib_decision__(true, vsn, vsn), do: {:use_configured}
+
+  def __elixir_lib_decision__(true, _configured_vsn, _toolchain_vsn),
+    do: {:use_detected, :version_skew}
+
+  @doc false
+  @spec __elixir_lib_skew_warning__(String.t(), String.t() | nil, String.t(), String.t()) ::
+          String.t()
+  def __elixir_lib_skew_warning__(configured, configured_vsn, toolchain_vsn, detected) do
+    """
+    * mob.exs elixir_lib is Elixir #{configured_vsn} but the active toolchain is \
+    #{toolchain_vsn}.
+        configured: #{configured}
+        A mismatched bundled stdlib causes on-device `undef` crashes when the app \
+    compiles .exs at runtime (e.g. Ecto migrations: :elixir_quote.validate_quote/1).
+        Bundling the toolchain's stdlib instead: #{detected}
+        Update mob.exs `elixir_lib` to silence this warning.
+    """
   end
 
   defp project_swift_sources_arg(cfg) do
