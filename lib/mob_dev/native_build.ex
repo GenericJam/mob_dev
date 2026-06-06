@@ -36,6 +36,13 @@ defmodule MobDev.NativeBuild do
     platforms = narrow_platforms_for_device(platforms, device_id)
     Process.put(:mob_slim, slim)
 
+    # Tier-3 build-time file merges (platform-agnostic; run once before the
+    # per-platform builds): copy plugin migrations into the host migrations dir
+    # and plugin images into the host bundle assets. Fonts are merged per-platform
+    # (iOS Info.plist + bundle, Android assets) inside the build chains.
+    apply_plugin_migrations!()
+    apply_plugin_images!()
+
     results = []
 
     # Skip Android when its toolchain isn't installed instead of failing the
@@ -4050,6 +4057,53 @@ defmodule MobDev.NativeBuild do
 
         :ok
     end
+  end
+
+  @host_migrations_dir "priv/repo/migrations"
+  @plugin_assets_root "priv/generated/plugin_assets"
+
+  # Tier 3: copies each activated plugin's migration files into the host's
+  # migrations dir, namespaced by `repo_namespace` (version-preserving) so the
+  # host's existing `Ecto.Migrator` picks them up. Idempotent. No-op when no
+  # plugin declares `:migrations`.
+  defp apply_plugin_migrations! do
+    migrations = MobDev.Plugin.Merge.migrations(MobDev.Plugin.activated())
+
+    if migrations != [] do
+      File.mkdir_p!(@host_migrations_dir)
+
+      plugin_migs =
+        for m <- migrations do
+          %{
+            repo_namespace: m.repo_namespace,
+            files: Path.wildcard(Path.join(m.migrations_dir, "*.exs"))
+          }
+        end
+
+      for {src, dest} <- MobDev.Plugin.Assets.migration_copies(plugin_migs, @host_migrations_dir) do
+        File.cp!(src, dest)
+        IO.puts("  ✓ plugin migration → #{Path.relative_to_cwd(dest)}")
+      end
+    end
+
+    :ok
+  end
+
+  # Tier 3: copies each activated plugin's images into the host bundle under
+  # `priv/generated/plugin_assets/assets/plugin/<plugin>/<file>` — the path the
+  # core `Mob.Plugins.resolve_image/1` (`plugin://<plugin>/<file>`) resolves to.
+  # No-op when no plugin declares image assets.
+  defp apply_plugin_images! do
+    for %{plugin: plugin, images: images} <- MobDev.Plugin.Merge.assets(MobDev.Plugin.activated()),
+        src <- images do
+      rel = MobDev.Plugin.Assets.image_bundle_path(plugin, Path.basename(src))
+      dest = Path.join(@plugin_assets_root, rel)
+      File.mkdir_p!(Path.dirname(dest))
+      File.cp!(src, dest)
+      IO.puts("  ✓ plugin image → #{Path.relative_to_cwd(dest)}")
+    end
+
+    :ok
   end
 
   # Copies each activated plugin's `bridge_kt` into the app's Kotlin sourceSet

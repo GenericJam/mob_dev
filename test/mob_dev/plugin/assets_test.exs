@@ -4,7 +4,7 @@ defmodule MobDev.Plugin.AssetsTest do
   alias MobDev.Plugin.Assets
 
   describe "migration_copies/2" do
-    test "namespaces each plugin migration into the host migrations dir" do
+    test "namespaces each plugin migration into the host migrations dir, preserving the version" do
       plugin_migrations = [
         %{repo_namespace: "kv_", files: ["/p/priv/repo/migrations/20260101_create.exs"]},
         %{repo_namespace: "iap_", files: ["/q/migrations/20260102_add.exs"]}
@@ -12,21 +12,25 @@ defmodule MobDev.Plugin.AssetsTest do
 
       assert Assets.migration_copies(plugin_migrations, "/host/priv/repo/migrations") == [
                {"/p/priv/repo/migrations/20260101_create.exs",
-                "/host/priv/repo/migrations/kv_20260101_create.exs"},
+                "/host/priv/repo/migrations/20260101_kv_create.exs"},
                {"/q/migrations/20260102_add.exs",
-                "/host/priv/repo/migrations/iap_20260102_add.exs"}
+                "/host/priv/repo/migrations/20260102_iap_add.exs"}
              ]
     end
   end
 
   describe "namespaced_filename/2" do
-    test "prefixes the namespace" do
-      assert Assets.namespaced_filename("kv_", "20260101_create.exs") == "kv_20260101_create.exs"
+    test "inserts the namespace into the name part, keeping the version prefix for Ecto" do
+      assert Assets.namespaced_filename("kv_", "20260101_create.exs") == "20260101_kv_create.exs"
     end
 
-    test "is idempotent (does not double-prefix)" do
-      assert Assets.namespaced_filename("kv_", "kv_20260101_create.exs") ==
-               "kv_20260101_create.exs"
+    test "is idempotent (does not double-namespace)" do
+      assert Assets.namespaced_filename("kv_", "20260101_kv_create.exs") ==
+               "20260101_kv_create.exs"
+    end
+
+    test "falls back to a plain prefix when there is no numeric version" do
+      assert Assets.namespaced_filename("kv_", "seed.exs") == "kv_seed.exs"
     end
   end
 
