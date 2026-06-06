@@ -34,6 +34,18 @@ defmodule MobDev.Plugin.AssetsTest do
     end
   end
 
+  describe "android_font_resource_name/1" do
+    test "lowercases, drops the extension, and underscores non-alnum" do
+      assert Assets.android_font_resource_name("Georgia.ttf") == "georgia"
+      assert Assets.android_font_resource_name("Inter-Regular.otf") == "inter_regular"
+      assert Assets.android_font_resource_name("My Font 2.ttf") == "my_font_2"
+    end
+
+    test "prefixes a non-letter leading char so it is a valid resource id" do
+      assert Assets.android_font_resource_name("123Sans.ttf") == "f_123sans"
+    end
+  end
+
   describe "image_bundle_path/2" do
     test "maps plugin + basename to the conventional bundle path" do
       assert Assets.image_bundle_path(:kv, "icon.png") == "assets/plugin/kv/icon.png"
