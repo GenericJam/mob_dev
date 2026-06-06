@@ -125,10 +125,28 @@ defmodule MobDev.NativeBuildTest do
       assert src =~ "fun registerAll(activity: Activity)"
       assert src =~ "io.mob.bluetooth.MobBluetoothBridge.register()"
       assert src =~ "handOff(io.mob.bluetooth.MobBluetoothBridge, activity)"
+      assert src =~ "collectPermissionProvider(io.mob.bluetooth.MobBluetoothBridge)"
       # The cast lives in the Any-typed helper, never inline against a final object.
       assert src =~ "private fun handOff(bridge: Any, activity: Activity)"
       assert src =~ "(bridge as? MobActivityAware)?.setActivity(activity)"
+      assert src =~ "private fun collectPermissionProvider(bridge: Any)"
+      assert src =~ "(bridge as? MobPermissionProvider)?.let {"
       refute src =~ "MobBluetoothBridge as? MobActivityAware"
+    end
+
+    test "__bootstrap_kotlin__ always exposes permissionsFor for core to consult" do
+      # Present with bridges...
+      with_bridge = NativeBuild.__bootstrap_kotlin__(["io.mob.location.MobLocationBridge"])
+
+      assert with_bridge =~
+               "private val permissionProviders = mutableListOf<MobPermissionProvider>()"
+
+      assert with_bridge =~ "fun permissionsFor(cap: String): Array<String>?"
+
+      # ...and without (so MobBridge can reference it unconditionally).
+      empty = NativeBuild.__bootstrap_kotlin__([])
+      assert empty =~ "fun permissionsFor(cap: String): Array<String>?"
+      assert empty =~ "private val permissionProviders = mutableListOf<MobPermissionProvider>()"
     end
 
     test "__bootstrap_kotlin__ hands the activity to every bridge uniformly" do
@@ -142,14 +160,17 @@ defmodule MobDev.NativeBuildTest do
       # exactly one shared helper holding the single cast.
       assert length(Regex.scan(~r/\.register\(\)/, src)) == 2
       assert length(Regex.scan(~r/handOff\([\w.]+, activity\)/, src)) == 2
+      assert length(Regex.scan(~r/collectPermissionProvider\([\w.]+\)/, src)) == 2
       assert length(Regex.scan(~r/as\? MobActivityAware/, src)) == 1
+      assert length(Regex.scan(~r/as\? MobPermissionProvider/, src)) == 1
     end
 
-    test "__bootstrap_kotlin__ emits an empty registerAll body and no helper when no bridges" do
+    test "__bootstrap_kotlin__ emits an empty registerAll body and no register helpers when no bridges" do
       src = NativeBuild.__bootstrap_kotlin__([])
       assert src =~ "fun registerAll(activity: Activity) {}"
       refute src =~ ".register()"
       refute src =~ "handOff"
+      refute src =~ "collectPermissionProvider"
     end
 
     test "__activity_aware_kotlin__ emits the stable MobActivityAware contract" do
@@ -158,6 +179,13 @@ defmodule MobDev.NativeBuildTest do
       assert src =~ "import android.app.Activity"
       assert src =~ "interface MobActivityAware {"
       assert src =~ "fun setActivity(activity: Activity)"
+    end
+
+    test "__permission_provider_kotlin__ emits the stable MobPermissionProvider contract" do
+      src = NativeBuild.__permission_provider_kotlin__()
+      assert src =~ "package io.mob.plugin"
+      assert src =~ "interface MobPermissionProvider {"
+      assert src =~ "fun permissionsFor(cap: String): Array<String>?"
     end
   end
 

@@ -23,13 +23,14 @@ defmodule MobDev.Plugin.Manifest do
     :nifs_generator,
     :android,
     :ios,
+    :permissions,
     :ui_components,
     :ui_components_generator
   ]
   @screen_sections [:screens, :screens_generator, :migrations, :assets]
   @subapp_sections [:lifecycle, :settings, :notifications]
   @visual_sections [:ui_components, :ui_components_generator]
-  @tier1_sections [:nifs, :nifs_generator, :android, :ios]
+  @tier1_sections [:nifs, :nifs_generator, :android, :ios, :permissions]
   # Sections whose Elixir half can still hot-push even when the plugin has
   # native code (the partial case).
   @pushable_sections [:screens, :screens_generator, :lifecycle, :migrations]
@@ -81,6 +82,15 @@ defmodule MobDev.Plugin.Manifest do
       |> check_name(manifest)
       |> check_mob_version(manifest)
       |> check_spec_version(manifest)
+      |> check_permissions(manifest)
+      |> check_nifs(manifest)
+      |> check_screens(manifest)
+      |> check_screens_generator(manifest)
+      |> check_migrations(manifest)
+      |> check_assets(manifest)
+      |> check_lifecycle(manifest)
+      |> check_settings(manifest)
+      |> check_notifications(manifest)
 
     case errors do
       [] -> {:ok, manifest}
@@ -121,6 +131,312 @@ defmodule MobDev.Plugin.Manifest do
 
   defp check_spec_version(errors, _),
     do: [":plugin_spec_version is required and must be an integer" | errors]
+
+  # `:permissions` is optional. When present it must be a list of maps, each with
+  # a `:capability` atom (the value `Mob.Permissions.request/2` accepts) and an
+  # optional `:ios` map carrying a `:handler` string (the cdecl symbol the
+  # plugin self-registers). Android needs nothing here — its provider is
+  # auto-discovered by interface at bootstrap (see the permission-registry ADR).
+  defp check_permissions(errors, %{permissions: perms}) when is_list(perms) do
+    perms
+    |> Enum.with_index()
+    |> Enum.reduce(errors, fn {entry, i}, acc -> check_permission_entry(acc, entry, i) end)
+  end
+
+  defp check_permissions(errors, %{permissions: other}),
+    do: ["permissions must be a list, got: #{inspect(other)}" | errors]
+
+  defp check_permissions(errors, _), do: errors
+
+  defp check_permission_entry(errors, %{capability: cap} = entry, _i) when is_atom(cap) do
+    case entry[:ios] do
+      nil ->
+        errors
+
+      %{handler: h} when is_binary(h) ->
+        errors
+
+      %{} ->
+        ["permissions entry #{inspect(cap)}: ios must declare a :handler string" | errors]
+
+      other ->
+        ["permissions entry #{inspect(cap)}: :ios must be a map, got: #{inspect(other)}" | errors]
+    end
+  end
+
+  defp check_permission_entry(errors, %{} = entry, i),
+    do: ["permissions entry ##{i} requires a :capability atom, got: #{inspect(entry)}" | errors]
+
+  defp check_permission_entry(errors, other, i),
+    do: ["permissions entry ##{i} must be a map, got: #{inspect(other)}" | errors]
+
+  # `:nifs` is optional. When present, each entry's optional `:platform` (used by
+  # cross-platform plugins that ship a separate iOS + Android source for the same
+  # module) must be `:ios` or `:android`. Other fields are validated at build /
+  # link time, not here.
+  defp check_nifs(errors, %{nifs: nifs}) when is_list(nifs) do
+    nifs
+    |> Enum.with_index()
+    |> Enum.reduce(errors, fn {nif, i}, acc -> check_nif_platform(acc, nif, i) end)
+  end
+
+  defp check_nifs(errors, %{nifs: other}),
+    do: ["nifs must be a list, got: #{inspect(other)}" | errors]
+
+  defp check_nifs(errors, _), do: errors
+
+  defp check_nif_platform(errors, %{platform: p}, i) when p not in [:ios, :android],
+    do: ["nifs entry ##{i}: :platform must be :ios or :android, got: #{inspect(p)}" | errors]
+
+  defp check_nif_platform(errors, _nif, _i), do: errors
+
+  # ── Tier 3: screens / migrations / assets ─────────────────────────────────
+
+  # `:screens` (static, tier 3) is a list of `%{module: Mod, default_route: "/p"}`.
+  # Mutually exclusive with `:screens_generator` (enforced in check_screens_generator).
+  defp check_screens(errors, %{screens: screens}) when is_list(screens) do
+    screens
+    |> Enum.with_index()
+    |> Enum.reduce(errors, fn {entry, i}, acc -> check_screen_entry(acc, entry, i) end)
+  end
+
+  defp check_screens(errors, %{screens: other}),
+    do: ["screens must be a list, got: #{inspect(other)}" | errors]
+
+  defp check_screens(errors, _), do: errors
+
+  defp check_screen_entry(errors, %{module: m, default_route: r}, _i)
+       when is_atom(m) and not is_nil(m) and is_binary(r),
+       do: errors
+
+  defp check_screen_entry(errors, %{} = entry, i),
+    do: [
+      "screens entry ##{i} requires a :module atom and a :default_route string, got: #{inspect(entry)}"
+      | errors
+    ]
+
+  defp check_screen_entry(errors, other, i),
+    do: ["screens entry ##{i} must be a map, got: #{inspect(other)}" | errors]
+
+  # `:screens_generator` (spec-v2) is an `{Module, :function, args}` MFA run at
+  # build time. Requires plugin_spec_version: 2 and is mutually exclusive with
+  # static `:screens`.
+  defp check_screens_generator(errors, %{screens_generator: gen} = m) do
+    errors
+    |> check_mfa(gen, :screens_generator)
+    |> require_spec_v2(m, :screens_generator)
+    |> reject_static_and_generated(m)
+  end
+
+  defp check_screens_generator(errors, _), do: errors
+
+  defp reject_static_and_generated(errors, m) do
+    if Map.has_key?(m, :screens) do
+      [":screens and :screens_generator are mutually exclusive — declare one, not both" | errors]
+    else
+      errors
+    end
+  end
+
+  defp require_spec_v2(errors, %{plugin_spec_version: v}, _section) when v >= 2, do: errors
+
+  defp require_spec_v2(errors, _m, section),
+    do: ["#{inspect(section)} requires plugin_spec_version: 2" | errors]
+
+  # `:migrations` (tier 3) is `%{repo_namespace: "prefix_", migrations_dir: "path"}`.
+  # The namespace prefixes migration/table names so vendors don't collide.
+  defp check_migrations(errors, %{migrations: %{repo_namespace: ns, migrations_dir: dir}})
+       when is_binary(ns) and is_binary(dir),
+       do: errors
+
+  defp check_migrations(errors, %{migrations: other}),
+    do: [
+      "migrations must be a map with :repo_namespace and :migrations_dir strings, got: #{inspect(other)}"
+      | errors
+    ]
+
+  defp check_migrations(errors, _), do: errors
+
+  # `:assets` (tier 3) is `%{fonts: [path], images: [path]}` (both keys optional).
+  defp check_assets(errors, %{assets: %{} = assets}) do
+    errors
+    |> check_asset_paths(assets, :fonts)
+    |> check_asset_paths(assets, :images)
+  end
+
+  defp check_assets(errors, %{assets: other}),
+    do: [
+      "assets must be a map with :fonts and/or :images path lists, got: #{inspect(other)}"
+      | errors
+    ]
+
+  defp check_assets(errors, _), do: errors
+
+  defp check_asset_paths(errors, assets, key) do
+    case Map.get(assets, key) do
+      nil ->
+        errors
+
+      paths when is_list(paths) ->
+        if Enum.all?(paths, &is_binary/1), do: errors, else: bad_assets(errors, key)
+
+      _ ->
+        bad_assets(errors, key)
+    end
+  end
+
+  defp bad_assets(errors, key),
+    do: ["assets.#{key} must be a list of path strings" | errors]
+
+  # ── Tier 4: lifecycle / settings / notifications ──────────────────────────
+
+  # `:lifecycle` (tier 4) wires the plugin into the host's OTP lifecycle:
+  # `on_start`/`on_resume`/`on_background` MFAs (optional) and `supervised`
+  # child specs (optional). The host calls them; this only checks shape.
+  defp check_lifecycle(errors, %{lifecycle: %{} = lc}) do
+    errors
+    |> check_optional_mfa(lc, :on_start)
+    |> check_optional_mfa(lc, :on_resume)
+    |> check_optional_mfa(lc, :on_background)
+    |> check_supervised(lc)
+  end
+
+  defp check_lifecycle(errors, %{lifecycle: other}),
+    do: ["lifecycle must be a map, got: #{inspect(other)}" | errors]
+
+  defp check_lifecycle(errors, _), do: errors
+
+  defp check_optional_mfa(errors, map, key) do
+    case Map.get(map, key) do
+      nil -> errors
+      mfa -> check_mfa(errors, mfa, :"lifecycle.#{key}")
+    end
+  end
+
+  defp check_supervised(errors, %{supervised: children}) when is_list(children), do: errors
+
+  defp check_supervised(errors, %{supervised: other}),
+    do: ["lifecycle.supervised must be a list of child specs, got: #{inspect(other)}" | errors]
+
+  defp check_supervised(errors, _), do: errors
+
+  # `:settings` (tier 4) is `%{schema: [%{key, type, default}], editor_screen: Mod}`.
+  # Persisted per-plugin via Mob.State; `type` drives runtime validation.
+  @setting_types [:boolean, :string, :integer]
+
+  defp check_settings(errors, %{settings: %{} = settings}) do
+    errors
+    |> check_settings_schema(settings)
+    |> check_editor_screen(settings)
+  end
+
+  defp check_settings(errors, %{settings: other}),
+    do: ["settings must be a map with a :schema list, got: #{inspect(other)}" | errors]
+
+  defp check_settings(errors, _), do: errors
+
+  defp check_settings_schema(errors, %{schema: schema}) when is_list(schema) do
+    schema
+    |> Enum.with_index()
+    |> Enum.reduce(errors, fn {entry, i}, acc -> check_setting_entry(acc, entry, i) end)
+  end
+
+  defp check_settings_schema(errors, _),
+    do: ["settings.schema is required and must be a list of %{key, type, default} maps" | errors]
+
+  defp check_setting_entry(errors, %{key: k, type: t} = entry, i)
+       when is_atom(k) and is_atom(t) do
+    cond do
+      t not in @setting_types ->
+        [
+          "settings entry ##{i}: :type must be one of #{inspect(@setting_types)}, got: #{inspect(t)}"
+          | errors
+        ]
+
+      not Map.has_key?(entry, :default) ->
+        ["settings entry ##{i} (#{inspect(k)}) requires a :default value" | errors]
+
+      true ->
+        errors
+    end
+  end
+
+  defp check_setting_entry(errors, other, i),
+    do: ["settings entry ##{i} requires :key and :type atoms, got: #{inspect(other)}" | errors]
+
+  defp check_editor_screen(errors, %{editor_screen: m}) when is_atom(m) and not is_nil(m),
+    do: errors
+
+  defp check_editor_screen(errors, %{editor_screen: other}),
+    do: [
+      "settings.editor_screen must be a Mob.Screen module atom, got: #{inspect(other)}" | errors
+    ]
+
+  defp check_editor_screen(errors, _), do: errors
+
+  # `:notifications` (tier 4) is `%{handlers: [%{match, handler}]}`. `match` is a
+  # map (prefix-matched against the payload) or a 1-arity fun; `handler` is an MFA.
+  defp check_notifications(errors, %{notifications: %{handlers: handlers}})
+       when is_list(handlers) do
+    handlers
+    |> Enum.with_index()
+    |> Enum.reduce(errors, fn {entry, i}, acc -> check_notification_handler(acc, entry, i) end)
+  end
+
+  defp check_notifications(errors, %{notifications: other}),
+    do: ["notifications must be a map with a :handlers list, got: #{inspect(other)}" | errors]
+
+  defp check_notifications(errors, _), do: errors
+
+  defp check_notification_handler(errors, %{match: match, handler: handler}, i) do
+    errors
+    |> check_match(match, i)
+    |> check_handler_ref(handler, i)
+  end
+
+  defp check_notification_handler(errors, other, i),
+    do: [
+      "notifications handler ##{i} requires :match and :handler, got: #{inspect(other)}" | errors
+    ]
+
+  # A notification handler is invoked WITH the payload, so it's a
+  # `{Module, :function, arity}` reference (arity is an integer), not an
+  # args-MFA. The dispatcher calls `apply(m, f, [payload])`.
+  defp check_handler_ref(errors, {m, f, arity}, _i)
+       when is_atom(m) and is_atom(f) and is_integer(arity),
+       do: errors
+
+  defp check_handler_ref(errors, other, i),
+    do: [
+      "notifications handler ##{i}: :handler must be a {Module, :function, arity} tuple, got: #{inspect(other)}"
+      | errors
+    ]
+
+  # `:match` is a map (prefix-matched against the payload) or a
+  # `{Module, :function, arity}` predicate reference. Anonymous functions are
+  # NOT allowed — the merged handler set is serialized into the host's runtime
+  # plugin manifest (a terms file), and closures don't survive that.
+  defp check_match(errors, match, _i) when is_map(match), do: errors
+
+  defp check_match(errors, {m, f, arity}, _i)
+       when is_atom(m) and is_atom(f) and is_integer(arity),
+       do: errors
+
+  defp check_match(errors, other, i),
+    do: [
+      "notifications handler ##{i}: :match must be a map or a {Module, :function, arity} predicate, got: #{inspect(other)}"
+      | errors
+    ]
+
+  # Shared: validate an `{Module, :function, args}` MFA tuple.
+  defp check_mfa(errors, {m, f, a}, _label) when is_atom(m) and is_atom(f) and is_list(a),
+    do: errors
+
+  defp check_mfa(errors, other, label),
+    do: [
+      "#{inspect(label)} must be an {Module, :function, args} tuple, got: #{inspect(other)}"
+      | errors
+    ]
 
   @doc """
   Classifies the plugin tier (0–4) from which capability sections are present.

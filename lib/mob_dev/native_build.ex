@@ -36,6 +36,13 @@ defmodule MobDev.NativeBuild do
     platforms = narrow_platforms_for_device(platforms, device_id)
     Process.put(:mob_slim, slim)
 
+    # Tier-3 build-time file merges (platform-agnostic; run once before the
+    # per-platform builds): copy plugin migrations into the host migrations dir
+    # and plugin images into the host bundle assets. Fonts are merged per-platform
+    # (iOS Info.plist + bundle, Android assets) inside the build chains.
+    apply_plugin_migrations!()
+    apply_plugin_images!()
+
     results = []
 
     # Skip Android when its toolchain isn't installed instead of failing the
@@ -131,6 +138,7 @@ defmodule MobDev.NativeBuild do
          :ok <- apply_plugin_android_manifest!(),
          :ok <- apply_plugin_gradle_deps!(),
          :ok <- apply_plugin_android_kotlin!(),
+         :ok <- apply_fonts_to_android!(),
          :ok <- gradle_assemble(),
          :ok <- adb_install_all(apk, bundle_id, device_id),
          :ok <-
@@ -242,13 +250,14 @@ defmodule MobDev.NativeBuild do
     # Activated plugins' C NIF sources (one .c per nif, named after the NIF
     # module). Empty when no NIF-bearing plugin is activated; the build.zig
     # template orelse's "" so the flag is always safe to emit.
-    plugin_c_nifs = MobDev.Plugin.Merge.nif_sources(MobDev.Plugin.activated()) |> Enum.join(",")
+    plugin_c_nifs =
+      MobDev.Plugin.Merge.nif_sources(MobDev.Plugin.activated(), :android) |> Enum.join(",")
 
     # Activated plugins' zig NIF sources (one .zig per nif, lang: :zig). Same
     # shape as plugin_c_nifs but compiled via addZigObject with named-module
     # imports for mob-core bindings. Empty when no zig-NIF plugin is activated.
     plugin_zig_nifs =
-      MobDev.Plugin.Merge.zig_nif_sources(MobDev.Plugin.activated()) |> Enum.join(",")
+      MobDev.Plugin.Merge.zig_nif_sources(MobDev.Plugin.activated(), :android) |> Enum.join(",")
 
     # Activated plugins' JNI-thunk C sources (android.jni_source). Plain C
     # objects (no NIF-init libname) compiled + linked into the app .so so a
@@ -2259,7 +2268,7 @@ defmodule MobDev.NativeBuild do
     # (zig plugin NIFs on iOS aren't wired yet — no current plugin needs one;
     # bt's zig NIF was Android-only. Add a plugin_zig_nifs path here + in
     # ios/build.zig if a future plugin ships an iOS zig NIF.)
-    plugin_c_nifs = MobDev.Plugin.Merge.nif_sources(activated_plugins) |> Enum.join(",")
+    plugin_c_nifs = MobDev.Plugin.Merge.nif_sources(activated_plugins, :ios) |> Enum.join(",")
 
     base_args = [
       "build",
@@ -3512,7 +3521,7 @@ defmodule MobDev.NativeBuild do
 
     # Activated plugins' C NIF sources — see the sim build for the full
     # rationale. Same path on device; the iPhone uses build_device.zig.
-    plugin_c_nifs = MobDev.Plugin.Merge.nif_sources(activated_plugins) |> Enum.join(",")
+    plugin_c_nifs = MobDev.Plugin.Merge.nif_sources(activated_plugins, :ios) |> Enum.join(",")
 
     base_args = [
       "build",
@@ -3688,6 +3697,7 @@ defmodule MobDev.NativeBuild do
         info_plist = Path.join(app_path, "Info.plist")
         File.cp!("ios/Info.plist", info_plist)
         apply_plugin_plist_keys!(info_plist)
+        apply_fonts_to_ios_bundle!(info_plist, app_path)
         if File.dir?("ios/Assets.xcassets/AppIcon.appiconset"), do: compile_ios_icons(app_path)
         {:ok, app_path}
     end
@@ -3879,6 +3889,7 @@ defmodule MobDev.NativeBuild do
         info_plist = Path.join(app_path, "Info.plist")
         File.cp!("ios/Info.plist", info_plist)
         apply_plugin_plist_keys!(info_plist)
+        apply_fonts_to_ios_bundle!(info_plist, app_path)
         plist_set!(info_plist, ":CFBundleIdentifier", bundle_id)
         plist_set!(info_plist, ":CFBundleExecutable", app_name)
         plist_set!(info_plist, ":CFBundleName", app_name)
@@ -3981,6 +3992,10 @@ defmodule MobDev.NativeBuild do
   # Generated stable contract: a bridge class implements MobActivityAware to be
   # handed the host Activity by registerAll. Always written next to the bootstrap.
   @plugin_activity_aware_path "android/app/src/main/java/io/mob/plugin/MobActivityAware.kt"
+  # Generated stable contract: a bridge class implements MobPermissionProvider to
+  # supply the cap->Android-permission-string mapping for a capability core no
+  # longer knows about (the permission-registry extension). Always written.
+  @plugin_permission_provider_path "android/app/src/main/java/io/mob/plugin/MobPermissionProvider.kt"
 
   # Inserts `<uses-permission android:name="..."/>` lines for each permission
   # declared by activated plugins into `AndroidManifest.xml`. Idempotent: skips
@@ -4047,6 +4062,108 @@ defmodule MobDev.NativeBuild do
     end
   end
 
+  @host_migrations_dir "priv/repo/migrations"
+  @plugin_assets_root "priv/generated/plugin_assets"
+
+  # Tier 3: copies each activated plugin's migration files into the host's
+  # migrations dir, namespaced by `repo_namespace` (version-preserving) so the
+  # host's existing `Ecto.Migrator` picks them up. Idempotent. No-op when no
+  # plugin declares `:migrations`.
+  defp apply_plugin_migrations! do
+    migrations = MobDev.Plugin.Merge.migrations(MobDev.Plugin.activated())
+
+    if migrations != [] do
+      File.mkdir_p!(@host_migrations_dir)
+
+      plugin_migs =
+        for m <- migrations do
+          %{
+            repo_namespace: m.repo_namespace,
+            files: Path.wildcard(Path.join(m.migrations_dir, "*.exs"))
+          }
+        end
+
+      for {src, dest} <- MobDev.Plugin.Assets.migration_copies(plugin_migs, @host_migrations_dir) do
+        File.cp!(src, dest)
+        IO.puts("  ✓ plugin migration → #{Path.relative_to_cwd(dest)}")
+      end
+    end
+
+    :ok
+  end
+
+  # Tier 3: copies each activated plugin's images into the host bundle under
+  # `priv/generated/plugin_assets/assets/plugin/<plugin>/<file>` — the path the
+  # core `Mob.Plugins.resolve_image/1` (`plugin://<plugin>/<file>`) resolves to.
+  # No-op when no plugin declares image assets.
+  defp apply_plugin_images! do
+    for %{plugin: plugin, images: images} <- MobDev.Plugin.Merge.assets(MobDev.Plugin.activated()),
+        src <- images do
+      rel = MobDev.Plugin.Assets.image_bundle_path(plugin, Path.basename(src))
+      dest = Path.join(@plugin_assets_root, rel)
+      File.mkdir_p!(Path.dirname(dest))
+      File.cp!(src, dest)
+      IO.puts("  ✓ plugin image → #{Path.relative_to_cwd(dest)}")
+    end
+
+    :ok
+  end
+
+  @android_res_font "android/app/src/main/res/font"
+
+  # App-level (`priv/fonts/*.ttf|otf`) + plugin (`assets.fonts`) custom fonts.
+  defp collect_all_fonts do
+    app_fonts = Path.wildcard("priv/fonts/*.{ttf,otf,TTF,OTF}")
+
+    plugin_fonts =
+      for %{fonts: fonts} <- MobDev.Plugin.Merge.assets(MobDev.Plugin.activated()),
+          f <- fonts,
+          do: f
+
+    Enum.uniq(app_fonts ++ plugin_fonts)
+  end
+
+  # Copies the app's + plugins' fonts into the iOS `.app` bundle root and lists
+  # them in `Info.plist` UIAppFonts so iOS registers them at launch (the SwiftUI
+  # `Font.custom(name, …)` path in MobRootView then resolves them by name). No-op
+  # when there are no fonts.
+  defp apply_fonts_to_ios_bundle!(info_plist, app_path) do
+    fonts = collect_all_fonts()
+
+    if fonts != [] do
+      for src <- fonts, do: File.cp!(src, Path.join(app_path, Path.basename(src)))
+      basenames = Enum.map(fonts, &Path.basename/1)
+      plist = File.read!(info_plist)
+      File.write!(info_plist, MobDev.Plugin.Assets.merge_ui_app_fonts(plist, basenames))
+      IO.puts("  ✓ bundled #{length(fonts)} font(s) + UIAppFonts")
+    end
+
+    :ok
+  end
+
+  # Copies the app's + plugins' fonts into the Android `res/font/` dir under a
+  # normalised resource name (lowercase + underscores; the renderer normalises
+  # the `font:` prop the same way to look them up via `getIdentifier`). Unlike
+  # `assets/`, `res/font/` entries are stored uncompressed, which Android's font
+  # loader requires. No-op when there are no fonts.
+  defp apply_fonts_to_android! do
+    fonts = collect_all_fonts()
+
+    if fonts != [] do
+      File.mkdir_p!(@android_res_font)
+
+      for src <- fonts do
+        ext = Path.extname(src) |> String.downcase()
+        res_name = MobDev.Plugin.Assets.android_font_resource_name(Path.basename(src))
+        dest = Path.join(@android_res_font, res_name <> ext)
+        File.cp!(src, dest)
+        IO.puts("  ✓ android font → #{Path.relative_to_cwd(dest)}")
+      end
+    end
+
+    :ok
+  end
+
   # Copies each activated plugin's `bridge_kt` into the app's Kotlin sourceSet
   # (at its own package path, read from the file's `package` line) so Gradle
   # compiles it, and (re)generates `io.mob.plugin.MobPluginBootstrap` whose
@@ -4080,6 +4197,7 @@ defmodule MobDev.NativeBuild do
       end
 
       write_generated_kotlin!(@plugin_activity_aware_path, __activity_aware_kotlin__())
+      write_generated_kotlin!(@plugin_permission_provider_path, __permission_provider_kotlin__())
 
       write_generated_kotlin!(
         @plugin_bootstrap_path,
@@ -4132,10 +4250,12 @@ defmodule MobDev.NativeBuild do
   def __bootstrap_kotlin__(bridge_classes) do
     calls =
       bridge_classes
-      |> Enum.map(fn cls -> "        #{cls}.register()\n        handOff(#{cls}, activity)" end)
+      |> Enum.map(fn cls ->
+        "        #{cls}.register()\n        handOff(#{cls}, activity)\n        collectPermissionProvider(#{cls})"
+      end)
       |> Enum.join("\n")
 
-    {body, helper} =
+    {body, helpers} =
       if calls == "" do
         {"", ""}
       else
@@ -4144,21 +4264,68 @@ defmodule MobDev.NativeBuild do
            " MobActivityAware.\n" <>
            "    private fun handOff(bridge: Any, activity: Activity) {\n" <>
            "        (bridge as? MobActivityAware)?.setActivity(activity)\n" <>
+           "    }\n\n" <>
+           "    // Records a bridge that opts in via MobPermissionProvider so" <>
+           " core\n" <>
+           "    // MobBridge.request_permission can fall through to it for a" <>
+           " capability\n" <>
+           "    // core no longer knows about.\n" <>
+           "    private fun collectPermissionProvider(bridge: Any) {\n" <>
+           "        (bridge as? MobPermissionProvider)?.let {\n" <>
+           "            if (!permissionProviders.contains(it)) permissionProviders.add(it)\n" <>
+           "        }\n" <>
            "    }"}
       end
 
     """
     // Generated by mob_dev (MobDev.NativeBuild) — do not edit.
     // Calls each activated plugin's bridge-class register() at startup, then
-    // hands the Activity to any bridge implementing MobActivityAware;
-    // invoked from MainActivity.onCreate as registerAll(this).
+    // hands the Activity to any bridge implementing MobActivityAware and records
+    // any bridge implementing MobPermissionProvider; invoked from
+    // MainActivity.onCreate as registerAll(this).
     package io.mob.plugin
 
     import android.app.Activity
 
     object MobPluginBootstrap {
+        private val permissionProviders = mutableListOf<MobPermissionProvider>()
+
         @JvmStatic
-        fun registerAll(activity: Activity) {#{body}}#{helper}
+        fun registerAll(activity: Activity) {#{body}}
+
+        // Returns the first plugin-supplied Android permission mapping for `cap`,
+        // or null if no activated plugin provides this capability. Core
+        // MobBridge.request_permission consults this in its `else` branch.
+        @JvmStatic
+        fun permissionsFor(cap: String): Array<String>? {
+            for (provider in permissionProviders) {
+                val perms = provider.permissionsFor(cap)
+                if (perms != null) return perms
+            }
+            return null
+        }#{helpers}
+    }
+    """
+  end
+
+  # Source for io.mob.plugin.MobPermissionProvider — the stable opt-in contract a
+  # plugin bridge class implements to supply the cap->Android-permission-string
+  # mapping for a capability core no longer hardcodes. Generated (never changes)
+  # so existing apps and mob_new projects get it without a template edit.
+  @doc false
+  @spec __permission_provider_kotlin__() :: String.t()
+  def __permission_provider_kotlin__ do
+    """
+    // Generated by mob_dev (MobDev.NativeBuild) — do not edit.
+    // A plugin bridge class implements this to supply the Android permission
+    // strings for a capability; MobPluginBootstrap collects providers at
+    // registerAll and core MobBridge.request_permission consults them.
+    package io.mob.plugin
+
+    interface MobPermissionProvider {
+        // Return the Android permission strings for `cap`, or null if this
+        // provider does not handle the capability.
+        fun permissionsFor(cap: String): Array<String>?
     }
     """
   end
