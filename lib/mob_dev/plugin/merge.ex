@@ -191,6 +191,102 @@ defmodule MobDev.Plugin.Merge do
         do: c
   end
 
+  # ── Tier 3/4: runtime-manifest contributions ──────────────────────────────
+  #
+  # Unlike the native gatherers above (which feed build args), these feed the
+  # host's generated runtime plugin manifest (priv/generated/mob_plugins.exs) —
+  # a terms file the on-device `Mob.Plugins` module reads at boot. Each entry is
+  # tagged with `:plugin` (the owning plugin name) so the runtime can namespace
+  # settings, order notification handlers, and attribute screens. Everything
+  # here must be serializable terms (atoms / tuples / maps / strings) — no
+  # closures (the manifest validator enforces that for notification matches).
+
+  @doc """
+  Static screen declarations across plugins, each tagged with `:plugin`.
+
+  Generator-produced screens (spec-v2 `:screens_generator`) are folded in
+  separately by the runtime-manifest codegen; this is the static `:screens` half.
+  """
+  @spec screens([plugin()]) :: [map()]
+  def screens(plugins) do
+    for {_dir, manifest} <- with_manifests(plugins),
+        s <- Map.get(manifest, :screens, []),
+        is_map(s),
+        do: Map.put(s, :plugin, manifest[:name])
+  end
+
+  @doc """
+  Migration declarations across plugins, with `:migrations_dir` resolved to an
+  absolute path and tagged with `:plugin` + `:repo_namespace`.
+  """
+  @spec migrations([plugin()]) :: [map()]
+  def migrations(plugins) do
+    for {dir, manifest} <- with_manifests(plugins),
+        m = Map.get(manifest, :migrations),
+        is_map(m) do
+      %{
+        plugin: manifest[:name],
+        repo_namespace: m[:repo_namespace],
+        migrations_dir: Path.join(dir, m[:migrations_dir])
+      }
+    end
+  end
+
+  @doc """
+  Asset declarations across plugins, with font/image paths resolved to absolute
+  and tagged with `:plugin` (used by the `plugin://<name>/<file>` image resolver
+  and the native font-bundling merge).
+  """
+  @spec assets([plugin()]) :: [map()]
+  def assets(plugins) do
+    for {dir, manifest} <- with_manifests(plugins),
+        a = Map.get(manifest, :assets),
+        is_map(a) do
+      %{
+        plugin: manifest[:name],
+        fonts: abs_paths(dir, a[:fonts]),
+        images: abs_paths(dir, a[:images])
+      }
+    end
+  end
+
+  @doc "Lifecycle declarations across plugins, each tagged with `:plugin`."
+  @spec lifecycle([plugin()]) :: [map()]
+  def lifecycle(plugins) do
+    for {_dir, manifest} <- with_manifests(plugins),
+        lc = Map.get(manifest, :lifecycle),
+        is_map(lc),
+        do: Map.put(lc, :plugin, manifest[:name])
+  end
+
+  @doc "Settings declarations across plugins, each tagged with `:plugin`."
+  @spec settings([plugin()]) :: [map()]
+  def settings(plugins) do
+    for {_dir, manifest} <- with_manifests(plugins),
+        s = Map.get(manifest, :settings),
+        is_map(s),
+        do: Map.put(s, :plugin, manifest[:name])
+  end
+
+  @doc """
+  Notification handlers across all plugins, flattened in plugin-then-declaration
+  order (first match wins at dispatch), each tagged with `:plugin`.
+  """
+  @spec notification_handlers([plugin()]) :: [map()]
+  def notification_handlers(plugins) do
+    for {_dir, manifest} <- with_manifests(plugins),
+        notes = Map.get(manifest, :notifications),
+        is_map(notes),
+        h <- Map.get(notes, :handlers, []),
+        is_map(h),
+        do: Map.put(h, :plugin, manifest[:name])
+  end
+
+  defp abs_paths(_dir, nil), do: []
+
+  defp abs_paths(dir, paths) when is_list(paths),
+    do: for(p <- paths, is_binary(p), do: Path.join(dir, p))
+
   # ── helpers ─────────────────────────────────────────────────────────────
 
   defp with_manifests(plugins) do

@@ -287,4 +287,77 @@ defmodule MobDev.Plugin.MergeTest do
       assert [%{atom: :chart}, %{atom: :gauge}] = Merge.ui_components(plugins)
     end
   end
+
+  describe "tier-3/4 runtime-manifest gatherers" do
+    test "screens/1 tags each entry with its plugin name" do
+      plugins = [
+        {"/a", base(%{name: :a, screens: [%{module: A.List, default_route: "/a"}]})},
+        {"/pal", nil},
+        {"/b", base(%{name: :b, screens: [%{module: B.List, default_route: "/b"}]})}
+      ]
+
+      assert [
+               %{module: A.List, default_route: "/a", plugin: :a},
+               %{module: B.List, default_route: "/b", plugin: :b}
+             ] = Merge.screens(plugins)
+    end
+
+    test "migrations/1 resolves migrations_dir to absolute + carries namespace" do
+      plugins = [
+        {"/abs/p",
+         base(%{
+           name: :p,
+           migrations: %{repo_namespace: "p_", migrations_dir: "priv/repo/migrations"}
+         })}
+      ]
+
+      assert [%{plugin: :p, repo_namespace: "p_", migrations_dir: "/abs/p/priv/repo/migrations"}] =
+               Merge.migrations(plugins)
+    end
+
+    test "assets/1 resolves font/image paths to absolute, defaulting missing lists to []" do
+      plugins = [
+        {"/abs/p", base(%{name: :p, assets: %{fonts: ["priv/a.ttf"]}})}
+      ]
+
+      assert [%{plugin: :p, fonts: ["/abs/p/priv/a.ttf"], images: []}] = Merge.assets(plugins)
+    end
+
+    test "lifecycle/1 and settings/1 tag with plugin name" do
+      lc = %{on_start: {P, :start, []}, supervised: [P.Worker]}
+      settings = %{schema: [%{key: :x, type: :boolean, default: true}], editor_screen: P.Edit}
+      plugins = [{"/p", base(%{name: :p, lifecycle: lc, settings: settings})}]
+
+      assert [%{plugin: :p, on_start: {P, :start, []}}] = Merge.lifecycle(plugins)
+
+      assert [%{plugin: :p, schema: [%{key: :x}], editor_screen: P.Edit}] =
+               Merge.settings(plugins)
+    end
+
+    test "notification_handlers/1 flattens in plugin-then-declaration order" do
+      plugins = [
+        {"/a",
+         base(%{
+           name: :a,
+           notifications: %{
+             handlers: [
+               %{match: %{type: "x"}, handler: {A, :hx, 1}},
+               %{match: %{type: "y"}, handler: {A, :hy, 1}}
+             ]
+           }
+         })},
+        {"/b",
+         base(%{
+           name: :b,
+           notifications: %{handlers: [%{match: %{type: "z"}, handler: {B, :hz, 1}}]}
+         })}
+      ]
+
+      assert [
+               %{plugin: :a, handler: {A, :hx, 1}},
+               %{plugin: :a, handler: {A, :hy, 1}},
+               %{plugin: :b, handler: {B, :hz, 1}}
+             ] = Merge.notification_handlers(plugins)
+    end
+  end
 end
