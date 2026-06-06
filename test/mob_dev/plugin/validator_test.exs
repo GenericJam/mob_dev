@@ -159,6 +159,35 @@ defmodule MobDev.Plugin.ValidatorTest do
       assert Enum.any?(errs, &(&1 =~ "C-token"))
     end
 
+    test "rejects a nif :module that collides with a core/runtime NIF", %{dir: dir} do
+      File.mkdir_p!(Path.join(dir, "priv/native/jni"))
+
+      for core <- [:crypto, :mob_nif, :prim_file, :zlib] do
+        m =
+          Map.put(@base, :nifs, [
+            %{module: core, native_dir: "priv/native/jni"}
+          ])
+
+        assert %{errors: errs} = Validator.validate_plugin(m, dir, "0.6.20")
+
+        assert Enum.any?(errs, &(&1 =~ "collides with a core/runtime NIF")),
+               "expected #{inspect(core)} to be rejected as a reserved NIF module"
+
+        assert Enum.any?(errs, &(&1 =~ to_string(core)))
+      end
+    end
+
+    test "still accepts a plugin-specific nif :module that is not reserved", %{dir: dir} do
+      File.mkdir_p!(Path.join(dir, "priv/native/jni"))
+
+      m =
+        Map.put(@base, :nifs, [
+          %{module: :mob_bluetooth_nif, native_dir: "priv/native/jni"}
+        ])
+
+      assert %{errors: []} = Validator.validate_plugin(m, dir, "0.6.20")
+    end
+
     test "accepts a Swift-identifier ios.swift_struct", %{dir: dir} do
       m =
         Map.put(@base, :ui_components, [
@@ -560,6 +589,26 @@ defmodule MobDev.Plugin.ValidatorTest do
     test "ignores tier-0 (nil) manifests" do
       a = Map.put(@base, :ui_components, [%{atom: :chart}])
       assert %{errors: []} = Validator.cross_validate([{:a, a}, {:palette, nil}])
+    end
+
+    test "detects a duplicate iOS view_module across plugins with distinct atoms" do
+      a = Map.put(@base, :ui_components, [%{atom: :chart, ios: %{view_module: "Shared_View"}}])
+      b = Map.put(@base, :ui_components, [%{atom: :gauge, ios: %{view_module: "Shared_View"}}])
+      assert %{errors: errs} = Validator.cross_validate([{:a, a}, {:b, b}])
+      assert Enum.any?(errs, &(&1 =~ "view_module"))
+    end
+
+    test "detects a duplicate Android composable across plugins with distinct atoms" do
+      a = Map.put(@base, :ui_components, [%{atom: :chart, android: %{composable: "Shared_View"}}])
+      b = Map.put(@base, :ui_components, [%{atom: :gauge, android: %{composable: "Shared_View"}}])
+      assert %{errors: errs} = Validator.cross_validate([{:a, a}, {:b, b}])
+      assert Enum.any?(errs, &(&1 =~ "composable"))
+    end
+
+    test "distinct native view keys across plugins do not collide" do
+      a = Map.put(@base, :ui_components, [%{atom: :chart, ios: %{view_module: "Chart_View"}}])
+      b = Map.put(@base, :ui_components, [%{atom: :gauge, ios: %{view_module: "Gauge_View"}}])
+      assert %{errors: []} = Validator.cross_validate([{:a, a}, {:b, b}])
     end
   end
 end

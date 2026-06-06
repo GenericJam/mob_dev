@@ -26,6 +26,22 @@ defmodule MobDev.Plugin.ScaffoldTest do
       assert {:error, _} = Scaffold.validate_name("with-dash")
       assert {:error, _} = Scaffold.validate_name("with space")
     end
+
+    test "rejects special atoms that build a no-app project (nil/true/false)" do
+      # `app: :nil`/`:false` make `mix compile` die with "Cannot access build
+      # without an application name"; `:true` builds a boolean-named app. These
+      # pass the snake_case regex but produce a broken plugin.
+      for name <- ["nil", "true", "false"] do
+        assert {:error, msg} = Scaffold.validate_name(name)
+        assert msg =~ "reserved word"
+      end
+    end
+
+    test "rejects Elixir reserved words (mirrors mix new)" do
+      for name <- ["when", "fn", "def", "import", "case", "receive"] do
+        assert {:error, _} = Scaffold.validate_name(name)
+      end
+    end
   end
 
   describe "validate_tier/1" do

@@ -61,6 +61,14 @@ defmodule MobDev.Plugin.Crypto do
   Returns `:ok` on valid signature, `{:error, :invalid_signature}`
   otherwise. Mirrors `sign/2` — the same canonical encoding is applied
   before verifying.
+
+  A wrong-*size* signature or public key (not a 64-byte sig / 32-byte
+  Ed25519 key) is treated as an invalid signature rather than crashing:
+  `:crypto.verify/5` raises `:badarg` from OpenSSL when handed an
+  ill-sized key, and these bytes originate from attacker-controlled
+  plugin files (`priv/mob_plugin.sig` / `priv/mob_plugin.pub`). The
+  documented contract (`:ok | {:error, :invalid_signature}`) must hold
+  for every binary input, so the raise is caught here.
   """
   @spec verify(term(), signature(), pub_key()) :: :ok | {:error, :invalid_signature}
   def verify(payload_term, signature_bin, pub_bin)
@@ -72,6 +80,9 @@ defmodule MobDev.Plugin.Crypto do
     else
       {:error, :invalid_signature}
     end
+  rescue
+    ArgumentError -> {:error, :invalid_signature}
+    ErlangError -> {:error, :invalid_signature}
   end
 
   @doc """

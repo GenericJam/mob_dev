@@ -121,6 +121,12 @@ defmodule MobDev.Plugin.ManifestTest do
       assert {:error, errs} = Manifest.validate(m)
       assert Enum.any?(errs, &(&1 =~ ":platform must be :ios or :android"))
     end
+
+    test "rejects a nif entry that is not a map" do
+      m = Map.put(@valid, :nifs, ["not_a_map"])
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "nifs entry #0 must be a map"))
+    end
   end
 
   describe "tier/1" do

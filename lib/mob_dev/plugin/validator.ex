@@ -204,6 +204,16 @@ defmodule MobDev.Plugin.Validator do
 
     errors =
       collisions(manifests, &component_atoms/1, "component atom (ui_components.atom)") ++
+        collisions(
+          manifests,
+          &component_view_modules/1,
+          "iOS native view key (ui_components.ios.view_module)"
+        ) ++
+        collisions(
+          manifests,
+          &component_composables/1,
+          "Android native view key (ui_components.android.composable)"
+        ) ++
         collisions(manifests, &screen_routes/1, "screen route (screens.default_route)") ++
         collisions(manifests, &repo_namespaces/1, "migration repo_namespace")
 
@@ -255,6 +265,16 @@ defmodule MobDev.Plugin.Validator do
   # time rather than at link time. See MOB_PLUGINS.md (nifs section).
   @nif_module_pattern ~r/^[a-z][a-z0-9_]*$/
 
+  # Core/runtime NIF module names baked into the static driver table by
+  # `MobDev.StaticNifs.default_nifs/0`. A plugin must not reuse one: the
+  # driver-tab generator de-duplicates by `:module` keeping the *last* entry
+  # (`StaticNifs.resolve/1`), so a plugin declaring e.g. `:crypto` silently
+  # overrides the core builtin row — dropping its `builtin: true` flag and
+  # repointing the `<module>_nif_init` symbol at the plugin's source. That
+  # breaks the core NIF at runtime/link time, far from the manifest that
+  # caused it. Catch the collision at validate time instead.
+  @reserved_nif_modules MapSet.new(MobDev.StaticNifs.default_nifs(), & &1.module)
+
   defp add_nif_module_errors(result, manifest) when is_map(manifest) do
     errs =
       for n <- Map.get(manifest, :nifs, []),
@@ -269,12 +289,26 @@ defmodule MobDev.Plugin.Validator do
   defp add_nif_module_errors(result, _manifest), do: result
 
   defp nif_module_error(mod) when is_atom(mod) and not is_nil(mod) do
-    if Regex.match?(@nif_module_pattern, Atom.to_string(mod)),
-      do: nil,
-      else: bad_nif_module_message(mod)
+    cond do
+      not Regex.match?(@nif_module_pattern, Atom.to_string(mod)) ->
+        bad_nif_module_message(mod)
+
+      MapSet.member?(@reserved_nif_modules, mod) ->
+        reserved_nif_module_message(mod)
+
+      true ->
+        nil
+    end
   end
 
   defp nif_module_error(other), do: bad_nif_module_message(other)
+
+  defp reserved_nif_module_message(mod) do
+    "nifs :module #{inspect(mod)} collides with a core/runtime NIF baked into " <>
+      "the static driver table — it would silently override the core entry " <>
+      "(dropping its builtin flag and repointing #{mod}_nif_init). Choose a " <>
+      "plugin-specific name (e.g. :my_plugin_nif)"
+  end
 
   defp bad_nif_module_message(value) do
     "nifs :module #{inspect(value)} must be a C-token atom matching " <>
@@ -454,6 +488,26 @@ defmodule MobDev.Plugin.Validator do
 
   defp component_atoms(manifest) do
     for c <- Map.get(manifest, :ui_components, []), is_map(c), c[:atom], do: c[:atom]
+  end
+
+  # Two plugins resolving to the same native view-registry key would silently
+  # shadow each other (last-write-wins) at build time, so flag the collision.
+  defp component_view_modules(manifest) do
+    for c <- Map.get(manifest, :ui_components, []),
+        is_map(c),
+        ios = c[:ios],
+        is_map(ios),
+        is_binary(ios[:view_module]),
+        do: ios[:view_module]
+  end
+
+  defp component_composables(manifest) do
+    for c <- Map.get(manifest, :ui_components, []),
+        is_map(c),
+        android = c[:android],
+        is_map(android),
+        is_binary(android[:composable]),
+        do: android[:composable]
   end
 
   defp screen_routes(manifest) do
