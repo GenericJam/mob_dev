@@ -10,6 +10,49 @@ defmodule MobDev.NativeBuildTest do
 
   alias MobDev.NativeBuild
 
+  describe "__elixir_lib_decision__/3 (which Elixir stdlib to bundle)" do
+    test "missing configured path → detect from running BEAM" do
+      assert NativeBuild.__elixir_lib_decision__(false, nil, "1.20.0") ==
+               {:use_detected, :missing}
+    end
+
+    test "matching version → honor the configured path" do
+      assert NativeBuild.__elixir_lib_decision__(true, "1.20.0", "1.20.0") ==
+               {:use_configured}
+    end
+
+    test "version skew → fall back to the toolchain's stdlib" do
+      # The exact bug this guards: mob.exs pinned 1.20.0-rc.5 while the toolchain
+      # is 1.20.0 final. rc.5's elixir_quote lacks validate_quote/1, so bundling
+      # it crashes on-device Ecto-migration compilation.
+      assert NativeBuild.__elixir_lib_decision__(true, "1.20.0-rc.5", "1.20.0") ==
+               {:use_detected, :version_skew}
+    end
+
+    test "present but unreadable version → honor config (can't prove it wrong)" do
+      assert NativeBuild.__elixir_lib_decision__(true, nil, "1.20.0") ==
+               {:use_configured}
+    end
+  end
+
+  describe "__elixir_lib_skew_warning__/4" do
+    test "names both versions, the failure mode, and the fallback" do
+      msg =
+        NativeBuild.__elixir_lib_skew_warning__(
+          "/x/1.20.0-rc.5-otp-29/lib",
+          "1.20.0-rc.5",
+          "1.20.0",
+          "/y/1.20.0-otp-29/lib"
+        )
+
+      assert msg =~ "1.20.0-rc.5"
+      assert msg =~ "1.20.0"
+      assert msg =~ "validate_quote/1"
+      assert msg =~ "/y/1.20.0-otp-29/lib"
+      assert msg =~ "mob.exs"
+    end
+  end
+
   describe "otp_dir_for_abi/3" do
     test "armeabi-v7a returns the arm32 path" do
       assert NativeBuild.otp_dir_for_abi("armeabi-v7a", "/otp/arm64", "/otp/arm32") ==
