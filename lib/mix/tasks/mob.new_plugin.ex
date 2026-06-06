@@ -41,8 +41,9 @@ defmodule Mix.Tasks.Mob.NewPlugin do
 
   @impl Mix.Task
   def run(args) do
-    {opts, positional, _} = OptionParser.parse(args, strict: @switches)
+    {opts, positional, invalid} = OptionParser.parse(args, strict: @switches)
 
+    refuse_invalid!(invalid)
     name = parse_name!(positional)
     tier = Keyword.get(opts, :tier, 0)
 
@@ -59,6 +60,37 @@ defmodule Mix.Tasks.Mob.NewPlugin do
 
   defp parse_name!([name | _]) when is_binary(name) and name != "", do: name
   defp parse_name!(_), do: Mix.raise("usage: mix mob.new_plugin <name> [--tier 0|1|2]")
+
+  # OptionParser's third element holds switches it could not parse: an unknown
+  # flag, or a bad value for a typed switch (e.g. `--tier abc` for an :integer).
+  # Without this guard those are silently dropped, so `mix mob.new_plugin foo
+  # --tier two` would scaffold a tier-0 plugin instead of erroring — the user's
+  # requested tier vanishes with no signal.
+  defp refuse_invalid!(invalid) do
+    case invalid_option_message(invalid) do
+      :ok -> :ok
+      {:error, msg} -> Mix.raise(msg)
+    end
+  end
+
+  @doc false
+  # Pure decision kernel for the `invalid` element of OptionParser.parse/2.
+  # Returns `:ok` for an empty list, or `{:error, message}` describing the
+  # unrecognized/badly-typed switches. `@doc false` — extracted for testing.
+  @spec invalid_option_message([{String.t(), String.t() | nil}]) :: :ok | {:error, String.t()}
+  def invalid_option_message([]), do: :ok
+
+  def invalid_option_message(invalid) do
+    flags =
+      Enum.map_join(invalid, ", ", fn
+        {flag, nil} -> flag
+        {flag, val} -> "#{flag} #{val}"
+      end)
+
+    {:error,
+     "unrecognized or invalid option(s): #{flags}\n" <>
+       "usage: mix mob.new_plugin <name> [--tier 0|1|2] [--dest DIR]"}
+  end
 
   defp refuse_if_exists!(dest) do
     if File.exists?(dest) do

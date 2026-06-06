@@ -72,15 +72,31 @@ defmodule Mix.Tasks.Mob.Plugins do
   defp activated_plugins do
     config_file = Path.join(File.cwd!(), "mob.exs")
 
-    if File.exists?(config_file) do
-      config_file
-      |> Config.Reader.read!()
-      |> Keyword.get(:mob, [])
-      |> Keyword.get(:plugins, [])
-    else
-      Application.get_env(:mob, :plugins, [])
-    end
+    raw =
+      if File.exists?(config_file) do
+        config_file
+        |> Config.Reader.read!()
+        |> Keyword.get(:mob, [])
+        |> Keyword.get(:plugins, [])
+      else
+        Application.get_env(:mob, :plugins, [])
+      end
+
+    normalize_activated(raw)
   rescue
-    _ -> Application.get_env(:mob, :plugins, [])
+    _ -> normalize_activated(Application.get_env(:mob, :plugins, []))
   end
+
+  @doc false
+  # Pure kernel: coerces a `config :mob, :plugins` value into a clean list of
+  # atom plugin names. A misconfigured value (a non-list, or a list carrying
+  # non-atom entries like a stray string typo `"mob_haptic"`) must not crash
+  # `mix mob.plugins` — `name in activated` raises Protocol.UndefinedError on a
+  # non-list, and downstream `name in activated` silently mismatches string
+  # entries. Non-list → `[]`; lists are filtered down to their atom entries.
+  @spec normalize_activated(term()) :: [atom()]
+  def normalize_activated(plugins) when is_list(plugins),
+    do: Enum.filter(plugins, &is_atom/1)
+
+  def normalize_activated(_other), do: []
 end

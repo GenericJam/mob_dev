@@ -54,6 +54,25 @@ defmodule MobDev.Plugin.CryptoTest do
       sig = Crypto.sign(payload, priv1)
       assert {:error, :invalid_signature} = Crypto.verify(payload, sig, pub2)
     end
+
+    test "returns :invalid_signature (not a crash) for wrong-size key/sig" do
+      # :crypto.verify/5 raises :badarg from OpenSSL on an ill-sized key.
+      # These bytes come from attacker-controlled plugin files, so the
+      # documented contract must hold: return the error tuple, never raise.
+      {_priv, pub} = Crypto.generate_keypair()
+      payload = %{manifest: %{name: :x}, file_hashes: [], envelope_version: 1}
+      good_sig = :binary.copy(<<0>>, 64)
+
+      assert {:error, :invalid_signature} = Crypto.verify(payload, good_sig, "")
+
+      assert {:error, :invalid_signature} =
+               Crypto.verify(payload, good_sig, :binary.copy(<<0>>, 10))
+
+      assert {:error, :invalid_signature} = Crypto.verify(payload, "", pub)
+
+      assert {:error, :invalid_signature} =
+               Crypto.verify(payload, :binary.copy(<<0>>, 10), pub)
+    end
   end
 
   describe "fingerprint/1" do
