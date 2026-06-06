@@ -29,12 +29,22 @@ defmodule MobDev.Plugin.Assets do
   end
 
   @doc """
-  Prefixes a migration filename with the plugin's `repo_namespace`, unless it is
-  already prefixed (idempotent — re-running a build doesn't double-prefix).
+  Namespaces a migration filename with the plugin's `repo_namespace`, inserting
+  it into the *name* part after the `<version>_` prefix so Ecto can still parse
+  the leading-integer version (`20260101000000_create.exs` →
+  `20260101000000_kv_create.exs`). Idempotent — re-running a build doesn't
+  double-prefix. Files without a numeric version prefix fall back to a plain
+  prefix.
   """
   @spec namespaced_filename(String.t(), String.t()) :: String.t()
   def namespaced_filename(ns, filename) do
-    if String.starts_with?(filename, ns), do: filename, else: ns <> filename
+    case Regex.run(~r/^(\d+)_(.*)$/, filename) do
+      [_, version, rest] ->
+        if String.starts_with?(rest, ns), do: filename, else: "#{version}_#{ns}#{rest}"
+
+      _ ->
+        if String.starts_with?(filename, ns), do: filename, else: ns <> filename
+    end
   end
 
   @doc """
