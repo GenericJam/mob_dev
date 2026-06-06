@@ -188,7 +188,10 @@ defmodule MobDev.Plugin.Manifest do
   defp check_nif_platform(errors, %{platform: p}, i) when p not in [:ios, :android],
     do: ["nifs entry ##{i}: :platform must be :ios or :android, got: #{inspect(p)}" | errors]
 
-  defp check_nif_platform(errors, _nif, _i), do: errors
+  defp check_nif_platform(errors, %{}, _i), do: errors
+
+  defp check_nif_platform(errors, other, i),
+    do: ["nifs entry ##{i} must be a map, got: #{inspect(other)}" | errors]
 
   # ── Tier 3: screens / migrations / assets ─────────────────────────────────
 

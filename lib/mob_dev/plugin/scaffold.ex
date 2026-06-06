@@ -18,6 +18,22 @@ defmodule MobDev.Plugin.Scaffold do
 
   @supported_tiers [0, 1, 2]
 
+  # Names that pass the snake_case regex but produce a broken or non-buildable
+  # plugin project. `nil`/`true`/`false` are the killers: the scaffold emits
+  # `app: :<name>` in mix.exs, and Mix treats `:nil`/`:false` as "no app name"
+  # (`mix compile` then dies with "Cannot access build without an application
+  # name"); `:true` builds a project whose `config :mob, :plugins, [:true]`
+  # entry is the boolean. The remaining entries are Elixir reserved words —
+  # rejected to mirror `mix new`'s `check_application_name!/2`, since a module
+  # or atom named after a keyword is a footgun for downstream `alias`/match.
+  @reserved_names ~w(
+    nil true false
+    when and or not in fn do end catch rescue after else
+    case cond if unless try receive with for
+    def defp defmodule defmacro defmacrop defprotocol defimpl
+    import alias require use quote unquote super
+  )
+
   @doc """
   Validates a plugin name (must be a snake_case atom-friendly identifier).
   """
@@ -30,6 +46,12 @@ defmodule MobDev.Plugin.Scaffold do
       not Regex.match?(~r/^[a-z][a-z0-9_]*$/, name) ->
         {:error,
          "plugin name #{inspect(name)} must be snake_case (lowercase ASCII letters, digits, underscores; starts with a letter)"}
+
+      name in @reserved_names ->
+        {:error,
+         "plugin name #{inspect(name)} is a reserved word; choose another name — " <>
+           "it is used verbatim as the OTP app atom and module, so it would produce " <>
+           "a project that does not build (e.g. mix treats `app: :nil`/`:false` as no app name)"}
 
       true ->
         :ok

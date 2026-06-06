@@ -94,11 +94,15 @@ defmodule MobDev.Plugin.Assets do
         replace_ui_app_fonts(plist, array)
 
       true ->
-        # Insert before the closing </dict></plist>.
+        # Insert before the closing </dict></plist>. The replacement is a
+        # function (not a string) so that `\N` sequences in a font basename
+        # — e.g. a file literally named `x\1y.ttf` — are emitted verbatim
+        # rather than interpreted as regex backreferences, which would splice
+        # the captured closing tags into the middle of the array.
         String.replace(
           plist,
           ~r{(\n\s*</dict>\s*</plist>\s*)$},
-          "\n\t<key>UIAppFonts</key>\n#{array}\\1"
+          fn closing -> "\n\t<key>UIAppFonts</key>\n#{array}#{closing}" end
         )
     end
   end
@@ -115,10 +119,12 @@ defmodule MobDev.Plugin.Assets do
   defp has_ui_app_fonts?(plist), do: String.contains?(plist, "<key>UIAppFonts</key>")
 
   defp replace_ui_app_fonts(plist, array) do
+    # Function replacement (not a string) so `\N` in a font basename is not
+    # interpreted as a backreference — see merge_ui_app_fonts/2 for details.
     String.replace(
       plist,
       ~r{<key>UIAppFonts</key>\s*<array>.*?</array>}s,
-      "<key>UIAppFonts</key>\n#{array}"
+      fn _matched -> "<key>UIAppFonts</key>\n#{array}" end
     )
   end
 

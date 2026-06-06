@@ -47,13 +47,49 @@ defmodule MobDev.Plugin.RuntimeManifest do
         not is_nil(gen) do
       {m, f, a} = gen
       allowed = manifest[:host_config_keys] || []
+      name = manifest[:name]
 
       {screens, _reads} =
-        MobDev.Plugin.with_host_config_audit(manifest[:name], allowed, fn -> apply(m, f, a) end)
+        MobDev.Plugin.with_host_config_audit(name, allowed, fn -> apply(m, f, a) end)
 
-      for s <- List.wrap(screens), is_map(s), do: Map.put(s, :plugin, manifest[:name])
+      screens
+      |> validate_generated_screens(name)
+      |> Enum.map(&Map.put(&1, :plugin, name))
     end
     |> List.flatten()
+  end
+
+  @doc """
+  Validates a `:screens_generator`'s output, raising on malformed specs.
+
+  A generator must return a list of `%{module: atom, default_route: binary}`
+  maps (a bare map is wrapped). This mirrors `MobDev.Plugin.Manifest`'s static
+  `:screens` validation so generator-produced screens are held to the same
+  shape contract — otherwise a typo'd or wrong-typed spec would be written into
+  `mob_plugins.exs` and silently dropped at boot (`Mob.Plugins.register_screens/0`
+  pattern-matches `%{module:, default_route:}` and skips non-matching maps),
+  making the plugin's screen vanish with no build-time error.
+
+  Returns the validated screen list (without the `:plugin` tag, which the caller
+  adds). Public for testing.
+  """
+  @spec validate_generated_screens(term(), atom() | nil) :: [map()]
+  def validate_generated_screens(screens, plugin_name) do
+    screens
+    |> List.wrap()
+    |> Enum.with_index()
+    |> Enum.map(fn {entry, i} -> validate_screen_entry(entry, i, plugin_name) end)
+  end
+
+  defp validate_screen_entry(%{module: m, default_route: r} = entry, _i, _plugin)
+       when is_atom(m) and not is_nil(m) and is_binary(r),
+       do: entry
+
+  defp validate_screen_entry(entry, i, plugin) do
+    raise ArgumentError,
+          "plugin #{inspect(plugin)} :screens_generator produced an invalid screen at " <>
+            "index #{i}: expected a %{module: atom, default_route: binary} map, got: " <>
+            "#{inspect(entry)}. Fix the generator to emit valid screen specs."
   end
 
   @doc """
