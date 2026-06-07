@@ -168,8 +168,20 @@ defmodule MobDev.Plugin.Merge do
 
   # An entry with no `:platform` is compiled on every platform; one tagged
   # `:ios`/`:android` only on that platform. `:all` keeps everything.
+  #
+  # `lang: :objc` is implicitly Apple-only: Objective-C has no Android runtime,
+  # so an objc NIF authored without an explicit `platform: :ios` must still be
+  # excluded from the Android build args + driver_tab (otherwise zig tries to
+  # compile a `.m` source Android cannot build).
   defp nif_for_platform?(_nif, :all), do: true
-  defp nif_for_platform?(nif, platform), do: nif[:platform] in [nil, platform]
+
+  defp nif_for_platform?(nif, platform) do
+    if nif_lang(nif) == :objc and platform != :ios do
+      false
+    else
+      nif[:platform] in [nil, platform]
+    end
+  end
 
   @doc "Merged iOS `plist_keys` across plugins (later plugins win on conflict)."
   @spec plist_keys([plugin()]) :: map()

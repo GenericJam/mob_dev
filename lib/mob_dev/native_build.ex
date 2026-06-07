@@ -4131,11 +4131,24 @@ defmodule MobDev.NativeBuild do
     fonts = collect_all_fonts()
 
     if fonts != [] do
-      for src <- fonts, do: File.cp!(src, Path.join(app_path, Path.basename(src)))
-      basenames = Enum.map(fonts, &Path.basename/1)
+      copies =
+        case MobDev.Plugin.Assets.plan_ios_font_bundle(fonts) do
+          {:ok, copies} ->
+            copies
+
+          {:error, {:font_basename_collision, name, srcs}} ->
+            Mix.raise(
+              "Font bundle collision: multiple fonts share the iOS bundle name #{name}:\n  " <>
+                Enum.join(srcs, "\n  ") <>
+                "\nRename one so the .app bundle + UIAppFonts stay unambiguous."
+            )
+        end
+
+      for {src, dest} <- copies, do: File.cp!(src, Path.join(app_path, dest))
+      basenames = Enum.map(copies, fn {_src, dest} -> dest end)
       plist = File.read!(info_plist)
       File.write!(info_plist, MobDev.Plugin.Assets.merge_ui_app_fonts(plist, basenames))
-      IO.puts("  ✓ bundled #{length(fonts)} font(s) + UIAppFonts")
+      IO.puts("  ✓ bundled #{length(copies)} font(s) + UIAppFonts")
     end
 
     :ok
@@ -4150,12 +4163,23 @@ defmodule MobDev.NativeBuild do
     fonts = collect_all_fonts()
 
     if fonts != [] do
+      copies =
+        case MobDev.Plugin.Assets.plan_android_font_copies(fonts) do
+          {:ok, copies} ->
+            copies
+
+          {:error, {:font_resource_collision, res_name, srcs}} ->
+            Mix.raise(
+              "Font resource collision: multiple fonts normalise to the Android resource #{res_name}:\n  " <>
+                Enum.join(srcs, "\n  ") <>
+                "\nRename one (Android collapses '-', '_', ' ' etc. to '_')."
+            )
+        end
+
       File.mkdir_p!(@android_res_font)
 
-      for src <- fonts do
-        ext = Path.extname(src) |> String.downcase()
-        res_name = MobDev.Plugin.Assets.android_font_resource_name(Path.basename(src))
-        dest = Path.join(@android_res_font, res_name <> ext)
+      for {src, res_filename} <- copies do
+        dest = Path.join(@android_res_font, res_filename)
         File.cp!(src, dest)
         IO.puts("  ✓ android font → #{Path.relative_to_cwd(dest)}")
       end

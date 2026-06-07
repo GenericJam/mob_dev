@@ -162,6 +162,8 @@ defmodule Mix.Tasks.Mob.RegenDriverTab do
   # Drops plugin NIFs the platform's build won't compile, so the generated table
   # never references an uncompiled <module>_nif_init:
   #   - iOS has no zig plugin-NIF path yet, so `lang: :zig` entries are dropped.
+  #   - Android has no Objective-C runtime, so `lang: :objc` entries are dropped
+  #     (objc is implicitly Apple-only even without an explicit `platform: :ios`).
   #   - A NIF tagged `platform: :ios | :android` is only compiled on that
   #     platform (a cross-platform plugin ships a separate iOS + Android source
   #     for the same module); the other platform drops it. No `:platform` =
@@ -174,8 +176,11 @@ defmodule Mix.Tasks.Mob.RegenDriverTab do
     |> Enum.reject(&(&1[:platform] == :android))
   end
 
-  def reject_uncompiled_plugin_nifs(nifs, :android),
-    do: Enum.reject(nifs, &(&1[:platform] == :ios))
+  def reject_uncompiled_plugin_nifs(nifs, :android) do
+    nifs
+    |> Enum.reject(&(&1[:lang] == :objc))
+    |> Enum.reject(&(&1[:platform] == :ios))
+  end
 
   def reject_uncompiled_plugin_nifs(nifs, _), do: nifs
 
