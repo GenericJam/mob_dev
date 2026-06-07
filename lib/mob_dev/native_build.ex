@@ -36,6 +36,14 @@ defmodule MobDev.NativeBuild do
     platforms = narrow_platforms_for_device(platforms, device_id)
     Process.put(:mob_slim, slim)
 
+    # Always regenerate the runtime plugin manifest from the CURRENT activated
+    # plugins before bundling priv — like the driver_tab, it's derived state, not
+    # a hand-maintained file. Regenerating on every build (not just when the
+    # `:plugins` list changes) means adding/changing a plugin's tier-3/4 sections
+    # can't silently ship a stale manifest (the lifecycle/settings/notification
+    # handlers just wouldn't activate on device, with no error).
+    regen_runtime_manifest!()
+
     # Tier-3 build-time file merges (platform-agnostic; run once before the
     # per-platform builds): copy plugin migrations into the host migrations dir
     # and plugin images into the host bundle assets. Fonts are merged per-platform
@@ -4069,6 +4077,22 @@ defmodule MobDev.NativeBuild do
   # migrations dir, namespaced by `repo_namespace` (version-preserving) so the
   # host's existing `Ecto.Migrator` picks them up. Idempotent. No-op when no
   # plugin declares `:migrations`.
+  # Rebuilds priv/generated/mob_plugins.exs (the host's runtime plugin manifest)
+  # from the activated plugins' current manifests, so the on-device tier-3/4
+  # wiring always matches what the plugins declare at build time.
+  defp regen_runtime_manifest! do
+    manifest = MobDev.Plugin.RuntimeManifest.build(MobDev.Plugin.activated())
+    MobDev.Plugin.RuntimeManifest.write(File.cwd!(), manifest)
+    %{screens: s, lifecycle: l, settings: st, notification_handlers: n} = manifest
+
+    IO.puts(
+      "  ✓ runtime plugin manifest (#{length(s)} screens, #{length(l)} lifecycle, " <>
+        "#{length(st)} settings, #{length(n)} handlers)"
+    )
+
+    :ok
+  end
+
   defp apply_plugin_migrations! do
     migrations = MobDev.Plugin.Merge.migrations(MobDev.Plugin.activated())
 
