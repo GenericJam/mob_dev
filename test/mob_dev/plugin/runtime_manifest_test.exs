@@ -117,6 +117,29 @@ defmodule MobDev.Plugin.RuntimeManifestTest do
       assert [%{plugin: :p}] = manifest.settings
       assert [%{plugin: :p, handler: {P, :h, 1}}] = manifest.notification_handlers
     end
+
+    test "a multi-tier plugin (screens_generator + tier-4 sections) keeps ALL its sections" do
+      # Regression for a composition bug: a plugin carrying both a spec-v2
+      # screens_generator AND tier-4 lifecycle/settings/notifications must not
+      # have the tier-4 sections dropped from the runtime manifest.
+      plugins = [
+        {"/g",
+         base(%{
+           name: :g,
+           plugin_spec_version: 2,
+           screens_generator: {FakeGen, :generate, []},
+           host_config_keys: [:sections],
+           lifecycle: %{on_start: {G, :start, []}, supervised: [G.Worker]},
+           settings: %{schema: [%{key: :verbose, type: :boolean, default: false}]},
+           notifications: %{handlers: [%{match: %{type: "g_ping"}, handler: {G, :h, 1}}]}
+         })}
+      ]
+
+      manifest = RuntimeManifest.build(plugins)
+      assert [%{plugin: :g, supervised: [G.Worker]}] = manifest.lifecycle
+      assert [%{plugin: :g}] = manifest.settings
+      assert [%{plugin: :g, match: %{type: "g_ping"}}] = manifest.notification_handlers
+    end
   end
 
   describe "validate_generated_screens/2" do
