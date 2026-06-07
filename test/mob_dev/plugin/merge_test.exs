@@ -229,6 +229,19 @@ defmodule MobDev.Plugin.MergeTest do
       # objc is C-family, not a zig source.
       assert Merge.zig_nif_sources(plugins, :ios) == []
     end
+
+    test "lang: :objc WITHOUT an explicit platform is still excluded from the Android build" do
+      # objc is implicitly Apple-only — it must never reach the Android build args
+      # even when the author omits `platform: :ios`.
+      plugins = [
+        {"/p", base(%{nifs: [%{module: :perm_nif, native_dir: "priv/ios", lang: :objc}]})}
+      ]
+
+      assert Merge.nif_sources(plugins, :android) == []
+      assert Merge.nif_sources(plugins, :ios) == ["/p/priv/ios/perm_nif.m"]
+      # :all (listing, not building) keeps it.
+      assert Merge.nif_sources(plugins) == ["/p/priv/ios/perm_nif.m"]
+    end
   end
 
   describe "jni_sources/1 + bridge_kt_sources/1 + bridge_classes/1" do
