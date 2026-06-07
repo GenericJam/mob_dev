@@ -203,21 +203,71 @@ defmodule MobDev.Plugin.Validator do
     manifests = for {_name, m} <- plugins, is_map(m), do: m
 
     errors =
-      collisions(manifests, &component_atoms/1, "component atom (ui_components.atom)") ++
-        collisions(
-          manifests,
-          &component_view_modules/1,
-          "iOS native view key (ui_components.ios.view_module)"
-        ) ++
-        collisions(
-          manifests,
-          &component_composables/1,
-          "Android native view key (ui_components.android.composable)"
-        ) ++
-        collisions(manifests, &screen_routes/1, "screen route (screens.default_route)") ++
-        collisions(manifests, &repo_namespaces/1, "migration repo_namespace")
+      for {_gatherer, {:collision, checks}} <- conflict_surface(),
+          {label, extractor} <- checks,
+          error <- collisions(manifests, extractor, label),
+          do: error
 
     %{errors: errors, warnings: []}
+  end
+
+  @doc """
+  The cross-plugin **conflict surface**: every `MobDev.Plugin.Merge` gatherer
+  (each combines N plugins' manifest contributions into one space) classified by
+  what happens when two plugins clash. The map is keyed by the Merge gatherer
+  name, and `conflict_surface_test` asserts it covers **every** public gatherer —
+  so a new shared-resource field can't be added without classifying its conflict
+  behavior here (the systematic guarantee that multiples compose safely).
+
+  Kinds:
+    * `{:collision, [{label, extractor}]}` — two plugins contributing the same
+      value is a build error. `extractor` returns the values one manifest claims.
+    * `{:namespaced, reason}` — per-plugin namespaced; no cross-plugin collision.
+    * `{:union, reason}` — set-union semantics; duplicates are harmless.
+    * `{:build_time, reason}` — collision is caught later in the native build
+      (e.g. font/migration planners in `MobDev.Plugin.Assets`), not here.
+    * `{:derived, reason}` — returns values derived from another classified field;
+      introduces no new namespace of its own.
+  """
+  @spec conflict_surface() :: %{atom() => tuple()}
+  def conflict_surface do
+    %{
+      screens: {:collision, [{"screen route (screens.default_route)", &screen_routes/1}]},
+      ui_components:
+        {:collision,
+         [
+           {"component atom (ui_components.atom)", &component_atoms/1},
+           {"iOS native view key (ui_components.ios.view_module)", &component_view_modules/1},
+           {"Android native view key (ui_components.android.composable)",
+            &component_composables/1}
+         ]},
+      migrations: {:collision, [{"migration repo_namespace", &repo_namespaces/1}]},
+      nifs: {:collision, [{"NIF module (nifs.module)", &nif_modules/1}]},
+      swift_files:
+        {:collision, [{"iOS Swift source basename (ios.swift_files)", &swift_basenames/1}]},
+      jni_sources:
+        {:collision, [{"Android JNI source basename (android.jni_source)", &jni_basenames/1}]},
+      bridge_classes:
+        {:collision, [{"Android bridge class (android.bridge_class)", &bridge_class_names/1}]},
+      plist_keys: {:collision, [{"iOS Info.plist key (ios.plist_keys)", &plist_key_names/1}]},
+      lifecycle:
+        {:collision, [{"supervised worker (lifecycle.supervised)", &supervised_workers/1}]},
+      notification_handlers:
+        {:collision,
+         [{"notification match (notifications.handlers.match)", &notification_matches/1}]},
+      # ── non-colliding (documented; no check needed) ───────────────────────
+      settings: {:namespaced, "settings stored under a per-plugin key in Mob.State"},
+      assets:
+        {:build_time,
+         "fonts: build-time collision planner (Assets.plan_*_font_*); images: per-plugin path"},
+      android_permissions: {:union, "Android permissions are set-unioned"},
+      gradle_deps: {:union, "Gradle deps are set-unioned"},
+      ios_frameworks: {:union, "iOS frameworks are set-unioned"},
+      bridge_kt_sources: {:derived, "Kotlin source paths; collision guarded via bridge_classes"},
+      android_sources: {:derived, "bridge_kt + jni_source + nif dirs; guarded via their sources"},
+      nif_sources: {:derived, "C/ObjC source paths derived from nifs (guarded via nifs.module)"},
+      zig_nif_sources: {:derived, "zig source paths derived from nifs (guarded via nifs.module)"}
+    }
   end
 
   # ── single-plugin checks ──────────────────────────────────────────────────
@@ -476,9 +526,14 @@ defmodule MobDev.Plugin.Validator do
 
   # ── cross-plugin collision detection ──────────────────────────────────────
 
+  # Counts DISTINCT plugins contributing each value (uniq per manifest first), so
+  # a value a single plugin legitimately declares more than once — e.g. a
+  # cross-platform NIF with one iOS + one Android entry sharing a `:module` — is
+  # not mistaken for a cross-plugin collision. cross_validate is about CROSS-plugin
+  # clashes; within-plugin duplicates are a single-plugin concern.
   defp collisions(manifests, extractor, label) do
     manifests
-    |> Enum.flat_map(extractor)
+    |> Enum.flat_map(fn manifest -> manifest |> extractor.() |> Enum.uniq() end)
     |> Enum.frequencies()
     |> Enum.filter(fn {_value, count} -> count > 1 end)
     |> Enum.map(fn {value, count} ->
@@ -519,5 +574,69 @@ defmodule MobDev.Plugin.Validator do
       nil -> []
       ns -> [ns]
     end
+  end
+
+  # Two plugins declaring the same NIF :module both compile a `<module>.c/.zig`
+  # with `STATIC_ERLANG_NIF_LIBNAME=<module>`, producing a duplicate
+  # `<module>_nif_init` symbol → link/build failure. (Distinct from the
+  # plugin-vs-core check in validate_plugin/3, which guards reserved names.)
+  defp nif_modules(manifest) do
+    for n <- Map.get(manifest, :nifs, []), is_map(n), is_atom(n[:module]), do: n[:module]
+  end
+
+  # Plugin Swift sources are compiled into the one iOS app target; two plugins
+  # shipping a file with the same basename collide in the build.
+  defp swift_basenames(manifest) do
+    for p <- get_in(manifest, [:ios, :swift_files]) || [], is_binary(p), do: Path.basename(p)
+  end
+
+  # Same for the single Android JNI-thunk C source.
+  defp jni_basenames(manifest) do
+    case get_in(manifest, [:android, :jni_source]) do
+      p when is_binary(p) -> [Path.basename(p)]
+      _ -> []
+    end
+  end
+
+  # Two plugins registering the same fully-qualified bridge class would have
+  # MobPluginBootstrap.registerAll call `<class>.register()` twice (and their
+  # bridge_kt land at the same package-path destination — last writer wins).
+  defp bridge_class_names(manifest) do
+    case get_in(manifest, [:android, :bridge_class]) do
+      c when is_binary(c) -> [c]
+      _ -> []
+    end
+  end
+
+  # Two plugins setting the same Info.plist key silently last-write-wins in the
+  # merged plist (Map.merge in Merge.plist_keys/1).
+  defp plist_key_names(manifest) do
+    case get_in(manifest, [:ios, :plist_keys]) do
+      m when is_map(m) -> Map.keys(m)
+      _ -> []
+    end
+  end
+
+  # Two plugins supervising a worker with the same registered name collide at
+  # boot (`{:already_started, _}`); the second child fails to start. A child is
+  # a module, `{module, arg}`, or a child-spec map — key the collision on its id.
+  defp supervised_workers(manifest) do
+    for child <- get_in(manifest, [:lifecycle, :supervised]) || [], do: worker_id(child)
+  end
+
+  defp worker_id(mod) when is_atom(mod), do: mod
+  defp worker_id({mod, _arg}) when is_atom(mod), do: mod
+  defp worker_id(%{id: id}), do: id
+  defp worker_id(other), do: other
+
+  # Two plugins with the identical notification `:match` create ambiguous
+  # routing — dispatch walks handlers in order and the first-registered wins, so
+  # the other plugin silently never fires. (Equality catches the obvious clash;
+  # semantic overlap of predicate matches is undecidable and out of scope.)
+  defp notification_matches(manifest) do
+    for h <- get_in(manifest, [:notifications, :handlers]) || [],
+        is_map(h),
+        Map.has_key?(h, :match),
+        do: h.match
   end
 end
