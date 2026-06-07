@@ -22,9 +22,35 @@ defmodule MobDev.Plugin.Assets do
   @spec migration_copies([%{repo_namespace: String.t(), files: [Path.t()]}], Path.t()) ::
           [{Path.t(), Path.t()}]
   def migration_copies(plugin_migrations, dest_dir) do
-    for %{repo_namespace: ns, files: files} <- plugin_migrations,
-        src <- files do
-      {src, Path.join(dest_dir, namespaced_filename(ns, Path.basename(src)))}
+    copies =
+      for %{repo_namespace: ns, files: files} <- plugin_migrations,
+          src <- files do
+        {src, Path.join(dest_dir, namespaced_filename(ns, Path.basename(src)))}
+      end
+
+    assert_unique_destinations!(copies)
+    copies
+  end
+
+  # Two distinct sources mapping to the same destination would make the second
+  # `File.cp!` silently clobber the first migration. After namespacing this can
+  # only happen if two plugins share a `repo_namespace` (which cross-validation
+  # already rejects) — so this is a defensive build-time guard, surfaced loudly
+  # rather than as silent data loss.
+  defp assert_unique_destinations!(copies) do
+    dups =
+      copies
+      |> Enum.group_by(fn {_src, dest} -> dest end)
+      |> Enum.filter(fn {_dest, list} -> length(list) > 1 end)
+
+    unless dups == [] do
+      detail =
+        Enum.map_join(dups, "\n", fn {dest, list} ->
+          "  #{Path.basename(dest)} <- #{Enum.map_join(list, ", ", fn {src, _} -> src end)}"
+        end)
+
+      raise "plugin migration filename collision — distinct sources map to the same destination:\n" <>
+              detail <> "\nRename the migrations so their <version>_<description> differ."
     end
   end
 
@@ -32,18 +58,21 @@ defmodule MobDev.Plugin.Assets do
   Namespaces a migration filename with the plugin's `repo_namespace`, inserting
   it into the *name* part after the `<version>_` prefix so Ecto can still parse
   the leading-integer version (`20260101000000_create.exs` →
-  `20260101000000_kv_create.exs`). Idempotent — re-running a build doesn't
-  double-prefix. Files without a numeric version prefix fall back to a plain
-  prefix.
+  `20260101000000_kv_create.exs`). Files without a numeric version prefix fall
+  back to a plain prefix.
+
+  The namespace is **always** inserted — there is no "already namespaced?" guard.
+  Migration sources are always the plugin author's raw files (never our output),
+  so re-run idempotency comes from the deterministic source→dest mapping, not
+  from inspecting the name. A guard that skipped namespacing when the description
+  happened to begin with the namespace text would silently drop the namespace and
+  cause cross-vendor collisions, so we don't do it.
   """
   @spec namespaced_filename(String.t(), String.t()) :: String.t()
   def namespaced_filename(ns, filename) do
     case Regex.run(~r/^(\d+)_(.*)$/, filename) do
-      [_, version, rest] ->
-        if String.starts_with?(rest, ns), do: filename, else: "#{version}_#{ns}#{rest}"
-
-      _ ->
-        if String.starts_with?(filename, ns), do: filename, else: ns <> filename
+      [_, version, rest] -> "#{version}_#{ns}#{rest}"
+      _ -> ns <> filename
     end
   end
 
@@ -64,6 +93,60 @@ defmodule MobDev.Plugin.Assets do
       |> String.replace(~r/[^a-z0-9_]/, "_")
 
     if base =~ ~r/^[a-z]/, do: base, else: "f_" <> base
+  end
+
+  @doc """
+  Plans the iOS font-bundle copies: each distinct source font copies to the `.app`
+  root under its basename (and is listed in `UIAppFonts` by basename). Two distinct
+  sources sharing a basename (e.g. two plugins both shipping `Icons.ttf`) would
+  silently overwrite each other in the bundle and collapse to a single `UIAppFonts`
+  entry, so that is surfaced as an error instead of a silent loss.
+
+  Returns `{:ok, [{src, dest_basename}]}` or
+  `{:error, {:font_basename_collision, basename, [src, ...]}}`.
+  """
+  @spec plan_ios_font_bundle([Path.t()]) ::
+          {:ok, [{Path.t(), String.t()}]}
+          | {:error, {:font_basename_collision, String.t(), [Path.t()]}}
+  def plan_ios_font_bundle(fonts) do
+    plan_font_copies(fonts, &Path.basename/1, :font_basename_collision)
+  end
+
+  @doc """
+  Plans the Android `res/font/` copies: each distinct source maps to
+  `<android_font_resource_name>.<ext>`. Two distinct sources normalising to the
+  same resource name (e.g. `Inter-Regular.ttf` and `Inter_Regular.ttf` both →
+  `inter_regular.ttf`) would silently overwrite each other, so that is surfaced
+  as an error.
+
+  Returns `{:ok, [{src, res_filename}]}` or
+  `{:error, {:font_resource_collision, res_filename, [src, ...]}}`.
+  """
+  @spec plan_android_font_copies([Path.t()]) ::
+          {:ok, [{Path.t(), String.t()}]}
+          | {:error, {:font_resource_collision, String.t(), [Path.t()]}}
+  def plan_android_font_copies(fonts) do
+    plan_font_copies(
+      fonts,
+      fn src ->
+        android_font_resource_name(Path.basename(src)) <> String.downcase(Path.extname(src))
+      end,
+      :font_resource_collision
+    )
+  end
+
+  defp plan_font_copies(fonts, dest_fun, collision_tag) do
+    copies = fonts |> Enum.uniq() |> Enum.map(fn src -> {src, dest_fun.(src)} end)
+
+    collision =
+      copies
+      |> Enum.group_by(fn {_src, dest} -> dest end)
+      |> Enum.find(fn {_dest, list} -> length(list) > 1 end)
+
+    case collision do
+      nil -> {:ok, copies}
+      {dest, list} -> {:error, {collision_tag, dest, Enum.map(list, fn {src, _} -> src end)}}
+    end
   end
 
   @doc """
