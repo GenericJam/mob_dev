@@ -182,10 +182,19 @@ defmodule Mix.Tasks.Mob.RegenDriverTabTest do
       refute @zig_nif in kept
     end
 
-    test ":android and :all keep every plugin NIF (both langs compile there)" do
+    test ":android and :all keep C and zig plugin NIFs (both langs compile there)" do
       nifs = [@c_nif, @default_nif, @zig_nif]
       assert RegenDriverTab.reject_uncompiled_plugin_nifs(nifs, :android) == nifs
       assert RegenDriverTab.reject_uncompiled_plugin_nifs(nifs, :all) == nifs
+    end
+
+    @objc_nif %{module: :perm_nif, native_dir: "/o", lang: :objc}
+
+    test ":android drops objc plugin NIFs (no Android Obj-C runtime), iOS/:all keep them" do
+      nifs = [@c_nif, @objc_nif, @zig_nif]
+      refute @objc_nif in RegenDriverTab.reject_uncompiled_plugin_nifs(nifs, :android)
+      assert @objc_nif in RegenDriverTab.reject_uncompiled_plugin_nifs(nifs, :ios)
+      assert @objc_nif in RegenDriverTab.reject_uncompiled_plugin_nifs(nifs, :all)
     end
 
     @ios_only %{module: :mob_location_nif, native_dir: "/i", lang: :c, platform: :ios}
