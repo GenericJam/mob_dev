@@ -10,6 +10,13 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ## [0.5.17]
 
+### Added
+- **`mix mob.new_plugin` scaffolds tiers 3 (multi-screen) and 4 (sub-app)**, not just 0–2. Tier 3 emits two `Mob.Screen` modules + a `:screens`/`:migrations` manifest + a namespaced Ecto migration; tier 4 emits a lifecycle module + supervised worker + notification handler + settings editor screen + a `:lifecycle`/`:settings`/`:notifications` manifest. Generated manifests validate and modules compile against real mob.
+- **Cross-plugin conflict detection.** `MobDev.Plugin.Validator.conflict_surface/0` classifies every merge gatherer; `cross_validate/1` fails the build when two activated plugins clash on any shared resource — screen route, component atom, iOS/Android native view key, migration `repo_namespace`, NIF module, Swift/JNI source basename, Android bridge class, iOS plist key, supervised worker name, or notification match. A completeness meta-test forces every new shared-resource field to be classified; a property-based fuzzer checks detection is sound + complete across random N-plugin sets. A single plugin declaring a cross-platform NIF (one iOS + one Android entry sharing a `:module`) is correctly not flagged.
+
+### Changed
+- **`mix mob.deploy --native` regenerates the runtime plugin manifest (`priv/generated/mob_plugins.exs`) on every build**, not only when `config :mob, :plugins` changes. Adding/changing a plugin's tier-3/4 sections previously shipped a stale manifest (the new sections silently didn't activate on device); it is now derived state, always rebuilt before bundling — like the driver table.
+
 ### Fixed
 - **iOS simulator deploy now boots from a clean `mix mob.deploy --native`** (was device-only). Three gaps made the sim deploy incomplete vs the device path, so the sim crashed on boot even though the device worked:
   - The Elixir-distribution apps `elixir`/`logger` were staged only under `lib/<app>/ebin`, which the sim's `mob_beam.m` doesn't add to the code path — boot failed at `ensure_all_started(:elixir)` with "elixir.app not found". They're now flattened into the flat BEAMS_DIR alongside `eex` (which already needed this), where the path resolves.
