@@ -3,20 +3,20 @@ defmodule MobDev.Plugin.Scaffold do
   Pure templates + name conversions behind `mix mob.new_plugin`.
 
   Inputs are a snake_case plugin name (e.g. `"mob_demo_widget"`) and a tier
-  (0–2). Output is a list of `{relative_path, content_string}` pairs the Mix
+  (0–4). Output is a list of `{relative_path, content_string}` pairs the Mix
   task writes to disk. All conversions live here so the task stays thin and
   the templates are unit-testable without filesystem I/O.
 
-  Templates mirror the three on-device-verified prototypes
-  (`mob_palette_demo`, `mob_demo_haptic_extras`, `mob_demo_signature_pad`) so
-  a freshly scaffolded plugin compiles + activates by the same path the
-  prototypes already prove.
+  Templates mirror the on-device-verified prototypes (`mob_palette_demo` t0,
+  `mob_demo_haptic_extras` t1, `mob_demo_signature_pad` t2,
+  `mob_demo_kv_browser` t3, `mob_demo_subapp` t4) so a freshly scaffolded plugin
+  compiles + activates by the same path the prototypes already prove.
   """
 
-  @type tier :: 0 | 1 | 2
+  @type tier :: 0 | 1 | 2 | 3 | 4
   @type file :: {Path.t(), String.t()}
 
-  @supported_tiers [0, 1, 2]
+  @supported_tiers [0, 1, 2, 3, 4]
 
   # Names that pass the snake_case regex but produce a broken or non-buildable
   # plugin project. `nil`/`true`/`false` are the killers: the scaffold emits
@@ -60,7 +60,7 @@ defmodule MobDev.Plugin.Scaffold do
 
   def validate_name(_), do: {:error, "plugin name must be a string"}
 
-  @doc "Validates a tier (0, 1, or 2)."
+  @doc "Validates a tier (0 through 4)."
   @spec validate_tier(integer()) :: :ok | {:error, String.t()}
   def validate_tier(t) when t in @supported_tiers, do: :ok
 
@@ -114,6 +114,31 @@ defmodule MobDev.Plugin.Scaffold do
       {"priv/mob_plugin.exs", tier2_manifest(name, mod, registry_name)},
       {"priv/native/android/#{mod}.kt", tier2_kt(mod, registry_name)},
       {"priv/native/ios/#{mod}View.swift", tier2_swift(mod)}
+    ]
+  end
+
+  def files_for(3, name) do
+    mod = module_name(name)
+
+    [
+      {"mix.exs", mix_exs(name)},
+      {"lib/#{name}/list_screen.ex", tier3_list_screen(mod)},
+      {"lib/#{name}/detail_screen.ex", tier3_detail_screen(mod)},
+      {"priv/mob_plugin.exs", tier3_manifest(name, mod)},
+      {"priv/repo/migrations/20260101000000_create_#{name}_items.exs", tier3_migration(mod)}
+    ]
+  end
+
+  def files_for(4, name) do
+    mod = module_name(name)
+
+    [
+      {"mix.exs", mix_exs(name)},
+      {"lib/#{name}.ex", tier4_lib(mod)},
+      {"lib/#{name}/worker.ex", tier4_worker(mod)},
+      {"lib/#{name}/notifications.ex", tier4_notifications(mod)},
+      {"lib/#{name}/settings_screen.ex", tier4_settings_screen(mod)},
+      {"priv/mob_plugin.exs", tier4_manifest(name, mod)}
     ]
   end
 
@@ -399,6 +424,232 @@ defmodule MobDev.Plugin.Scaffold do
             let label = props["label"] as? String ?? "#{mod}"
             Text(label)
         }
+    }
+    """
+  end
+
+  # ── Tier 3 — multi-screen + migration ─────────────────────────────────────
+
+  defp tier3_list_screen(mod) do
+    """
+    defmodule #{mod}.ListScreen do
+      @moduledoc \"\"\"
+      Tier-3 plugin screen. The host registers it as a navigable destination at
+      boot (by `default_route`); tapping a row pushes the detail screen.
+      \"\"\"
+      use Mob.Screen
+
+      @items ["alpha", "beta", "gamma"]
+
+      def mount(_params, _session, socket), do: {:ok, socket}
+
+      def render(_assigns) do
+        ~MOB\"""
+        <Scroll background={:background}>
+          <Column background={:background} padding={:space_lg}>
+            <Text text="#{mod}" text_size={:xl} text_color={:on_surface} padding={:space_sm} />
+            {for item <- @items, do: row(item)}
+          </Column>
+        </Scroll>
+        \"""
+      end
+
+      def handle_event("open", %{"key" => key}, socket) do
+        {:noreply, Mob.Socket.push_screen(socket, #{mod}.DetailScreen, %{key: key})}
+      end
+
+      defp row(item) do
+        ~MOB\"""
+        <Button text={item} background={:primary} text_color={:on_primary}
+                padding={:space_md} fill_width={true} on_tap={{self(), {:open, item}}} />
+        \"""
+      end
+    end
+    """
+  end
+
+  defp tier3_detail_screen(mod) do
+    """
+    defmodule #{mod}.DetailScreen do
+      @moduledoc "Tier-3 plugin detail screen, pushed from the list screen."
+      use Mob.Screen
+
+      def mount(params, _session, socket) do
+        {:ok, Mob.Socket.assign(socket, :key, params[:key] || params["key"] || "?")}
+      end
+
+      def render(assigns) do
+        ~MOB\"""
+        <Scroll background={:background}>
+          <Column background={:background} padding={:space_lg}>
+            <Text text={"key: " <> assigns.key} text_size={:lg} text_color={:on_surface} padding={4} />
+            <Button text="Back" background={:primary} text_color={:on_primary}
+                    padding={:space_md} on_tap={{self(), :back}} />
+          </Column>
+        </Scroll>
+        \"""
+      end
+
+      def handle_event("back", _params, socket), do: {:noreply, Mob.Socket.pop_screen(socket)}
+    end
+    """
+  end
+
+  defp tier3_manifest(name, mod) do
+    """
+    %{
+      name: :#{name},
+      mob_version: "~> 0.6",
+      plugin_spec_version: 1,
+      description: "TODO: describe your plugin",
+
+      # Whole screens the host can navigate to. Registered by default_route at
+      # boot; two distinct plugins may not claim the same route (cross-plugin
+      # validation rejects it — see MOB_PLUGINS.md "Cross-plugin conflict detection").
+      screens: [
+        %{module: #{mod}.ListScreen, default_route: "/#{name}/list"},
+        %{module: #{mod}.DetailScreen, default_route: "/#{name}/detail"}
+      ],
+
+      # Ecto migrations the plugin ships. mob_dev copies them into the host's
+      # migrations dir at `--native` build, prefixing each with repo_namespace
+      # (so vendors don't collide); the host's Ecto.Migrator runs them. The
+      # repo_namespace must be unique across activated plugins.
+      migrations: %{
+        repo_namespace: "#{name}_",
+        migrations_dir: "priv/repo/migrations"
+      }
+
+      # Optional tier-3 assets — add real files then uncomment:
+      #
+      #   assets: %{
+      #     fonts: ["priv/fonts/MyFont.ttf"],   # registered (iOS UIAppFonts / Android res/font)
+      #     images: ["priv/assets/icon.png"]    # addressable via plugin://#{name}/icon.png
+      #   }
+    }
+    """
+  end
+
+  defp tier3_migration(mod) do
+    """
+    defmodule #{mod}.Migrations.CreateItems do
+      # Rename this file with a real timestamp before publishing (the leading
+      # integer is the Ecto version). mob_dev namespaces the copied filename by
+      # the plugin's repo_namespace so it can't collide with other plugins'.
+      use Ecto.Migration
+
+      def change do
+        create table(:#{Macro.underscore(mod)}_items) do
+          add(:name, :string, null: false)
+        end
+      end
+    end
+    """
+  end
+
+  # ── Tier 4 — embedded sub-app (lifecycle + settings + notifications) ───────
+
+  defp tier4_lib(mod) do
+    """
+    defmodule #{mod} do
+      @moduledoc \"\"\"
+      Tier-4 sub-app plugin: lifecycle hooks + a supervised worker + settings +
+      a notification handler. The host runs `on_start` at boot (under the plugin
+      supervisor), starts the `supervised` children, and calls `on_resume` /
+      `on_background` on OS foreground/background transitions.
+      \"\"\"
+
+      @doc "lifecycle.on_start — runs once at boot under the plugin supervisor."
+      def start, do: :ok
+
+      @doc "lifecycle.on_resume — host came to the foreground."
+      def on_resume, do: :ok
+
+      @doc "lifecycle.on_background — host went to the background."
+      def on_background, do: :ok
+    end
+    """
+  end
+
+  defp tier4_worker(mod) do
+    """
+    defmodule #{mod}.Worker do
+      @moduledoc "Supervised background worker for the tier-4 plugin."
+      use GenServer
+
+      def start_link(_arg), do: GenServer.start_link(__MODULE__, :ok, name: __MODULE__)
+
+      @impl GenServer
+      def init(:ok), do: {:ok, %{}}
+    end
+    """
+  end
+
+  defp tier4_notifications(mod) do
+    """
+    defmodule #{mod}.Notifications do
+      @moduledoc "Notification handler — invoked when an incoming payload matches."
+
+      @doc "Handles a notification payload routed here by the host dispatcher."
+      def handle(_payload), do: :ok
+    end
+    """
+  end
+
+  defp tier4_settings_screen(mod) do
+    """
+    defmodule #{mod}.SettingsScreen do
+      @moduledoc "Settings editor screen the host pushes for this plugin."
+      use Mob.Screen
+
+      def mount(_params, _session, socket), do: {:ok, socket}
+
+      def render(_assigns) do
+        ~MOB\"""
+        <Column background={:background} padding={:space_lg}>
+          <Text text="#{mod} settings" text_size={:xl} text_color={:on_surface} />
+        </Column>
+        \"""
+      end
+    end
+    """
+  end
+
+  defp tier4_manifest(name, mod) do
+    """
+    %{
+      name: :#{name},
+      mob_version: "~> 0.6",
+      plugin_spec_version: 1,
+      description: "TODO: describe your plugin",
+
+      # Lifecycle hooks + supervised children. on_start/on_resume/on_background
+      # are {Module, fun, args} MFAs; supervised children join the host's plugin
+      # supervisor. A supervised worker's registered name must be unique across
+      # activated plugins.
+      lifecycle: %{
+        on_start: {#{mod}, :start, []},
+        on_resume: {#{mod}, :on_resume, []},
+        on_background: {#{mod}, :on_background, []},
+        supervised: [#{mod}.Worker]
+      },
+
+      # Typed, per-plugin-namespaced settings (read/written via Mob.Plugins
+      # get_setting/3 + put_setting/4, validated against :type). editor_screen
+      # is the screen the host pushes to let the user change them.
+      settings: %{
+        schema: [%{key: :enabled, type: :boolean, default: true}],
+        editor_screen: #{mod}.SettingsScreen
+      },
+
+      # Notification handlers. `match` is a map prefix-matched against the
+      # payload (or a 1-arity predicate); the first matching handler across all
+      # plugins wins, so two plugins may not declare the identical match.
+      notifications: %{
+        handlers: [
+          %{match: %{type: "#{name}"}, handler: {#{mod}.Notifications, :handle, 1}}
+        ]
+      }
     }
     """
   end

@@ -45,12 +45,12 @@ defmodule MobDev.Plugin.ScaffoldTest do
   end
 
   describe "validate_tier/1" do
-    test "0, 1, 2 are valid" do
-      for t <- [0, 1, 2], do: assert(Scaffold.validate_tier(t) == :ok)
+    test "0 through 4 are valid" do
+      for t <- [0, 1, 2, 3, 4], do: assert(Scaffold.validate_tier(t) == :ok)
     end
 
     test "other tiers are rejected" do
-      assert {:error, _} = Scaffold.validate_tier(3)
+      assert {:error, _} = Scaffold.validate_tier(5)
       assert {:error, _} = Scaffold.validate_tier(-1)
       assert {:error, _} = Scaffold.validate_tier("0")
     end
@@ -182,6 +182,72 @@ defmodule MobDev.Plugin.ScaffoldTest do
       manifest = load_manifest!(dir)
       assert {:ok, _} = Manifest.validate(manifest)
       assert Manifest.tier(manifest) == 2
+      assert %{errors: []} = Validator.validate_plugin(manifest, dir, "0.6.20")
+    end
+  end
+
+  describe "files_for/2 — tier 3" do
+    setup do
+      {:ok, files: Scaffold.files_for(3, "mob_demo_widget")}
+    end
+
+    test "emits two screens, a manifest, and a migration", %{files: files} do
+      paths = paths(files)
+      assert "mix.exs" in paths
+      assert "lib/mob_demo_widget/list_screen.ex" in paths
+      assert "lib/mob_demo_widget/detail_screen.ex" in paths
+      assert "priv/mob_plugin.exs" in paths
+      assert "priv/repo/migrations/20260101000000_create_mob_demo_widget_items.exs" in paths
+      assert length(files) == 5
+    end
+
+    test "manifest declares two screen routes + a namespaced migration", %{files: files} do
+      {map, _} = Code.eval_string(content_for(files, "priv/mob_plugin.exs"))
+      assert %{screens: screens, migrations: %{repo_namespace: "mob_demo_widget_"}} = map
+      routes = Enum.map(screens, & &1.default_route)
+      assert "/mob_demo_widget/list" in routes
+      assert "/mob_demo_widget/detail" in routes
+    end
+
+    test "tier-3 manifest validates clean + classifies as tier 3" do
+      dir = write_to_tmpdir!(Scaffold.files_for(3, "mob_demo_widget"))
+      manifest = load_manifest!(dir)
+      assert {:ok, _} = Manifest.validate(manifest)
+      assert Manifest.tier(manifest) == 3
+      assert %{errors: []} = Validator.validate_plugin(manifest, dir, "0.6.20")
+    end
+  end
+
+  describe "files_for/2 — tier 4" do
+    setup do
+      {:ok, files: Scaffold.files_for(4, "mob_demo_widget")}
+    end
+
+    test "emits lifecycle lib, worker, notifications, settings screen, manifest", %{files: files} do
+      paths = paths(files)
+      assert "mix.exs" in paths
+      assert "lib/mob_demo_widget.ex" in paths
+      assert "lib/mob_demo_widget/worker.ex" in paths
+      assert "lib/mob_demo_widget/notifications.ex" in paths
+      assert "lib/mob_demo_widget/settings_screen.ex" in paths
+      assert "priv/mob_plugin.exs" in paths
+      assert length(files) == 6
+    end
+
+    test "manifest wires lifecycle + settings + notifications", %{files: files} do
+      {map, _} = Code.eval_string(content_for(files, "priv/mob_plugin.exs"))
+      assert %{lifecycle: lc, settings: settings, notifications: %{handlers: [h]}} = map
+      assert lc.on_start == {MobDemoWidget, :start, []}
+      assert lc.supervised == [MobDemoWidget.Worker]
+      assert settings.editor_screen == MobDemoWidget.SettingsScreen
+      assert h.match == %{type: "mob_demo_widget"}
+    end
+
+    test "tier-4 manifest validates clean + classifies as tier 4" do
+      dir = write_to_tmpdir!(Scaffold.files_for(4, "mob_demo_widget"))
+      manifest = load_manifest!(dir)
+      assert {:ok, _} = Manifest.validate(manifest)
+      assert Manifest.tier(manifest) == 4
       assert %{errors: []} = Validator.validate_plugin(manifest, dir, "0.6.20")
     end
   end

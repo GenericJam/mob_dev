@@ -1,12 +1,12 @@
 defmodule Mix.Tasks.Mob.NewPlugin do
   use Mix.Task
 
-  @shortdoc "Scaffold a new mob plugin (tier 0–2)"
+  @shortdoc "Scaffold a new mob plugin (tier 0–4)"
 
   @moduledoc """
   Generates the skeleton for a new mob plugin under `plugins/<name>/`.
 
-      mix mob.new_plugin <name> [--tier <0|1|2>] [--dest <DIR>]
+      mix mob.new_plugin <name> [--tier <0|1|2|3|4>] [--dest <DIR>]
 
   Tiers (per `MOB_PLUGINS.md`):
 
@@ -17,10 +17,16 @@ defmodule Mix.Tasks.Mob.NewPlugin do
   - `2` — native UI component via `Mob.UI.native_view` + `Mob.Component`.
     Manifest with `:ui_components`; ships an Elixir `Mob.Component` module,
     the matching Kotlin Composable, and a Swift View placeholder.
+  - `3` — multi-screen plugin. Manifest with `:screens` + `:migrations` (and
+    optionally `:assets`); ships two `Mob.Screen` modules and an Ecto migration
+    the host applies on device.
+  - `4` — embedded sub-app. Manifest with `:lifecycle` + `:settings` +
+    `:notifications`; ships a lifecycle module, a supervised worker, a
+    notification handler, and a settings editor screen.
 
   ## Options
 
-    * `--tier <0|1|2>` — plugin tier; defaults to `0`.
+    * `--tier <0|1|2|3|4>` — plugin tier; defaults to `0`.
     * `--dest <DIR>` — destination directory; defaults to `plugins/<name>`
       relative to the current working directory.
 
@@ -89,7 +95,7 @@ defmodule Mix.Tasks.Mob.NewPlugin do
 
     {:error,
      "unrecognized or invalid option(s): #{flags}\n" <>
-       "usage: mix mob.new_plugin <name> [--tier 0|1|2] [--dest DIR]"}
+       "usage: mix mob.new_plugin <name> [--tier 0|1|2|3|4] [--dest DIR]"}
   end
 
   defp refuse_if_exists!(dest) do
@@ -136,6 +142,20 @@ defmodule Mix.Tasks.Mob.NewPlugin do
       "     (paste the @Composable + the #{mod}Plugin object), and call\n" <>
       "     #{mod}Plugin.register() from MobNativeViewRegistry's init {} block.\n" <>
       "     (Mix automation of this step is a future merge-engine slice.)\n"
+  end
+
+  defp tier_specific_hint(3, _name) do
+    "  4. Tier 3: implement the two Mob.Screen modules + the Ecto migration.\n" <>
+      "     The host registers your screens (by default_route) and applies the\n" <>
+      "     migration on `mix mob.deploy --native`. Rename the migration file\n" <>
+      "     with a real timestamp; add fonts/images under :assets when ready.\n"
+  end
+
+  defp tier_specific_hint(4, name) do
+    "  4. Tier 4: flesh out lib/#{name}.ex (lifecycle), the supervised Worker,\n" <>
+      "     the Notifications handler, and the settings schema. on_start +\n" <>
+      "     supervised children run at boot under the host's plugin supervisor;\n" <>
+      "     settings round-trip via Mob.Plugins get_setting/3 + put_setting/4.\n"
   end
 
   defp tier_specific_hint(_, _), do: ""
