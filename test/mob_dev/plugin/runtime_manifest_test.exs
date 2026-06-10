@@ -118,6 +118,33 @@ defmodule MobDev.Plugin.RuntimeManifestTest do
       assert [%{plugin: :p, handler: {P, :h, 1}}] = manifest.notification_handlers
     end
 
+    test "collects + dedups plugin NIF module atoms (core loads them at boot)" do
+      plugins = [
+        {"/p",
+         base(%{
+           name: :p,
+           nifs: [
+             %{module: :p_nif, native_dir: "priv/native/ios", lang: :objc, platform: :ios},
+             %{module: :p_nif, native_dir: "priv/native/jni", lang: :zig, platform: :android}
+           ]
+         })},
+        {"/q",
+         base(%{
+           name: :q,
+           nifs: [
+             %{module: :q_nif, native_dir: "priv/native/jni", lang: :zig, platform: :android}
+           ]
+         })}
+      ]
+
+      # :p_nif declared for both platforms collapses to one entry.
+      assert RuntimeManifest.build(plugins).nifs == [:p_nif, :q_nif]
+    end
+
+    test "nifs is empty when no plugin declares a NIF" do
+      assert RuntimeManifest.build([{"/p", base(%{name: :p})}]).nifs == []
+    end
+
     test "a multi-tier plugin (screens_generator + tier-4 sections) keeps ALL its sections" do
       # Regression for a composition bug: a plugin carrying both a spec-v2
       # screens_generator AND tier-4 lifecycle/settings/notifications must not
