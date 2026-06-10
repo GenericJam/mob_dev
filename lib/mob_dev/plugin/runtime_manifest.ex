@@ -36,8 +36,23 @@ defmodule MobDev.Plugin.RuntimeManifest do
       screens: Merge.screens(plugins) ++ generated_screens(plugins),
       lifecycle: Merge.lifecycle(plugins),
       settings: Merge.settings(plugins),
-      notification_handlers: Merge.notification_handlers(plugins)
+      notification_handlers: Merge.notification_handlers(plugins),
+      nifs: nif_modules(plugins)
     }
+  end
+
+  # The activated plugins' NIF module atoms (deduped, platform-agnostic — the
+  # same module name backs both the iOS and Android NIF). Core loads these at
+  # boot so an iOS plugin NIF's `load` callback fires eagerly, registering any
+  # permission handler it owns before a screen can request that permission.
+  # (Android registers permissions eagerly via MobPluginBootstrap, so this is
+  # the iOS counterpart; loading on both platforms is harmless and fail-fast.)
+  @spec nif_modules([{Path.t(), map() | nil}]) :: [atom()]
+  defp nif_modules(plugins) do
+    Merge.nifs(plugins)
+    |> Enum.map(& &1[:module])
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
   end
 
   defp generated_screens(plugins) do
