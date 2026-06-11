@@ -45,12 +45,13 @@ defmodule MobDev.Plugin.MergeFuzzTest do
       manifests = gen_set(i)
       plugins = to_plugins(manifests)
       %{errors: errors} = Validator.cross_validate(plugins)
-      text = Enum.join(errors, "\n")
 
       for {_gatherer, {:collision, checks}} <- Validator.conflict_surface(),
           {label, extractor} <- checks do
         expected = cross_plugin_dup?(manifests, extractor)
-        actual = String.contains?(text, label)
+        # Anchored to the exact collision-message shape so one guard's label
+        # can't substring-match inside another guard's error text.
+        actual = Enum.any?(errors, &(&1 =~ ~r/declare the same #{Regex.escape(label)}: /))
 
         assert expected == actual,
                "iter #{i}: resource #{inspect(label)} expected collision=#{expected} " <>

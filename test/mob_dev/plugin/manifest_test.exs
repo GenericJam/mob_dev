@@ -62,12 +62,16 @@ defmodule MobDev.Plugin.ManifestTest do
     end
 
     test "accepts spec version 2 (code-generated plugins)" do
-      assert {:ok, _} = Manifest.validate(%{@valid | plugin_spec_version: 2})
+      m = %{@valid | plugin_spec_version: 2}
+      assert {:ok, ^m} = Manifest.validate(m)
     end
 
     test "reports every problem at once, not just the first" do
       assert {:error, errs} = Manifest.validate(%{plugin_spec_version: "nope"})
       assert length(errs) == 3
+      assert Enum.any?(errs, &(&1 =~ ":name"))
+      assert Enum.any?(errs, &(&1 =~ ":mob_version"))
+      assert Enum.any?(errs, &(&1 =~ "plugin_spec_version"))
     end
 
     test "rejects a non-map manifest" do
@@ -81,7 +85,7 @@ defmodule MobDev.Plugin.ManifestTest do
           %{capability: :sensors}
         ])
 
-      assert {:ok, _} = Manifest.validate(m)
+      assert {:ok, ^m} = Manifest.validate(m)
     end
 
     test "rejects permissions that isn't a list" do
@@ -113,7 +117,7 @@ defmodule MobDev.Plugin.ManifestTest do
           %{module: :shared_nif}
         ])
 
-      assert {:ok, _} = Manifest.validate(m)
+      assert {:ok, ^m} = Manifest.validate(m)
     end
 
     test "rejects a nif entry with an invalid :platform" do
@@ -200,7 +204,7 @@ defmodule MobDev.Plugin.ManifestTest do
 
     test "accepts a valid static screens list" do
       m = Map.put(@valid, :screens, [%{module: MyPlugin.ListScreen, default_route: "/p/list"}])
-      assert {:ok, _} = Manifest.validate(m)
+      assert {:ok, ^m} = Manifest.validate(m)
     end
 
     test "rejects a screen entry missing module or default_route" do
@@ -216,7 +220,7 @@ defmodule MobDev.Plugin.ManifestTest do
 
     test "accepts a screens_generator MFA on spec v2" do
       m = Map.put(@v2, :screens_generator, {MyPlugin.Gen, :generate, []})
-      assert {:ok, _} = Manifest.validate(m)
+      assert {:ok, ^m} = Manifest.validate(m)
     end
 
     test "rejects screens_generator on spec v1 (needs v2)" do
@@ -248,7 +252,7 @@ defmodule MobDev.Plugin.ManifestTest do
           migrations_dir: "priv/repo/migrations"
         })
 
-      assert {:ok, _} = Manifest.validate(m)
+      assert {:ok, ^m} = Manifest.validate(m)
     end
 
     test "rejects migrations missing keys" do
@@ -259,7 +263,7 @@ defmodule MobDev.Plugin.ManifestTest do
 
     test "accepts assets with font and image path lists" do
       m = Map.put(@valid, :assets, %{fonts: ["priv/assets/x.ttf"], images: ["priv/assets/y.png"]})
-      assert {:ok, _} = Manifest.validate(m)
+      assert {:ok, ^m} = Manifest.validate(m)
     end
 
     test "rejects assets with a non-string path" do
@@ -278,7 +282,8 @@ defmodule MobDev.Plugin.ManifestTest do
         on_background: {P, :on_background, []}
       }
 
-      assert {:ok, _} = Manifest.validate(Map.put(@valid, :lifecycle, lc))
+      m = Map.put(@valid, :lifecycle, lc)
+      assert {:ok, ^m} = Manifest.validate(m)
     end
 
     test "rejects a non-MFA lifecycle.on_start" do
@@ -302,7 +307,8 @@ defmodule MobDev.Plugin.ManifestTest do
         editor_screen: P.SettingsScreen
       }
 
-      assert {:ok, _} = Manifest.validate(Map.put(@valid, :settings, settings))
+      m = Map.put(@valid, :settings, settings)
+      assert {:ok, ^m} = Manifest.validate(m)
     end
 
     test "rejects an unsupported setting type" do
@@ -325,7 +331,8 @@ defmodule MobDev.Plugin.ManifestTest do
         ]
       }
 
-      assert {:ok, _} = Manifest.validate(Map.put(@valid, :notifications, notes))
+      m = Map.put(@valid, :notifications, notes)
+      assert {:ok, ^m} = Manifest.validate(m)
     end
 
     test "rejects a notification handler whose handler is an args-MFA not arity" do

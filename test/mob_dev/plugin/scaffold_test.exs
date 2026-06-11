@@ -61,7 +61,7 @@ defmodule MobDev.Plugin.ScaffoldTest do
       {:ok, files: Scaffold.files_for(0, "mob_demo_widget")}
     end
 
-    test "emits mix.exs and lib/<name>.ex (2 files, no manifest)", %{files: files} do
+    test "emits mix.exs, lib/<name>.ex + test scaffolding (no manifest)", %{files: files} do
       paths = paths(files)
       assert "mix.exs" in paths
       assert "lib/mob_demo_widget.ex" in paths
@@ -86,7 +86,7 @@ defmodule MobDev.Plugin.ScaffoldTest do
       {:ok, files: Scaffold.files_for(1, "mob_demo_widget")}
     end
 
-    test "emits the 5 expected files for a NIF-bearing plugin", %{files: files} do
+    test "emits the 7 expected files for a NIF-bearing plugin", %{files: files} do
       paths = paths(files)
       assert "mix.exs" in paths
       assert "lib/mob_demo_widget.ex" in paths
@@ -125,7 +125,7 @@ defmodule MobDev.Plugin.ScaffoldTest do
       dir = write_to_tmpdir!(Scaffold.files_for(1, "mob_demo_widget"))
       manifest = load_manifest!(dir)
 
-      assert {:ok, _} = Manifest.validate(manifest)
+      assert {:ok, ^manifest} = Manifest.validate(manifest)
       assert Manifest.tier(manifest) == 1
       assert %{errors: [], warnings: []} = Validator.validate_plugin(manifest, dir, "0.6.20")
     end
@@ -136,7 +136,7 @@ defmodule MobDev.Plugin.ScaffoldTest do
       {:ok, files: Scaffold.files_for(2, "mob_demo_widget")}
     end
 
-    test "emits the 6 expected files for a UI-component plugin", %{files: files} do
+    test "emits the 8 expected files for a UI-component plugin", %{files: files} do
       paths = paths(files)
       assert "mix.exs" in paths
       assert "lib/mob_demo_widget.ex" in paths
@@ -180,7 +180,7 @@ defmodule MobDev.Plugin.ScaffoldTest do
     test "tier-2 manifest validates clean" do
       dir = write_to_tmpdir!(Scaffold.files_for(2, "mob_demo_widget"))
       manifest = load_manifest!(dir)
-      assert {:ok, _} = Manifest.validate(manifest)
+      assert {:ok, ^manifest} = Manifest.validate(manifest)
       assert Manifest.tier(manifest) == 2
       assert %{errors: []} = Validator.validate_plugin(manifest, dir, "0.6.20")
     end
@@ -212,7 +212,7 @@ defmodule MobDev.Plugin.ScaffoldTest do
     test "tier-3 manifest validates clean + classifies as tier 3" do
       dir = write_to_tmpdir!(Scaffold.files_for(3, "mob_demo_widget"))
       manifest = load_manifest!(dir)
-      assert {:ok, _} = Manifest.validate(manifest)
+      assert {:ok, ^manifest} = Manifest.validate(manifest)
       assert Manifest.tier(manifest) == 3
       assert %{errors: []} = Validator.validate_plugin(manifest, dir, "0.6.20")
     end
@@ -246,7 +246,7 @@ defmodule MobDev.Plugin.ScaffoldTest do
     test "tier-4 manifest validates clean + classifies as tier 4" do
       dir = write_to_tmpdir!(Scaffold.files_for(4, "mob_demo_widget"))
       manifest = load_manifest!(dir)
-      assert {:ok, _} = Manifest.validate(manifest)
+      assert {:ok, ^manifest} = Manifest.validate(manifest)
       assert Manifest.tier(manifest) == 4
       assert %{errors: []} = Validator.validate_plugin(manifest, dir, "0.6.20")
     end
@@ -298,8 +298,8 @@ defmodule MobDev.Plugin.ScaffoldTest do
       # present in the scaffolded file set (on-disk File checks are covered by
       # the validate-in-tmpdir tests above).
       assert m.name == :mob_demo_widget
-      assert is_binary(m.mob_version)
-      assert is_integer(m.plugin_spec_version)
+      assert m.mob_version == "~> 0.6"
+      assert m.plugin_spec_version == 1
 
       scaffolded_dirs = paths(files) |> Enum.map(&Path.dirname/1) |> MapSet.new()
 
