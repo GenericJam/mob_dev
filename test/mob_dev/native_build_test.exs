@@ -63,6 +63,24 @@ defmodule MobDev.NativeBuildTest do
     end
   end
 
+  describe "__host_requirements_warning__/1" do
+    test "no obligations → no warning" do
+      assert NativeBuild.__host_requirements_warning__([]) == nil
+    end
+
+    test "renders one line per obligation, tagged with the plugin" do
+      msg =
+        NativeBuild.__host_requirements_warning__([
+          %{plugin: :mob_screencast, requirement: "add the mediaProjection <service>"},
+          %{plugin: :mob_camera, requirement: "declare a FileProvider"}
+        ])
+
+      assert msg =~ "manual steps the build can NOT do for you"
+      assert msg =~ "[mob_screencast] add the mediaProjection <service>"
+      assert msg =~ "[mob_camera] declare a FileProvider"
+    end
+  end
+
   describe "__elixir_lib_decision__/3 (which Elixir stdlib to bundle)" do
     test "missing configured path → detect from running BEAM" do
       assert NativeBuild.__elixir_lib_decision__(false, nil, "1.20.0") ==

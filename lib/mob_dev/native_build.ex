@@ -59,6 +59,12 @@ defmodule MobDev.NativeBuild do
     apply_plugin_migrations!()
     apply_plugin_images!()
 
+    # Manual host-app obligations a plugin declared (e.g. an AndroidManifest
+    # <service> fragment the plugin system can't contribute) — print every
+    # build, because forgetting one builds + boots clean and only fails at
+    # first feature use (a SecurityException with nothing pointing here).
+    warn_host_requirements!()
+
     results = []
 
     # Skip Android when its toolchain isn't installed instead of failing the
@@ -4122,6 +4128,32 @@ defmodule MobDev.NativeBuild do
     end
 
     :ok
+  end
+
+  defp warn_host_requirements! do
+    case __host_requirements_warning__(
+           MobDev.Plugin.Merge.host_requirements(MobDev.Plugin.activated())
+         ) do
+      nil -> :ok
+      msg -> IO.puts(msg)
+    end
+
+    :ok
+  end
+
+  @doc false
+  # Pure kernel: render the host-obligation warning block (nil when no plugin
+  # declares any). Public for tests.
+  @spec __host_requirements_warning__([%{plugin: atom(), requirement: String.t()}]) ::
+          String.t() | nil
+  def __host_requirements_warning__([]), do: nil
+
+  def __host_requirements_warning__(reqs) do
+    lines = for %{plugin: p, requirement: r} <- reqs, do: "      [#{p}] #{r}"
+
+    IO.ANSI.yellow() <>
+      "  ⚠  plugin host requirements — manual steps the build can NOT do for you:\n" <>
+      Enum.join(lines, "\n") <> IO.ANSI.reset()
   end
 
   @doc false
