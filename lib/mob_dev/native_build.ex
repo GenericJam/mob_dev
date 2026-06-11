@@ -44,6 +44,14 @@ defmodule MobDev.NativeBuild do
     # handlers just wouldn't activate on device, with no error).
     regen_runtime_manifest!()
 
+    # Same treatment for the static-NIF driver table: it's derived state
+    # (mob.exs :static_nifs + the activated plugins' NIFs), but it used to be a
+    # checked-in artifact only `mix mob.regen_driver_tab` refreshed. Activating
+    # a NIF plugin against a stale table links the <module>_nif_init symbol but
+    # never registers it — every call then raises :nif_not_loaded at runtime
+    # with nothing pointing at the cause. Regenerate on every native build.
+    regen_driver_tab!()
+
     # Tier-3 build-time file merges (platform-agnostic; run once before the
     # per-platform builds): copy plugin migrations into the host migrations dir
     # and plugin images into the host bundle assets. Fonts are merged per-platform
@@ -4080,6 +4088,53 @@ defmodule MobDev.NativeBuild do
   # Rebuilds priv/generated/mob_plugins.exs (the host's runtime plugin manifest)
   # from the activated plugins' current manifests, so the on-device tier-3/4
   # wiring always matches what the plugins declare at build time.
+  @doc false
+  # Regenerates the on-disk static-NIF driver tables for every format the
+  # project already uses (zig and/or c). A project with no generated driver_tab
+  # files is left untouched — nothing in its build references them. Public for
+  # tests (and exercised on every `build_all`).
+  @spec regen_driver_tab!() :: :ok
+  def regen_driver_tab! do
+    for fmt <- __driver_tab_formats__(&File.exists?/1) do
+      paths = Mix.Tasks.Mob.RegenDriverTab.target_paths(fmt)
+
+      expected = %{
+        paths.ios =>
+          MobDev.StaticNifs.generate(:ios, Mix.Tasks.Mob.RegenDriverTab.resolved_nifs(:ios),
+            format: fmt
+          )
+          |> IO.iodata_to_binary(),
+        paths.android =>
+          MobDev.StaticNifs.generate(
+            :android,
+            Mix.Tasks.Mob.RegenDriverTab.resolved_nifs(:android),
+            format: fmt
+          )
+          |> IO.iodata_to_binary()
+      }
+
+      for {path, src} <- expected,
+          File.read(path) != {:ok, src} do
+        File.mkdir_p!(Path.dirname(path))
+        File.write!(path, src)
+        IO.puts("  ✓ driver_tab regenerated (was stale): #{path}")
+      end
+    end
+
+    :ok
+  end
+
+  @doc false
+  # Pure kernel: which driver_tab formats the project uses, decided from file
+  # existence alone (`exists?` is injected so tests don't touch the disk).
+  @spec __driver_tab_formats__((String.t() -> boolean())) :: [:zig | :c]
+  def __driver_tab_formats__(exists?) when is_function(exists?, 1) do
+    for fmt <- [:zig, :c],
+        paths = Mix.Tasks.Mob.RegenDriverTab.target_paths(fmt),
+        exists?.(paths.ios) or exists?.(paths.android),
+        do: fmt
+  end
+
   defp regen_runtime_manifest! do
     manifest = MobDev.Plugin.RuntimeManifest.build(MobDev.Plugin.activated())
     MobDev.Plugin.RuntimeManifest.write(File.cwd!(), manifest)

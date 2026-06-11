@@ -572,11 +572,55 @@ defmodule Mix.Tasks.Mob.Doctor do
       List.flatten([
         check_deps_fetched(),
         check_compiled(),
-        check_driver_tab()
+        check_driver_tab(),
+        check_plugin_build_options()
       ])
     else
       []
     end
+  end
+
+  # ── Plugin build options ──────────────────────────────────────────────────────
+  #
+  # When activated plugins contribute native code, the native build passes
+  # -Dplugin_* flags to the project's build.zig files. An app scaffolded before
+  # the plugin system declares no b.option for them, and Zig hard-rejects an
+  # unknown -D flag — half a build in, with nothing pointing at the real cause.
+  # Surface the mismatch up front.
+
+  @plugin_build_options %{
+    "android/app/src/main/jni/build.zig" => ~w(plugin_c_nifs plugin_zig_nifs plugin_jni_sources),
+    "ios/build.zig" => ~w(plugin_c_nifs plugin_swift_files plugin_frameworks),
+    "ios/build_device.zig" => ~w(plugin_c_nifs plugin_swift_files plugin_frameworks)
+  }
+
+  defp check_plugin_build_options do
+    case MobDev.Plugin.activated() do
+      [] ->
+        []
+
+      _activated ->
+        for {path, required} <- @plugin_build_options,
+            {:ok, content} <- [File.read(path)],
+            missing = __missing_plugin_options__(content, required),
+            missing != [] do
+          {:warn, "plugin options (#{path})",
+           "doesn't declare #{Enum.join(missing, ", ")} — the native build emits " <>
+             "these -D flags for activated plugins' native code, and Zig rejects " <>
+             "unknown options",
+           "Port the plugin option block into #{path} from a freshly generated " <>
+             "app (mix mob.new) or mob_new's templates"}
+        end
+    end
+  end
+
+  @doc false
+  # Pure kernel: which plugin -D option names the build file doesn't declare.
+  # Detection is the quoted option name (how every template's b.option call
+  # spells it). Public for tests.
+  @spec __missing_plugin_options__(String.t(), [String.t()]) :: [String.t()]
+  def __missing_plugin_options__(content, required) do
+    Enum.reject(required, &String.contains?(content, "\"#{&1}\""))
   end
 
   # ── Driver_tab manifest drift ────────────────────────────────────────────────
