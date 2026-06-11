@@ -351,4 +351,26 @@ defmodule MobDev.Plugin.ManifestTest do
              )
     end
   end
+
+  describe "host_requirements" do
+    test "accepts a list of non-empty strings (optional key)" do
+      m = Map.put(@valid, :host_requirements, ["add <service .../> to AndroidManifest"])
+      assert {:ok, ^m} = Manifest.validate(m)
+    end
+
+    test "rejects a non-list" do
+      assert {:error, errs} = Manifest.validate(Map.put(@valid, :host_requirements, "oops"))
+      assert Enum.any?(errs, &(&1 =~ "host_requirements must be a list"))
+    end
+
+    test "rejects empty or non-string entries" do
+      assert {:error, errs} = Manifest.validate(Map.put(@valid, :host_requirements, ["ok", ""]))
+      assert Enum.any?(errs, &(&1 =~ "non-empty strings"))
+
+      assert {:error, errs} =
+               Manifest.validate(Map.put(@valid, :host_requirements, [:not_a_string]))
+
+      assert Enum.any?(errs, &(&1 =~ "non-empty strings"))
+    end
+  end
 end

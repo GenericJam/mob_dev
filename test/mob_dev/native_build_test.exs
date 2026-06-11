@@ -10,6 +10,77 @@ defmodule MobDev.NativeBuildTest do
 
   alias MobDev.NativeBuild
 
+  describe "__driver_tab_formats__/1 + regen_driver_tab!/0" do
+    test "detects the formats whose generated files exist" do
+      zig_paths = Mix.Tasks.Mob.RegenDriverTab.target_paths(:zig)
+      c_paths = Mix.Tasks.Mob.RegenDriverTab.target_paths(:c)
+
+      assert NativeBuild.__driver_tab_formats__(fn _ -> false end) == []
+      assert NativeBuild.__driver_tab_formats__(&(&1 == zig_paths.android)) == [:zig]
+      assert NativeBuild.__driver_tab_formats__(&(&1 == c_paths.ios)) == [:c]
+      assert NativeBuild.__driver_tab_formats__(fn _ -> true end) == [:zig, :c]
+    end
+
+    test "rewrites a stale on-disk driver_tab (the :nif_not_loaded footgun)" do
+      dir =
+        Path.join(System.tmp_dir!(), "mob_driver_tab_regen_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(Path.join(dir, "priv/generated"))
+      stale_path = Path.join(dir, "priv/generated/driver_tab_android.zig")
+      File.write!(stale_path, "// stale — generated before a plugin was added\n")
+
+      cwd = File.cwd!()
+      File.cd!(dir)
+
+      try do
+        assert :ok = NativeBuild.regen_driver_tab!()
+        regenerated = File.read!(stale_path)
+        refute regenerated =~ "stale"
+        # The zig sibling is regenerated alongside; the c format stays absent.
+        assert File.exists?(Path.join(dir, "priv/generated/driver_tab_ios.zig"))
+        refute File.exists?(Path.join(dir, "priv/generated/driver_tab_ios.c"))
+      after
+        File.cd!(cwd)
+        File.rm_rf!(dir)
+      end
+    end
+
+    test "leaves a project with no generated driver_tab untouched" do
+      dir =
+        Path.join(System.tmp_dir!(), "mob_driver_tab_none_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(dir)
+      cwd = File.cwd!()
+      File.cd!(dir)
+
+      try do
+        assert :ok = NativeBuild.regen_driver_tab!()
+        assert File.ls!(dir) == []
+      after
+        File.cd!(cwd)
+        File.rm_rf!(dir)
+      end
+    end
+  end
+
+  describe "__host_requirements_warning__/1" do
+    test "no obligations → no warning" do
+      assert NativeBuild.__host_requirements_warning__([]) == nil
+    end
+
+    test "renders one line per obligation, tagged with the plugin" do
+      msg =
+        NativeBuild.__host_requirements_warning__([
+          %{plugin: :mob_screencast, requirement: "add the mediaProjection <service>"},
+          %{plugin: :mob_camera, requirement: "declare a FileProvider"}
+        ])
+
+      assert msg =~ "manual steps the build can NOT do for you"
+      assert msg =~ "[mob_screencast] add the mediaProjection <service>"
+      assert msg =~ "[mob_camera] declare a FileProvider"
+    end
+  end
+
   describe "__elixir_lib_decision__/3 (which Elixir stdlib to bundle)" do
     test "missing configured path → detect from running BEAM" do
       assert NativeBuild.__elixir_lib_decision__(false, nil, "1.20.0") ==

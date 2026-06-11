@@ -295,6 +295,20 @@ defmodule MobDev.Plugin.Merge do
         do: Map.put(h, :plugin, manifest[:name])
   end
 
+  @doc """
+  Host-app obligations the plugin system can't automate (e.g. AndroidManifest
+  fragments — a typed foreground `<service>`, a `FileProvider`), tagged with
+  `:plugin`. The native build prints these so a host author can't activate a
+  plugin and only discover the missing manual step at first feature use.
+  """
+  @spec host_requirements([plugin()]) :: [%{plugin: atom(), requirement: String.t()}]
+  def host_requirements(plugins) do
+    for {_dir, manifest} <- with_manifests(plugins),
+        req <- List.wrap(Map.get(manifest, :host_requirements)),
+        is_binary(req),
+        do: %{plugin: manifest[:name], requirement: req}
+  end
+
   defp abs_paths(dir, paths) when is_list(paths),
     do: for(p <- paths, is_binary(p), do: Path.join(dir, p))
 
