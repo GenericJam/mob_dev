@@ -63,6 +63,17 @@ defmodule MobDev.NativeBuildTest do
     end
   end
 
+  describe "__notify_hub_kotlin__/0" do
+    test "generated hub is the stable io.mob.plugin seam with the three members" do
+      src = NativeBuild.__notify_hub_kotlin__()
+      assert src =~ "package io.mob.plugin"
+      assert src =~ "object MobNotifyHub"
+      assert src =~ ~s(const val CHANNEL_ID = "mob_notifications")
+      assert src =~ "var notifyPid: Long = 0"
+      assert src =~ "var pendingToken: String? = null"
+    end
+  end
+
   describe "__host_requirements_warning__/1" do
     test "no obligations → no warning" do
       assert NativeBuild.__host_requirements_warning__([]) == nil
