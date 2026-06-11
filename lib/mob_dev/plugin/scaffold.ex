@@ -87,7 +87,9 @@ defmodule MobDev.Plugin.Scaffold do
   def files_for(0, name) do
     [
       {"mix.exs", mix_exs(name)},
-      {"lib/#{name}.ex", tier0_lib(name)}
+      {"lib/#{name}.ex", tier0_lib(name)},
+      {"test/test_helper.exs", test_helper()},
+      {"test/#{name}_test.exs", tier0_test(name)}
     ]
   end
 
@@ -99,7 +101,9 @@ defmodule MobDev.Plugin.Scaffold do
       {"lib/#{name}.ex", tier1_lib(name, nif_name)},
       {"src/#{nif_name}.erl", tier1_erl_stub(nif_name)},
       {"priv/mob_plugin.exs", tier1_manifest(name, nif_name)},
-      {"priv/native/jni/#{nif_name}.c", tier1_c(nif_name)}
+      {"priv/native/jni/#{nif_name}.c", tier1_c(nif_name)},
+      {"test/test_helper.exs", test_helper()},
+      {"test/#{name}_test.exs", plugin_test(name)}
     ]
   end
 
@@ -113,7 +117,9 @@ defmodule MobDev.Plugin.Scaffold do
       {"lib/#{name}/view.ex", tier2_view(mod)},
       {"priv/mob_plugin.exs", tier2_manifest(name, mod, registry_name)},
       {"priv/native/android/#{mod}.kt", tier2_kt(mod, registry_name)},
-      {"priv/native/ios/#{mod}View.swift", tier2_swift(mod)}
+      {"priv/native/ios/#{mod}View.swift", tier2_swift(mod)},
+      {"test/test_helper.exs", test_helper()},
+      {"test/#{name}_test.exs", plugin_test(name)}
     ]
   end
 
@@ -125,7 +131,9 @@ defmodule MobDev.Plugin.Scaffold do
       {"lib/#{name}/list_screen.ex", tier3_list_screen(mod)},
       {"lib/#{name}/detail_screen.ex", tier3_detail_screen(mod)},
       {"priv/mob_plugin.exs", tier3_manifest(name, mod)},
-      {"priv/repo/migrations/20260101000000_create_#{name}_items.exs", tier3_migration(mod)}
+      {"priv/repo/migrations/20260101000000_create_#{name}_items.exs", tier3_migration(mod)},
+      {"test/test_helper.exs", test_helper()},
+      {"test/#{name}_test.exs", plugin_test(name)}
     ]
   end
 
@@ -138,7 +146,9 @@ defmodule MobDev.Plugin.Scaffold do
       {"lib/#{name}/worker.ex", tier4_worker(mod)},
       {"lib/#{name}/notifications.ex", tier4_notifications(mod)},
       {"lib/#{name}/settings_screen.ex", tier4_settings_screen(mod)},
-      {"priv/mob_plugin.exs", tier4_manifest(name, mod)}
+      {"priv/mob_plugin.exs", tier4_manifest(name, mod)},
+      {"test/test_helper.exs", test_helper()},
+      {"test/#{name}_test.exs", plugin_test(name)}
     ]
   end
 
@@ -168,6 +178,70 @@ defmodule MobDev.Plugin.Scaffold do
         [
           {:mob, "~> 0.6"}
         ]
+      end
+    end
+    """
+  end
+
+  # ── Test scaffolding (all tiers) ──────────────────────────────────────────
+  # Stdlib-only on purpose: a scaffolded plugin can live anywhere, so it can't
+  # assume a path to mob_dev. The full validator still runs from a host app
+  # via `mix mob.validate_plugin`.
+
+  defp test_helper, do: "ExUnit.start()\n"
+
+  defp tier0_test(name) do
+    mod = module_name(name)
+
+    """
+    defmodule #{mod}Test do
+      use ExUnit.Case, async: true
+
+      # Tier 0 ships no manifest — the contract is just "the module compiles
+      # against mob". Grow this suite alongside your plugin's pure logic.
+      test "the plugin module compiles" do
+        assert Code.ensure_loaded?(#{mod})
+      end
+    end
+    """
+  end
+
+  defp plugin_test(name) do
+    mod = module_name(name)
+
+    """
+    defmodule #{mod}Test do
+      use ExUnit.Case, async: true
+
+      # Structural checks that run with no extra deps. For the full pre-publish
+      # validation (path/NIF/permission rules + cross-plugin collisions) run
+      # `mix mob.validate_plugin` from a host app that has mob_dev. Grow this
+      # suite alongside your plugin's pure logic (option builders, parsers, …).
+      @plugin_dir Path.expand("..", __DIR__)
+      @manifest_path Path.join(@plugin_dir, "priv/mob_plugin.exs")
+
+      test "manifest evaluates to a map with the required keys" do
+        assert {%{} = m, _} = Code.eval_file(@manifest_path)
+        assert m.name == :#{name}
+        assert is_binary(m.mob_version)
+        assert is_integer(m.plugin_spec_version)
+      end
+
+      test "every NIF entry has a loadable stub module and an existing native_dir" do
+        {m, _} = Code.eval_file(@manifest_path)
+
+        for %{module: nif_mod, native_dir: dir} <- Map.get(m, :nifs, []) do
+          assert Code.ensure_loaded?(nif_mod), "src/\#{nif_mod}.erl stub missing or broken"
+          assert File.dir?(Path.join(@plugin_dir, dir)), "\#{dir} missing"
+        end
+      end
+
+      test "every screen module the manifest references compiles" do
+        {m, _} = Code.eval_file(@manifest_path)
+
+        for %{module: screen_mod} <- Map.get(m, :screens, []) do
+          assert Code.ensure_loaded?(screen_mod)
+        end
       end
     end
     """
