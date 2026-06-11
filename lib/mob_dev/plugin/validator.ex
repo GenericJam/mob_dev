@@ -261,6 +261,8 @@ defmodule MobDev.Plugin.Validator do
         {:build_time,
          "fonts: build-time collision planner (Assets.plan_*_font_*); images: per-plugin path"},
       android_permissions: {:union, "Android permissions are set-unioned"},
+      host_requirements:
+        {:union, "informational host-app obligations, printed by the build; duplicates harmless"},
       gradle_deps: {:union, "Gradle deps are set-unioned"},
       ios_frameworks: {:union, "iOS frameworks are set-unioned"},
       bridge_kt_sources: {:derived, "Kotlin source paths; collision guarded via bridge_classes"},

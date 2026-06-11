@@ -91,6 +91,7 @@ defmodule MobDev.Plugin.Manifest do
       |> check_lifecycle(manifest)
       |> check_settings(manifest)
       |> check_notifications(manifest)
+      |> check_host_requirements(manifest)
 
     case errors do
       [] -> {:ok, manifest}
@@ -390,6 +391,24 @@ defmodule MobDev.Plugin.Manifest do
     do: ["notifications must be a map with a :handlers list, got: #{inspect(other)}" | errors]
 
   defp check_notifications(errors, _), do: errors
+
+  # `:host_requirements` is optional: human-readable host-app obligations the
+  # plugin system can't automate (e.g. AndroidManifest fragments). The native
+  # build prints them as warnings; here we only enforce the shape.
+  defp check_host_requirements(errors, %{host_requirements: reqs}) when is_list(reqs) do
+    Enum.reduce(reqs, errors, fn
+      req, acc when is_binary(req) and req != "" ->
+        acc
+
+      req, acc ->
+        ["host_requirements entries must be non-empty strings, got: #{inspect(req)}" | acc]
+    end)
+  end
+
+  defp check_host_requirements(errors, %{host_requirements: other}),
+    do: ["host_requirements must be a list of strings, got: #{inspect(other)}" | errors]
+
+  defp check_host_requirements(errors, _), do: errors
 
   defp check_notification_handler(errors, %{match: match, handler: handler}, i) do
     errors
