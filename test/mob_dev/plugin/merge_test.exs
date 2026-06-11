@@ -390,5 +390,18 @@ defmodule MobDev.Plugin.MergeTest do
                %{plugin: :b, handler: {B, :hz, 1}}
              ] = Merge.notification_handlers(plugins)
     end
+
+    test "host_requirements/1 tags each obligation with its plugin, skipping malformed" do
+      plugins = [
+        {"/a", base(%{name: :a, host_requirements: ["add the <service> fragment", :oops]})},
+        {"/b", base(%{name: :b})},
+        {"/c", base(%{name: :c, host_requirements: ["declare a FileProvider"]})}
+      ]
+
+      assert [
+               %{plugin: :a, requirement: "add the <service> fragment"},
+               %{plugin: :c, requirement: "declare a FileProvider"}
+             ] = Merge.host_requirements(plugins)
+    end
   end
 end

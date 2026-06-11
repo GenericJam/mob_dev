@@ -11,6 +11,14 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 ## [0.5.17]
 
 ### Added
+- **`mix mob.new_plugin` scaffolds a starter test suite for every tier** (`test/test_helper.exs` + `test/<name>_test.exs`): tiers 1–4 get stdlib-only structural manifest checks (required keys, NIF stub loadable, `native_dir` exists, screen modules compile) with a pointer at `mix mob.validate_plugin` for the full validator; tier 0 gets a compile smoke test. New plugins start covered instead of starting at zero tests.
+- **Plugin `host_requirements` manifest key.** A plugin can declare human-readable host-app obligations the build can't automate (e.g. the AndroidManifest `<service android:foregroundServiceType="mediaProjection">` fragment mob_screencast needs, or a capture `FileProvider`). The manifest validator enforces the shape, `MobDev.Plugin.Merge.host_requirements/1` gathers them, and every native build prints them as a warning block — previously forgetting the manual step built + booted clean and only failed at first feature use.
+- **`mix mob.doctor` detects pre-plugin build files.** When plugins are activated but a `build.zig`/`build_device.zig` declares no `b.option` for the `-Dplugin_*` flags the native build emits, doctor warns with the exact missing options — previously Zig rejected the unknown flag half a build in.
+
+### Changed
+- **`mix mob.deploy --native` regenerates the static-NIF driver table on every build** (whatever formats the project uses, zig and/or c), exactly like the runtime plugin manifest: it's derived state. A stale checked-in `driver_tab_*` used to link a newly activated plugin's `<module>_nif_init` without registering it, so every NIF call raised `:nif_not_loaded` at runtime with nothing pointing at the cause.
+
+### Added
 - **`mix mob.new_plugin` scaffolds tiers 3 (multi-screen) and 4 (sub-app)**, not just 0–2. Tier 3 emits two `Mob.Screen` modules + a `:screens`/`:migrations` manifest + a namespaced Ecto migration; tier 4 emits a lifecycle module + supervised worker + notification handler + settings editor screen + a `:lifecycle`/`:settings`/`:notifications` manifest. Generated manifests validate and modules compile against real mob.
 - **Cross-plugin conflict detection.** `MobDev.Plugin.Validator.conflict_surface/0` classifies every merge gatherer; `cross_validate/1` fails the build when two activated plugins clash on any shared resource — screen route, component atom, iOS/Android native view key, migration `repo_namespace`, NIF module, Swift/JNI source basename, Android bridge class, iOS plist key, supervised worker name, or notification match. A completeness meta-test forces every new shared-resource field to be classified; a property-based fuzzer checks detection is sound + complete across random N-plugin sets. A single plugin declaring a cross-platform NIF (one iOS + one Android entry sharing a `:module`) is correctly not flagged.
 
