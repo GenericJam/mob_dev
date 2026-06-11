@@ -65,7 +65,7 @@ defmodule MobDev.Plugin.ScaffoldTest do
       paths = paths(files)
       assert "mix.exs" in paths
       assert "lib/mob_demo_widget.ex" in paths
-      assert length(files) == 2
+      assert length(files) == 4
     end
 
     test "mix.exs has the right module + app names", %{files: files} do
@@ -93,7 +93,7 @@ defmodule MobDev.Plugin.ScaffoldTest do
       assert "src/mob_demo_widget_nif.erl" in paths
       assert "priv/mob_plugin.exs" in paths
       assert "priv/native/jni/mob_demo_widget_nif.c" in paths
-      assert length(files) == 5
+      assert length(files) == 7
     end
 
     test "manifest's nif :module is the C-token name (not the Elixir module)", %{files: files} do
@@ -144,7 +144,7 @@ defmodule MobDev.Plugin.ScaffoldTest do
       assert "priv/mob_plugin.exs" in paths
       assert "priv/native/android/MobDemoWidget.kt" in paths
       assert "priv/native/ios/MobDemoWidgetView.swift" in paths
-      assert length(files) == 6
+      assert length(files) == 8
     end
 
     test "manifest's registry name matches Mob.Component's module-name encoding", %{files: files} do
@@ -198,7 +198,7 @@ defmodule MobDev.Plugin.ScaffoldTest do
       assert "lib/mob_demo_widget/detail_screen.ex" in paths
       assert "priv/mob_plugin.exs" in paths
       assert "priv/repo/migrations/20260101000000_create_mob_demo_widget_items.exs" in paths
-      assert length(files) == 5
+      assert length(files) == 7
     end
 
     test "manifest declares two screen routes + a namespaced migration", %{files: files} do
@@ -231,7 +231,7 @@ defmodule MobDev.Plugin.ScaffoldTest do
       assert "lib/mob_demo_widget/notifications.ex" in paths
       assert "lib/mob_demo_widget/settings_screen.ex" in paths
       assert "priv/mob_plugin.exs" in paths
-      assert length(files) == 6
+      assert length(files) == 8
     end
 
     test "manifest wires lifecycle + settings + notifications", %{files: files} do
@@ -249,6 +249,63 @@ defmodule MobDev.Plugin.ScaffoldTest do
       assert {:ok, _} = Manifest.validate(manifest)
       assert Manifest.tier(manifest) == 4
       assert %{errors: []} = Validator.validate_plugin(manifest, dir, "0.6.20")
+    end
+  end
+
+  describe "files_for/2 — test scaffolding (all tiers)" do
+    test "every tier ships test/test_helper.exs + test/<name>_test.exs" do
+      for tier <- 0..4 do
+        ps = Scaffold.files_for(tier, "mob_demo_widget") |> paths()
+        assert "test/test_helper.exs" in ps, "tier #{tier} missing test_helper"
+        assert "test/mob_demo_widget_test.exs" in ps, "tier #{tier} missing test file"
+      end
+    end
+
+    test "generated test files are valid Elixir with the right module name" do
+      for tier <- 0..4 do
+        content =
+          Scaffold.files_for(tier, "mob_demo_widget")
+          |> content_for("test/mob_demo_widget_test.exs")
+
+        assert content =~ "defmodule MobDemoWidgetTest do"
+        Code.string_to_quoted!(content)
+      end
+    end
+
+    test "manifest-bearing tiers (1-4) get the structural manifest tests, tier 0 doesn't" do
+      for tier <- 1..4 do
+        content =
+          Scaffold.files_for(tier, "mob_demo_widget")
+          |> content_for("test/mob_demo_widget_test.exs")
+
+        assert content =~ "priv/mob_plugin.exs"
+        assert content =~ "mix mob.validate_plugin"
+      end
+
+      tier0 =
+        Scaffold.files_for(0, "mob_demo_widget")
+        |> content_for("test/mob_demo_widget_test.exs")
+
+      refute tier0 =~ "priv/mob_plugin.exs"
+    end
+
+    test "the generated structural expectations hold for the scaffolded tier-1 plugin itself" do
+      files = Scaffold.files_for(1, "mob_demo_widget")
+      manifest_src = content_for(files, "priv/mob_plugin.exs")
+      {m, _} = Code.eval_string(manifest_src)
+
+      # Mirror the generated assertions: required keys + per-NIF native_dir
+      # present in the scaffolded file set (on-disk File checks are covered by
+      # the validate-in-tmpdir tests above).
+      assert m.name == :mob_demo_widget
+      assert is_binary(m.mob_version)
+      assert is_integer(m.plugin_spec_version)
+
+      scaffolded_dirs = paths(files) |> Enum.map(&Path.dirname/1) |> MapSet.new()
+
+      for %{native_dir: dir} <- m.nifs do
+        assert dir in scaffolded_dirs, "manifest native_dir #{dir} not scaffolded"
+      end
     end
   end
 
