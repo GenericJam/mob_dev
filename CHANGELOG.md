@@ -8,7 +8,7 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
-## [0.6.0] — UNRELEASED (pairs with mob 0.7.0)
+## [0.6.0] - 2026-06-12
 
 ### Added
 - **Style packages, tokens-only tier**: `MobDev.Style` (priv/mob_style.exs loader + validator), `config :mob, :styles`/`:default_style` activation, runtime-manifest emission (misconfiguration fails the build), and `mix mob.styles`.
