@@ -185,8 +185,16 @@ defmodule MobDev.Plugin.ManifestTest do
       assert Manifest.hot_pushable(Map.put(@valid, :nifs, [])) == false
     end
 
-    test "visual plugin is not hot-pushable" do
-      assert Manifest.hot_pushable(Map.put(@valid, :ui_components, [])) == false
+    test "a NATIVE-backed visual plugin is not hot-pushable" do
+      native = [%{tag: "Sig", atom: :sig, ios: %{view_module: "Sig_View"}}]
+      assert Manifest.hot_pushable(Map.put(@valid, :ui_components, native)) == false
+    end
+
+    test "an expand-only (pure-Elixir composite) visual plugin IS hot-pushable" do
+      comps = [%{tag: "Card", atom: :card, expand: {Kit, :card}}]
+      assert Manifest.hot_pushable(Map.put(@valid, :ui_components, comps)) == true
+      # …and still classifies as tier 2 (visual).
+      assert Manifest.tier(Map.put(@valid, :ui_components, comps)) == 2
     end
 
     test "native + Elixir screens is partial" do
@@ -371,6 +379,54 @@ defmodule MobDev.Plugin.ManifestTest do
                Manifest.validate(Map.put(@valid, :host_requirements, [:not_a_string]))
 
       assert Enum.any?(errs, &(&1 =~ "non-empty strings"))
+    end
+  end
+
+  describe "ui_components validation (native XOR expand)" do
+    test "a native-backed entry validates" do
+      m =
+        Map.put(@valid, :ui_components, [
+          %{tag: "Sig", atom: :sig, ios: %{view_module: "Sig_View"}}
+        ])
+
+      assert {:ok, ^m} = Manifest.validate(m)
+    end
+
+    test "an expand entry ({Module, :function}) validates" do
+      m =
+        Map.put(@valid, :ui_components, [
+          %{tag: "MishkaCombobox", atom: :mishka_combobox, expand: {Mishka.Combobox, :expand}}
+        ])
+
+      assert {:ok, ^m} = Manifest.validate(m)
+    end
+
+    test "neither native nor expand is an error" do
+      m = Map.put(@valid, :ui_components, [%{tag: "X", atom: :x}])
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "needs native backing"))
+    end
+
+    test "mixing expand with native backing is an error" do
+      m =
+        Map.put(@valid, :ui_components, [
+          %{tag: "X", atom: :x, expand: {M, :f}, ios: %{view_module: "V"}}
+        ])
+
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "pick one"))
+    end
+
+    test "a malformed expand value is an error" do
+      m = Map.put(@valid, :ui_components, [%{tag: "X", atom: :x, expand: :nope}])
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "must be {Module, :function}"))
+    end
+
+    test "a tag-less entry is an error" do
+      m = Map.put(@valid, :ui_components, [%{atom: :x, expand: {M, :f}}])
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ ":tag string"))
     end
   end
 end

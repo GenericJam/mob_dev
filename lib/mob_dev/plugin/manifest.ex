@@ -91,6 +91,7 @@ defmodule MobDev.Plugin.Manifest do
       |> check_lifecycle(manifest)
       |> check_settings(manifest)
       |> check_notifications(manifest)
+      |> check_ui_components(manifest)
       |> check_host_requirements(manifest)
 
     case errors do
@@ -392,6 +393,60 @@ defmodule MobDev.Plugin.Manifest do
 
   defp check_notifications(errors, _), do: errors
 
+  # `:ui_components` entries are either NATIVE-backed (ios/android view
+  # registrations, tier 2's original form) or the pure-Elixir `expand:` form
+  # ({Module, :function} composite expander — MOB_PLUGINS.md, now honored).
+  # An entry must pick one; both/neither is an error.
+  defp check_ui_components(errors, %{ui_components: comps}) when is_list(comps) do
+    comps
+    |> Enum.with_index()
+    |> Enum.reduce(errors, fn {entry, i}, acc -> check_ui_component(acc, entry, i) end)
+  end
+
+  defp check_ui_components(errors, %{ui_components: other}),
+    do: ["ui_components must be a list, got: #{inspect(other)}" | errors]
+
+  defp check_ui_components(errors, _), do: errors
+
+  defp check_ui_component(errors, %{tag: t, atom: a} = entry, i)
+       when is_binary(t) and is_atom(a) do
+    native? = Map.has_key?(entry, :ios) or Map.has_key?(entry, :android)
+
+    case {Map.get(entry, :expand), native?} do
+      {nil, true} ->
+        errors
+
+      {{m, f}, false} when is_atom(m) and is_atom(f) ->
+        errors
+
+      {nil, false} ->
+        [
+          "ui_components entry ##{i} needs native backing (:ios/:android) or an " <>
+            "expand: {Module, :function} composite expander"
+          | errors
+        ]
+
+      {_, true} ->
+        [
+          "ui_components entry ##{i} mixes expand: with native backing — pick one " <>
+            "(a composite that needs a native part should emit Mob.UI.native_view)"
+          | errors
+        ]
+
+      {bad, false} ->
+        [
+          "ui_components entry ##{i} expand: must be {Module, :function}, got: #{inspect(bad)}"
+          | errors
+        ]
+    end
+  end
+
+  defp check_ui_component(errors, entry, i),
+    do: [
+      "ui_components entry ##{i} requires a :tag string and an :atom, got: #{inspect(entry)}"
+      | errors
+    ]
+
   # `:host_requirements` is optional: human-readable host-app obligations the
   # plugin system can't automate (e.g. AndroidManifest fragments). The native
   # build prints them as warnings; here we only enforce the shape.
@@ -492,11 +547,29 @@ defmodule MobDev.Plugin.Manifest do
 
   def hot_pushable(m) when is_map(m) do
     cond do
-      not has_any?(m, @native_sections) -> true
+      not has_any_native?(m) -> true
       has_any?(m, @pushable_sections) -> :partial
       true -> false
     end
   end
 
   defp has_any?(map, keys), do: Enum.any?(keys, &Map.has_key?(map, &1))
+
+  # :ui_components counts as native ONLY when an entry actually carries native
+  # backing (:ios/:android). The expand: form (pure-Elixir composites) is
+  # hot-pushable like any screen module.
+  defp has_any_native?(m) do
+    Enum.any?(@native_sections, fn
+      :ui_components ->
+        m |> Map.get(:ui_components, []) |> Enum.any?(&native_component?/1)
+
+      key ->
+        Map.has_key?(m, key)
+    end)
+  end
+
+  defp native_component?(c) when is_map(c),
+    do: Map.has_key?(c, :ios) or Map.has_key?(c, :android)
+
+  defp native_component?(_), do: false
 end

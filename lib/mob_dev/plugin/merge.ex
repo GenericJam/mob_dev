@@ -200,7 +200,7 @@ defmodule MobDev.Plugin.Merge do
     for {_dir, manifest} <- with_manifests(plugins),
         c <- Map.get(manifest, :ui_components, []),
         is_map(c),
-        do: c
+        do: Map.put(c, :plugin, manifest[:name])
   end
 
   # ── Tier 3/4: runtime-manifest contributions ──────────────────────────────

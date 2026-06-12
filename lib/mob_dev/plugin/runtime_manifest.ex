@@ -43,9 +43,19 @@ defmodule MobDev.Plugin.RuntimeManifest do
       settings: Merge.settings(plugins),
       notification_handlers: Merge.notification_handlers(plugins),
       nifs: nif_modules(plugins),
+      composites: composites(plugins),
       styles: styles,
       default_style: default_style
     }
+  end
+
+  # Pure-Elixir composite components (the ui_components expand: form) — core
+  # registers each into Mob.Composite at boot.
+  defp composites(plugins) do
+    for c <- Merge.ui_components(plugins),
+        match?({m, f} when is_atom(m) and is_atom(f), c[:expand]) do
+      %{plugin: c[:plugin], atom: c[:atom], expand: c[:expand]}
+    end
   end
 
   # The activated plugins' NIF module atoms (deduped, platform-agnostic — the
