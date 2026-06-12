@@ -5288,8 +5288,8 @@ defmodule MobDev.NativeBuild do
   rely on the dep being added, or vendor pythonx some other way.
   """
   @spec pythonx_in_project?(String.t()) :: boolean()
-  def pythonx_in_project?(project_dir \\ File.cwd!()) do
-    File.dir?(Path.join([project_dir, "_build", "dev", "lib", "pythonx"]))
+  def pythonx_in_project?(_project_dir \\ File.cwd!()) do
+    dep_in_project?(:pythonx)
   end
 
   @doc """
@@ -5320,9 +5320,26 @@ defmodule MobDev.NativeBuild do
   bundle and adding `-Dmlx_static=true` to the iOS Zig build.
   """
   @spec emlx_in_project?(String.t()) :: boolean()
-  def emlx_in_project?(project_dir \\ File.cwd!()) do
-    File.dir?(Path.join([project_dir, "_build", "dev", "lib", "emlx"]))
+  def emlx_in_project?(_project_dir \\ File.cwd!()) do
+    dep_in_project?(:emlx)
   end
+
+  # The old detector checked `_build/dev/lib/<dep>` exists — a STALE build
+  # artifact (dep since removed) false-positived, e.g. triggering MLX bundle
+  # downloads (and their 404 noise) for apps that don't dep emlx at all.
+  # Mix.Project.deps_paths/0 is the dependency truth: hex + path + transitive,
+  # immune to leftover _build dirs.
+  defp dep_in_project?(name) do
+    __dep_in_project__(Mix.Project.deps_paths(), name)
+  rescue
+    # Outside a Mix project context, fall back to "not present".
+    _ -> false
+  end
+
+  @doc false
+  # Pure kernel, public for tests.
+  @spec __dep_in_project__(%{atom() => Path.t()}, atom()) :: boolean()
+  def __dep_in_project__(deps_paths, name), do: Map.has_key?(deps_paths, name)
 
   # Downloads the cross-compiled MLX bundle iff EMLX is a dep, for the given
   # target slice. Returns `{:ok, nil}` for projects without EMLX so the
