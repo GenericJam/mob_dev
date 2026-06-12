@@ -258,4 +258,29 @@ defmodule MobDev.Plugin.RuntimeManifestTest do
       assert MobDev.Plugin.host_config(:app, :anything, :default) == :default
     end
   end
+
+  describe "composites (the ui_components expand: form)" do
+    test "expand entries reach the runtime manifest tagged with their plugin" do
+      plugins = [
+        {"/kit",
+         %{
+           name: :mishka_kit,
+           ui_components: [
+             %{tag: "MishkaCard", atom: :mishka_card, expand: {Mishka.Card, :expand}},
+             %{tag: "Native", atom: :native, ios: %{view_module: "N_View"}}
+           ]
+         }}
+      ]
+
+      manifest = RuntimeManifest.build(plugins)
+
+      assert manifest.composites == [
+               %{plugin: :mishka_kit, atom: :mishka_card, expand: {Mishka.Card, :expand}}
+             ]
+    end
+
+    test "no expand entries → empty composites" do
+      assert RuntimeManifest.build([]).composites == []
+    end
+  end
 end
