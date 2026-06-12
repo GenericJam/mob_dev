@@ -192,6 +192,7 @@ defmodule MobDev.Plugin.ValidatorTest do
       m =
         Map.put(@base, :ui_components, [
           %{
+            tag: "Sig",
             atom: :sig,
             ios: %{view_module: "Demo_SigPad_View", swift_struct: "MobSignaturePadView"},
             android: %{composable: "Demo_SigPad_View"}
@@ -205,6 +206,7 @@ defmodule MobDev.Plugin.ValidatorTest do
       m =
         Map.put(@base, :ui_components, [
           %{
+            tag: "Sig",
             atom: :sig,
             ios: %{view_module: "Demo_SigPad_View", swift_struct: MobSignaturePadView},
             android: %{composable: "Demo_SigPad_View"}
@@ -220,6 +222,7 @@ defmodule MobDev.Plugin.ValidatorTest do
       m =
         Map.put(@base, :ui_components, [
           %{
+            tag: "Sig",
             atom: :sig,
             ios: %{view_module: "Demo_SigPad_View", swift_struct: "Mob-Bad-View"},
             android: %{composable: "Demo_SigPad_View"}
@@ -234,6 +237,7 @@ defmodule MobDev.Plugin.ValidatorTest do
       m =
         Map.put(@base, :ui_components, [
           %{
+            tag: "Sig",
             atom: :sig,
             ios: %{view_module: "Demo_SigPad_View"},
             android: %{composable: "Demo_SigPad_View"}
