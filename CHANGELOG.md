@@ -8,6 +8,22 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.6.0] — UNRELEASED (pairs with mob 0.7.0)
+
+### Added
+- **Style packages, tokens-only tier**: `MobDev.Style` (priv/mob_style.exs loader + validator), `config :mob, :styles`/`:default_style` activation, runtime-manifest emission (misconfiguration fails the build), and `mix mob.styles`.
+- **`ui_components` `expand:` form honored** (pure-Elixir composites): validated native-XOR-expand; expand-only plugins classify tier 2 but hot-push; the runtime manifest carries `composites` for boot registration.
+- **`mix mob.doctor`**: pre-plugin build.zig detection (missing `-Dplugin_*` options) and the host_requirements lane.
+- **`host_requirements` manifest key** printed by every native build; `mix mob.new_plugin` scaffolds starter test suites for every tier.
+
+### Changed
+- **Native builds auto-regenerate the static-NIF driver_tab** (was a checked-in artifact whose staleness produced runtime `:nif_not_loaded`).
+- **`mix mob.regen_plugin_manifest` loads the host app first** — spec-v2 generators may call host modules (mob_ash), not just read config.
+
+### Fixed
+- **Dep detection uses `Mix.Project.deps_paths`**, not stale `_build` dirs — ends the spurious MLX-404 downloads for apps that never dep emlx.
+- ExSlop is registered as a credo PLUGIN (it had silently never run).
+
 ## [0.5.17]
 
 ### Added
