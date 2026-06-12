@@ -32,12 +32,19 @@ defmodule MobDev.Plugin.RuntimeManifest do
   """
   @spec build([{Path.t(), map() | nil}]) :: map()
   def build(plugins) do
+    # Styles ride the same runtime manifest (MOB_STYLES.md shares the plugin
+    # infrastructure): the activated token-only style packages + the
+    # configured default, applied by core at boot (Mob.Plugins.apply_default_style).
+    %{styles: styles, default_style: default_style} = MobDev.Style.runtime_entries!()
+
     %{
       screens: Merge.screens(plugins) ++ generated_screens(plugins),
       lifecycle: Merge.lifecycle(plugins),
       settings: Merge.settings(plugins),
       notification_handlers: Merge.notification_handlers(plugins),
-      nifs: nif_modules(plugins)
+      nifs: nif_modules(plugins),
+      styles: styles,
+      default_style: default_style
     }
   end
 
