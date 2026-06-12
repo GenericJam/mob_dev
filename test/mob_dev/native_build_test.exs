@@ -819,16 +819,18 @@ defmodule MobDev.NativeBuildTest do
 
   # ── Pythonx integration ────────────────────────────────────────────────────
 
-  describe "pythonx_in_project?/1" do
-    @tag :tmp_dir
-    test "false when no _build/dev/lib/pythonx", %{tmp_dir: tmp} do
-      refute NativeBuild.pythonx_in_project?(tmp)
+  describe "dep detection (deps_paths, not stale _build dirs — the MLX-404 lesson)" do
+    test "__dep_in_project__/2 keys on deps_paths" do
+      assert NativeBuild.__dep_in_project__(%{pythonx: "/deps/pythonx"}, :pythonx)
+      refute NativeBuild.__dep_in_project__(%{}, :pythonx)
     end
 
     @tag :tmp_dir
-    test "true when _build/dev/lib/pythonx exists", %{tmp_dir: tmp} do
+    test "a leftover _build/dev/lib/<dep> dir no longer counts", %{tmp_dir: tmp} do
       File.mkdir_p!(Path.join([tmp, "_build", "dev", "lib", "pythonx", "ebin"]))
-      assert NativeBuild.pythonx_in_project?(tmp)
+      # mob_dev itself deps neither pythonx nor emlx; the stale dir is ignored.
+      refute NativeBuild.pythonx_in_project?(tmp)
+      refute NativeBuild.emlx_in_project?(tmp)
     end
   end
 
