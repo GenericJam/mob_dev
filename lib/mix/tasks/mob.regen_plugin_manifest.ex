@@ -27,6 +27,12 @@ defmodule Mix.Tasks.Mob.RegenPluginManifest do
 
   @impl Mix.Task
   def run(args) do
+    # Spec-v2 generators may call HOST modules (mob_ash introspects the host's
+    # Ash domains), not just read config values — make sure the host app is
+    # compiled, its config loaded, and its ebin on the code path. (Surfaced by
+    # mob_ash: gen_screens only ever read config, masking this.)
+    Mix.Task.run("app.config")
+
     {opts, _, _} = OptionParser.parse(args, strict: [check: :boolean])
 
     manifest = RuntimeManifest.build(MobDev.Plugin.activated())
