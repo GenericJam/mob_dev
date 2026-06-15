@@ -111,6 +111,7 @@ narrowing functions). Don't make them private:
 - `PythonAppleSupport.valid_dir?/1`
 - `NativeBuild.narrow_platforms_for_device/2`, `ios_toolchain_available?/0`, `read_sdk_dir/1`, `fallback_entitlements_plist/3`
 - `NativeBuild.pythonx_in_project?/1`, `python_apple_support_env/2`
+- `NativeBuild.__prune_plugin_artifacts__/2` (the plugin-removal prune; ledger-tracked per merge concern)
 - `Enable.inject_pythonx_dep/1`, `inject_pythonx_uv_init_gate/2`, `python_paths_module_template/1`
 - `Emulators.parse_simctl_json/1`, `find_emulator_binary/1`
 - `Provision.diagnose_xcodebuild_failure/1`
