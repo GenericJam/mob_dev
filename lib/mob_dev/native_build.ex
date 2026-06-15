@@ -4091,6 +4091,42 @@ defmodule MobDev.NativeBuild do
 
   @host_migrations_dir "priv/repo/migrations"
   @plugin_assets_root "priv/generated/plugin_assets"
+  @plugin_artifact_ledger_dir "priv/generated/.mob_plugin_artifacts"
+
+  @doc false
+  # The removal half of the add/remove plugin lifecycle. A plugin's tier-3
+  # merges COPY files into the host tree (bridge Kotlin into the Kotlin
+  # sourceSet, migrations into priv/repo/migrations, images into the asset
+  # bundle); the runtime manifest + driver_tab are recomputed from scratch each
+  # build, but these copies linger after a plugin is removed — an orphaned
+  # bridge .kt can even break the Gradle compile. This deletes the files a
+  # prior build wrote for one merge concern (`scope`) that the current build no
+  # longer produces: it reads the scope's ledger of relative paths, removes
+  # (previous − current), then persists `current`. Per-scope and only called
+  # when that concern's merge runs, so an iOS-only build never prunes Android
+  # artifacts. Returns the pruned paths (for tests).
+  @spec __prune_plugin_artifacts__(atom(), [Path.t()]) :: [Path.t()]
+  def __prune_plugin_artifacts__(scope, current) do
+    ledger = Path.join(@plugin_artifact_ledger_dir, to_string(scope))
+    current = current |> Enum.map(&Path.relative_to_cwd/1) |> Enum.uniq()
+
+    previous =
+      case File.read(ledger) do
+        {:ok, body} -> String.split(body, "\n", trim: true)
+        _ -> []
+      end
+
+    pruned =
+      for stale <- previous -- current, File.exists?(stale) do
+        File.rm!(stale)
+        IO.puts("  ✓ pruned orphaned plugin artifact (plugin removed): #{stale}")
+        stale
+      end
+
+    File.mkdir_p!(@plugin_artifact_ledger_dir)
+    File.write!(ledger, Enum.join(current, "\n"))
+    pruned
+  end
 
   # Tier 3: copies each activated plugin's migration files into the host's
   # migrations dir, namespaced by `repo_namespace` (version-preserving) so the
@@ -4188,22 +4224,32 @@ defmodule MobDev.NativeBuild do
   defp apply_plugin_migrations! do
     migrations = MobDev.Plugin.Merge.migrations(MobDev.Plugin.activated())
 
-    if migrations != [] do
-      File.mkdir_p!(@host_migrations_dir)
+    written =
+      if migrations != [] do
+        File.mkdir_p!(@host_migrations_dir)
 
-      plugin_migs =
-        for m <- migrations do
-          %{
-            repo_namespace: m.repo_namespace,
-            files: Path.wildcard(Path.join(m.migrations_dir, "*.exs"))
-          }
+        plugin_migs =
+          for m <- migrations do
+            %{
+              repo_namespace: m.repo_namespace,
+              files: Path.wildcard(Path.join(m.migrations_dir, "*.exs"))
+            }
+          end
+
+        for {src, dest} <-
+              MobDev.Plugin.Assets.migration_copies(plugin_migs, @host_migrations_dir) do
+          File.cp!(src, dest)
+          IO.puts("  ✓ plugin migration → #{Path.relative_to_cwd(dest)}")
+          dest
         end
-
-      for {src, dest} <- MobDev.Plugin.Assets.migration_copies(plugin_migs, @host_migrations_dir) do
-        File.cp!(src, dest)
-        IO.puts("  ✓ plugin migration → #{Path.relative_to_cwd(dest)}")
+      else
+        []
       end
-    end
+
+    # Prune migrations a removed plugin left in the host dir. Deleting the file
+    # does not roll back an already-applied migration (schema_migrations keeps
+    # the record); it just stops Ecto re-running it and keeps the dir honest.
+    __prune_plugin_artifacts__(:migrations, written)
 
     :ok
   end
@@ -4213,14 +4259,20 @@ defmodule MobDev.NativeBuild do
   # core `Mob.Plugins.resolve_image/1` (`plugin://<plugin>/<file>`) resolves to.
   # No-op when no plugin declares image assets.
   defp apply_plugin_images! do
-    for %{plugin: plugin, images: images} <- MobDev.Plugin.Merge.assets(MobDev.Plugin.activated()),
-        src <- images do
-      rel = MobDev.Plugin.Assets.image_bundle_path(plugin, Path.basename(src))
-      dest = Path.join(@plugin_assets_root, rel)
-      File.mkdir_p!(Path.dirname(dest))
-      File.cp!(src, dest)
-      IO.puts("  ✓ plugin image → #{Path.relative_to_cwd(dest)}")
-    end
+    written =
+      for %{plugin: plugin, images: images} <-
+            MobDev.Plugin.Merge.assets(MobDev.Plugin.activated()),
+          src <- images do
+        rel = MobDev.Plugin.Assets.image_bundle_path(plugin, Path.basename(src))
+        dest = Path.join(@plugin_assets_root, rel)
+        File.mkdir_p!(Path.dirname(dest))
+        File.cp!(src, dest)
+        IO.puts("  ✓ plugin image → #{Path.relative_to_cwd(dest)}")
+        dest
+      end
+
+    # Prune images a removed plugin left in the bundle.
+    __prune_plugin_artifacts__(:images, written)
 
     :ok
   end
@@ -4318,23 +4370,33 @@ defmodule MobDev.NativeBuild do
     if File.dir?(@android_java_root) do
       activated = MobDev.Plugin.activated()
 
-      for src <- MobDev.Plugin.Merge.bridge_kt_sources(activated) do
-        case File.read(src) do
-          {:ok, content} ->
-            case __parse_kotlin_package__(content) do
-              nil ->
-                IO.puts("  [plugin android] #{src} has no `package` line — skipping copy.")
+      written =
+        Enum.flat_map(MobDev.Plugin.Merge.bridge_kt_sources(activated), fn src ->
+          case File.read(src) do
+            {:ok, content} ->
+              case __parse_kotlin_package__(content) do
+                nil ->
+                  IO.puts("  [plugin android] #{src} has no `package` line — skipping copy.")
+                  []
 
-              package ->
-                dest = __bridge_kt_dest__(@android_java_root, package, Path.basename(src))
-                File.mkdir_p!(Path.dirname(dest))
-                File.write!(dest, content)
-            end
+                package ->
+                  dest = __bridge_kt_dest__(@android_java_root, package, Path.basename(src))
+                  File.mkdir_p!(Path.dirname(dest))
+                  File.write!(dest, content)
+                  [dest]
+              end
 
-          {:error, reason} ->
-            IO.puts("  [plugin android] cannot read #{src}: #{inspect(reason)} — skipping.")
-        end
-      end
+            {:error, reason} ->
+              IO.puts("  [plugin android] cannot read #{src}: #{inspect(reason)} — skipping.")
+              []
+          end
+        end)
+
+      # Delete bridge .kt left in the sourceSet by plugins since removed — an
+      # orphaned bridge can break the Gradle compile. The generated glue below
+      # is overwritten at fixed paths each build, so only the per-plugin bridge
+      # copies (scattered by package) need ledger-tracked pruning.
+      __prune_plugin_artifacts__(:android_kotlin, written)
 
       write_generated_kotlin!(@plugin_activity_aware_path, __activity_aware_kotlin__())
       write_generated_kotlin!(@plugin_permission_provider_path, __permission_provider_kotlin__())

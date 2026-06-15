@@ -1472,4 +1472,71 @@ defmodule MobDev.NativeBuildTest do
       assert String.contains?(content, "iphoneos"), "patch should switch to iphoneos SDK"
     end
   end
+
+  describe "__prune_plugin_artifacts__/2 (the plugin-removal prune)" do
+    setup do
+      dir = Path.join(System.tmp_dir!(), "mob_prune_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      cwd = File.cwd!()
+      File.cd!(dir)
+      on_exit(fn -> File.cd!(cwd) end)
+      on_exit(fn -> File.rm_rf!(dir) end)
+      {:ok, dir: dir}
+    end
+
+    defp touch!(rel) do
+      File.mkdir_p!(Path.dirname(rel))
+      File.write!(rel, "x")
+      rel
+    end
+
+    test "first run prunes nothing and records the current set" do
+      a = touch!("android/app/src/main/java/io/cam/CamBridge.kt")
+      assert NativeBuild.__prune_plugin_artifacts__(:android_kotlin, [a]) == []
+      assert File.exists?(a)
+      assert File.exists?("priv/generated/.mob_plugin_artifacts/android_kotlin")
+    end
+
+    test "a file dropped from the current set is deleted on the next run" do
+      cam = touch!("android/app/src/main/java/io/cam/CamBridge.kt")
+      loc = touch!("android/app/src/main/java/io/loc/LocBridge.kt")
+      NativeBuild.__prune_plugin_artifacts__(:android_kotlin, [cam, loc])
+
+      # mob_camera removed: next build only writes the location bridge.
+      pruned = NativeBuild.__prune_plugin_artifacts__(:android_kotlin, [loc])
+
+      assert pruned == [cam]
+      refute File.exists?(cam), "orphaned bridge should be pruned"
+      assert File.exists?(loc), "still-activated bridge must survive"
+    end
+
+    test "an empty current set (all plugins removed) prunes everything prior" do
+      a = touch!("priv/generated/plugin_assets/assets/plugin/cam/icon.png")
+      NativeBuild.__prune_plugin_artifacts__(:images, [a])
+
+      assert NativeBuild.__prune_plugin_artifacts__(:images, []) == [a]
+      refute File.exists?(a)
+    end
+
+    test "scopes are independent — pruning one never touches another" do
+      kt = touch!("android/app/src/main/java/io/cam/CamBridge.kt")
+      mig = touch!("priv/repo/migrations/20260101_cam.exs")
+      NativeBuild.__prune_plugin_artifacts__(:android_kotlin, [kt])
+      NativeBuild.__prune_plugin_artifacts__(:migrations, [mig])
+
+      # Re-run kotlin with nothing; the migration in another scope is untouched.
+      NativeBuild.__prune_plugin_artifacts__(:android_kotlin, [])
+
+      refute File.exists?(kt)
+      assert File.exists?(mig)
+    end
+
+    test "a ledgered path already gone (manually deleted) does not crash" do
+      a = touch!("android/app/src/main/java/io/cam/CamBridge.kt")
+      NativeBuild.__prune_plugin_artifacts__(:android_kotlin, [a])
+      File.rm!(a)
+
+      assert NativeBuild.__prune_plugin_artifacts__(:android_kotlin, []) == []
+    end
+  end
 end
