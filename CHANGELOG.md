@@ -8,6 +8,19 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.6.2] - 2026-06-15
+
+### Fixed
+- **Create an app-level driver_tab when a NIF-bearing plugin is active.** A
+  generated app ships no driver_tab and links against mob's core static-NIF
+  table — which has no plugin entries. So a plugin's `<module>_nif_init` linked
+  but never registered, and the NIF was `:nif_not_loaded` on device (the home
+  rendered, the Kotlin/permission bridge worked, but the actual capability call
+  crashed). `regen_driver_tab!` now creates `priv/generated/driver_tab_*.zig`
+  (core + plugin entries) when plugins contribute NIFs and the app has none.
+  Found + fixed verifying the showcase app on a physical Android phone and the
+  iOS simulator (location demo now returns a real fix on both).
+
 ## [0.6.1] - 2026-06-15
 
 ### Fixed

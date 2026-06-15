@@ -1473,6 +1473,24 @@ defmodule MobDev.NativeBuildTest do
     end
   end
 
+  describe "__regen_formats__/2 (driver_tab format selection)" do
+    test "an app with existing tables keeps its format(s)" do
+      assert NativeBuild.__regen_formats__([:zig], false) == [:zig]
+      assert NativeBuild.__regen_formats__([:c], true) == [:c]
+      assert NativeBuild.__regen_formats__([:zig, :c], false) == [:zig, :c]
+    end
+
+    test "no existing table + no plugin NIFs → generate nothing (links against mob core)" do
+      assert NativeBuild.__regen_formats__([], false) == []
+    end
+
+    test "no existing table + a plugin NIF → create a zig table (the device fix)" do
+      # Without this, a plugin's <module>_nif_init links but never registers,
+      # so the NIF is :nif_not_loaded on device (caught verifying the showcase).
+      assert NativeBuild.__regen_formats__([], true) == [:zig]
+    end
+  end
+
   describe "__prune_plugin_artifacts__/2 (the plugin-removal prune)" do
     setup do
       dir = Path.join(System.tmp_dir!(), "mob_prune_#{System.unique_integer([:positive])}")

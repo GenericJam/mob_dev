@@ -4138,11 +4138,19 @@ defmodule MobDev.NativeBuild do
   @doc false
   # Regenerates the on-disk static-NIF driver tables for every format the
   # project already uses (zig and/or c). A project with no generated driver_tab
-  # files is left untouched — nothing in its build references them. Public for
-  # tests (and exercised on every `build_all`).
+  # files is normally left untouched — a plain app relies on mob's core table at
+  # link time. BUT activating a NIF-bearing plugin adds entries the core table
+  # lacks: without an app-level table the plugin's `<module>_nif_init` links yet
+  # never registers, so `load_nif/2` falls back to dlopen and the NIF is
+  # `:nif_not_loaded` on device. So when plugins contribute NIFs and the app has
+  # no table yet, create one (zig — the default format). Public for tests (and
+  # exercised on every `build_all`).
   @spec regen_driver_tab!() :: :ok
   def regen_driver_tab! do
-    for fmt <- __driver_tab_formats__(&File.exists?/1) do
+    formats =
+      __regen_formats__(__driver_tab_formats__(&File.exists?/1), __plugin_nifs_present__())
+
+    for fmt <- formats do
       paths = Mix.Tasks.Mob.RegenDriverTab.target_paths(fmt)
 
       expected = %{
@@ -4162,14 +4170,35 @@ defmodule MobDev.NativeBuild do
 
       for {path, src} <- expected,
           File.read(path) != {:ok, src} do
+        existed? = File.exists?(path)
         File.mkdir_p!(Path.dirname(path))
         File.write!(path, src)
-        IO.puts("  ✓ driver_tab regenerated (was stale): #{path}")
+        verb = if existed?, do: "regenerated (was stale)", else: "created (plugin NIFs)"
+        IO.puts("  ✓ driver_tab #{verb}: #{path}")
       end
     end
 
     :ok
   end
+
+  @doc false
+  # True when any activated plugin contributes a NIF — the trigger for creating
+  # an app-level driver_tab where none exists (see regen_driver_tab!/0).
+  @spec __plugin_nifs_present__() :: boolean()
+  def __plugin_nifs_present__ do
+    MobDev.Plugin.Merge.nifs(MobDev.Plugin.activated()) != []
+  end
+
+  @doc false
+  # Pure kernel: which driver_tab formats to (re)generate. An app with existing
+  # tables keeps its format(s). An app with NONE normally generates nothing (it
+  # links against mob's core table) — UNLESS a NIF-bearing plugin is active, in
+  # which case it needs its own table (core + plugin entries), defaulting to
+  # zig. Public for tests.
+  @spec __regen_formats__([:zig | :c], boolean()) :: [:zig | :c]
+  def __regen_formats__([], true), do: [:zig]
+  def __regen_formats__([], false), do: []
+  def __regen_formats__(existing, _plugin_nifs?), do: existing
 
   defp warn_host_requirements! do
     case __host_requirements_warning__(
