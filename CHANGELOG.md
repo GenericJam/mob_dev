@@ -8,6 +8,18 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.6.1] - 2026-06-15
+
+### Fixed
+- **Prune orphaned plugin artifacts when a plugin is removed.** Plugin tier-3
+  merges copy files into the host tree (bridge Kotlin into the Kotlin sourceSet,
+  migrations, images); these lingered after a plugin was dropped, and an
+  orphaned bridge `.kt` could break the Gradle compile. `NativeBuild`'s kotlin /
+  migration / image merges now ledger what they write (per concern, under
+  `priv/generated/.mob_plugin_artifacts/`) and delete what a prior build
+  produced but the current one no longer does — so add/remove of a plugin is
+  clean in both directions.
+
 ## [0.6.0] - 2026-06-12
 
 ### Added
