@@ -8,6 +8,17 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.6.3] - 2026-06-16
+
+### Fixed
+- **exqlite NIF symlink now picks the device's actual ABI.** The Android
+  deployer hardcoded `lib/arm64` for the `sqlite3_nif.so` symlink target, so on
+  a 32-bit (`armeabi-v7a`) device the link dangled, exqlite was
+  `:nif_not_loaded`, and any generated app using ecto_sqlite3 crashed on boot.
+  It now probes `lib/<abi>/libsqlite3_nif.so` (Android extracts only the active
+  ABI). Found + fixed verifying the showcase on a 32-bit Moto E — SQLite
+  migrations now run and the app boots.
+
 ## [0.6.2] - 2026-06-15
 
 ### Fixed

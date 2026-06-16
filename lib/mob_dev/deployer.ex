@@ -644,25 +644,62 @@ defmodule MobDev.Deployer do
   defp create_exqlite_nif_symlink(serial, exqlite_lib, mode) do
     case run_adb(["-s", serial, "shell", "pm path #{android_package()}"]) do
       {:ok, path_out} ->
-        # path_out looks like: "package:/data/app/~~hash==/com.pkg-hash==/base.apk"
-        apk_path = path_out |> String.trim() |> String.replace_prefix("package:", "")
-        native_lib_dir = apk_path |> Path.dirname() |> Path.join("lib/arm64")
-        nif_target = "#{native_lib_dir}/libsqlite3_nif.so"
-        nif_link = "#{exqlite_lib}/priv/sqlite3_nif.so"
+        # pm path can return multiple lines (split APKs: base + config.*); they
+        # all live under the same install dir, so take the first.
+        apk_path =
+          path_out
+          |> String.split("\n", trim: true)
+          |> List.first("")
+          |> String.trim()
+          |> String.replace_prefix("package:", "")
 
-        cmd =
-          case mode do
-            :runas -> "run-as #{android_package()} ln -sf #{nif_target} #{nif_link}"
-            :rooted -> "ln -sf #{nif_target} #{nif_link}"
-          end
+        apk_dir = Path.dirname(apk_path)
 
-        case run_adb(["-s", serial, "shell", cmd]) do
-          {:ok, _} -> :ok
-          {:error, e} -> IO.puts("    (warning: exqlite NIF symlink failed: #{e})")
+        case resolve_sqlite_nif_target(serial, apk_dir) do
+          nil ->
+            IO.puts(
+              "    (warning: libsqlite3_nif.so not found under #{apk_dir}/lib — " <>
+                "exqlite NIF symlink skipped)"
+            )
+
+          nif_target ->
+            nif_link = "#{exqlite_lib}/priv/sqlite3_nif.so"
+
+            cmd =
+              case mode do
+                :runas -> "run-as #{android_package()} ln -sf #{nif_target} #{nif_link}"
+                :rooted -> "ln -sf #{nif_target} #{nif_link}"
+              end
+
+            case run_adb(["-s", serial, "shell", cmd]) do
+              {:ok, _} -> :ok
+              {:error, e} -> IO.puts("    (warning: exqlite NIF symlink failed: #{e})")
+            end
         end
 
       _ ->
         IO.puts("    (warning: pm path failed — exqlite NIF symlink skipped)")
+    end
+  end
+
+  # The native lib lands under `lib/<abi>/` — `arm64-v8a` → "arm64",
+  # `armeabi-v7a` → "arm". Android extracts only the device's active ABI, so a
+  # glob matches exactly one file. Probe for it rather than assuming 64-bit, so
+  # 32-bit devices (older / low-end phones) get a real target instead of a
+  # dangling `lib/arm64` symlink (which left exqlite `:nif_not_loaded` and
+  # crashed boot). Returns the absolute path or nil.
+  @doc false
+  @spec __sqlite_nif_target__([String.t()]) :: String.t() | nil
+  def __sqlite_nif_target__(ls_lines) do
+    ls_lines
+    |> Enum.map(&String.trim/1)
+    |> Enum.find(&String.ends_with?(&1, "/libsqlite3_nif.so"))
+  end
+
+  defp resolve_sqlite_nif_target(serial, apk_dir) do
+    case run_adb(["-s", serial, "shell", "ls #{apk_dir}/lib/*/libsqlite3_nif.so 2>/dev/null"]) do
+      {:ok, out} -> __sqlite_nif_target__(String.split(out, "\n", trim: true))
+      _ -> nil
     end
   end
 

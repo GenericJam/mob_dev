@@ -198,4 +198,27 @@ defmodule MobDev.DeployerTest do
       refute Deployer.android_package_installed?(pm_out, "com.example.test_migration")
     end
   end
+
+  describe "__sqlite_nif_target__/1 (exqlite NIF symlink target, ABI-aware)" do
+    test "picks the 64-bit lib on an arm64 device" do
+      lines = ["/data/app/com.example.app-hash==/lib/arm64/libsqlite3_nif.so"]
+      assert Deployer.__sqlite_nif_target__(lines) =~ "/lib/arm64/libsqlite3_nif.so"
+    end
+
+    test "picks the 32-bit lib on an armeabi-v7a device (the bug: was hardcoded arm64)" do
+      # Android extracts only the active ABI, so a 32-bit phone has lib/arm —
+      # hardcoding lib/arm64 produced a dangling symlink and crashed boot.
+      lines = ["/data/app/com.example.app-hash==/lib/arm/libsqlite3_nif.so"]
+      assert Deployer.__sqlite_nif_target__(lines) == hd(lines)
+    end
+
+    test "nil when the glob matched nothing (ls returned no real path)" do
+      assert Deployer.__sqlite_nif_target__([]) == nil
+    end
+
+    test "ignores trailing whitespace and unrelated lines" do
+      lines = ["  /data/app/x/lib/arm/libsqlite3_nif.so  ", "ls: bad: No such file"]
+      assert Deployer.__sqlite_nif_target__(lines) == "/data/app/x/lib/arm/libsqlite3_nif.so"
+    end
+  end
 end
