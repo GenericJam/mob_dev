@@ -11,6 +11,7 @@ defmodule MobDev.MixProject do
       compilers: compilers(Mix.env()) ++ Mix.compilers(),
       elixirc_paths: elixirc_paths(Mix.env()),
       deps: deps(),
+      aliases: aliases(),
       package: package(),
       docs: docs(),
       unused: [
@@ -56,6 +57,13 @@ defmodule MobDev.MixProject do
 
   def application do
     [extra_applications: [:logger]]
+  end
+
+  defp aliases do
+    # `mix setup` after cloning installs deps and activates the shared git
+    # hooks (.githooks): format / Credo --strict / compile run on every push
+    # and the full suite when mix.exs changes — the same gate CI enforces.
+    [setup: ["deps.get", "cmd git config core.hooksPath .githooks"]]
   end
 
   defp deps do
