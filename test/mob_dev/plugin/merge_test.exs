@@ -119,6 +119,120 @@ defmodule MobDev.Plugin.MergeTest do
       plugins = [{"/a", base(%{nifs: [%{module: :foo_nif, lang: :zig}]})}]
       assert Merge.nif_sources(plugins) == []
     end
+
+    test "excludes lang: :cpp_archive NIFs (they belong to static_archives/2)" do
+      plugins = [
+        {"/a",
+         base(%{nifs: [%{module: :x, lang: :cpp_archive, sources: ["a.cpp"], nm_symbol: "x"}]})}
+      ]
+
+      assert Merge.nif_sources(plugins) == []
+      assert Merge.zig_nif_sources(plugins) == []
+    end
+  end
+
+  describe "static_archives/2" do
+    test "resolves sources to absolute and tags the plugin" do
+      plugins = [
+        {"/abs/plug",
+         base(%{
+           nifs: [
+             %{
+               module: :nx_eigen_nif,
+               lang: :cpp_archive,
+               sources: ["c_src/nx_eigen_nif.cpp", "c_src/fft.cpp"],
+               nm_symbol: "nx_eigen_nif_init"
+             }
+           ]
+         })}
+      ]
+
+      assert [spec] = Merge.static_archives(plugins)
+      assert spec.module == :nx_eigen_nif
+      assert spec.sources == ["/abs/plug/c_src/nx_eigen_nif.cpp", "/abs/plug/c_src/fft.cpp"]
+      assert spec.nm_symbol == "nx_eigen_nif_init"
+      assert spec.plugin == :p
+    end
+
+    test "resolves plugin-relative includes to absolute, passes :dep tokens through" do
+      plugins = [
+        {"/plug",
+         base(%{
+           nifs: [
+             %{
+               module: :x,
+               lang: :cpp_archive,
+               sources: ["a.cpp"],
+               includes: ["c_src", {:dep, :nx_eigen, "eigen-3.4.0"}, {:dep, :fine, "c_include"}],
+               nm_symbol: "x_init"
+             }
+           ]
+         })}
+      ]
+
+      assert [spec] = Merge.static_archives(plugins)
+
+      assert spec.includes == [
+               "/plug/c_src",
+               {:dep, :nx_eigen, "eigen-3.4.0"},
+               {:dep, :fine, "c_include"}
+             ]
+    end
+
+    test "ignores non-cpp_archive NIFs and tier-0 manifests" do
+      plugins = [
+        {"/a", base(%{nifs: [%{module: :c_nif}, %{module: :z, lang: :zig}]})},
+        {"/b", nil}
+      ]
+
+      assert Merge.static_archives(plugins) == []
+    end
+
+    test "filters by platform (entry tagged :ios excluded from android build)" do
+      plugins = [
+        {"/a",
+         base(%{
+           nifs: [
+             %{
+               module: :ios_only,
+               lang: :cpp_archive,
+               sources: ["a.cpp"],
+               nm_symbol: "a",
+               platform: :ios
+             },
+             %{module: :both, lang: :cpp_archive, sources: ["b.cpp"], nm_symbol: "b"}
+           ]
+         })}
+      ]
+
+      assert Enum.map(Merge.static_archives(plugins, :android), & &1.module) == [:both]
+      assert Enum.map(Merge.static_archives(plugins, :ios), & &1.module) == [:ios_only, :both]
+      assert length(Merge.static_archives(plugins, :all)) == 2
+    end
+
+    test "carries base + per-platform cxxflags through" do
+      plugins = [
+        {"/a",
+         base(%{
+           nifs: [
+             %{
+               module: :x,
+               lang: :cpp_archive,
+               sources: ["a.cpp"],
+               nm_symbol: "x",
+               cxxflags: ["-std=c++17"],
+               cxxflags_android: ["-mbranch-protection=standard"],
+               cxxflags_ios: []
+             }
+           ]
+         })}
+      ]
+
+      assert [spec] = Merge.static_archives(plugins)
+      assert spec.cxxflags == ["-std=c++17"]
+      assert spec.cxxflags_android == ["-mbranch-protection=standard"]
+      assert spec.cxxflags_ios == []
+    end
   end
 
   describe "zig_nif_sources/1" do

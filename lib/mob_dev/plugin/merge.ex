@@ -183,6 +183,58 @@ defmodule MobDev.Plugin.Merge do
     end
   end
 
+  @doc """
+  Cross-compiled C++ static-archive contributions (`lang: :cpp_archive`) across
+  plugins, resolved for one platform.
+
+  Unlike `nif_sources/2` (a single source `build.zig` compiles inline), a
+  `:cpp_archive` NIF is a set of C++ sources cross-compiled into a `libNAME.a`
+  by `MobDev.Plugin.CppArchive` and static-linked into the app — the path for
+  heavyweight NIFs like the Nx/Eigen CPU backend (Eigen headers, RTTI/exceptions,
+  per-arch CXXFLAGS) that don't fit the single-source model.
+
+  Each returned spec has `:sources` (absolute) and `:includes` resolved: a
+  plugin-relative string becomes absolute against the plugin dir, while a
+  `{:dep, name, subpath}` token is passed through unchanged for the build to
+  resolve against `Mix.Project.deps_path/0` (Eigen/Fine live in the plugin's
+  *deps*, not its own tree, and this module stays Mix-free/pure). CXXFLAGS and
+  `:nm_symbol` pass through; the entry is tagged with `:plugin`.
+  """
+  @spec static_archives([plugin()], :ios | :android | :all) :: [map()]
+  def static_archives(plugins, platform \\ :all) do
+    for {dir, manifest} <- with_manifests(plugins),
+        nif <- Map.get(manifest, :nifs, []),
+        is_map(nif),
+        nif_lang(nif) == :cpp_archive,
+        is_atom(nif[:module]),
+        nif_for_platform?(nif, platform) do
+      %{
+        module: nif[:module],
+        sources: for(s <- List.wrap(nif[:sources]), is_binary(s), do: Path.join(dir, s)),
+        includes: resolve_includes(dir, List.wrap(nif[:includes])),
+        cxxflags: List.wrap(nif[:cxxflags]),
+        cxxflags_android: List.wrap(nif[:cxxflags_android]),
+        cxxflags_ios: List.wrap(nif[:cxxflags_ios]),
+        nm_symbol: nif[:nm_symbol],
+        platform: nif[:platform],
+        plugin: manifest[:name]
+      }
+    end
+  end
+
+  # Plugin-relative include strings resolve to absolute against the plugin dir;
+  # `{:dep, name, subpath}` tokens pass through (resolved at build time against
+  # the deps path — keeps this module pure / Mix-free).
+  defp resolve_includes(dir, includes) do
+    for inc <- includes do
+      case inc do
+        bin when is_binary(bin) -> Path.join(dir, bin)
+        {:dep, name, sub} when is_atom(name) and is_binary(sub) -> {:dep, name, sub}
+        other -> other
+      end
+    end
+  end
+
   @doc "Merged iOS `plist_keys` across plugins (later plugins win on conflict)."
   @spec plist_keys([plugin()]) :: map()
   def plist_keys(plugins) do

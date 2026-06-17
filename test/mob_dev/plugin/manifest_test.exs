@@ -131,6 +131,63 @@ defmodule MobDev.Plugin.ManifestTest do
       assert {:error, errs} = Manifest.validate(m)
       assert Enum.any?(errs, &(&1 =~ "nifs entry #0 must be a map"))
     end
+
+    test "accepts a valid lang: :cpp_archive nif entry" do
+      m =
+        Map.put(@valid, :nifs, [
+          %{
+            module: :nx_eigen_nif,
+            lang: :cpp_archive,
+            sources: ["c_src/nx_eigen_nif.cpp", "c_src/nx_eigen_fft_eigen.cpp"],
+            includes: ["c_src", {:dep, :nx_eigen, "eigen-3.4.0"}],
+            cxxflags: ["-std=c++17", "-O3"],
+            nm_symbol: "nx_eigen_nif_init"
+          }
+        ])
+
+      assert {:ok, ^m} = Manifest.validate(m)
+    end
+
+    test "accepts a cpp_archive entry with only the required fields" do
+      m =
+        Map.put(@valid, :nifs, [
+          %{module: :nx_eigen_nif, lang: :cpp_archive, sources: ["a.cpp"], nm_symbol: "a_init"}
+        ])
+
+      assert {:ok, ^m} = Manifest.validate(m)
+    end
+
+    test "rejects a cpp_archive entry missing :sources" do
+      m = Map.put(@valid, :nifs, [%{module: :x, lang: :cpp_archive, nm_symbol: "x_init"}])
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "cpp_archive requires a non-empty :sources"))
+    end
+
+    test "rejects a cpp_archive entry with an empty :sources list" do
+      m =
+        Map.put(@valid, :nifs, [
+          %{module: :x, lang: :cpp_archive, sources: [], nm_symbol: "x_init"}
+        ])
+
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "cpp_archive requires a non-empty :sources"))
+    end
+
+    test "rejects a cpp_archive entry with non-string sources" do
+      m =
+        Map.put(@valid, :nifs, [
+          %{module: :x, lang: :cpp_archive, sources: [:nope], nm_symbol: "x_init"}
+        ])
+
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "cpp_archive sources must all be path strings"))
+    end
+
+    test "rejects a cpp_archive entry missing :nm_symbol" do
+      m = Map.put(@valid, :nifs, [%{module: :x, lang: :cpp_archive, sources: ["a.cpp"]}])
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "cpp_archive requires an :nm_symbol"))
+    end
   end
 
   describe "tier/1" do

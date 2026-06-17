@@ -174,12 +174,14 @@ defmodule MobDev.Plugin.Manifest do
 
   # `:nifs` is optional. When present, each entry's optional `:platform` (used by
   # cross-platform plugins that ship a separate iOS + Android source for the same
-  # module) must be `:ios` or `:android`. Other fields are validated at build /
-  # link time, not here.
+  # module) must be `:ios` or `:android`. For single-source C/ObjC/zig NIFs the
+  # rest of the fields are validated at build / link time. `lang: :cpp_archive`
+  # entries (a cross-compiled C++ static lib, e.g. an Nx backend) declare more —
+  # `:sources` + `:nm_symbol` — so those are checked structurally here.
   defp check_nifs(errors, %{nifs: nifs}) when is_list(nifs) do
     nifs
     |> Enum.with_index()
-    |> Enum.reduce(errors, fn {nif, i}, acc -> check_nif_platform(acc, nif, i) end)
+    |> Enum.reduce(errors, fn {nif, i}, acc -> check_nif_entry(acc, nif, i) end)
   end
 
   defp check_nifs(errors, %{nifs: other}),
@@ -187,13 +189,49 @@ defmodule MobDev.Plugin.Manifest do
 
   defp check_nifs(errors, _), do: errors
 
+  defp check_nif_entry(errors, %{} = nif, i) do
+    errors
+    |> check_nif_platform(nif, i)
+    |> check_nif_cpp_archive(nif, i)
+  end
+
+  defp check_nif_entry(errors, other, i),
+    do: ["nifs entry ##{i} must be a map, got: #{inspect(other)}" | errors]
+
   defp check_nif_platform(errors, %{platform: p}, i) when p not in [:ios, :android],
     do: ["nifs entry ##{i}: :platform must be :ios or :android, got: #{inspect(p)}" | errors]
 
-  defp check_nif_platform(errors, %{}, _i), do: errors
+  defp check_nif_platform(errors, _nif, _i), do: errors
 
-  defp check_nif_platform(errors, other, i),
-    do: ["nifs entry ##{i} must be a map, got: #{inspect(other)}" | errors]
+  # A `lang: :cpp_archive` entry is cross-compiled into a static `.a` and
+  # static-linked into the app (see `MobDev.Plugin.CppArchive`). It needs more
+  # than a single-source NIF: `:sources` (≥1 relative C++ paths) and
+  # `:nm_symbol` (the ERL_NIF_INIT symbol the driver table references). The
+  # toolchain-shaped fields (`:includes`, `:cxxflags*`) are optional and
+  # resolved at build time.
+  defp check_nif_cpp_archive(errors, %{lang: :cpp_archive} = nif, i) do
+    errors
+    |> check_archive_sources(nif, i)
+    |> check_archive_symbol(nif, i)
+  end
+
+  defp check_nif_cpp_archive(errors, _nif, _i), do: errors
+
+  defp check_archive_sources(errors, %{sources: s}, _i)
+       when is_list(s) and s != [] do
+    if Enum.all?(s, &is_binary/1),
+      do: errors,
+      else: ["nifs cpp_archive sources must all be path strings" | errors]
+  end
+
+  defp check_archive_sources(errors, _nif, i),
+    do: ["nifs entry ##{i}: lang: :cpp_archive requires a non-empty :sources list" | errors]
+
+  defp check_archive_symbol(errors, %{nm_symbol: sym}, _i) when is_binary(sym) and sym != "",
+    do: errors
+
+  defp check_archive_symbol(errors, _nif, i),
+    do: ["nifs entry ##{i}: lang: :cpp_archive requires an :nm_symbol string" | errors]
 
   # ── Tier 3: screens / migrations / assets ─────────────────────────────────
 
