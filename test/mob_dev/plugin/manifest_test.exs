@@ -136,7 +136,7 @@ defmodule MobDev.Plugin.ManifestTest do
       m =
         Map.put(@valid, :nifs, [
           %{
-            module: :nx_eigen_nif,
+            module: :nx_eigen,
             lang: :cpp_archive,
             sources: ["c_src/nx_eigen_nif.cpp", "c_src/nx_eigen_fft_eigen.cpp"],
             includes: ["c_src", {:dep, :nx_eigen, "eigen-3.4.0"}],
@@ -151,10 +151,27 @@ defmodule MobDev.Plugin.ManifestTest do
     test "accepts a cpp_archive entry with only the required fields" do
       m =
         Map.put(@valid, :nifs, [
-          %{module: :nx_eigen_nif, lang: :cpp_archive, sources: ["a.cpp"], nm_symbol: "a_init"}
+          %{module: :foo, lang: :cpp_archive, sources: ["a.cpp"], nm_symbol: "foo_nif_init"}
         ])
 
       assert {:ok, ^m} = Manifest.validate(m)
+    end
+
+    test "rejects a cpp_archive whose nm_symbol disagrees with <module>_nif_init" do
+      # The exact bug device-verify caught: driver table derives nx_eigen_nif_init
+      # from the module, archive exports a different symbol → link failure.
+      m =
+        Map.put(@valid, :nifs, [
+          %{
+            module: :nx_eigen_nif,
+            lang: :cpp_archive,
+            sources: ["a.cpp"],
+            nm_symbol: "nx_eigen_nif_init"
+          }
+        ])
+
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "must be \"nx_eigen_nif_nif_init\""))
     end
 
     test "rejects a cpp_archive entry missing :sources" do
@@ -177,7 +194,7 @@ defmodule MobDev.Plugin.ManifestTest do
       m =
         Map.put(@valid, :nifs, [
           %{
-            module: :nx_eigen_nif,
+            module: :nx_eigen,
             lang: :cpp_archive,
             sources: [{:dep, :nx_eigen, "c_src/nx_eigen_nif.cpp"}, "c_src/fft.cpp"],
             nm_symbol: "nx_eigen_nif_init"

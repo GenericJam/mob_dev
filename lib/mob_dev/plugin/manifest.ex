@@ -213,6 +213,7 @@ defmodule MobDev.Plugin.Manifest do
     errors
     |> check_archive_sources(nif, i)
     |> check_archive_symbol(nif, i)
+    |> check_archive_symbol_matches_module(nif, i)
   end
 
   defp check_nif_cpp_archive(errors, _nif, _i), do: errors
@@ -241,6 +242,29 @@ defmodule MobDev.Plugin.Manifest do
 
   defp check_archive_symbol(errors, _nif, i),
     do: ["nifs entry ##{i}: lang: :cpp_archive requires an :nm_symbol string" | errors]
+
+  # The static-NIF driver table derives a cpp_archive's init function as
+  # `<module>_nif_init` and resolves load_nif by the module name, so the
+  # archive's actual `:nm_symbol` MUST equal `<module>_nif_init`. Mismatch is a
+  # link-time "cannot locate symbol …_nif_init" that only shows up on-device
+  # after a full native build (it bit the first real consumer: module
+  # :nx_eigen_nif vs symbol nx_eigen_nif_init). Catch it at config time.
+  defp check_archive_symbol_matches_module(errors, %{module: m, nm_symbol: sym}, i)
+       when is_atom(m) and is_binary(sym) do
+    expected = "#{m}_nif_init"
+
+    if sym == expected,
+      do: errors,
+      else: [
+        "nifs entry ##{i}: cpp_archive :nm_symbol #{inspect(sym)} must be " <>
+          "#{inspect(expected)} (the driver table derives the init symbol as " <>
+          "<module>_nif_init; set the module so they agree, or fix " <>
+          "-DSTATIC_ERLANG_NIF_LIBNAME)"
+        | errors
+      ]
+  end
+
+  defp check_archive_symbol_matches_module(errors, _nif, _i), do: errors
 
   # ── Tier 3: screens / migrations / assets ─────────────────────────────────
 
