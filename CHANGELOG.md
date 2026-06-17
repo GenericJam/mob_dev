@@ -8,6 +8,21 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.6.5] - 2026-06-17
+
+### Changed
+- **Default OTP runtime → Elixir 1.20.1** (`@otp_hash` `7d46fdd4` → `5c9c69fc`).
+  Same OTP-29 / erts-17.0 / OpenSSL 3.4.0 base; the bundled Elixir stdlib
+  (elixir/logger/eex) is swapped rc.5 → 1.20.1 across all five tarballs
+  (android, android-arm32, android-x86_64, ios-sim, ios-device), published as
+  the `otp-5c9c69fc` release on GenericJam/mob. `bundled_versions.exs` adds the
+  `5c9c69fc` bundle and flips `active_hash`. Backward compatible — apps pick up
+  1.20.1 on their next `mix mob.deploy` (recompile against the new runtime).
+  NOTE: the major.minor skew check treats rc.5 and 1.20.1 as both "1.20", so it
+  does NOT warn on this transition; the stdlib swap is what makes beams load.
+
+---
+
 ## [0.6.4] - 2026-06-16
 
 ### Added
