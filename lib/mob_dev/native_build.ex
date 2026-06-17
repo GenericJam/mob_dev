@@ -333,16 +333,28 @@ defmodule MobDev.NativeBuild do
     # but received a list".
     nif_args_no_root = Enum.reject(nif_args, &String.starts_with?(&1, "-Dproject_root="))
 
-    args =
-      base_args ++
-        plugin_args ++
-        nif_args_no_root ++
-        nxeigen_zig_args_android(nxeigen_archive) ++
-        tflite_zig_args_android(tflite_build)
+    # Activated plugins' cpp_archive NIFs (e.g. an Nx CPU backend): each
+    # cross-compiled to lib<mod>.a for this ABI and static-linked via
+    # -Dplugin_static_libs. {:ok, []} when none / unsupported ABI.
+    plugin_archive_result =
+      case android_abi_to_cpp_target(abi) do
+        nil -> {:ok, []}
+        target_id -> build_plugin_static_archives(target_id, :android, otp_dir)
+      end
 
-    case System.cmd("zig", args, stderr_to_stdout: true, into: IO.stream()) do
-      {_, 0} -> :ok
-      {_, code} -> {:error, "zig build for #{abi} exited #{code}"}
+    with {:ok, plugin_archives} <- plugin_archive_result do
+      args =
+        base_args ++
+          plugin_args ++
+          nif_args_no_root ++
+          nxeigen_zig_args_android(nxeigen_archive) ++
+          tflite_zig_args_android(tflite_build) ++
+          plugin_static_lib_args(plugin_archives)
+
+      case System.cmd("zig", args, stderr_to_stdout: true, into: IO.stream()) do
+        {_, 0} -> :ok
+        {_, code} -> {:error, "zig build for #{abi} exited #{code}"}
+      end
     end
   end
 
@@ -2337,14 +2349,16 @@ defmodule MobDev.NativeBuild do
           val != "",
           do: "-D#{name}=#{val}"
 
-    with {:ok, nif_args} <- project_nif_zig_args(:ios_sim) do
+    with {:ok, nif_args} <- project_nif_zig_args(:ios_sim),
+         {:ok, plugin_archives} <- build_plugin_static_archives(:ios_sim, :ios, otp_root) do
       args =
         base_args ++
           plugin_args ++
           nif_args ++
           mlx_zig_args(mlx_dir) ++
           nxeigen_zig_args_ios(nxeigen_archive) ++
-          tflite_zig_args_ios(tflite_build)
+          tflite_zig_args_ios(tflite_build) ++
+          plugin_static_lib_args(plugin_archives)
 
       case System.cmd("zig", args, stderr_to_stdout: true, into: IO.stream()) do
         {_, 0} -> :ok
@@ -2483,6 +2497,92 @@ defmodule MobDev.NativeBuild do
   def nxeigen_zig_args_android(archive_path) when is_binary(archive_path) do
     ["-Dnxeigen_static=true", "-Dnxeigen_lib=#{archive_path}"]
   end
+
+  # ── Generic plugin cpp_archive integration ─────────────────────────────────
+  # The plugin-system replacement for the bespoke nxeigen/tflite hooks above:
+  # activated plugins declare `lang: :cpp_archive` NIFs (MobDev.Plugin.Merge +
+  # CppArchive), each cross-compiled to lib<mod>.a and static-linked. One
+  # `-Dplugin_static_libs=<comma-paths>` flag carries them all to build.zig.
+
+  # The zig `-Dplugin_static_libs` flag for a list of built archive paths.
+  # Emitted only when non-empty so apps on a pre-plugin-archive build.zig (no
+  # such option) don't choke on an unknown `-D` flag — same gating as
+  # `-Dplugin_c_nifs`. Pure; public (@doc false) for testing.
+  @doc false
+  @spec plugin_static_lib_args([Path.t()]) :: [String.t()]
+  def plugin_static_lib_args([]), do: []
+
+  def plugin_static_lib_args(paths) when is_list(paths),
+    do: ["-Dplugin_static_libs=#{Enum.join(paths, ",")}"]
+
+  # Build every activated cpp_archive plugin NIF for one target ABI. Returns
+  # `{:ok, archive_paths}` (empty when no such plugin is active, or when the
+  # target ABI isn't yet supported by CppArchive — currently android_x86_64,
+  # which is logged rather than silently dropped), or a tagged error string.
+  @spec build_plugin_static_archives(atom(), :ios | :android, Path.t()) ::
+          {:ok, [Path.t()]} | {:error, String.t()}
+  defp build_plugin_static_archives(target_id, platform, otp_dir) do
+    specs = MobDev.Plugin.Merge.static_archives(MobDev.Plugin.activated(), platform)
+
+    cond do
+      specs == [] ->
+        {:ok, []}
+
+      target_id not in MobDev.Plugin.CppArchive.targets() ->
+        names = Enum.map_join(specs, ", ", &"#{&1.plugin}/#{&1.module}")
+
+        IO.puts(
+          "  ! skipping cpp_archive plugin NIF(s) [#{names}] on #{target_id} — " <>
+            "MobDev.Plugin.CppArchive has no target for this ABI yet"
+        )
+
+        {:ok, []}
+
+      true ->
+        do_build_plugin_static_archives(specs, target_id, otp_dir)
+    end
+  end
+
+  defp do_build_plugin_static_archives(specs, target_id, otp_dir) do
+    with {:ok, erts_inc} <- resolve_erts_include(otp_dir) do
+      out_dir =
+        Path.join([Mix.Project.build_path(), "plugin_archives", Atom.to_string(target_id)])
+
+      specs
+      |> Enum.reduce_while({:ok, []}, fn spec, {:ok, acc} ->
+        IO.puts(
+          "  === Building #{MobDev.Plugin.CppArchive.archive_name(spec.module)} (#{target_id}, #{spec.plugin})"
+        )
+
+        case MobDev.Plugin.CppArchive.build(spec, target_id,
+               out_dir: out_dir,
+               erts_include: erts_inc
+             ) do
+          {:ok, info} ->
+            IO.puts("    ✓ #{info.archive}")
+            {:cont, {:ok, [info.archive | acc]}}
+
+          {:error, {tag, detail}} ->
+            {:halt,
+             {:error,
+              "plugin cpp_archive #{spec.plugin}/#{spec.module} failed " <>
+                "(#{target_id}, #{tag}): #{inspect(detail)}"}}
+        end
+      end)
+      |> case do
+        {:ok, paths} -> {:ok, Enum.reverse(paths)}
+        err -> err
+      end
+    end
+  end
+
+  # Android ABI string → CppArchive target id. x86_64 maps to :android_x86_64,
+  # which CppArchive doesn't build yet — build_plugin_static_archives/3 logs the
+  # skip rather than silently dropping it. nil = a truly unknown ABI string.
+  defp android_abi_to_cpp_target("arm64-v8a"), do: :android_arm64
+  defp android_abi_to_cpp_target("armeabi-v7a"), do: :android_arm32
+  defp android_abi_to_cpp_target("x86_64"), do: :android_x86_64
+  defp android_abi_to_cpp_target(_), do: nil
 
   # ── TFLite NIF integration (mirrors NxEigen above) ─────────────────────────
   # Same shape as nxeigen but with TFLite-specific details: the runtime
@@ -3601,7 +3701,8 @@ defmodule MobDev.NativeBuild do
           val != "",
           do: "-D#{name}=#{val}"
 
-    with {:ok, nif_args} <- project_nif_zig_args(:ios_device) do
+    with {:ok, nif_args} <- project_nif_zig_args(:ios_device),
+         {:ok, plugin_archives} <- build_plugin_static_archives(:ios_device, :ios, otp_root) do
       sqlite_args =
         case sqlite_static_lib do
           nil -> []
@@ -3615,7 +3716,8 @@ defmodule MobDev.NativeBuild do
           sqlite_args ++
           mlx_zig_args(mlx_dir) ++
           nxeigen_zig_args_ios(nxeigen_archive) ++
-          tflite_zig_args_ios(tflite_build)
+          tflite_zig_args_ios(tflite_build) ++
+          plugin_static_lib_args(plugin_archives)
 
       case System.cmd("zig", args, stderr_to_stdout: true, into: IO.stream()) do
         {_, 0} ->

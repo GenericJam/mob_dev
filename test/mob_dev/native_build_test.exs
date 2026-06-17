@@ -1262,6 +1262,22 @@ defmodule MobDev.NativeBuildTest do
     end
   end
 
+  describe "plugin_static_lib_args/1" do
+    test "empty list → no flag (so pre-plugin build.zig isn't passed an unknown -D)" do
+      assert NativeBuild.plugin_static_lib_args([]) == []
+    end
+
+    test "one archive → -Dplugin_static_libs=<path>" do
+      assert NativeBuild.plugin_static_lib_args(["/b/android_arm64/libnx_eigen_nif.a"]) ==
+               ["-Dplugin_static_libs=/b/android_arm64/libnx_eigen_nif.a"]
+    end
+
+    test "multiple archives → one comma-joined flag" do
+      args = NativeBuild.plugin_static_lib_args(["/b/liba.a", "/b/libb.a"])
+      assert args == ["-Dplugin_static_libs=/b/liba.a,/b/libb.a"]
+    end
+  end
+
   # ── install_nx_eigen_otp_lib — filesystem integration ────────────────────
 
   describe "install_nx_eigen_otp_lib/1 (and stage_empty_priv_otp_lib/2)" do
