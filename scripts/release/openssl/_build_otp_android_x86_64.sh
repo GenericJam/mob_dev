@@ -22,6 +22,15 @@ export RELEASE_LIBBEAM=yes
 
 cd "$OTP_SRC"
 
+# Install mob's corrected x86_64 xcomp conf into the OTP source. Upstream
+# OTP ships an incomplete stub (missing AR/RANLIB, gc-sections, the
+# --without-* flags; references the removed ld.gold) — see
+# scripts/release/xcomp/erl-xcomp-x86_64-android.conf. Vendored here so a
+# fresh OTP checkout builds without manual patching.
+VENDORED_CONF="$(dirname "$0")/../xcomp/erl-xcomp-x86_64-android.conf"
+[ -f "$VENDORED_CONF" ] && cp "$VENDORED_CONF" "$OTP_SRC/xcomp/erl-xcomp-x86_64-android.conf"
+
+
 # Clean any stale config from a prior arch (arm64, iOS, etc.).
 make distclean >/dev/null 2>&1 || true
 
