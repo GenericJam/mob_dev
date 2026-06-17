@@ -154,6 +154,16 @@ defmodule MobDev.NativeBuildTest do
     test "empty ABI string falls back to arm64" do
       assert NativeBuild.otp_dir_for_abi("", "/otp/arm64", "/otp/arm32") == "/otp/arm64"
     end
+
+    test "x86_64 returns the x86_64 path when provided" do
+      assert NativeBuild.otp_dir_for_abi("x86_64", "/otp/arm64", "/otp/arm32", "/otp/x86_64") ==
+               "/otp/x86_64"
+    end
+
+    test "unknown ABI still falls back to arm64 when x86_64 path is provided" do
+      assert NativeBuild.otp_dir_for_abi("x86", "/otp/arm64", "/otp/arm32", "/otp/x86_64") ==
+               "/otp/arm64"
+    end
   end
 
   describe "filter_serials/2" do
