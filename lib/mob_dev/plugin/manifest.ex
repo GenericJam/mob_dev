@@ -219,13 +219,22 @@ defmodule MobDev.Plugin.Manifest do
 
   defp check_archive_sources(errors, %{sources: s}, _i)
        when is_list(s) and s != [] do
-    if Enum.all?(s, &is_binary/1),
+    if Enum.all?(s, &archive_path_entry?/1),
       do: errors,
-      else: ["nifs cpp_archive sources must all be path strings" | errors]
+      else: [
+        "nifs cpp_archive sources must be path strings or {:dep, name, subpath} tokens" | errors
+      ]
   end
 
   defp check_archive_sources(errors, _nif, i),
     do: ["nifs entry ##{i}: lang: :cpp_archive requires a non-empty :sources list" | errors]
+
+  # A cpp_archive :sources / :includes entry is either a plugin-relative path
+  # string or a `{:dep, name, subpath}` token referencing a dep's tree (e.g.
+  # NxEigen's NIF lives in the nx_eigen dep). Merge resolves both.
+  defp archive_path_entry?(s) when is_binary(s), do: true
+  defp archive_path_entry?({:dep, name, sub}) when is_atom(name) and is_binary(sub), do: true
+  defp archive_path_entry?(_), do: false
 
   defp check_archive_symbol(errors, %{nm_symbol: sym}, _i) when is_binary(sym) and sym != "",
     do: errors

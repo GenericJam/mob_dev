@@ -173,14 +173,28 @@ defmodule MobDev.Plugin.ManifestTest do
       assert Enum.any?(errs, &(&1 =~ "cpp_archive requires a non-empty :sources"))
     end
 
-    test "rejects a cpp_archive entry with non-string sources" do
+    test "accepts {:dep, name, subpath} source tokens (dep-sourced C++)" do
+      m =
+        Map.put(@valid, :nifs, [
+          %{
+            module: :nx_eigen_nif,
+            lang: :cpp_archive,
+            sources: [{:dep, :nx_eigen, "c_src/nx_eigen_nif.cpp"}, "c_src/fft.cpp"],
+            nm_symbol: "nx_eigen_nif_init"
+          }
+        ])
+
+      assert {:ok, ^m} = Manifest.validate(m)
+    end
+
+    test "rejects a cpp_archive entry with a bogus source entry" do
       m =
         Map.put(@valid, :nifs, [
           %{module: :x, lang: :cpp_archive, sources: [:nope], nm_symbol: "x_init"}
         ])
 
       assert {:error, errs} = Manifest.validate(m)
-      assert Enum.any?(errs, &(&1 =~ "cpp_archive sources must all be path strings"))
+      assert Enum.any?(errs, &(&1 =~ "path strings or {:dep"))
     end
 
     test "rejects a cpp_archive entry missing :nm_symbol" do
