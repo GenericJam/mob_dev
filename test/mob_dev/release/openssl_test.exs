@@ -32,6 +32,15 @@ defmodule MobDev.Release.OpenSSLTest do
       refute "no-asm" in spec.extra_configure_args
     end
 
+    test "android_x86_64 — no `no-asm`; -D__ANDROID_API__=24" do
+      spec = OpenSSL.target_spec(:android_x86_64)
+
+      assert spec.configure_target == "android-x86_64"
+      assert spec.default_prefix == "/tmp/openssl-android-x86_64"
+      assert "-D__ANDROID_API__=24" in spec.extra_configure_args
+      refute "no-asm" in spec.extra_configure_args
+    end
+
     test "android_arm32 — `no-asm` IS present (ld.lld rejects non-PIC reloc)" do
       spec = OpenSSL.target_spec(:android_arm32)
 
@@ -56,8 +65,14 @@ defmodule MobDev.Release.OpenSSLTest do
       assert spec.extra_configure_args == []
     end
 
-    test "targets/0 enumerates all four in canonical order" do
-      assert OpenSSL.targets() == [:android_arm64, :android_arm32, :ios_sim, :ios_device]
+    test "targets/0 enumerates all five in canonical order" do
+      assert OpenSSL.targets() == [
+               :android_arm64,
+               :android_arm32,
+               :android_x86_64,
+               :ios_sim,
+               :ios_device
+             ]
     end
   end
 
@@ -384,7 +399,14 @@ defmodule MobDev.Release.OpenSSLTest do
 
       results = OpenSSL.build_all(openssl_src: "/fake/openssl")
 
-      assert Keyword.keys(results) == [:android_arm64, :android_arm32, :ios_sim, :ios_device]
+      assert Keyword.keys(results) == [
+               :android_arm64,
+               :android_arm32,
+               :android_x86_64,
+               :ios_sim,
+               :ios_device
+             ]
+
       assert Enum.all?(results, fn {_id, r} -> match?({:ok, _}, r) end)
     end
 

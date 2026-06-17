@@ -105,7 +105,7 @@ defmodule MobDev.Release.OTP do
 
   @doc "All cross-compile targets, in canonical order."
   @spec targets() :: [atom()]
-  def targets, do: [:android_arm64, :android_arm32, :ios_sim, :ios_device]
+  def targets, do: [:android_arm64, :android_arm32, :android_x86_64, :ios_sim, :ios_device]
 
   @doc "Per-target spec. Public for testing — surface lock-down."
   @spec target_spec(atom()) :: Target.t()
@@ -115,6 +115,18 @@ defmodule MobDev.Release.OTP do
       arch_dir: "aarch64-unknown-linux-android",
       xcomp_conf: "xcomp/erl-xcomp-arm64-android.conf",
       default_release_root: "/tmp/otp-android",
+      ssl_strategy: :with_openssl,
+      install_method: :otp_build_release,
+      env_fn: &android_env(&1, "android24")
+    }
+  end
+
+  def target_spec(:android_x86_64) do
+    %Target{
+      id: :android_x86_64,
+      arch_dir: "x86_64-pc-linux-android",
+      xcomp_conf: "xcomp/erl-xcomp-x86_64-android.conf",
+      default_release_root: "/tmp/otp-android-x86_64",
       ssl_strategy: :with_openssl,
       install_method: :otp_build_release,
       env_fn: &android_env(&1, "android24")
@@ -216,7 +228,7 @@ defmodule MobDev.Release.OTP do
   """
   @spec build(atom(), keyword()) :: {:ok, map()} | Errors.t()
   def build(target_id, opts \\ [])
-      when target_id in [:android_arm64, :android_arm32, :ios_sim, :ios_device] do
+      when target_id in [:android_arm64, :android_arm32, :android_x86_64, :ios_sim, :ios_device] do
     target = target_spec(target_id)
     shell = Shell.impl()
     otp_src = opts[:otp_src] || default_otp_src(shell)
@@ -261,6 +273,7 @@ defmodule MobDev.Release.OTP do
         case target_id do
           :android_arm64 -> Keyword.put_new(opts, :openssl_prefix, "/tmp/openssl-android-arm64")
           :android_arm32 -> Keyword.put_new(opts, :openssl_prefix, "/tmp/openssl-android-arm32")
+          :android_x86_64 -> Keyword.put_new(opts, :openssl_prefix, "/tmp/openssl-android-x86_64")
           _ -> opts
         end
 
@@ -291,7 +304,7 @@ defmodule MobDev.Release.OTP do
           "OPENSSL_PREFIX missing at #{openssl_prefix} — run MobDev.Release.OpenSSL.build(#{inspect(target.id)})"
         )
 
-      target.id in [:android_arm64, :android_arm32] ->
+      target.id in [:android_arm64, :android_arm32, :android_x86_64] ->
         android_precheck(shell, opts)
 
       true ->
@@ -333,7 +346,7 @@ defmodule MobDev.Release.OTP do
           "missing #{erts_dir} after install — 'make release' / 'otp_build release' didn't produce the expected layout"
         )
 
-      target.id in [:android_arm64, :android_arm32] ->
+      target.id in [:android_arm64, :android_arm32, :android_x86_64] ->
         verify_android_outputs(target, shell, release_root)
 
       target.id in [:ios_sim, :ios_device] ->

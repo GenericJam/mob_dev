@@ -50,7 +50,14 @@ defmodule Mix.Tasks.Mob.Release.Otp do
 
   alias MobDev.Release.{Errors, OTP}
 
-  @valid_targets ["android_arm64", "android_arm32", "ios_sim", "ios_device", "all"]
+  @valid_targets [
+    "android_arm64",
+    "android_arm32",
+    "android_x86_64",
+    "ios_sim",
+    "ios_device",
+    "all"
+  ]
 
   @switches [
     otp_src: :string,
