@@ -55,6 +55,17 @@ defmodule MobDev.Plugin.CppArchiveTest do
       includes = Enum.filter(flags, &String.starts_with?(&1, "-I"))
       assert includes == ["-I/first", "-I/second", "-I/third"]
     end
+
+    test "android_arm32 gets the armv7 ABI flags; arm64 does not" do
+      arm32 = CppArchive.cxxflags(spec(), :android_arm32, [])
+      arm64 = CppArchive.cxxflags(spec(), :android_arm64, [])
+
+      assert "-march=armv7-a" in arm32
+      assert "-mfloat-abi=softfp" in arm32
+      assert "-mthumb" in arm32
+
+      refute "-march=armv7-a" in arm64
+    end
   end
 
   describe "resolve_deps/2" do

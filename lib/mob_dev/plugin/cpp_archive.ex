@@ -44,8 +44,17 @@ defmodule MobDev.Plugin.CppArchive do
 
   # ── Pure surface (unit-tested) ───────────────────────────────────────────
 
+  # Target-intrinsic ABI flags the builder always supplies (like -fPIC): the
+  # armeabi-v7a Android ABI mandates these for correct code-gen, so they belong
+  # to the target, not the plugin — a plugin author shouldn't have to know them.
+  defp target_abi_cxxflags(:android_arm32),
+    do: ["-march=armv7-a", "-mfloat-abi=softfp", "-mthumb"]
+
+  defp target_abi_cxxflags(_), do: []
+
   @doc """
-  Assemble the full CXXFLAGS for one target: forced `-fPIC`, then the plugin's
+  Assemble the full CXXFLAGS for one target: forced `-fPIC` + the target's
+  intrinsic ABI flags (e.g. armv7 flags for android_arm32), then the plugin's
   base `:cxxflags`, then the target's platform-specific flags
   (`:cxxflags_android` / `:cxxflags_ios`), then `-I` for each resolved include
   dir (order preserved). Pure — silent flag drops are the regression class this
@@ -60,6 +69,7 @@ defmodule MobDev.Plugin.CppArchive do
       end
 
     @forced_cxxflags ++
+      target_abi_cxxflags(target_id) ++
       List.wrap(spec[:cxxflags]) ++
       platform_flags ++
       Enum.map(includes, &"-I#{&1}")
