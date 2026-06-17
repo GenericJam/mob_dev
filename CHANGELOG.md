@@ -8,6 +8,18 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.6.4] - 2026-06-16
+
+### Added
+- **Android x86_64 emulator support** (resolves GenericJam/mob#20). The `x86_64`
+  ABI is now wired throughout: `OtpDownloader.ensure_android("x86_64")` (#11),
+  the x86_64 native build path (`zig_build_android_objects`, `ensure_jni_libs`,
+  `otp_dir_for_abi`), and an `android_x86_64` target in `mix mob.release.otp`
+  plus the `scripts/release/*x86_64*` build scripts. The
+  `otp-android-x86_64-<hash>.tar.gz` runtime is published on the `otp-<hash>`
+  release. This is the slice x86_64 Linux / CI hosts need, where ARM emulation
+  isn't available.
+
 ## [0.6.3] - 2026-06-16
 
 ### Fixed
