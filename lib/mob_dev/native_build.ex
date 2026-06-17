@@ -2400,11 +2400,31 @@ defmodule MobDev.NativeBuild do
   # isn't a dep, or a tagged-tuple error.
   defp maybe_build_nxeigen(target_id)
        when target_id in [:android_arm64, :android_arm32, :ios_sim, :ios_device] do
-    if nxeigen_in_project?() do
-      do_build_nxeigen(target_id)
-    else
-      {:ok, nil}
+    cond do
+      # An activated cpp_archive plugin (mob_nx_eigen) provides nx_eigen_nif_init
+      # itself, so the legacy core build must yield — otherwise both emit
+      # libnx_eigen*.a with the same symbol and the link fails on a duplicate.
+      # Lets the plugin path be device-verified before the core hooks are
+      # removed; the core path stays the fallback for apps not yet on the plugin.
+      nxeigen_provided_by_plugin?() ->
+        {:ok, nil}
+
+      nxeigen_in_project?() ->
+        do_build_nxeigen(target_id)
+
+      true ->
+        {:ok, nil}
     end
+  end
+
+  # True when an activated plugin contributes a cpp_archive NIF whose init symbol
+  # is nx_eigen's (`nx_eigen_nif_init`) — i.e. the plugin supersedes the core
+  # NxEigen build.
+  @doc false
+  @spec nxeigen_provided_by_plugin?() :: boolean()
+  def nxeigen_provided_by_plugin? do
+    MobDev.Plugin.Merge.static_archives(MobDev.Plugin.activated(), :all)
+    |> Enum.any?(&(&1[:nm_symbol] == "nx_eigen_nif_init"))
   end
 
   defp do_build_nxeigen(target_id) do

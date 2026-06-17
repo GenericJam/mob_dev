@@ -1278,6 +1278,15 @@ defmodule MobDev.NativeBuildTest do
     end
   end
 
+  describe "nxeigen_provided_by_plugin?/0" do
+    test "false when no cpp_archive plugin provides nx_eigen_nif_init (mob_dev's own env)" do
+      # mob_dev activates no plugins, so the legacy core NxEigen build stays the
+      # active path. (Guards the coexistence logic; the plugin-present case is
+      # covered by Merge.static_archives tests.)
+      refute NativeBuild.nxeigen_provided_by_plugin?()
+    end
+  end
+
   # ── install_nx_eigen_otp_lib — filesystem integration ────────────────────
 
   describe "install_nx_eigen_otp_lib/1 (and stage_empty_priv_otp_lib/2)" do
