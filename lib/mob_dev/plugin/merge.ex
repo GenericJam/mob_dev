@@ -210,8 +210,8 @@ defmodule MobDev.Plugin.Merge do
         nif_for_platform?(nif, platform) do
       %{
         module: nif[:module],
-        sources: for(s <- List.wrap(nif[:sources]), is_binary(s), do: Path.join(dir, s)),
-        includes: resolve_includes(dir, List.wrap(nif[:includes])),
+        sources: resolve_paths(dir, List.wrap(nif[:sources])),
+        includes: resolve_paths(dir, List.wrap(nif[:includes])),
         cxxflags: List.wrap(nif[:cxxflags]),
         cxxflags_android: List.wrap(nif[:cxxflags_android]),
         cxxflags_ios: List.wrap(nif[:cxxflags_ios]),
@@ -222,12 +222,15 @@ defmodule MobDev.Plugin.Merge do
     end
   end
 
-  # Plugin-relative include strings resolve to absolute against the plugin dir;
-  # `{:dep, name, subpath}` tokens pass through (resolved at build time against
-  # the deps path — keeps this module pure / Mix-free).
-  defp resolve_includes(dir, includes) do
-    for inc <- includes do
-      case inc do
+  # Resolve a cpp_archive's `:sources`/`:includes` entries. A plugin-relative
+  # string resolves to absolute against the plugin dir; a `{:dep, name, subpath}`
+  # token passes through (resolved at build time against the deps path — keeps
+  # this module pure / Mix-free). The dep form lets a plugin reference sources or
+  # headers that live in one of its deps (e.g. nx_eigen's own c_src + Eigen
+  # headers) rather than vendoring a copy that can drift.
+  defp resolve_paths(dir, entries) do
+    for entry <- entries do
+      case entry do
         bin when is_binary(bin) -> Path.join(dir, bin)
         {:dep, name, sub} when is_atom(name) and is_binary(sub) -> {:dep, name, sub}
         other -> other

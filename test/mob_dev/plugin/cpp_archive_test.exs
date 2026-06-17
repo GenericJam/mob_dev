@@ -57,15 +57,20 @@ defmodule MobDev.Plugin.CppArchiveTest do
     end
   end
 
-  describe "resolve_includes/2" do
+  describe "resolve_deps/2" do
     test "resolves {:dep, name, sub} tokens against deps_path, passes strings through" do
-      includes = ["/plug/c_src", {:dep, :nx_eigen, "eigen-3.4.0"}, {:dep, :fine, "c_include"}]
+      entries = ["/plug/c_src", {:dep, :nx_eigen, "eigen-3.4.0"}, {:dep, :fine, "c_include"}]
 
-      assert CppArchive.resolve_includes(includes, "/proj/deps") == [
+      assert CppArchive.resolve_deps(entries, "/proj/deps") == [
                "/plug/c_src",
                "/proj/deps/nx_eigen/eigen-3.4.0",
                "/proj/deps/fine/c_include"
              ]
+    end
+
+    test "resolves a dep-sourced .cpp path (NxEigen's NIF lives in the nx_eigen dep)" do
+      assert CppArchive.resolve_deps([{:dep, :nx_eigen, "c_src/nx_eigen_nif.cpp"}], "/d") ==
+               ["/d/nx_eigen/c_src/nx_eigen_nif.cpp"]
     end
   end
 

@@ -154,6 +154,32 @@ defmodule MobDev.Plugin.MergeTest do
       assert spec.plugin == :p
     end
 
+    test "resolves dep-sourced .cpp (NxEigen's NIF lives in the nx_eigen dep)" do
+      plugins = [
+        {"/plug",
+         base(%{
+           nifs: [
+             %{
+               module: :nx_eigen_nif,
+               lang: :cpp_archive,
+               sources: [
+                 {:dep, :nx_eigen, "c_src/nx_eigen_nif.cpp"},
+                 "c_src/nx_eigen_fft_eigen.cpp"
+               ],
+               nm_symbol: "nx_eigen_nif_init"
+             }
+           ]
+         })}
+      ]
+
+      assert [spec] = Merge.static_archives(plugins)
+      # dep token passes through; plugin-relative source resolves to absolute.
+      assert spec.sources == [
+               {:dep, :nx_eigen, "c_src/nx_eigen_nif.cpp"},
+               "/plug/c_src/nx_eigen_fft_eigen.cpp"
+             ]
+    end
+
     test "resolves plugin-relative includes to absolute, passes :dep tokens through" do
       plugins = [
         {"/plug",

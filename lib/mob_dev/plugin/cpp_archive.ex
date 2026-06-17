@@ -66,14 +66,14 @@ defmodule MobDev.Plugin.CppArchive do
   end
 
   @doc """
-  Resolve a spec's `:includes` (a mix of absolute strings and
+  Resolve a spec's `:sources`/`:includes` (a mix of absolute strings and
   `{:dep, name, subpath}` tokens left by `Merge.static_archives/2`) to absolute
   paths, resolving dep tokens against `deps_path`. Pure.
   """
-  @spec resolve_includes([Path.t() | {:dep, atom(), String.t()}], Path.t()) :: [Path.t()]
-  def resolve_includes(includes, deps_path) when is_list(includes) do
-    for inc <- includes do
-      case inc do
+  @spec resolve_deps([Path.t() | {:dep, atom(), String.t()}], Path.t()) :: [Path.t()]
+  def resolve_deps(entries, deps_path) when is_list(entries) do
+    for entry <- entries do
+      case entry do
         {:dep, name, sub} -> Path.join([deps_path, Atom.to_string(name), sub])
         bin when is_binary(bin) -> bin
       end
@@ -130,18 +130,19 @@ defmodule MobDev.Plugin.CppArchive do
       deps_path = opts[:deps_path] || Mix.Project.deps_path()
 
       includes =
-        resolve_includes(spec.includes, deps_path) ++ [erts_inc, Path.join(erts_inc, "internal")]
+        resolve_deps(spec.includes, deps_path) ++ [erts_inc, Path.join(erts_inc, "internal")]
 
+      sources = resolve_deps(spec.sources, deps_path)
       arch_dir = arch_dir(target_id)
       obj_dir = Path.join([out_dir, "obj", arch_dir])
       archive = Path.join(out_dir, archive_name(spec.module))
       flags = cxxflags(spec, target_id, includes)
       tools = tools(target_id, opts)
 
-      with :ok <- precheck(spec, target_id, shell, opts),
+      with :ok <- precheck(sources, target_id, shell, opts),
            :ok <- shell.mkdir_p(obj_dir),
            :ok <- shell.mkdir_p(out_dir),
-           {:ok, objects} <- compile_sources(shell, tools, flags, spec.sources, obj_dir),
+           {:ok, objects} <- compile_sources(shell, tools, flags, sources, obj_dir),
            :ok <- shell.rm_f(archive),
            {:ok, _} <- shell.cmd(tools.ar ++ ["rcs", archive | objects], []),
            {:ok, _} <- shell.cmd(tools.ranlib ++ [archive], []),
@@ -176,8 +177,8 @@ defmodule MobDev.Plugin.CppArchive do
     end
   end
 
-  defp precheck(spec, target_id, shell, opts) do
-    missing = Enum.reject(spec.sources, &shell.file?/1)
+  defp precheck(sources, target_id, shell, opts) do
+    missing = Enum.reject(sources, &shell.file?/1)
 
     cond do
       missing != [] ->
