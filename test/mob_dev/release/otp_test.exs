@@ -31,6 +31,17 @@ defmodule MobDev.Release.OTPTest do
       assert spec.install_method == :otp_build_release
     end
 
+    test "android_x86_64 — x86_64-android conf (arch_dir is x86_64-PC-linux-android)" do
+      spec = OTP.target_spec(:android_x86_64)
+      # config.sub canonicalizes x86_64-linux-android to the `pc` vendor, NOT
+      # `unknown` like aarch64 — getting this wrong silently breaks the tarball.
+      assert spec.arch_dir == "x86_64-pc-linux-android"
+      assert spec.xcomp_conf == "xcomp/erl-xcomp-x86_64-android.conf"
+      assert spec.default_release_root == "/tmp/otp-android-x86_64"
+      assert spec.ssl_strategy == :with_openssl
+      assert spec.install_method == :otp_build_release
+    end
+
     test "android_arm32 — arm-android conf (NOT arm32-android — historical)" do
       spec = OTP.target_spec(:android_arm32)
       assert spec.arch_dir == "arm-unknown-linux-androideabi"
@@ -62,8 +73,14 @@ defmodule MobDev.Release.OTPTest do
       assert device.install_method == :make_release
     end
 
-    test "targets/0 enumerates all four in canonical order" do
-      assert OTP.targets() == [:android_arm64, :android_arm32, :ios_sim, :ios_device]
+    test "targets/0 enumerates all five in canonical order" do
+      assert OTP.targets() == [
+               :android_arm64,
+               :android_arm32,
+               :android_x86_64,
+               :ios_sim,
+               :ios_device
+             ]
     end
   end
 
@@ -437,11 +454,12 @@ defmodule MobDev.Release.OTPTest do
       OTP.build_all(otp_src: otp_src, ndk_root: "/fake/ndk")
 
       calls = :ets.tab2list(configure_calls)
-      assert length(calls) == 4
+      assert length(calls) == 5
 
       flat = List.flatten(for {:configure, argv} <- calls, do: argv)
       assert Enum.any?(flat, &(&1 == "--with-ssl=/tmp/openssl-android-arm64"))
       assert Enum.any?(flat, &(&1 == "--with-ssl=/tmp/openssl-android-arm32"))
+      assert Enum.any?(flat, &(&1 == "--with-ssl=/tmp/openssl-android-x86_64"))
       assert Enum.count(flat, &(&1 == "--without-ssl")) == 2
     end
   end

@@ -100,7 +100,7 @@ defmodule MobDev.Release.OpenSSL do
 
   @doc "All known targets in canonical order."
   @spec targets() :: [atom()]
-  def targets, do: [:android_arm64, :android_arm32, :ios_sim, :ios_device]
+  def targets, do: [:android_arm64, :android_arm32, :android_x86_64, :ios_sim, :ios_device]
 
   @doc """
   Return the `Target` spec for an id. Public so tests can inspect specs
@@ -114,6 +114,17 @@ defmodule MobDev.Release.OpenSSL do
       default_prefix: "/tmp/openssl-android-arm64",
       env_fn: &android_env/1,
       # arm64 hand-written assembly is PIC-safe — no `no-asm` needed.
+      extra_configure_args: ["-D__ANDROID_API__=#{@android_api}"]
+    }
+  end
+
+  def target_spec(:android_x86_64) do
+    %Target{
+      id: :android_x86_64,
+      configure_target: "android-x86_64",
+      default_prefix: "/tmp/openssl-android-x86_64",
+      env_fn: &android_env/1,
+      # x86_64 assembly is PIC-safe — no `no-asm` needed (like arm64).
       extra_configure_args: ["-D__ANDROID_API__=#{@android_api}"]
     }
   end
@@ -238,7 +249,7 @@ defmodule MobDev.Release.OpenSSL do
   """
   @spec build(atom(), keyword()) :: {:ok, map()} | Errors.t()
   def build(target_id, opts \\ [])
-      when target_id in [:android_arm64, :android_arm32, :ios_sim, :ios_device] do
+      when target_id in [:android_arm64, :android_arm32, :android_x86_64, :ios_sim, :ios_device] do
     target = target_spec(target_id)
     shell = Shell.impl()
     openssl_src = opts[:openssl_src] || default_openssl_src(shell)
@@ -284,7 +295,7 @@ defmodule MobDev.Release.OpenSSL do
           "OPENSSL_SRC missing at #{openssl_src} — clone github.com/openssl/openssl and pass `openssl_src:`"
         )
 
-      target.id in [:android_arm64, :android_arm32] ->
+      target.id in [:android_arm64, :android_arm32, :android_x86_64] ->
         android_precheck(shell, opts)
 
       target.id in [:ios_sim, :ios_device] ->
