@@ -22,8 +22,23 @@
 # is bundled at deploy time instead.
 
 %{
-  active_hash: "7d46fdd4",
+  active_hash: "5c9c69fc",
   bundles: %{
+    # Same OTP-29 / erts-17.0 / OpenSSL base as 7d46fdd4, Elixir bumped
+    # rc.5 -> 1.20.1 (stdlib swap; published as otp-5c9c69fc).
+    "5c9c69fc" => %{
+      erts: "17.0",
+      otp_release: "29",
+      elixir: "1.20.1",
+      openssl: "3.4.0",
+      exqlite_beam: "0.36.0",
+      openssl_release_date: "2024-10-22",
+      platforms: [:android, :android_arm32, :ios_sim, :ios_device],
+      per_platform: %{
+        ios_sim: %{exqlite_beam: nil},
+        ios_device: %{exqlite_beam: nil}
+      }
+    },
     "7d46fdd4" => %{
       erts: "17.0",
       otp_release: "29",
