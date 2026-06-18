@@ -105,10 +105,11 @@ defmodule MobDev.Deployer do
 
       results =
         all
-        |> Enum.with_index()
-        |> Enum.map(fn {device, idx} ->
+        |> Enum.map(fn device ->
           IO.write("  #{device.name || device.serial}  →  pushing...")
-          dist_port = dist_port_override || Tunnel.dist_port(idx)
+          # Serial-derived so the port a device is deployed to listen on matches
+          # what `mix mob.connect` later forwards to (same crc32(serial) base).
+          dist_port = dist_port_override || Tunnel.serial_base_port(device.serial)
           node = Device.node_name(device)
 
           {method, result} =

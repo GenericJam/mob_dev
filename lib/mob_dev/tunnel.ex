@@ -3,21 +3,29 @@ defmodule MobDev.Tunnel do
   Manages port tunnels for Android and physical iOS devices.
 
   Android (adb):
-    adb reverse tcp:4369 tcp:4369   — Android BEAM registers in Mac's EPMD
-    adb forward tcp:<dist> tcp:9100 — Mac reaches device's dist port
+    adb reverse tcp:4369 tcp:4369     — Android BEAM registers in Mac's EPMD
+    adb forward tcp:<dist> tcp:<dist> — Mac reaches the device's dist port (1:1)
 
   Physical iOS (direct networking — USB preferred, WiFi/LAN fallback):
     mob_beam.m finds the device's own IP via getifaddrs() and starts the BEAM
     as mob_qa_ios@<device-ip>. The in-process EPMD binds 0.0.0.0:4369 so Mac
     can query it at <device-ip>:4369. The dist port is directly reachable.
 
-    Connection priority (mirrors mob_beam.m priority):
-      1. USB link-local (169.254.x.x) — detected from Mac ARP table
-      2. WiFi/LAN (10.x, 172.16-31.x, 192.168.x) — EPMD scan of ARP table
-      3. Tailscale (100.64-127.x) — EPMD scan of ARP table
-
   iOS simulator:
     Shares Mac network stack — no tunnels needed.
+
+  ## Dist ports are keyed by device serial, not run index
+
+  The Mac runs ONE EPMD (port 4369) that every device — across every project
+  and every `mix mob.connect` run — registers into. Assigning dist ports by
+  per-run index (`9100 + index`) meant project A's device-0 and project B's
+  device-0 both claimed 9100: two nodes at the same port in the shared EPMD,
+  but `adb forward tcp:9100` can only point at one device → the other resolved
+  to the wrong phone or nothing (silent timeout). Now the port is derived from
+  the device serial (`serial_base_port/1`, a crc32 hash into 9100..9899), so a
+  given phone always gets the same unique port regardless of project/run, and
+  `assign_dist_port/2` bumps past any port another live node/forward already
+  holds (cross-project or hash collision).
   """
 
   alias MobDev.Device
@@ -25,48 +33,42 @@ defmodule MobDev.Tunnel do
   # EPMD port — shared across all devices (same Mac EPMD).
   @epmd_port 4369
 
-  # Base dist port — each device gets an offset so they don't collide.
+  # Dist port window. crc32(serial) spreads phones across [9100, 9100+span).
   @base_dist_port 9100
+  @port_span 800
 
   @doc """
-  Assigns a dist port and sets up tunnels for a device.
-  Returns {:ok, %Device{}} with dist_port and host_ip filled in, or {:error, reason}.
+  Assigns a serial-derived dist port and sets up tunnels for a device.
+
+  Cleans the device's own stale forwards first, then picks a port that no other
+  live node/forward on this Mac is using. Returns `{:ok, %Device{}}` with
+  `dist_port` (and `host_ip` for USB iOS) filled in, or `{:error, reason}`.
   """
-  @spec setup(Device.t(), non_neg_integer()) :: {:ok, Device.t()} | {:error, String.t()}
-  def setup(device, index \\ 0)
+  @spec setup(Device.t()) :: {:ok, Device.t()} | {:error, String.t()}
+  def setup(%Device{platform: :android, serial: serial} = device) do
+    clean_android_forwards(serial)
+    port = assign_dist_port(serial, ports_in_use(device.node))
 
-  def setup(%Device{platform: :android, serial: serial} = device, index) do
-    dist_port = @base_dist_port + index
-
-    # Forward host:dist_port -> device:dist_port (1:1) rather than
-    # the older host:dist_port -> device:9100. The device's BEAM picks
-    # up `MOB_DIST_PORT` from the launch intent extra (set by
-    # `Discovery.Android.restart_app/4`) and listens on `dist_port`
-    # inside the emulator/device — so EPMD broadcasts that same port.
-    # When a Mac IEx asks EPMD for a node, it gets back `dist_port`
-    # and connects to `localhost:dist_port`, which adb-forwards to the
-    # right device's BEAM. With 1:N forwarding (every device's forward
-    # pointing at device-side 9100), only the index-0 device was
-    # reachable; non-zero indices got silent EPMD/forward mismatches.
     with :ok <- reverse(serial, @epmd_port, @epmd_port),
-         :ok <- forward(serial, dist_port, dist_port) do
-      {:ok, %{device | dist_port: dist_port, status: :tunneled}}
+         :ok <- forward(serial, port, port) do
+      {:ok, %{device | dist_port: port, status: :tunneled}}
     end
   end
 
-  def setup(%Device{platform: :ios, type: :physical, host_ip: ip} = device, _index)
+  def setup(%Device{platform: :ios, type: :physical, host_ip: ip} = device)
       when not is_nil(ip) do
     # IP already known from WiFi/LAN discovery — no ARP lookup needed.
     # dist_port was set during discovery (parsed from EPMD). Node name already set.
     {:ok, %{device | status: :tunneled}}
   end
 
-  def setup(%Device{platform: :ios, type: :physical} = device, index) do
-    dist_port = @base_dist_port + index
+  def setup(%Device{platform: :ios, type: :physical, serial: udid} = device) do
     # IP not yet known — device was discovered via USB. Find the USB link-local IP.
+    port = assign_dist_port(udid, ports_in_use(device.node))
+
     case device_usb_ip() do
       {:ok, device_ip} ->
-        d = %{device | dist_port: dist_port, host_ip: device_ip, status: :tunneled}
+        d = %{device | dist_port: port, host_ip: device_ip, status: :tunneled}
         {:ok, %{d | node: Device.node_name(d)}}
 
       {:error, reason} ->
@@ -74,22 +76,45 @@ defmodule MobDev.Tunnel do
     end
   end
 
-  def setup(%Device{platform: :ios} = device, index) do
-    # iOS simulator shares Mac network stack — no tunnels needed.
-    # Port is offset by index so iOS and Android don't share the same dist port.
-    dist_port = @base_dist_port + index
-    {:ok, %{device | dist_port: dist_port, status: :tunneled}}
+  def setup(%Device{platform: :ios, serial: udid} = device) do
+    # iOS simulator shares Mac network stack — no tunnels needed, but it still
+    # needs a unique dist port (multiple sims / Android share the Mac EPMD).
+    port = assign_dist_port(udid, ports_in_use(device.node))
+    {:ok, %{device | dist_port: port, status: :tunneled}}
   end
 
-  @doc "Returns the dist port for a given device index (same formula used in setup/2)."
-  @spec dist_port(non_neg_integer()) :: non_neg_integer()
-  def dist_port(index), do: @base_dist_port + index
+  @doc """
+  Stable, deterministic dist port for a device serial — a crc32 hash into
+  `[9100, 9100 + 800)`. Same serial → same port across runs and projects, so
+  the port a device is *deployed* to listen on matches what `mix mob.connect`
+  later forwards to.
+  """
+  @spec serial_base_port(String.t()) :: pos_integer()
+  def serial_base_port(serial) when is_binary(serial) do
+    @base_dist_port + rem(:erlang.crc32(serial), @port_span)
+  end
+
+  @doc """
+  The serial's base port, bumped to the next free slot if `in_use` already
+  claims it (a cross-project collision or a crc32 hash collision between two
+  serials). Walks the window from the base; falls back to the base if the whole
+  window is somehow taken. Pure — `in_use` is gathered by the caller.
+  """
+  @spec assign_dist_port(String.t(), MapSet.t()) :: pos_integer()
+  def assign_dist_port(serial, in_use \\ MapSet.new()) do
+    base_off = rem(:erlang.crc32(serial), @port_span)
+
+    Enum.find_value(0..(@port_span - 1), serial_base_port(serial), fn off ->
+      port = @base_dist_port + rem(base_off + off, @port_span)
+      if MapSet.member?(in_use, port), do: false, else: port
+    end)
+  end
 
   @doc "Tears down tunnels for a device."
   @spec teardown(Device.t()) :: :ok
   def teardown(%Device{platform: :android, serial: serial, dist_port: dist_port}) do
     run_adb(["-s", serial, "reverse", "--remove", "tcp:#{@epmd_port}"])
-    run_adb(["-s", serial, "forward", "--remove", "tcp:#{dist_port}"])
+    if dist_port, do: run_adb(["-s", serial, "forward", "--remove", "tcp:#{dist_port}"])
     :ok
   end
 
@@ -100,6 +125,72 @@ defmodule MobDev.Tunnel do
   end
 
   def teardown(%Device{platform: :ios}), do: :ok
+
+  # ── port bookkeeping ──────────────────────────────────────────────────────────
+
+  @doc false
+  # Host-side ports already claimed on this Mac — by another node in the shared
+  # EPMD or by an existing adb forward — so a device's serial-derived port can
+  # dodge a cross-project collision. `exclude_node` drops this device's own
+  # registration so re-running reclaims its port.
+  @spec ports_in_use(atom() | nil) :: MapSet.t()
+  def ports_in_use(exclude_node \\ nil) do
+    MapSet.union(epmd_ports(exclude_node), forward_host_ports())
+  end
+
+  defp epmd_ports(exclude_node) do
+    exclude = exclude_node && exclude_node |> Atom.to_string() |> String.split("@") |> hd()
+
+    case System.cmd("epmd", ["-names"], stderr_to_stdout: true) do
+      {out, 0} ->
+        ~r/name (\S+) at port (\d+)/
+        |> Regex.scan(out)
+        |> Enum.reject(fn [_, name, _] -> name == exclude end)
+        |> Enum.map(fn [_, _, port] -> String.to_integer(port) end)
+        |> MapSet.new()
+
+      _ ->
+        MapSet.new()
+    end
+  end
+
+  defp forward_host_ports do
+    case run_adb(["forward", "--list"]) do
+      {:ok, out} ->
+        ~r/tcp:(\d+) tcp:\d+/
+        |> Regex.scan(out)
+        |> Enum.map(fn [_, port] -> String.to_integer(port) end)
+        |> MapSet.new()
+
+      _ ->
+        MapSet.new()
+    end
+  end
+
+  # Remove this device's own stale forwards (old per-run ports) so its
+  # serial-derived port is free to reclaim and we don't accumulate duplicates.
+  # Scoped to this serial — never touches other devices' forwards.
+  defp clean_android_forwards(serial) do
+    case run_adb(["forward", "--list"]) do
+      {:ok, out} ->
+        out
+        |> String.split("\n")
+        |> Enum.each(fn line ->
+          case String.split(line) do
+            [^serial, "tcp:" <> host_port | _] ->
+              run_adb(["-s", serial, "forward", "--remove", "tcp:#{host_port}"])
+
+            _ ->
+              :ok
+          end
+        end)
+
+      _ ->
+        :ok
+    end
+
+    :ok
+  end
 
   # ── iproxy cleanup ────────────────────────────────────────────────────────────
 

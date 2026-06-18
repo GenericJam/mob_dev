@@ -91,13 +91,15 @@ defmodule MobDev.Connector do
   end
 
   defp setup_tunnels(devices) do
-    # Track index per platform to assign unique ports
+    # Ports are derived from each device's serial (Tunnel.assign_dist_port/2),
+    # not a per-run index — so they're stable and don't collide across projects.
+    # Sequential so each device's freshly-added forward is visible as "in use"
+    # to the next device's collision check.
     devices
-    |> Enum.with_index()
-    |> Enum.reduce({[], []}, fn {device, idx}, {ok, fail} ->
+    |> Enum.reduce({[], []}, fn device, {ok, fail} ->
       IO.write("  #{device.name || device.serial}  →  tunneling...")
 
-      case Tunnel.setup(device, idx) do
+      case Tunnel.setup(device) do
         {:ok, d} ->
           IO.puts("  #{color(:green)}✓#{color(:reset)}")
           {ok ++ [d], fail}
@@ -246,7 +248,9 @@ defmodule MobDev.Connector do
 
         {:error, reason} ->
           IO.puts("  #{color(:red)}✗#{color(:reset)}")
-          {ok, fail ++ [%{device | status: :error, error: reason}]}
+          diagnosis = connect_diagnosis(device)
+          error = if diagnosis, do: "#{reason} — #{diagnosis}", else: reason
+          {ok, fail ++ [%{device | status: :error, error: error}]}
       end
     end)
   end
@@ -268,6 +272,67 @@ defmodule MobDev.Connector do
   end
 
   defp node_candidates(%Device{node: node}), do: [node]
+
+  # Turn a black-box "timed out" into an actionable reason by inspecting the
+  # actual EPMD / forward / app state. Android only (the path users hit); other
+  # platforms fall through to nil and keep the bare reason.
+  @spec connect_diagnosis(Device.t()) :: String.t() | nil
+  defp connect_diagnosis(%Device{platform: :android, serial: serial, node: node, dist_port: port}) do
+    name = node |> Atom.to_string() |> String.split("@") |> hd()
+    registered_port = epmd_port_for(name)
+
+    cond do
+      not android_app_running?(serial) ->
+        "app not running on #{serial} (crashed, or Android App Standby killed its " <>
+          "network while backgrounded) — foreground it and retry"
+
+      registered_port == nil ->
+        "node #{name} never registered in EPMD — distribution didn't start on the " <>
+          "device. Check `adb -s #{serial} logcat` for the dist boot step"
+
+      registered_port != port ->
+        "node #{name} registered at port #{registered_port} but mob.connect uses " <>
+          "#{port} — re-run mob.connect to realign the forward"
+
+      not android_forwarded?(serial, port) ->
+        "no adb forward localhost:#{port} → #{serial}:#{port} — re-run mob.connect"
+
+      true ->
+        "registered + forwarded but Node.connect failed — likely a cookie mismatch " <>
+          "(both sides must use :mob_secret)"
+    end
+  end
+
+  defp connect_diagnosis(_device), do: nil
+
+  defp epmd_port_for(name) do
+    case System.cmd("epmd", ["-names"], stderr_to_stdout: true) do
+      {out, 0} ->
+        case Regex.run(~r/name #{Regex.escape(name)} at port (\d+)/, out) do
+          [_, p] -> String.to_integer(p)
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp android_forwarded?(serial, port) do
+    case System.cmd("adb", ["forward", "--list"], stderr_to_stdout: true) do
+      {out, 0} -> String.contains?(out, "#{serial} tcp:#{port} ")
+      _ -> false
+    end
+  end
+
+  defp android_app_running?(serial) do
+    case System.cmd("adb", ["-s", serial, "shell", "pidof", android_package()],
+           stderr_to_stdout: true
+         ) do
+      {out, 0} -> String.trim(out) != ""
+      _ -> false
+    end
+  end
 
   defp ios_sim_fallback_node(%Device{node: node}) do
     case Atom.to_string(node) |> String.split("@", parts: 2) do
