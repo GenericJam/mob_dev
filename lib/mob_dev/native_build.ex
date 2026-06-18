@@ -224,37 +224,64 @@ defmodule MobDev.NativeBuild do
              {:ok, arm32_nxeigen} <- maybe_build_nxeigen(:android_arm32),
              {:ok, arm64_tflite} <- maybe_build_tflite(:android_arm64),
              {:ok, arm32_tflite} <- maybe_build_tflite(:android_arm32) do
-          Enum.reduce_while(
-            [
-              {otp_arm64, "arm64-v8a", arm64_nif_args, arm64_nxeigen, arm64_tflite},
-              {otp_arm32, "armeabi-v7a", arm32_nif_args, arm32_nxeigen, arm32_tflite},
-              {otp_x86_64, "x86_64", x86_64_nif_args, nil, nil}
-            ],
-            :ok,
-            fn {otp_dir, abi, abi_nif_args, abi_nxeigen, abi_tflite}, _acc ->
-              # Drop the TFLite runtime .so into jniLibs/<abi>/ alongside
-              # the static-NIF archive that gets linked into native-lib.
-              # No-op when TFLite isn't enabled.
-              :ok = copy_tflite_runtime_lib_android(abi_tflite, abi)
+          build_zig_src = File.read!(build_zig)
 
-              case run_zig_android_objects(
-                     build_zig,
-                     abi,
-                     otp_dir,
-                     erts_vsn,
-                     mob_dir,
-                     driver_tab,
-                     abi_nif_args,
-                     abi_nxeigen,
-                     abi_tflite
-                   ) do
-                :ok -> {:cont, :ok}
-                {:error, reason} -> {:halt, {:error, reason}}
-              end
+          [
+            {otp_arm64, "arm64-v8a", arm64_nif_args, arm64_nxeigen, arm64_tflite},
+            {otp_arm32, "armeabi-v7a", arm32_nif_args, arm32_nxeigen, arm32_tflite},
+            {otp_x86_64, "x86_64", x86_64_nif_args, nil, nil}
+          ]
+          |> Enum.filter(fn {_otp, abi, _nif, _nx, _tf} ->
+            build_zig_supports_abi?(build_zig_src, abi) ||
+              warn_skip_abi(build_zig, abi)
+          end)
+          |> Enum.reduce_while(:ok, fn {otp_dir, abi, abi_nif_args, abi_nxeigen, abi_tflite},
+                                       _acc ->
+            # Drop the TFLite runtime .so into jniLibs/<abi>/ alongside
+            # the static-NIF archive that gets linked into native-lib.
+            # No-op when TFLite isn't enabled.
+            :ok = copy_tflite_runtime_lib_android(abi_tflite, abi)
+
+            case run_zig_android_objects(
+                   build_zig,
+                   abi,
+                   otp_dir,
+                   erts_vsn,
+                   mob_dir,
+                   driver_tab,
+                   abi_nif_args,
+                   abi_nxeigen,
+                   abi_tflite
+                 ) do
+              :ok -> {:cont, :ok}
+              {:error, reason} -> {:halt, {:error, reason}}
             end
-          )
+          end)
         end
     end
+  end
+
+  # True if the app's build.zig handles `abi`. mob_dev builds all of
+  # arm64-v8a/armeabi-v7a/x86_64 by default, but an app's app-owned build.zig
+  # (copied at `mix mob.new` time) may predate x86_64 support (mob_new < 0.4.5)
+  # and reject it, which used to fail the whole native build — aborting before
+  # the plugin-bootstrap regen. Each handled ABI appears as a quoted string
+  # literal in the build.zig's abi_to_target/ndk_arch_triple switches, so check
+  # for that. Safe to skip: gradle abiFilters won't ship an ABI the build.zig
+  # can't compile. Real failures of a SUPPORTED ABI still halt the build.
+  @doc false
+  @spec build_zig_supports_abi?(String.t(), String.t()) :: boolean()
+  def build_zig_supports_abi?(build_zig_src, abi) do
+    String.contains?(build_zig_src, ~s("#{abi}"))
+  end
+
+  defp warn_skip_abi(build_zig, abi) do
+    IO.puts(
+      "  #{IO.ANSI.yellow()}Skipping ABI #{abi}: not handled by #{build_zig} " <>
+        "(regenerate from mob_new >= 0.4.5 to add x86_64).#{IO.ANSI.reset()}"
+    )
+
+    false
   end
 
   defp run_zig_android_objects(
