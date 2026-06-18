@@ -10,6 +10,29 @@ defmodule MobDev.NativeBuildTest do
 
   alias MobDev.NativeBuild
 
+  describe "build_zig_supports_abi?/2" do
+    test "true when the build.zig declares the ABI as a quoted string literal" do
+      src = ~s|
+        if (std.mem.eql(u8, abi, "arm64-v8a")) return "aarch64-linux-android";
+        if (std.mem.eql(u8, abi, "x86_64")) return "x86_64-linux-android";
+      |
+
+      assert NativeBuild.build_zig_supports_abi?(src, "arm64-v8a")
+      assert NativeBuild.build_zig_supports_abi?(src, "x86_64")
+    end
+
+    test "false when the ABI is absent (e.g. a pre-x86_64 mob_new < 0.4.5 build.zig)" do
+      src = ~s|
+        if (std.mem.eql(u8, abi, "arm64-v8a")) return "aarch64-linux-android";
+        if (std.mem.eql(u8, abi, "armeabi-v7a")) return "arm-linux-androideabi";
+        // ERROR: unsupported -Dabi (expected arm64-v8a or armeabi-v7a)
+      |
+
+      assert NativeBuild.build_zig_supports_abi?(src, "armeabi-v7a")
+      refute NativeBuild.build_zig_supports_abi?(src, "x86_64")
+    end
+  end
+
   describe "__driver_tab_formats__/1 + regen_driver_tab!/0" do
     test "detects the formats whose generated files exist" do
       zig_paths = Mix.Tasks.Mob.RegenDriverTab.target_paths(:zig)

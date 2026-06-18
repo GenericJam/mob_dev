@@ -8,6 +8,22 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.6.6] - 2026-06-18
+
+### Fixed
+- **Android native build skips ABIs the app's `build.zig` doesn't handle**
+  instead of hard-failing. mob_dev builds arm64-v8a/armeabi-v7a/x86_64 by
+  default, but an app's app-owned `build.zig` (copied at `mix mob.new` time)
+  may predate x86_64 support (mob_new < 0.4.5) and reject `-Dabi=x86_64`. That
+  used to fail the whole native build — aborting *before* the
+  `io.mob.plugin.MobPluginBootstrap` regen, so the next gradle build then failed
+  on an unresolved bootstrap. Now each ABI is pre-flighted against the build.zig
+  (`build_zig_supports_abi?/2`) and unsupported ones are skipped with a warning
+  (gradle `abiFilters` wouldn't ship them anyway). Real failures of a SUPPORTED
+  ABI still halt the build.
+
+---
+
 ## [0.6.5] - 2026-06-17
 
 ### Changed
