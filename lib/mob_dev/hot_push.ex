@@ -24,9 +24,8 @@ defmodule MobDev.HotPush do
 
     nodes =
       (Android.list_devices() ++ IOS.list_simulators())
-      |> Enum.with_index()
-      |> Enum.flat_map(fn {device, idx} ->
-        case Tunnel.setup(device, idx) do
+      |> Enum.flat_map(fn device ->
+        case Tunnel.setup(device) do
           {:ok, d} -> [d]
           _ -> []
         end

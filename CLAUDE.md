@@ -293,24 +293,25 @@ helper already existed and was used in `restart_app/4`. See ADR
 Physical (USB/Wi-Fi) Android is unchanged: still keyed off `ro.serialno`.
 iOS untouched.
 
-### Fixing adb-forward port mismatch
+### Dist ports are serial-derived (FIXED 0.6.7, 2026-06-18)
 
-`mob_dev` assigns dist ports by index (`9100` for the first device,
-`9101` for the second, …) but EPMD broadcasts the *device-side*
-port (always `9100`). When EPMD says "node X is at port 9100",
-your IEx connects to `localhost:9100` — which may be an `adb
-forward` to a different device, or to nothing. Symptom:
+Dist ports are no longer assigned by per-run index (which made *every*
+project's first device claim 9100 → cross-project collisions in the one
+shared Mac EPMD → silent timeouts). `Tunnel.serial_base_port/1` maps a
+device serial to a stable port in `9100..9899` (crc32 hash), bumped past
+any port a live node/forward already holds (`assign_dist_port/2`). The
+device-side BEAM listens on that same port (via `MOB_DIST_PORT`), so the
+forward is 1:1 and EPMD's broadcast matches. `setup` also removes the
+device's own stale forwards first. A given phone always gets the same
+unique port across runs/projects, and deploy + connect agree on it.
 
-```elixir
-Node.connect(:"your_app_android_<suffix>@127.0.0.1")
-#=> false
-```
-
-Repoint `localhost:9100` at the device whose BEAM you want:
+If `mix mob.connect` still fails, it now tells you *why* (app not running /
+Standby-killed, dist not registered, port mismatch, no forward, cookie
+mismatch) instead of a bare "timed out". To inspect by hand:
 
 ```bash
-adb forward --list                           # see what's there
-adb -s <serial> forward tcp:9100 tcp:9100    # 9100 host → 9100 device
+epmd -names           # registered nodes + their ports
+adb forward --list    # host→device forwards (should be 1:1, no dupes)
 ```
 
 For physical-device-on-Wi-Fi targets (iPhone, real Android), the
