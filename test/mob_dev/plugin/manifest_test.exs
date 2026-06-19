@@ -131,6 +131,138 @@ defmodule MobDev.Plugin.ManifestTest do
       assert {:error, errs} = Manifest.validate(m)
       assert Enum.any?(errs, &(&1 =~ "nifs entry #0 must be a map"))
     end
+
+    test "accepts a valid lang: :cpp_archive nif entry" do
+      m =
+        Map.put(@valid, :nifs, [
+          %{
+            module: :nx_eigen,
+            lang: :cpp_archive,
+            sources: ["c_src/nx_eigen_nif.cpp", "c_src/nx_eigen_fft_eigen.cpp"],
+            includes: ["c_src", {:dep, :nx_eigen, "eigen-3.4.0"}],
+            cxxflags: ["-std=c++17", "-O3"],
+            nm_symbol: "nx_eigen_nif_init"
+          }
+        ])
+
+      assert {:ok, ^m} = Manifest.validate(m)
+    end
+
+    test "accepts a cpp_archive entry with only the required fields" do
+      m =
+        Map.put(@valid, :nifs, [
+          %{module: :foo, lang: :cpp_archive, sources: ["a.cpp"], nm_symbol: "foo_nif_init"}
+        ])
+
+      assert {:ok, ^m} = Manifest.validate(m)
+    end
+
+    test "rejects a cpp_archive whose nm_symbol disagrees with <module>_nif_init" do
+      # The exact bug device-verify caught: driver table derives nx_eigen_nif_init
+      # from the module, archive exports a different symbol → link failure.
+      m =
+        Map.put(@valid, :nifs, [
+          %{
+            module: :nx_eigen_nif,
+            lang: :cpp_archive,
+            sources: ["a.cpp"],
+            nm_symbol: "nx_eigen_nif_init"
+          }
+        ])
+
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "must be \"nx_eigen_nif_nif_init\""))
+    end
+
+    test "rejects a cpp_archive entry missing :sources" do
+      m = Map.put(@valid, :nifs, [%{module: :x, lang: :cpp_archive, nm_symbol: "x_init"}])
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "cpp_archive requires a non-empty :sources"))
+    end
+
+    test "rejects a cpp_archive entry with an empty :sources list" do
+      m =
+        Map.put(@valid, :nifs, [
+          %{module: :x, lang: :cpp_archive, sources: [], nm_symbol: "x_init"}
+        ])
+
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "cpp_archive requires a non-empty :sources"))
+    end
+
+    test "accepts {:dep, name, subpath} source tokens (dep-sourced C++)" do
+      m =
+        Map.put(@valid, :nifs, [
+          %{
+            module: :nx_eigen,
+            lang: :cpp_archive,
+            sources: [{:dep, :nx_eigen, "c_src/nx_eigen_nif.cpp"}, "c_src/fft.cpp"],
+            nm_symbol: "nx_eigen_nif_init"
+          }
+        ])
+
+      assert {:ok, ^m} = Manifest.validate(m)
+    end
+
+    test "rejects a cpp_archive entry with a bogus source entry" do
+      m =
+        Map.put(@valid, :nifs, [
+          %{module: :x, lang: :cpp_archive, sources: [:nope], nm_symbol: "x_init"}
+        ])
+
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "path strings or {:dep"))
+    end
+
+    test "rejects a cpp_archive entry missing :nm_symbol" do
+      m = Map.put(@valid, :nifs, [%{module: :x, lang: :cpp_archive, sources: ["a.cpp"]}])
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "cpp_archive requires an :nm_symbol"))
+    end
+
+    test "rejects a cpp_archive entry missing :module" do
+      # Without :module, Merge.static_archives silently drops the entry (its
+      # comprehension guards on is_atom(nif[:module])) — fail-open. Catch it.
+      m =
+        Map.put(@valid, :nifs, [
+          %{lang: :cpp_archive, sources: ["a.cpp"], nm_symbol: "x_nif_init"}
+        ])
+
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "cpp_archive requires a lowercase :module atom"))
+    end
+
+    test "rejects a cpp_archive entry with a non-atom :module" do
+      # A non-atom :module is dropped at merge; nil would build libnil.a.
+      m =
+        Map.put(@valid, :nifs, [
+          %{module: "x", lang: :cpp_archive, sources: ["a.cpp"], nm_symbol: "x_nif_init"}
+        ])
+
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "cpp_archive requires a lowercase :module atom"))
+    end
+
+    test "rejects a cpp_archive entry with a nil :module" do
+      m =
+        Map.put(@valid, :nifs, [
+          %{module: nil, lang: :cpp_archive, sources: ["a.cpp"], nm_symbol: "x_nif_init"}
+        ])
+
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "cpp_archive requires a lowercase :module atom"))
+    end
+
+    test "rejects a cpp_archive entry with an aliased (uppercase) :module" do
+      # Foo.Bar would yield a wrong-named libElixir.Foo.Bar.a downstream.
+      m =
+        Map.put(@valid, :nifs, [
+          %{module: Foo.Bar, lang: :cpp_archive, sources: ["a.cpp"], nm_symbol: "x_nif_init"}
+        ])
+
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "lowercase NIF atom"))
+    end
   end
 
   describe "tier/1" do

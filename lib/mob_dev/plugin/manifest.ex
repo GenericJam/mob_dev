@@ -174,12 +174,14 @@ defmodule MobDev.Plugin.Manifest do
 
   # `:nifs` is optional. When present, each entry's optional `:platform` (used by
   # cross-platform plugins that ship a separate iOS + Android source for the same
-  # module) must be `:ios` or `:android`. Other fields are validated at build /
-  # link time, not here.
+  # module) must be `:ios` or `:android`. For single-source C/ObjC/zig NIFs the
+  # rest of the fields are validated at build / link time. `lang: :cpp_archive`
+  # entries (a cross-compiled C++ static lib, e.g. an Nx backend) declare more —
+  # `:sources` + `:nm_symbol` — so those are checked structurally here.
   defp check_nifs(errors, %{nifs: nifs}) when is_list(nifs) do
     nifs
     |> Enum.with_index()
-    |> Enum.reduce(errors, fn {nif, i}, acc -> check_nif_platform(acc, nif, i) end)
+    |> Enum.reduce(errors, fn {nif, i}, acc -> check_nif_entry(acc, nif, i) end)
   end
 
   defp check_nifs(errors, %{nifs: other}),
@@ -187,13 +189,105 @@ defmodule MobDev.Plugin.Manifest do
 
   defp check_nifs(errors, _), do: errors
 
+  defp check_nif_entry(errors, %{} = nif, i) do
+    errors
+    |> check_nif_platform(nif, i)
+    |> check_nif_cpp_archive(nif, i)
+  end
+
+  defp check_nif_entry(errors, other, i),
+    do: ["nifs entry ##{i} must be a map, got: #{inspect(other)}" | errors]
+
   defp check_nif_platform(errors, %{platform: p}, i) when p not in [:ios, :android],
     do: ["nifs entry ##{i}: :platform must be :ios or :android, got: #{inspect(p)}" | errors]
 
-  defp check_nif_platform(errors, %{}, _i), do: errors
+  defp check_nif_platform(errors, _nif, _i), do: errors
 
-  defp check_nif_platform(errors, other, i),
-    do: ["nifs entry ##{i} must be a map, got: #{inspect(other)}" | errors]
+  # A `lang: :cpp_archive` entry is cross-compiled into a static `.a` and
+  # static-linked into the app (see `MobDev.Plugin.CppArchive`). It needs more
+  # than a single-source NIF: `:sources` (≥1 relative C++ paths) and
+  # `:nm_symbol` (the ERL_NIF_INIT symbol the driver table references). The
+  # toolchain-shaped fields (`:includes`, `:cxxflags*`) are optional and
+  # resolved at build time.
+  defp check_nif_cpp_archive(errors, %{lang: :cpp_archive} = nif, i) do
+    errors
+    |> check_archive_module(nif, i)
+    |> check_archive_sources(nif, i)
+    |> check_archive_symbol(nif, i)
+    |> check_archive_symbol_matches_module(nif, i)
+  end
+
+  defp check_nif_cpp_archive(errors, _nif, _i), do: errors
+
+  # The driver table builds the archive's libname and init symbol from
+  # `:module` (`lib<module>.a`, `<module>_nif_init`), and `Merge.static_archives`
+  # silently drops any entry whose `:module` isn't an atom. A missing/non-atom
+  # `:module` therefore fails *open*: validation passes but the build either
+  # drops the NIF (non-atom) or names it `libnil.a` (nil). Require a lowercase
+  # NIF `:module` atom up front — mirrors the `:screens` `:module` check, but
+  # also rejects aliased modules (`Foo.Bar`), which would yield a wrong-named
+  # `libElixir.Foo.Bar.a`. NIF modules are bare lowercase atoms (`:nx_eigen_nif`).
+  defp check_archive_module(errors, %{module: m}, _i)
+       when is_atom(m) and not is_nil(m) and m not in [true, false] do
+    if String.starts_with?(Atom.to_string(m), "Elixir."),
+      do: [
+        "nifs cpp_archive :module must be a lowercase NIF atom (e.g. :nx_eigen_nif), " <>
+          "got an aliased module #{inspect(m)}"
+        | errors
+      ],
+      else: errors
+  end
+
+  defp check_archive_module(errors, _nif, i),
+    do: ["nifs entry ##{i}: lang: :cpp_archive requires a lowercase :module atom" | errors]
+
+  defp check_archive_sources(errors, %{sources: s}, _i)
+       when is_list(s) and s != [] do
+    if Enum.all?(s, &archive_path_entry?/1),
+      do: errors,
+      else: [
+        "nifs cpp_archive sources must be path strings or {:dep, name, subpath} tokens" | errors
+      ]
+  end
+
+  defp check_archive_sources(errors, _nif, i),
+    do: ["nifs entry ##{i}: lang: :cpp_archive requires a non-empty :sources list" | errors]
+
+  # A cpp_archive :sources / :includes entry is either a plugin-relative path
+  # string or a `{:dep, name, subpath}` token referencing a dep's tree (e.g.
+  # NxEigen's NIF lives in the nx_eigen dep). Merge resolves both.
+  defp archive_path_entry?(s) when is_binary(s), do: true
+  defp archive_path_entry?({:dep, name, sub}) when is_atom(name) and is_binary(sub), do: true
+  defp archive_path_entry?(_), do: false
+
+  defp check_archive_symbol(errors, %{nm_symbol: sym}, _i) when is_binary(sym) and sym != "",
+    do: errors
+
+  defp check_archive_symbol(errors, _nif, i),
+    do: ["nifs entry ##{i}: lang: :cpp_archive requires an :nm_symbol string" | errors]
+
+  # The static-NIF driver table derives a cpp_archive's init function as
+  # `<module>_nif_init` and resolves load_nif by the module name, so the
+  # archive's actual `:nm_symbol` MUST equal `<module>_nif_init`. Mismatch is a
+  # link-time "cannot locate symbol …_nif_init" that only shows up on-device
+  # after a full native build (it bit the first real consumer: module
+  # :nx_eigen_nif vs symbol nx_eigen_nif_init). Catch it at config time.
+  defp check_archive_symbol_matches_module(errors, %{module: m, nm_symbol: sym}, i)
+       when is_atom(m) and is_binary(sym) do
+    expected = "#{m}_nif_init"
+
+    if sym == expected,
+      do: errors,
+      else: [
+        "nifs entry ##{i}: cpp_archive :nm_symbol #{inspect(sym)} must be " <>
+          "#{inspect(expected)} (the driver table derives the init symbol as " <>
+          "<module>_nif_init; set the module so they agree, or fix " <>
+          "-DSTATIC_ERLANG_NIF_LIBNAME)"
+        | errors
+      ]
+  end
+
+  defp check_archive_symbol_matches_module(errors, _nif, _i), do: errors
 
   # ── Tier 3: screens / migrations / assets ─────────────────────────────────
 
