@@ -8,6 +8,24 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.6.10] - 2026-06-19
+
+### Added
+- **Plugin `:cpp_archive` NIFs** — ship a C++ static library (e.g. an Nx
+  backend) from a plugin. Manifest-driven cross-compile + `--whole-archive`
+  static link (rule #11), with `<module>_nif_init` symbol verification and
+  duplicate-init cross-validation. (#18)
+
+### Fixed
+- cpp_archive builds now **fail fast with a named error** on an unsupported
+  Android ABI (e.g. the x86_64 emulator) instead of silently skipping — which
+  previously deferred an unresolved `<module>_nif_init` to an on-device link
+  failure.
+- The plugin manifest now requires a lowercase `:module` atom for
+  `:cpp_archive` entries (fail-loud instead of fail-open / `libnil.a`).
+
+---
+
 ## [0.6.9] - 2026-06-18
 
 ### Fixed
