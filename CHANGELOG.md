@@ -8,6 +8,21 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.6.12] - 2026-06-19
+
+### Fixed
+- **16 KB page-size alignment enforced at build time for every app.** Android
+  15+ devices use 16 KB memory pages and Google Play requires every bundled
+  `.so` to have 16 KB-aligned LOAD segments. The `-Wl,-z,max-page-size=16384`
+  link flag lives in the app's `build.zig`, which is copied once at `mix mob.new`
+  and never regenerated — so apps generated before the template carried the flag
+  kept linking 4 KB-aligned `.so` and failed Play. `mix mob.deploy --native` now
+  reads the app's `build.zig` and, if its `-shared` link lacks the flag, injects
+  it before linking (idempotent — a no-op when already present, e.g. the current
+  mob_new template or a hand-fixed app). Pure core in `inject_page_size_flag/1`.
+
+---
+
 ## [0.6.11] - 2026-06-19
 
 ### Added
