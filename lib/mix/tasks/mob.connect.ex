@@ -15,6 +15,12 @@ defmodule Mix.Tasks.Mob.Connect do
     * `--no-iex`   — set up connections but don't start IEx (print node names instead)
     * `--name`     — local node name for this session (default: `mob_dev@127.0.0.1`)
     * `--cookie`   — Erlang cookie (default: `mob_secret`)
+    * `--only` / `--device` (`-d`) — restrict to devices whose serial/udid contains
+      the given substring. Repeatable. Without it, connect attaches to *every*
+      running device, so a single slow or locked device (e.g. a plugged-in
+      physical iPhone) can stall the whole run. Target one phone with:
+
+          mix mob.connect --only ZY22CRLMWK
 
   ## Multiple simultaneous sessions
 
@@ -111,17 +117,21 @@ defmodule Mix.Tasks.Mob.Connect do
   def run(args) do
     {opts, _, _} =
       OptionParser.parse(args,
-        switches: [iex: :boolean, cookie: :string, name: :string],
-        aliases: [c: :cookie, n: :name]
+        switches: [iex: :boolean, cookie: :string, name: :string, only: :keep, device: :keep],
+        aliases: [c: :cookie, n: :name, d: :device]
       )
 
     no_iex = Keyword.get(opts, :iex, true) == false
     cookie = opts |> Keyword.get(:cookie, "mob_secret") |> String.to_atom()
     local_name = opts |> Keyword.get(:name, "mob_dev@127.0.0.1") |> String.to_atom()
+    # --only / --device (repeatable) restrict to matching serials/udids. Without
+    # it, connect attaches to every running device — handy for a cluster, but a
+    # slow or locked device (e.g. a physical iPhone) can stall the whole run.
+    only = Keyword.get_values(opts, :only) ++ Keyword.get_values(opts, :device)
 
     Mix.Task.run("app.config")
 
-    {connected, _failed} = MobDev.Connector.connect_all(cookie: cookie)
+    {connected, _failed} = MobDev.Connector.connect_all(cookie: cookie, only: only)
 
     if connected == [] do
       IO.puts("\n#{IO.ANSI.yellow()}No nodes connected. Nothing to do.#{IO.ANSI.reset()}\n")

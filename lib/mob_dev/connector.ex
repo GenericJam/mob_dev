@@ -26,14 +26,23 @@ defmodule MobDev.Connector do
   def connect_all(opts \\ []) do
     cookie = Keyword.get(opts, :cookie, :mob_secret)
 
+    only = opts |> Keyword.get(:only, []) |> List.wrap()
+
     IO.puts("\n#{color(:cyan)}Scanning for devices...#{color(:reset)}\n")
 
-    devices = discover_all()
+    devices = discover_all() |> filter_only(only)
 
     if devices == [] do
-      IO.puts("  #{color(:yellow)}No devices found.#{color(:reset)}")
-      IO.puts("  • Connect an Android device via USB and enable USB debugging")
-      IO.puts("  • Start an iOS simulator in Xcode or via xcrun simctl")
+      if only != [] do
+        IO.puts("  #{color(:yellow)}No devices matched #{Enum.join(only, ", ")}.#{color(:reset)}")
+
+        IO.puts("  • Run `mix mob.connect` with no --only to list all discovered devices")
+      else
+        IO.puts("  #{color(:yellow)}No devices found.#{color(:reset)}")
+        IO.puts("  • Connect an Android device via USB and enable USB debugging")
+        IO.puts("  • Start an iOS simulator in Xcode or via xcrun simctl")
+      end
+
       {[], []}
     else
       print_discovered(devices)
@@ -88,6 +97,21 @@ defmodule MobDev.Connector do
     android = Android.list_devices()
     ios = IOS.list_devices()
     android ++ ios
+  end
+
+  # Restrict the discovered set to devices whose serial/udid contains any of the
+  # given substrings (case-insensitive). Empty list = no filter (connect to all).
+  @doc false
+  @spec filter_only([Device.t()], [String.t()]) :: [Device.t()]
+  def filter_only(devices, []), do: devices
+
+  def filter_only(devices, patterns) do
+    pats = Enum.map(patterns, &String.downcase/1)
+
+    Enum.filter(devices, fn d ->
+      serial = String.downcase(to_string(d.serial))
+      Enum.any?(pats, &String.contains?(serial, &1))
+    end)
   end
 
   defp setup_tunnels(devices) do

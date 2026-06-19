@@ -2,6 +2,51 @@ defmodule MobDev.ConnectorTest do
   use ExUnit.Case, async: true
 
   alias MobDev.Connector
+  alias MobDev.Device
+
+  # ── filter_only/2 ────────────────────────────────────────────────────────────
+
+  describe "filter_only/2" do
+    setup do
+      devices = [
+        %Device{serial: "ZY22CRLMWK", platform: :android},
+        %Device{serial: "ZY22DP6HFL", platform: :android},
+        %Device{serial: "00008110-001E1C3A34F8401E", platform: :ios}
+      ]
+
+      {:ok, devices: devices}
+    end
+
+    test "empty pattern list is a no-op (connect to all)", %{devices: devices} do
+      assert Connector.filter_only(devices, []) == devices
+    end
+
+    test "matches a single serial substring", %{devices: devices} do
+      assert [%Device{serial: "ZY22CRLMWK"}] = Connector.filter_only(devices, ["ZY22CRLMWK"])
+    end
+
+    test "matching is case-insensitive", %{devices: devices} do
+      assert [%Device{serial: "ZY22CRLMWK"}] = Connector.filter_only(devices, ["zy22crlmwk"])
+    end
+
+    test "partial substrings match", %{devices: devices} do
+      # both Motos share the ZY22 prefix
+      result = Connector.filter_only(devices, ["ZY22"])
+      assert length(result) == 2
+    end
+
+    test "multiple patterns union their matches", %{devices: devices} do
+      result = Connector.filter_only(devices, ["CRLMWK", "00008110"])
+      serials = Enum.map(result, & &1.serial)
+      assert "ZY22CRLMWK" in serials
+      assert "00008110-001E1C3A34F8401E" in serials
+      refute "ZY22DP6HFL" in serials
+    end
+
+    test "no match yields an empty list", %{devices: devices} do
+      assert Connector.filter_only(devices, ["nonexistent"]) == []
+    end
+  end
 
   # ── start_epmd/0 ─────────────────────────────────────────────────────────────
 
