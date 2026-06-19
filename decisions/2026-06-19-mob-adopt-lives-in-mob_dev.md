@@ -44,11 +44,15 @@ Relocate the whole adopt task tree into mob_dev, where `mob.add_nif` /
 mob_new is **untouched** — `mix mob.new` still uses its own copies. This is a
 duplication, not a move.
 
-The native Android/iOS trees still render from mob_new's
-`priv/templates/mob.new/` (the templates belong to the generator, not the
-build toolkit). `Generator.templates_root/1` resolves mob_new's priv dir at
-runtime: a `:mob_new` dep first, then `$MOB_NEW_DIR`, then a `~/code/mob_new`
-checkout, raising a clear message if none is reachable.
+The native Android/iOS trees render from mob_new's `priv/templates/mob.new/`
+(the templates belong to the generator, not the build toolkit). Rather than
+duplicate the template files, `mix mob.adopt --android/--ios` **requires the
+mob_new archive installed** (`mix archive.install hex mob_new`) alongside
+mob_dev as a project dep. Mix puts an installed archive on the code path, so
+`Generator.templates_root/1` resolves them via `:code.priv_dir(:mob_new)` at
+runtime — the same mechanism `mix mob.new` uses to load its own templates —
+falling back to `$MOB_NEW_DIR` / `~/code/mob_new` for local development and
+raising a clear "install the mob_new archive" message if none is reachable.
 
 ## Consequences
 
@@ -60,9 +64,14 @@ checkout, raising a clear message if none is reachable.
   `MobNew.NdkVersion` ↔ `MobDev.NdkVersion`; adopt's `Generator` calls
   `MobDev.NdkVersion.recommended/0` directly rather than carrying yet another
   mirror.
-- adopt depends on mob_new's templates being reachable at runtime — a new
-  cross-repo lookup that didn't exist in mob_dev before. Phase 5's Igniter
-  reunification removes it.
+- adopt requires mob_new's templates at runtime for the native path. This is
+  an **accepted, documented contract** — the dual requirement (mob_new archive
+  installed + mob_dev as a dep) keeps mob_new the single source of native
+  templates and avoids duplicating/drifting them across repos. The Elixir-side
+  adoption (deps, LV bridge, `mob.exs`, MobScreen) is fully self-contained in
+  mob_dev and needs no archive. Phase 5 of `build_system_migration.md` may
+  revisit how templates are shared, but the cross-repo template source is
+  intentional, not a stopgap.
 - The acceptance test (`test/acceptance/mob_adopt_acceptance_test.exs`,
   `@tag :acceptance`) wires the generated project to mob_dev via a `path:` dep
   (the checkout under test) + `:igniter`, then runs `mix mob.adopt`. It needs

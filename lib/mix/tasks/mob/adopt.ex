@@ -53,6 +53,16 @@ defmodule Mix.Tasks.Mob.Adopt do
   declare `{:igniter, "~> 0.7", only: [:dev, :test]}` in its mix.exs
   (most modern Phoenix-ecosystem projects already do).
 
+  The native trees (`--android` / `--ios`, on by default) render from
+  mob_new's templates, so they also require the **mob_new archive
+  installed**:
+
+      mix archive.install hex mob_new
+
+  mob_new stays the single source of native templates (no duplication
+  across repos). The Elixir-side adoption (deps, LiveView bridge,
+  `mob.exs`, `MobScreen`) needs no archive — only `--android`/`--ios` do.
+
   ## Options
 
   - `--no-ios` — skip the iOS native tree

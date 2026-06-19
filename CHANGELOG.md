@@ -21,8 +21,10 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
   generates a thin-client shell whose WebView opens a deployed server.
   Pre-1.0: refuses loudly (via Igniter issues) on umbrella / non-Phoenix /
   heavily-customised `app.js` or root layout / non-SQLite LV hosts rather
-  than risk breaking the app. Native Android/iOS trees render from mob_new's
-  templates (resolved via `MOB_NEW_DIR`, a `:mob_new` dep, or `~/code/mob_new`).
+  than risk breaking the app. The native Android/iOS trees (`--android` /
+  `--ios`) render from mob_new's templates and require the **mob_new archive
+  installed** (`mix archive.install hex mob_new`) — mob_new stays the single
+  source of native templates; the Elixir-side adoption needs no archive.
   Contributed as [mob_new#8](https://github.com/GenericJam/mob_new/pull/8)
   by [@ken-kost](https://github.com/ken-kost) and relocated here — adopt is
   an Igniter task that mutates an existing project (like `mob.add_nif` /

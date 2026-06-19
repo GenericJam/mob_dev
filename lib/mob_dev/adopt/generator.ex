@@ -13,15 +13,20 @@ defmodule MobDev.Adopt.Generator do
   (mob_new can't depend on mob_dev — it's a self-contained Mix archive;
   see `ArchiveSelfContainedTest`).
 
-  ## Native templates live in mob_new
+  ## Native templates come from the installed mob_new archive
 
   The Android/iOS native trees `mob.adopt` emits are rendered from
-  mob_new's `priv/templates/mob.new/` and `priv/static/mob.new/`. mob_dev
-  does not carry those template files (they belong to the generator).
-  `templates_root/1` / `static_root/1` resolve mob_new's priv dir at
-  runtime — preferring `:code.priv_dir(:mob_new)` when the user's project
-  has `:mob_new` as a dep, then `$MOB_NEW_DIR`, then a `~/code/mob_new`
-  checkout. Phase 5's Igniter reunification removes this cross-repo lookup.
+  mob_new's `priv/templates/mob.new/` and `priv/static/mob.new/`. Those
+  template files belong to the generator and are deliberately NOT
+  duplicated here. By design, `mix mob.adopt --android/--ios` requires the
+  mob_new archive installed (`mix archive.install hex mob_new`) in addition
+  to mob_dev as a project dep — mob_new stays the single source of native
+  templates, so the two can't drift. Mix puts an installed archive on the
+  code path, so `:code.priv_dir(:mob_new)` resolves its bundled priv at
+  runtime — the same way mob_new's own `mix mob.new` loads them.
+  `templates_root/1` / `static_root/1` prefer that, then fall back to a
+  local checkout via `$MOB_NEW_DIR` / `~/code/mob_new` for development. See
+  `decisions/2026-06-19-mob-adopt-lives-in-mob_dev.md`.
 
   ## Compile-time regex
 
@@ -40,9 +45,9 @@ defmodule MobDev.Adopt.Generator do
   def static_root(opts), do: priv_root(opts) |> Path.join("static/mob.new")
 
   # The native templates ship in mob_new, not mob_dev. Resolve mob_new's
-  # priv dir: prefer the loaded `:mob_new` app (a project that depends on
-  # both mob and mob_new), then a local checkout via `$MOB_NEW_DIR` /
-  # `~/code/mob_new`.
+  # priv dir: prefer the installed mob_new archive (on Mix's code path, so
+  # `:code.priv_dir(:mob_new)` finds its bundled priv), then a local
+  # checkout via `$MOB_NEW_DIR` / `~/code/mob_new` for development.
   defp priv_root(_opts) do
     case mob_new_priv_from_code() do
       nil -> mob_new_priv_from_checkout() || raise_no_templates()
@@ -74,11 +79,14 @@ defmodule MobDev.Adopt.Generator do
     Mix.raise("""
     mob.adopt could not find mob_new's native templates.
 
-    The Android/iOS trees are rendered from mob_new's
-    priv/templates/mob.new/. Make one of these reachable:
-      - add `{:mob_new, "~> 0.4"}` to your project deps, or
-      - set MOB_NEW_DIR to a local mob_new checkout, or
-      - clone mob_new to ~/code/mob_new
+    The Android/iOS native trees are rendered from mob_new's bundled
+    priv/templates/mob.new/. Install the mob_new archive so it is on
+    Mix's code path:
+
+        mix archive.install hex mob_new
+
+    (For local mob_new development instead, set MOB_NEW_DIR to your
+    checkout, or clone mob_new to ~/code/mob_new.)
     """)
   end
 
