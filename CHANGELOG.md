@@ -8,6 +8,20 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.6.8] - 2026-06-18
+
+### Added
+- **`mix mob.connect --only <serial>` (alias `--device`/`-d`, repeatable).**
+  Restricts the run to devices whose serial/udid contains the given substring.
+  Without it, connect attaches to *every* running device, so one slow or locked
+  device (typically a plugged-in physical iPhone whose app restart blocks) could
+  stall the whole session before any node connected. Verified end-to-end against
+  a single Android phone: `mix mob.connect --only ZY22CRLMWK` tunnels, restarts,
+  and connects `livebook_mob_android_zy22crlmwk@127.0.0.1` on its serial-derived
+  port 9633, then RPC into the device BEAM works (read live state, eval code).
+
+---
+
 ## [0.6.7] - 2026-06-18
 
 ### Fixed
