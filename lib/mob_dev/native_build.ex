@@ -360,16 +360,30 @@ defmodule MobDev.NativeBuild do
     # but received a list".
     nif_args_no_root = Enum.reject(nif_args, &String.starts_with?(&1, "-Dproject_root="))
 
-    args =
-      base_args ++
-        plugin_args ++
-        nif_args_no_root ++
-        nxeigen_zig_args_android(nxeigen_archive) ++
-        tflite_zig_args_android(tflite_build)
+    # Activated plugins' cpp_archive NIFs (e.g. an Nx CPU backend): each
+    # cross-compiled to lib<mod>.a for this ABI and static-linked via
+    # -Dplugin_static_libs. {:ok, []} when no such plugin is active; raises a
+    # hard build error when one IS active on an ABI CppArchive can't target
+    # (x86_64 emulator) rather than shipping an unresolved-symbol link failure.
+    plugin_archive_result =
+      case android_abi_to_cpp_target(abi) do
+        nil -> {:ok, []}
+        target_id -> build_plugin_static_archives(target_id, :android, otp_dir)
+      end
 
-    case System.cmd("zig", args, stderr_to_stdout: true, into: IO.stream()) do
-      {_, 0} -> :ok
-      {_, code} -> {:error, "zig build for #{abi} exited #{code}"}
+    with {:ok, plugin_archives} <- plugin_archive_result do
+      args =
+        base_args ++
+          plugin_args ++
+          nif_args_no_root ++
+          nxeigen_zig_args_android(nxeigen_archive) ++
+          tflite_zig_args_android(tflite_build) ++
+          plugin_static_lib_args(plugin_archives)
+
+      case System.cmd("zig", args, stderr_to_stdout: true, into: IO.stream()) do
+        {_, 0} -> :ok
+        {_, code} -> {:error, "zig build for #{abi} exited #{code}"}
+      end
     end
   end
 
@@ -2364,14 +2378,16 @@ defmodule MobDev.NativeBuild do
           val != "",
           do: "-D#{name}=#{val}"
 
-    with {:ok, nif_args} <- project_nif_zig_args(:ios_sim) do
+    with {:ok, nif_args} <- project_nif_zig_args(:ios_sim),
+         {:ok, plugin_archives} <- build_plugin_static_archives(:ios_sim, :ios, otp_root) do
       args =
         base_args ++
           plugin_args ++
           nif_args ++
           mlx_zig_args(mlx_dir) ++
           nxeigen_zig_args_ios(nxeigen_archive) ++
-          tflite_zig_args_ios(tflite_build)
+          tflite_zig_args_ios(tflite_build) ++
+          plugin_static_lib_args(plugin_archives)
 
       case System.cmd("zig", args, stderr_to_stdout: true, into: IO.stream()) do
         {_, 0} -> :ok
@@ -2413,11 +2429,31 @@ defmodule MobDev.NativeBuild do
   # isn't a dep, or a tagged-tuple error.
   defp maybe_build_nxeigen(target_id)
        when target_id in [:android_arm64, :android_arm32, :ios_sim, :ios_device] do
-    if nxeigen_in_project?() do
-      do_build_nxeigen(target_id)
-    else
-      {:ok, nil}
+    cond do
+      # An activated cpp_archive plugin (mob_nx_eigen) provides nx_eigen_nif_init
+      # itself, so the legacy core build must yield — otherwise both emit
+      # libnx_eigen*.a with the same symbol and the link fails on a duplicate.
+      # Lets the plugin path be device-verified before the core hooks are
+      # removed; the core path stays the fallback for apps not yet on the plugin.
+      nxeigen_provided_by_plugin?() ->
+        {:ok, nil}
+
+      nxeigen_in_project?() ->
+        do_build_nxeigen(target_id)
+
+      true ->
+        {:ok, nil}
     end
+  end
+
+  # True when an activated plugin contributes a cpp_archive NIF whose init symbol
+  # is nx_eigen's (`nx_eigen_nif_init`) — i.e. the plugin supersedes the core
+  # NxEigen build.
+  @doc false
+  @spec nxeigen_provided_by_plugin?() :: boolean()
+  def nxeigen_provided_by_plugin? do
+    MobDev.Plugin.Merge.static_archives(MobDev.Plugin.activated(), :all)
+    |> Enum.any?(&(&1[:nm_symbol] == "nx_eigen_nif_init"))
   end
 
   defp do_build_nxeigen(target_id) do
@@ -2510,6 +2546,134 @@ defmodule MobDev.NativeBuild do
   def nxeigen_zig_args_android(archive_path) when is_binary(archive_path) do
     ["-Dnxeigen_static=true", "-Dnxeigen_lib=#{archive_path}"]
   end
+
+  # ── Generic plugin cpp_archive integration ─────────────────────────────────
+  # The plugin-system replacement for the bespoke nxeigen/tflite hooks above:
+  # activated plugins declare `lang: :cpp_archive` NIFs (MobDev.Plugin.Merge +
+  # CppArchive), each cross-compiled to lib<mod>.a and static-linked. One
+  # `-Dplugin_static_libs=<comma-paths>` flag carries them all to build.zig.
+
+  # The zig `-Dplugin_static_libs` flag for a list of built archive paths.
+  # Emitted only when non-empty so apps on a pre-plugin-archive build.zig (no
+  # such option) don't choke on an unknown `-D` flag — same gating as
+  # `-Dplugin_c_nifs`. Pure; public (@doc false) for testing.
+  @doc false
+  @spec plugin_static_lib_args([Path.t()]) :: [String.t()]
+  def plugin_static_lib_args([]), do: []
+
+  def plugin_static_lib_args(paths) when is_list(paths),
+    do: ["-Dplugin_static_libs=#{Enum.join(paths, ",")}"]
+
+  # Build every activated cpp_archive plugin NIF for one target ABI. Returns
+  # `{:ok, archive_paths}` (empty when no such plugin is active), or a tagged
+  # error string from the cross-compile.
+  #
+  # When a cpp_archive plugin IS active but `target_id` is an ABI CppArchive
+  # can't build (today the x86_64 Android emulator → :android_x86_64), this is
+  # a HARD build error rather than a logged skip: the per-platform driver_tab
+  # still references `<module>_nif_init` as a strong-undefined symbol, so
+  # silently returning {:ok, []} produces an unresolved-symbol link failure
+  # later (and only on-device). Failing here, by name, is the actionable
+  # signal. When no cpp_archive plugin is active the ABI gap is harmless, so
+  # the `specs == []` clause short-circuits first and unsupported ABIs build
+  # fine.
+  @spec build_plugin_static_archives(atom(), :ios | :android, Path.t()) ::
+          {:ok, [Path.t()]} | {:error, String.t()}
+  defp build_plugin_static_archives(target_id, platform, otp_dir) do
+    specs = MobDev.Plugin.Merge.static_archives(MobDev.Plugin.activated(), platform)
+
+    case cpp_archive_target_decision(specs, target_id) do
+      :none -> {:ok, []}
+      {:error, msg} -> raise msg
+      :build -> do_build_plugin_static_archives(specs, target_id, otp_dir)
+    end
+  end
+
+  @doc false
+  # Pure decision for `build_plugin_static_archives/3`, extracted so the
+  # short-circuit (no active cpp_archive plugin) and the hard-error (active
+  # plugin on an unsupported ABI) are unit-testable without driving a build:
+  #
+  #   * `:none`         — no cpp_archive spec needs building (ABI gap is
+  #                       harmless; an unsupported ABI like x86_64 builds fine)
+  #   * `{:error, msg}` — a spec IS present but `target_id` isn't one CppArchive
+  #                       can build → hard build error (the driver_tab still
+  #                       references `<module>_nif_init`, so {:ok, []} would
+  #                       defer an unresolved-symbol link failure to on-device)
+  #   * `:build`        — a spec is present and the ABI is supported
+  @spec cpp_archive_target_decision([map()], atom()) ::
+          :none | :build | {:error, String.t()}
+  def cpp_archive_target_decision([], _target_id), do: :none
+
+  def cpp_archive_target_decision(specs, target_id) do
+    if target_id in MobDev.Plugin.CppArchive.targets(),
+      do: :build,
+      else: {:error, unsupported_cpp_archive_target_error(specs, target_id)}
+  end
+
+  @doc false
+  # Build-error message for an active cpp_archive plugin on an ABI CppArchive
+  # can't target yet. Pure string builder, public so the failure path is
+  # testable without driving a full Android build.
+  @spec unsupported_cpp_archive_target_error([map()], atom()) :: String.t()
+  def unsupported_cpp_archive_target_error(specs, target_id) do
+    names = Enum.map_join(specs, ", ", &"#{&1.plugin}/#{&1.module}")
+
+    "cpp_archive plugin NIF(s) [#{names}] cannot be built for #{inspect(target_id)} — " <>
+      "MobDev.Plugin.CppArchive has no target for this ABI. cpp_archive currently " <>
+      "supports Android arm64 (:android_arm64) and arm32 (:android_arm32) only " <>
+      "(plus :ios_sim / :ios_device). The x86_64 Android emulator ABI is not " <>
+      "supported: building it would link <module>_nif_init as an unresolved symbol " <>
+      "and fail at link time on-device. Drop x86_64 from this build (target an " <>
+      "arm64/arm32 device or emulator), or remove the cpp_archive plugin for x86_64."
+  end
+
+  defp do_build_plugin_static_archives(specs, target_id, otp_dir) do
+    with {:ok, erts_inc} <- resolve_erts_include(otp_dir) do
+      out_dir =
+        Path.join([Mix.Project.build_path(), "plugin_archives", Atom.to_string(target_id)])
+
+      specs
+      |> Enum.reduce_while({:ok, []}, fn spec, {:ok, acc} ->
+        IO.puts(
+          "  === Building #{MobDev.Plugin.CppArchive.archive_name(spec.module)} (#{target_id}, #{spec.plugin})"
+        )
+
+        case MobDev.Plugin.CppArchive.build(spec, target_id,
+               out_dir: out_dir,
+               erts_include: erts_inc
+             ) do
+          {:ok, info} ->
+            IO.puts("    ✓ #{info.archive}")
+            {:cont, {:ok, [info.archive | acc]}}
+
+          {:error, {tag, detail}} ->
+            {:halt,
+             {:error,
+              "plugin cpp_archive #{spec.plugin}/#{spec.module} failed " <>
+                "(#{target_id}, #{tag}): #{inspect(detail)}"}}
+        end
+      end)
+      |> case do
+        {:ok, paths} -> {:ok, Enum.reverse(paths)}
+        err -> err
+      end
+    end
+  end
+
+  @doc false
+  # Android ABI string → CppArchive target id. x86_64 maps to :android_x86_64,
+  # which CppArchive doesn't build yet — `build_plugin_static_archives/3` raises
+  # a hard build error (rather than silently linking an unresolved init symbol)
+  # when a cpp_archive plugin is actually active for that ABI. nil = a truly
+  # unknown ABI string. Public for unit testing the mapping matrix.
+  @spec android_abi_to_cpp_target(String.t()) :: atom() | nil
+  def android_abi_to_cpp_target("arm64-v8a"), do: :android_arm64
+  def android_abi_to_cpp_target("arm64"), do: :android_arm64
+  def android_abi_to_cpp_target("armeabi-v7a"), do: :android_arm32
+  def android_abi_to_cpp_target("arm32"), do: :android_arm32
+  def android_abi_to_cpp_target("x86_64"), do: :android_x86_64
+  def android_abi_to_cpp_target(_), do: nil
 
   # ── TFLite NIF integration (mirrors NxEigen above) ─────────────────────────
   # Same shape as nxeigen but with TFLite-specific details: the runtime
@@ -3628,7 +3792,8 @@ defmodule MobDev.NativeBuild do
           val != "",
           do: "-D#{name}=#{val}"
 
-    with {:ok, nif_args} <- project_nif_zig_args(:ios_device) do
+    with {:ok, nif_args} <- project_nif_zig_args(:ios_device),
+         {:ok, plugin_archives} <- build_plugin_static_archives(:ios_device, :ios, otp_root) do
       sqlite_args =
         case sqlite_static_lib do
           nil -> []
@@ -3642,7 +3807,8 @@ defmodule MobDev.NativeBuild do
           sqlite_args ++
           mlx_zig_args(mlx_dir) ++
           nxeigen_zig_args_ios(nxeigen_archive) ++
-          tflite_zig_args_ios(tflite_build)
+          tflite_zig_args_ios(tflite_build) ++
+          plugin_static_lib_args(plugin_archives)
 
       case System.cmd("zig", args, stderr_to_stdout: true, into: IO.stream()) do
         {_, 0} ->

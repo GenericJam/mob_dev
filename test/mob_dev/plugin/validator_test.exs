@@ -614,5 +614,34 @@ defmodule MobDev.Plugin.ValidatorTest do
       b = Map.put(@base, :ui_components, [%{atom: :gauge, ios: %{view_module: "Gauge_View"}}])
       assert %{errors: []} = Validator.cross_validate([{:a, a}, {:b, b}])
     end
+
+    test "detects a duplicate cpp_archive nm_symbol across plugins (distinct modules)" do
+      a =
+        Map.put(@base, :nifs, [
+          %{module: :a_nif, lang: :cpp_archive, sources: ["a.cpp"], nm_symbol: "shared_init"}
+        ])
+
+      b =
+        Map.put(@base, :nifs, [
+          %{module: :b_nif, lang: :cpp_archive, sources: ["b.cpp"], nm_symbol: "shared_init"}
+        ])
+
+      assert %{errors: errs} = Validator.cross_validate([{:a, a}, {:b, b}])
+      assert Enum.any?(errs, &(&1 =~ "cpp_archive init symbol"))
+    end
+
+    test "distinct cpp_archive nm_symbols across plugins do not collide" do
+      a =
+        Map.put(@base, :nifs, [
+          %{module: :a_nif, lang: :cpp_archive, sources: ["a.cpp"], nm_symbol: "a_init"}
+        ])
+
+      b =
+        Map.put(@base, :nifs, [
+          %{module: :b_nif, lang: :cpp_archive, sources: ["b.cpp"], nm_symbol: "b_init"}
+        ])
+
+      assert %{errors: []} = Validator.cross_validate([{:a, a}, {:b, b}])
+    end
   end
 end

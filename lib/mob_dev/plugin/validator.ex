@@ -243,6 +243,8 @@ defmodule MobDev.Plugin.Validator do
          ]},
       migrations: {:collision, [{"migration repo_namespace", &repo_namespaces/1}]},
       nifs: {:collision, [{"NIF module (nifs.module)", &nif_modules/1}]},
+      static_archives:
+        {:collision, [{"cpp_archive init symbol (nifs.nm_symbol)", &archive_nm_symbols/1}]},
       swift_files:
         {:collision, [{"iOS Swift source basename (ios.swift_files)", &swift_basenames/1}]},
       jni_sources:
@@ -584,6 +586,18 @@ defmodule MobDev.Plugin.Validator do
   # plugin-vs-core check in validate_plugin/3, which guards reserved names.)
   defp nif_modules(manifest) do
     for n <- Map.get(manifest, :nifs, []), is_map(n), is_atom(n[:module]), do: n[:module]
+  end
+
+  # cpp_archive NIFs static-link a libNAME.a into the app; two plugins emitting
+  # the same NIF-init symbol would be a duplicate-symbol link failure that the
+  # nifs.module guard doesn't catch (distinct modules can declare the same
+  # :nm_symbol). Collect the declared symbols so cross-validation flags a clash.
+  defp archive_nm_symbols(manifest) do
+    for n <- Map.get(manifest, :nifs, []),
+        is_map(n),
+        n[:lang] == :cpp_archive,
+        is_binary(n[:nm_symbol]),
+        do: n[:nm_symbol]
   end
 
   # Plugin Swift sources are compiled into the one iOS app target; two plugins
