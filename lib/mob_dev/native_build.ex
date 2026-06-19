@@ -231,7 +231,30 @@ defmodule MobDev.NativeBuild do
              {:ok, arm32_nxeigen} <- maybe_build_nxeigen(:android_arm32),
              {:ok, arm64_tflite} <- maybe_build_tflite(:android_arm64),
              {:ok, arm32_tflite} <- maybe_build_tflite(:android_arm32) do
-          build_zig_src = File.read!(build_zig)
+          build_zig_src =
+            case inject_page_size_flag(File.read!(build_zig)) do
+              {:already, src} ->
+                src
+
+              {:patched, src} ->
+                File.write!(build_zig, src)
+
+                IO.puts(
+                  "  Added 16 KB page-size alignment to #{build_zig} " <>
+                    "(Android 15+ / Play requirement; build.zig predated the flag)."
+                )
+
+                src
+
+              {:no_match, src} ->
+                IO.puts(
+                  "  #{IO.ANSI.yellow()}Could not auto-add the 16 KB page-size flag to " <>
+                    "#{build_zig} — add -Wl,-z,max-page-size=16384 to the -shared link " <>
+                    "manually, or regenerate build.zig from mob_new.#{IO.ANSI.reset()}"
+                )
+
+                src
+            end
 
           [
             {otp_arm64, "arm64-v8a", arm64_nif_args, arm64_nxeigen, arm64_tflite},
@@ -337,6 +360,35 @@ defmodule MobDev.NativeBuild do
     )
 
     false
+  end
+
+  # The app's `-shared` link command, and that command with the 16 KB page-size
+  # flag added. Android 15+ devices use 16 KB memory pages; Google Play requires
+  # every bundled .so to have 16 KB-aligned LOAD segments. New apps get this from
+  # the mob_new template, but an app-owned build.zig copied at `mix mob.new` time
+  # predates the flag and links 4 KB-aligned .so. The link line is identical
+  # across template versions, so we patch the command-array form (independent of
+  # the `run`/var name and any later addArg lines).
+  @shared_link ", \"-shared\" })"
+  @shared_link_aligned ", \"-shared\", \"-Wl,-z,max-page-size=16384\" })"
+
+  # Ensure the app's build.zig links 16 KB-aligned .so. Returns the (possibly
+  # patched) source plus a status: `:already` (flag present), `:patched` (flag
+  # injected into the -shared link), or `:no_match` (link line not recognized —
+  # can't auto-fix). Pure; the caller writes the file + logs.
+  @doc false
+  @spec inject_page_size_flag(String.t()) :: {:already | :patched | :no_match, String.t()}
+  def inject_page_size_flag(build_zig_src) do
+    cond do
+      String.contains?(build_zig_src, "max-page-size") ->
+        {:already, build_zig_src}
+
+      String.contains?(build_zig_src, @shared_link) ->
+        {:patched, String.replace(build_zig_src, @shared_link, @shared_link_aligned)}
+
+      true ->
+        {:no_match, build_zig_src}
+    end
   end
 
   defp run_zig_android_objects(

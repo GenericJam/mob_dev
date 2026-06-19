@@ -33,6 +33,40 @@ defmodule MobDev.NativeBuildTest do
     end
   end
 
+  describe "inject_page_size_flag/1" do
+    test "injects the 16 KB flag into a stale build.zig's -shared link" do
+      src = ~s|    const run = b.addSystemCommand(&.{ ndk_clang, target_arg, "-shared" });|
+      assert {:patched, out} = NativeBuild.inject_page_size_flag(src)
+      assert out =~ ~s|"-shared", "-Wl,-z,max-page-size=16384" })|
+      assert out =~ "max-page-size=16384"
+    end
+
+    test "patches every -shared link (app .so + sqlite .so)" do
+      src = ~s|
+        const run = b.addSystemCommand(&.{ ndk_clang, target_arg, "-shared" });
+        const run = b.addSystemCommand(&.{ ndk_clang, target_arg, "-shared" });
+      |
+
+      assert {:patched, out} = NativeBuild.inject_page_size_flag(src)
+      assert length(String.split(out, "max-page-size=16384")) == 3
+    end
+
+    test "idempotent — already-aligned build.zig is left unchanged" do
+      # mirrors how the mob_new template / a hand-fixed app (e.g. Io) carries it
+      src = ~s|
+        const run = b.addSystemCommand(&.{ ndk_clang, target_arg, "-shared" });
+        run.addArg("-Wl,-z,max-page-size=16384");
+      |
+
+      assert {:already, ^src} = NativeBuild.inject_page_size_flag(src)
+    end
+
+    test "no_match when the -shared link line is unrecognized" do
+      src = ~s|    // a build.zig that does its linking some other way|
+      assert {:no_match, ^src} = NativeBuild.inject_page_size_flag(src)
+    end
+  end
+
   describe "__driver_tab_formats__/1 + regen_driver_tab!/0" do
     test "detects the formats whose generated files exist" do
       zig_paths = Mix.Tasks.Mob.RegenDriverTab.target_paths(:zig)
