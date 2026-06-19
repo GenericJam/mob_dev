@@ -190,19 +190,26 @@ defmodule MobDev.NativeBuild do
   # directly through the Phase 0 fallback).
   defp zig_build_android_objects(mob_dir, otp_arm64, otp_arm32, otp_x86_64) do
     build_zig = "android/app/src/main/jni/build.zig"
+    # The CMake fallback (used when zig can't run) tries to compile this C
+    # source straight out of the mob dep. mob 0.7+ ships it as .zig instead,
+    # so on a current mob the fallback is a dead end; see zig_build_plan/3.
+    legacy_c = Path.join(mob_dir, "android/jni/mob_nif.c")
 
-    cond do
-      not File.exists?(build_zig) ->
+    case zig_build_plan(File.exists?(build_zig), zig_available?(), File.exists?(legacy_c)) do
+      :skip_no_build_zig ->
         :ok
 
-      not zig_available?() ->
+      :legacy_cmake ->
         IO.puts(
           "  #{IO.ANSI.yellow()}zig not on PATH — skipping build.zig step (CMake will compile sources directly)#{IO.ANSI.reset()}"
         )
 
         :ok
 
-      true ->
+      :zig_required ->
+        {:error, zig_required_message()}
+
+      :run_zig ->
         driver_tab = resolve_driver_tab_android(mob_dir)
         erts_vsn = detect_erts_vsn(otp_arm64) || "erts-17.0"
 
@@ -259,6 +266,54 @@ defmodule MobDev.NativeBuild do
           end)
         end
     end
+  end
+
+  # Pure kernel behind zig_build_android_objects/4, extracted so the
+  # "obvious failure" case is testable without a toolchain or a device.
+  # Decides the JNI build step from the three facts that determine whether
+  # a native build can succeed at all:
+  #
+  #   build_zig?  does the project ship jni/build.zig?
+  #   zig?        is `zig` on PATH (so build.zig can actually run)?
+  #   legacy_c?   does the mob dep still ship the C JNI source the CMake
+  #               fallback would compile (android/jni/mob_nif.c)?
+  #
+  # Outcomes:
+  #   :skip_no_build_zig  no build.zig, nothing for this step to do.
+  #   :run_zig            zig present, drive the real build.zig path.
+  #   :legacy_cmake       no zig, but the mob dep still has the C sources,
+  #                       so CMake can compile them directly (old mob).
+  #   :zig_required       no zig AND no C sources (mob 0.7+): the build
+  #                       cannot succeed, so fail fast with a clear cause
+  #                       instead of limping into a cryptic CMake error.
+  @doc false
+  @spec zig_build_plan(boolean(), boolean(), boolean()) ::
+          :skip_no_build_zig | :run_zig | :legacy_cmake | :zig_required
+  def zig_build_plan(build_zig?, zig?, legacy_c?)
+  def zig_build_plan(false, _zig?, _legacy_c?), do: :skip_no_build_zig
+  def zig_build_plan(true, true, _legacy_c?), do: :run_zig
+  def zig_build_plan(true, false, true), do: :legacy_cmake
+  def zig_build_plan(true, false, false), do: :zig_required
+
+  # The actionable error shown when an Android native build needs `zig` but
+  # it is not on PATH and the mob dep no longer ships the C fallback sources.
+  # Public so the test suite can pin the guidance without driving a build.
+  @doc false
+  @spec zig_required_message() :: String.t()
+  def zig_required_message do
+    """
+    zig is not on your PATH, and this project's Android native build needs it.
+
+    mob 0.7+ compiles the Android JNI layer with build.zig. The legacy CMake
+    fallback would reference C sources (deps/mob/android/jni/mob_nif.c) that no
+    longer ship with mob, so the build cannot succeed without zig.
+
+    Install zig 0.15.x, then re-run `mix mob.deploy --native --android`:
+      asdf:    asdf plugin add zig && asdf install zig 0.15.2 && asdf global zig 0.15.2
+      manual:  https://ziglang.org/download/  (then put `zig` on your PATH)
+
+    Verify your toolchain any time with `mix mob.doctor`.\
+    """
   end
 
   # True if the app's build.zig handles `abi`. mob_dev builds all of

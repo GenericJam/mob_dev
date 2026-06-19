@@ -1670,4 +1670,42 @@ defmodule MobDev.NativeBuildTest do
       assert NativeBuild.__prune_plugin_artifacts__(:android_kotlin, []) == []
     end
   end
+
+  describe "zig_build_plan/3 (fail fast when the JNI build can't succeed)" do
+    test "no build.zig: nothing to do, regardless of zig or C sources" do
+      assert NativeBuild.zig_build_plan(false, false, false) == :skip_no_build_zig
+      assert NativeBuild.zig_build_plan(false, true, true) == :skip_no_build_zig
+      assert NativeBuild.zig_build_plan(false, false, true) == :skip_no_build_zig
+    end
+
+    test "zig present: drive the real build.zig path (C-source presence irrelevant)" do
+      assert NativeBuild.zig_build_plan(true, true, false) == :run_zig
+      assert NativeBuild.zig_build_plan(true, true, true) == :run_zig
+    end
+
+    test "no zig but the mob dep still ships C sources: CMake fallback can compile them" do
+      assert NativeBuild.zig_build_plan(true, false, true) == :legacy_cmake
+    end
+
+    test "no zig AND no C sources (mob 0.7+): obvious failure, so signal :zig_required" do
+      assert NativeBuild.zig_build_plan(true, false, false) == :zig_required
+    end
+  end
+
+  describe "zig_required_message/0" do
+    test "names the cause and the exact fix" do
+      msg = NativeBuild.zig_required_message()
+
+      # the cause: zig missing + the vanished C fallback source
+      assert msg =~ "zig is not on your PATH"
+      assert msg =~ "mob_nif.c"
+      # the fix: the version mob.doctor pins, plus how to verify
+      assert msg =~ "zig 0.15"
+      assert msg =~ "mix mob.doctor"
+    end
+
+    test "stays in plain prose (no em dashes leaking into user-facing output)" do
+      refute NativeBuild.zig_required_message() =~ "—"
+    end
+  end
 end
