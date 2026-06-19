@@ -8,6 +8,35 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [Unreleased]
+
+### Added
+- **`mix mob.adopt`** — installs Mob into an *existing* Phoenix project,
+  the Igniter-based install-into-existing counterpart to `mix mob.new`
+  (which generates from scratch). Composable: the orchestrator runs the
+  sub-installers `mob.adopt.{deps,bridge,screen,mob_app,mob_exs,native,finalize}`,
+  each invokable independently. Default LV-bridge mode wires `window.mob`
+  through a LiveView `phx-hook` and generates a `mob_app.ex` that boots the
+  host Phoenix endpoint on-device (SQLite Repo assumed); `--no-live-view`
+  generates a thin-client shell whose WebView opens a deployed server.
+  Pre-1.0: refuses loudly (via Igniter issues) on umbrella / non-Phoenix /
+  heavily-customised `app.js` or root layout / non-SQLite LV hosts rather
+  than risk breaking the app. The native Android/iOS trees (`--android` /
+  `--ios`) render from mob_new's templates and require the **mob_new archive
+  installed** (`mix archive.install hex mob_new`) — mob_new stays the single
+  source of native templates; the Elixir-side adoption needs no archive.
+  Contributed as [mob_new#8](https://github.com/GenericJam/mob_new/pull/8)
+  by [@ken-kost](https://github.com/ken-kost) and relocated here — adopt is
+  an Igniter task that mutates an existing project (like `mob.add_nif` /
+  `mob.enable`), so it belongs in mob_dev (a Hex dep), not in mob_new (a
+  self-contained Mix archive that can't carry Igniter). See
+  `decisions/2026-06-19-mob-adopt-lives-in-mob_dev.md`. The shared
+  patcher/generator helpers are duplicated from mob_new into
+  `MobDev.Adopt.{Patcher,Generator}` pending the Phase-5 Igniter
+  reunification.
+
+---
+
 ## [0.6.10] - 2026-06-19
 
 ### Added

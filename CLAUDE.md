@@ -247,6 +247,10 @@ updating the hash in `otp_downloader.ex`).
 - `lib/mob_dev/icon_generator.ex` — robot avatar generation + platform icon resizing
 - `lib/mix/tasks/mob.new.ex` — `mix mob.new APP_NAME`
 - `lib/mix/tasks/mob.icon.ex` — `mix mob.icon [--source PATH]`
+- `lib/mix/tasks/mob/adopt.ex` — `mix mob.adopt` orchestrator (install Mob into an existing Phoenix project)
+- `lib/mix/tasks/mob/adopt/` — the adopt sub-installers (`deps`, `bridge`, `screen`, `mob_app`, `mob_exs`, `native[/android,/ios]`, `finalize`)
+- `lib/mob_dev/adopt_guard.ex` — `MobDev.AdoptGuard`, the pre-1.0 detect-and-refuse for `mob.adopt`
+- `lib/mob_dev/adopt/patcher.ex` / `lib/mob_dev/adopt/generator.ex` — `MobDev.Adopt.{Patcher,Generator}`, the shared LV-bridge patches + EEx assigns/dep-resolution (duplicated from mob_new; see the adopt ADR)
 - `priv/templates/mob.new/` — EEx templates for generated project files
 
 ## Connecting an IEx session to a running mob app (Mac → device BEAM)

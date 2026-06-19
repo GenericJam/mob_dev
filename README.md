@@ -21,6 +21,7 @@ end
 | Task | Description |
 |------|-------------|
 | `mix mob.new APP_NAME` | Generate a new Mob project (see `mob_new` archive) |
+| `mix mob.adopt` | Install Mob into an **existing** Phoenix project (Igniter-based; composes `mob.adopt.{deps,bridge,screen,mob_app,mob_exs,native,finalize}`). The install-into-existing counterpart to `mix mob.new` |
 | `mix mob.install` | First-run setup: download OTP runtime, generate icons, write `mob.exs` |
 | `mix mob.deploy` | Compile and push BEAMs to all connected devices |
 | `mix mob.deploy --native` | Also build and install the native APK/iOS app |

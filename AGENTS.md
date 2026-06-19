@@ -99,6 +99,23 @@ mix test --exclude integration # skip the device-dependent ones
   NOT `File.cwd!() <> "/mix.exs"`. Under `test_project`, disk reads
   see mob_dev's own mix.exs (wrong app). Falls back to the legacy
   on-disk read only when Igniter has no mix.exs source.
+- **`mix mob.adopt` is the install-into-existing-Phoenix task** (Igniter,
+  like `mob.enable`). The orchestrator (`Mix.Tasks.Mob.Adopt`) gates on
+  `MobDev.AdoptGuard.check/2` then composes the sub-installers
+  `mob.adopt.{deps,bridge,screen,mob_app,mob_exs,native,finalize}` — each a
+  task module under `lib/mix/tasks/mob/adopt/`. Pre-1.0 it *refuses* (adds
+  Igniter issues, no file changes) on unblessed shapes; widen the guard, not
+  the silent-proceed path. Shared Elixir-source content + LV-bridge patches
+  live in `MobDev.Adopt.Patcher`; assigns / dep-resolution / Pythonx wiring
+  in `MobDev.Adopt.Generator`. **The native Android/iOS trees come from
+  mob_new's `priv/templates/mob.new/`** — `Generator.templates_root/1`
+  resolves a `:mob_new` dep, then `$MOB_NEW_DIR`, then `~/code/mob_new`. Both
+  `Adopt.{Patcher,Generator}` are duplicated from mob_new's
+  `LiveViewPatcher` / `ProjectGenerator` (mob_new is a self-contained
+  archive, can't depend on mob_dev); Phase 5 of `build_system_migration.md`
+  reunifies them. See `decisions/2026-06-19-mob-adopt-lives-in-mob_dev.md`.
+  `MobDev.AdoptGuard.check/2` / `mode_from/1` and the `Adopt.Patcher` /
+  `Adopt.Generator` helpers are public for testing — don't privatise.
 
 ## Public-but-undocumented seams
 
