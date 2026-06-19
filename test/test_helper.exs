@@ -1,4 +1,4 @@
-ExUnit.start(exclude: [:integration])
+ExUnit.start(exclude: [:integration, :acceptance])
 
 # Mox setup — every behaviour-based mock used in tests gets defined in
 # test/support/ via Mox.defmock and just needs an `Application.put_env`

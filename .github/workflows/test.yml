@@ -25,6 +25,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # mob.adopt's native (--android/--ios) tests render from mob_new's
+      # templates — mob_new is the single source, not duplicated here. Provide
+      # a mob_new checkout so MobDev.Adopt.Generator resolves them via
+      # MOB_NEW_DIR (mirrors a user having the mob_new archive installed).
+      - name: Checkout mob_new (native adopt templates)
+        uses: actions/checkout@v4
+        with:
+          repository: GenericJam/mob_new
+          path: mob_new
+
       - uses: erlef/setup-beam@v1
         with:
           elixir-version: ${{ matrix.elixir }}
@@ -59,6 +69,9 @@ jobs:
         run: mix credo --strict
 
       - name: Tests
+        env:
+          # mob.adopt native tests resolve mob_new's templates from this checkout.
+          MOB_NEW_DIR: ${{ github.workspace }}/mob_new
         # `:macos_only` — tests that shell out to /usr/libexec/PlistBuddy
         # and similar macOS-bound tools.
         # `:requires_zig` — the StaticNifs zig-ast-check round-trip; we
