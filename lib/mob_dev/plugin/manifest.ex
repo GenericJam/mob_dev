@@ -211,12 +211,35 @@ defmodule MobDev.Plugin.Manifest do
   # resolved at build time.
   defp check_nif_cpp_archive(errors, %{lang: :cpp_archive} = nif, i) do
     errors
+    |> check_archive_module(nif, i)
     |> check_archive_sources(nif, i)
     |> check_archive_symbol(nif, i)
     |> check_archive_symbol_matches_module(nif, i)
   end
 
   defp check_nif_cpp_archive(errors, _nif, _i), do: errors
+
+  # The driver table builds the archive's libname and init symbol from
+  # `:module` (`lib<module>.a`, `<module>_nif_init`), and `Merge.static_archives`
+  # silently drops any entry whose `:module` isn't an atom. A missing/non-atom
+  # `:module` therefore fails *open*: validation passes but the build either
+  # drops the NIF (non-atom) or names it `libnil.a` (nil). Require a lowercase
+  # NIF `:module` atom up front — mirrors the `:screens` `:module` check, but
+  # also rejects aliased modules (`Foo.Bar`), which would yield a wrong-named
+  # `libElixir.Foo.Bar.a`. NIF modules are bare lowercase atoms (`:nx_eigen_nif`).
+  defp check_archive_module(errors, %{module: m}, _i)
+       when is_atom(m) and not is_nil(m) and m not in [true, false] do
+    if String.starts_with?(Atom.to_string(m), "Elixir."),
+      do: [
+        "nifs cpp_archive :module must be a lowercase NIF atom (e.g. :nx_eigen_nif), " <>
+          "got an aliased module #{inspect(m)}"
+        | errors
+      ],
+      else: errors
+  end
+
+  defp check_archive_module(errors, _nif, i),
+    do: ["nifs entry ##{i}: lang: :cpp_archive requires a lowercase :module atom" | errors]
 
   defp check_archive_sources(errors, %{sources: s}, _i)
        when is_list(s) and s != [] do

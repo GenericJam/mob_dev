@@ -1278,6 +1278,61 @@ defmodule MobDev.NativeBuildTest do
     end
   end
 
+  describe "android_abi_to_cpp_target/1" do
+    test "arm64 ABI strings → :android_arm64" do
+      assert NativeBuild.android_abi_to_cpp_target("arm64-v8a") == :android_arm64
+      assert NativeBuild.android_abi_to_cpp_target("arm64") == :android_arm64
+    end
+
+    test "arm32 ABI strings → :android_arm32" do
+      assert NativeBuild.android_abi_to_cpp_target("armeabi-v7a") == :android_arm32
+      assert NativeBuild.android_abi_to_cpp_target("arm32") == :android_arm32
+    end
+
+    test "x86_64 → :android_x86_64 (a real target id CppArchive can't build yet)" do
+      assert NativeBuild.android_abi_to_cpp_target("x86_64") == :android_x86_64
+    end
+
+    test "unknown ABI strings → nil" do
+      assert NativeBuild.android_abi_to_cpp_target("riscv64") == nil
+      assert NativeBuild.android_abi_to_cpp_target("") == nil
+      assert NativeBuild.android_abi_to_cpp_target("x86") == nil
+    end
+  end
+
+  describe "cpp_archive_target_decision/2 + unsupported_cpp_archive_target_error/2" do
+    @cpp_spec %{plugin: :nx_cpu, module: :nx_cpu_nif}
+
+    test ":none when no cpp_archive spec is present (unsupported ABI is harmless then)" do
+      # The x86_64 emulator ABI gap only matters when a plugin actually needs it.
+      assert NativeBuild.cpp_archive_target_decision([], :android_x86_64) == :none
+    end
+
+    test "{:error, _} when a cpp_archive spec is present on an unsupported ABI (x86_64)" do
+      assert {:error, msg} =
+               NativeBuild.cpp_archive_target_decision([@cpp_spec], :android_x86_64)
+
+      # Names the unsupported ABI and the plugin/module, explains arm-only support.
+      assert msg =~ ":android_x86_64"
+      assert msg =~ "nx_cpu/nx_cpu_nif"
+      assert msg =~ ":android_arm64"
+      assert msg =~ ":android_arm32"
+    end
+
+    test ":build when a cpp_archive spec is present on a supported ABI" do
+      assert NativeBuild.cpp_archive_target_decision([@cpp_spec], :android_arm64) == :build
+      assert NativeBuild.cpp_archive_target_decision([@cpp_spec], :android_arm32) == :build
+      assert NativeBuild.cpp_archive_target_decision([@cpp_spec], :ios_sim) == :build
+    end
+
+    test "error message lists every active plugin/module" do
+      specs = [@cpp_spec, %{plugin: :other, module: :other_nif}]
+      msg = NativeBuild.unsupported_cpp_archive_target_error(specs, :android_x86_64)
+      assert msg =~ "nx_cpu/nx_cpu_nif"
+      assert msg =~ "other/other_nif"
+    end
+  end
+
   describe "nxeigen_provided_by_plugin?/0" do
     test "false when no cpp_archive plugin provides nx_eigen_nif_init (mob_dev's own env)" do
       # mob_dev activates no plugins, so the legacy core NxEigen build stays the

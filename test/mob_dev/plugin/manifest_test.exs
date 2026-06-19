@@ -219,6 +219,50 @@ defmodule MobDev.Plugin.ManifestTest do
       assert {:error, errs} = Manifest.validate(m)
       assert Enum.any?(errs, &(&1 =~ "cpp_archive requires an :nm_symbol"))
     end
+
+    test "rejects a cpp_archive entry missing :module" do
+      # Without :module, Merge.static_archives silently drops the entry (its
+      # comprehension guards on is_atom(nif[:module])) — fail-open. Catch it.
+      m =
+        Map.put(@valid, :nifs, [
+          %{lang: :cpp_archive, sources: ["a.cpp"], nm_symbol: "x_nif_init"}
+        ])
+
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "cpp_archive requires a lowercase :module atom"))
+    end
+
+    test "rejects a cpp_archive entry with a non-atom :module" do
+      # A non-atom :module is dropped at merge; nil would build libnil.a.
+      m =
+        Map.put(@valid, :nifs, [
+          %{module: "x", lang: :cpp_archive, sources: ["a.cpp"], nm_symbol: "x_nif_init"}
+        ])
+
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "cpp_archive requires a lowercase :module atom"))
+    end
+
+    test "rejects a cpp_archive entry with a nil :module" do
+      m =
+        Map.put(@valid, :nifs, [
+          %{module: nil, lang: :cpp_archive, sources: ["a.cpp"], nm_symbol: "x_nif_init"}
+        ])
+
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "cpp_archive requires a lowercase :module atom"))
+    end
+
+    test "rejects a cpp_archive entry with an aliased (uppercase) :module" do
+      # Foo.Bar would yield a wrong-named libElixir.Foo.Bar.a downstream.
+      m =
+        Map.put(@valid, :nifs, [
+          %{module: Foo.Bar, lang: :cpp_archive, sources: ["a.cpp"], nm_symbol: "x_nif_init"}
+        ])
+
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "lowercase NIF atom"))
+    end
   end
 
   describe "tier/1" do

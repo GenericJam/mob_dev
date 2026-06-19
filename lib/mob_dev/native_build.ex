@@ -335,7 +335,9 @@ defmodule MobDev.NativeBuild do
 
     # Activated plugins' cpp_archive NIFs (e.g. an Nx CPU backend): each
     # cross-compiled to lib<mod>.a for this ABI and static-linked via
-    # -Dplugin_static_libs. {:ok, []} when none / unsupported ABI.
+    # -Dplugin_static_libs. {:ok, []} when no such plugin is active; raises a
+    # hard build error when one IS active on an ABI CppArchive can't target
+    # (x86_64 emulator) rather than shipping an unresolved-symbol link failure.
     plugin_archive_result =
       case android_abi_to_cpp_target(abi) do
         nil -> {:ok, []}
@@ -2536,31 +2538,67 @@ defmodule MobDev.NativeBuild do
     do: ["-Dplugin_static_libs=#{Enum.join(paths, ",")}"]
 
   # Build every activated cpp_archive plugin NIF for one target ABI. Returns
-  # `{:ok, archive_paths}` (empty when no such plugin is active, or when the
-  # target ABI isn't yet supported by CppArchive — currently android_x86_64,
-  # which is logged rather than silently dropped), or a tagged error string.
+  # `{:ok, archive_paths}` (empty when no such plugin is active), or a tagged
+  # error string from the cross-compile.
+  #
+  # When a cpp_archive plugin IS active but `target_id` is an ABI CppArchive
+  # can't build (today the x86_64 Android emulator → :android_x86_64), this is
+  # a HARD build error rather than a logged skip: the per-platform driver_tab
+  # still references `<module>_nif_init` as a strong-undefined symbol, so
+  # silently returning {:ok, []} produces an unresolved-symbol link failure
+  # later (and only on-device). Failing here, by name, is the actionable
+  # signal. When no cpp_archive plugin is active the ABI gap is harmless, so
+  # the `specs == []` clause short-circuits first and unsupported ABIs build
+  # fine.
   @spec build_plugin_static_archives(atom(), :ios | :android, Path.t()) ::
           {:ok, [Path.t()]} | {:error, String.t()}
   defp build_plugin_static_archives(target_id, platform, otp_dir) do
     specs = MobDev.Plugin.Merge.static_archives(MobDev.Plugin.activated(), platform)
 
-    cond do
-      specs == [] ->
-        {:ok, []}
-
-      target_id not in MobDev.Plugin.CppArchive.targets() ->
-        names = Enum.map_join(specs, ", ", &"#{&1.plugin}/#{&1.module}")
-
-        IO.puts(
-          "  ! skipping cpp_archive plugin NIF(s) [#{names}] on #{target_id} — " <>
-            "MobDev.Plugin.CppArchive has no target for this ABI yet"
-        )
-
-        {:ok, []}
-
-      true ->
-        do_build_plugin_static_archives(specs, target_id, otp_dir)
+    case cpp_archive_target_decision(specs, target_id) do
+      :none -> {:ok, []}
+      {:error, msg} -> raise msg
+      :build -> do_build_plugin_static_archives(specs, target_id, otp_dir)
     end
+  end
+
+  @doc false
+  # Pure decision for `build_plugin_static_archives/3`, extracted so the
+  # short-circuit (no active cpp_archive plugin) and the hard-error (active
+  # plugin on an unsupported ABI) are unit-testable without driving a build:
+  #
+  #   * `:none`         — no cpp_archive spec needs building (ABI gap is
+  #                       harmless; an unsupported ABI like x86_64 builds fine)
+  #   * `{:error, msg}` — a spec IS present but `target_id` isn't one CppArchive
+  #                       can build → hard build error (the driver_tab still
+  #                       references `<module>_nif_init`, so {:ok, []} would
+  #                       defer an unresolved-symbol link failure to on-device)
+  #   * `:build`        — a spec is present and the ABI is supported
+  @spec cpp_archive_target_decision([map()], atom()) ::
+          :none | :build | {:error, String.t()}
+  def cpp_archive_target_decision([], _target_id), do: :none
+
+  def cpp_archive_target_decision(specs, target_id) do
+    if target_id in MobDev.Plugin.CppArchive.targets(),
+      do: :build,
+      else: {:error, unsupported_cpp_archive_target_error(specs, target_id)}
+  end
+
+  @doc false
+  # Build-error message for an active cpp_archive plugin on an ABI CppArchive
+  # can't target yet. Pure string builder, public so the failure path is
+  # testable without driving a full Android build.
+  @spec unsupported_cpp_archive_target_error([map()], atom()) :: String.t()
+  def unsupported_cpp_archive_target_error(specs, target_id) do
+    names = Enum.map_join(specs, ", ", &"#{&1.plugin}/#{&1.module}")
+
+    "cpp_archive plugin NIF(s) [#{names}] cannot be built for #{inspect(target_id)} — " <>
+      "MobDev.Plugin.CppArchive has no target for this ABI. cpp_archive currently " <>
+      "supports Android arm64 (:android_arm64) and arm32 (:android_arm32) only " <>
+      "(plus :ios_sim / :ios_device). The x86_64 Android emulator ABI is not " <>
+      "supported: building it would link <module>_nif_init as an unresolved symbol " <>
+      "and fail at link time on-device. Drop x86_64 from this build (target an " <>
+      "arm64/arm32 device or emulator), or remove the cpp_archive plugin for x86_64."
   end
 
   defp do_build_plugin_static_archives(specs, target_id, otp_dir) do
@@ -2596,13 +2634,19 @@ defmodule MobDev.NativeBuild do
     end
   end
 
+  @doc false
   # Android ABI string → CppArchive target id. x86_64 maps to :android_x86_64,
-  # which CppArchive doesn't build yet — build_plugin_static_archives/3 logs the
-  # skip rather than silently dropping it. nil = a truly unknown ABI string.
-  defp android_abi_to_cpp_target("arm64-v8a"), do: :android_arm64
-  defp android_abi_to_cpp_target("armeabi-v7a"), do: :android_arm32
-  defp android_abi_to_cpp_target("x86_64"), do: :android_x86_64
-  defp android_abi_to_cpp_target(_), do: nil
+  # which CppArchive doesn't build yet — `build_plugin_static_archives/3` raises
+  # a hard build error (rather than silently linking an unresolved init symbol)
+  # when a cpp_archive plugin is actually active for that ABI. nil = a truly
+  # unknown ABI string. Public for unit testing the mapping matrix.
+  @spec android_abi_to_cpp_target(String.t()) :: atom() | nil
+  def android_abi_to_cpp_target("arm64-v8a"), do: :android_arm64
+  def android_abi_to_cpp_target("arm64"), do: :android_arm64
+  def android_abi_to_cpp_target("armeabi-v7a"), do: :android_arm32
+  def android_abi_to_cpp_target("arm32"), do: :android_arm32
+  def android_abi_to_cpp_target("x86_64"), do: :android_x86_64
+  def android_abi_to_cpp_target(_), do: nil
 
   # ── TFLite NIF integration (mirrors NxEigen above) ─────────────────────────
   # Same shape as nxeigen but with TFLite-specific details: the runtime
