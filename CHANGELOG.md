@@ -8,7 +8,7 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
-## [Unreleased]
+## [0.6.11] - 2026-06-19
 
 ### Added
 - **`mix mob.adopt`** — installs Mob into an *existing* Phoenix project,
