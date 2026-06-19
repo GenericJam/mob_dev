@@ -172,10 +172,39 @@ defmodule MobDev.GooglePlay do
   end
 
   defp commit_edit(token, package, edit_id) do
-    case post("#{@play}/#{package}/edits/#{edit_id}:commit", json_headers(token), "{}") do
-      {:ok, _} -> :ok
-      err -> err
+    url = "#{@play}/#{package}/edits/#{edit_id}:commit"
+
+    case post(url, json_headers(token), "{}") do
+      {:ok, _} ->
+        :ok
+
+      {:error, msg} = err ->
+        if needs_changes_not_sent_for_review?(msg) do
+          # Google won't auto-send these changes for review (e.g. a release while
+          # the app is under policy review). Commit without sending — the changes
+          # are then sent for review from the Play Console UI.
+          log(
+            "changes can't be auto-sent for review — committing with " <>
+              "changesNotSentForReview=true (send for review from the Console)"
+          )
+
+          case post("#{url}?changesNotSentForReview=true", json_headers(token), "{}") do
+            {:ok, _} -> :ok
+            retry_err -> retry_err
+          end
+        else
+          err
+        end
     end
+  end
+
+  # True when a commit failed solely because Google requires the
+  # changesNotSentForReview flag (app under policy review, etc). The Play API
+  # names the query parameter verbatim in the 400 body.
+  @doc false
+  @spec needs_changes_not_sent_for_review?(String.t()) :: boolean()
+  def needs_changes_not_sent_for_review?(error_message) when is_binary(error_message) do
+    String.contains?(error_message, "changesNotSentForReview")
   end
 
   # ── HTTP ─────────────────────────────────────────────────────────────────────

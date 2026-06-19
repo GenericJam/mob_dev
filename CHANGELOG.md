@@ -8,6 +8,21 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.6.9] - 2026-06-18
+
+### Fixed
+- **`mix mob.publish --android` now commits when Google requires
+  `changesNotSentForReview=true`.** Uploading a release while the app is under
+  policy review (or otherwise can't auto-send for review) made the Play Edits
+  `:commit` fail with HTTP 400 ("Please set the query parameter
+  changesNotSentForReview to true"), discarding the whole edit so nothing
+  reached the track. `commit_edit/3` now detects that 400 and retries the commit
+  with `?changesNotSentForReview=true`; the changes land on the track and are
+  sent for review from the Play Console UI. Verified uploading Io v13 to the
+  internal track.
+
+---
+
 ## [0.6.8] - 2026-06-18
 
 ### Added
