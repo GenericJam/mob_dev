@@ -1742,4 +1742,24 @@ defmodule MobDev.NativeBuildTest do
       refute NativeBuild.zig_required_message() =~ "—"
     end
   end
+
+  describe "needs_clean_reinstall?/2 (in-place install -r vs uninstall fallback)" do
+    test "false on a successful in-place reinstall — app data is preserved" do
+      refute NativeBuild.needs_clean_reinstall?("Success\n", 0)
+    end
+
+    test "true on signature mismatch (INSTALL_FAILED_UPDATE_INCOMPATIBLE)" do
+      out = "adb: failed to install app.apk: Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE]"
+      assert NativeBuild.needs_clean_reinstall?(out, 1)
+    end
+
+    test "true on version downgrade (INSTALL_FAILED_VERSION_DOWNGRADE)" do
+      out = "Failure [INSTALL_FAILED_VERSION_DOWNGRADE]"
+      assert NativeBuild.needs_clean_reinstall?(out, 1)
+    end
+
+    test "true on a non-zero exit even without an INSTALL_FAILED line" do
+      assert NativeBuild.needs_clean_reinstall?("error: device offline", 1)
+    end
+  end
 end
