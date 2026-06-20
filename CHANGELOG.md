@@ -8,7 +8,7 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
-## [Unreleased]
+## [0.6.13] - 2026-06-20
 
 ### Changed
 - **`mix mob.deploy --native` now preserves on-device app data when the signing
@@ -22,6 +22,17 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
   pin a committed debug keystore now keep their identity across `--native`
   redeploys. Decision logic extracted to `NativeBuild.needs_clean_reinstall?/2`
   and unit-tested.
+
+### Fixed
+- **`mix mob.deploy --native --android` now fails fast with the real cause when
+  `zig` is missing** (landed in code before 0.6.13; previously undocumented).
+  The Android JNI build is driven by `build.zig`; with `zig` off PATH it used to
+  print a yellow "skipping build.zig step" warning and fall through to a CMake
+  fallback that references C sources mob 0.7+ no longer ships, dying ~150 lines
+  later with a misleading `Cannot find source file: .../mob_nif.c`. It now aborts
+  before Gradle with an actionable message (install zig 0.15.x, verify with
+  `mix mob.doctor`) when `build.zig` is present, `zig` is absent, and the legacy
+  C sources are gone. Decision extracted to `NativeBuild.zig_build_plan/3`. (#20)
 
 ---
 
