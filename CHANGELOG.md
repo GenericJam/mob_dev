@@ -8,6 +8,23 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [Unreleased]
+
+### Changed
+- **`mix mob.deploy --native` now preserves on-device app data when the signing
+  key matches.** The Android install path previously ran an unconditional
+  `adb uninstall` before `adb install`, which wiped `MOB_DATA_DIR` (on-device
+  identity, screen stores) on **every** native deploy — even an in-place update
+  signed with the same (e.g. committed) debug keystore. It now attempts
+  `adb install -r` first and only falls back to uninstall + install when the
+  in-place update is genuinely rejected (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`
+  from a signature mismatch, `INSTALL_FAILED_VERSION_DOWNGRADE`, etc.). Apps that
+  pin a committed debug keystore now keep their identity across `--native`
+  redeploys. Decision logic extracted to `NativeBuild.needs_clean_reinstall?/2`
+  and unit-tested.
+
+---
+
 ## [0.6.12] - 2026-06-19
 
 ### Fixed

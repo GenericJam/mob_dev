@@ -1232,6 +1232,20 @@ defmodule MobDev.NativeBuild do
     end)
   end
 
+  @doc """
+  Decide whether an `adb install -r` result forces a clean (uninstall + install)
+  reinstall.
+
+  True when the in-place update was rejected — a non-zero exit or an
+  `INSTALL_FAILED_*` line (signature mismatch, version downgrade, etc.). A clean
+  reinstall wipes app data (on-device identity, screen stores), so the caller
+  only falls back to it when the in-place update genuinely cannot apply.
+  """
+  @spec needs_clean_reinstall?(String.t(), integer()) :: boolean()
+  def needs_clean_reinstall?(install_output, exit_code) do
+    exit_code != 0 or String.contains?(install_output, "INSTALL_FAILED")
+  end
+
   defp adb_install_all(apk, bundle_id, device_id) do
     case System.cmd("adb", ["devices"], stderr_to_stdout: true) do
       {output, 0} ->
@@ -1250,10 +1264,38 @@ defmodule MobDev.NativeBuild do
             stderr_to_stdout: true
           )
 
-          System.cmd("adb", ["-s", serial, "uninstall", bundle_id], stderr_to_stdout: true)
+          # Try an in-place reinstall first (`install -r`): it preserves app data
+          # (on-device identity, screen stores) when the signing key matches —
+          # the common case once an app pins a committed debug keystore. Only
+          # when the package can't be updated in place (signature mismatch,
+          # version downgrade) do we uninstall + install, which clears app data.
+          {first_out, first_rc} =
+            System.cmd("adb", ["-s", serial, "install", "-r", apk], stderr_to_stdout: true)
 
           {install_out, install_rc} =
-            System.cmd("adb", ["-s", serial, "install", apk], stderr_to_stdout: true)
+            if needs_clean_reinstall?(first_out, first_rc) do
+              # Distinguish a genuine package-state rejection (signature or
+              # version mismatch) from a transient adb error (e.g. device
+              # offline): a clean reinstall reliably clears app data only in the
+              # former case, so word the notice accordingly rather than always
+              # promising "app data will be cleared".
+              if String.contains?(first_out, "INSTALL_FAILED") do
+                IO.puts(
+                  "  #{IO.ANSI.yellow()}In-place update rejected (signature or version " <>
+                    "mismatch), reinstalling clean (app data will be cleared)#{IO.ANSI.reset()}"
+                )
+              else
+                IO.puts(
+                  "  #{IO.ANSI.yellow()}In-place update failed (adb exit #{first_rc}), " <>
+                    "retrying with a clean install#{IO.ANSI.reset()}"
+                )
+              end
+
+              System.cmd("adb", ["-s", serial, "uninstall", bundle_id], stderr_to_stdout: true)
+              System.cmd("adb", ["-s", serial, "install", apk], stderr_to_stdout: true)
+            else
+              {first_out, first_rc}
+            end
 
           if install_rc != 0 or String.contains?(install_out, "INSTALL_FAILED") do
             reason =
