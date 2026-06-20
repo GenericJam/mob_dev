@@ -1274,10 +1274,22 @@ defmodule MobDev.NativeBuild do
 
           {install_out, install_rc} =
             if needs_clean_reinstall?(first_out, first_rc) do
-              IO.puts(
-                "  #{IO.ANSI.yellow()}In-place update rejected — reinstalling clean " <>
-                  "(app data will be cleared)#{IO.ANSI.reset()}"
-              )
+              # Distinguish a genuine package-state rejection (signature or
+              # version mismatch) from a transient adb error (e.g. device
+              # offline): a clean reinstall reliably clears app data only in the
+              # former case, so word the notice accordingly rather than always
+              # promising "app data will be cleared".
+              if String.contains?(first_out, "INSTALL_FAILED") do
+                IO.puts(
+                  "  #{IO.ANSI.yellow()}In-place update rejected (signature or version " <>
+                    "mismatch), reinstalling clean (app data will be cleared)#{IO.ANSI.reset()}"
+                )
+              else
+                IO.puts(
+                  "  #{IO.ANSI.yellow()}In-place update failed (adb exit #{first_rc}), " <>
+                    "retrying with a clean install#{IO.ANSI.reset()}"
+                )
+              end
 
               System.cmd("adb", ["-s", serial, "uninstall", bundle_id], stderr_to_stdout: true)
               System.cmd("adb", ["-s", serial, "install", apk], stderr_to_stdout: true)
