@@ -33,6 +33,7 @@ defmodule MobDev.StaticNifs do
   | `:builtin` | boolean  | `false`   | True for OTP-shipped libs              |
   | `:archs`   | [atom]   | `[:all]`  | Where this NIF should appear           |
   | `:guard`   | string   | none      | Preprocessor macro that gates the entry |
+  | `:extra_static_libs` | map | none | Per-ABI archives to link with this NIF |
 
   Valid `:archs` values: `:all`, `:ios`, `:android`, `:ios_sim`,
   `:ios_device`, `:android_arm64`, `:android_arm32`.
@@ -64,12 +65,20 @@ defmodule MobDev.StaticNifs do
           | :android_arm64
           | :android_arm32
 
+  @type extra_static_lib_arch ::
+          :ios_sim
+          | :ios_device
+          | :android_arm64
+          | :android_arm32
+          | :android_x86_64
+
   @type nif_entry :: %{
           required(:module) => atom(),
           optional(:init) => String.t(),
           optional(:builtin) => boolean(),
           optional(:archs) => [arch()],
-          optional(:guard) => String.t()
+          optional(:guard) => String.t(),
+          optional(:extra_static_libs) => %{optional(extra_static_lib_arch()) => Path.t()}
         }
 
   @valid_archs [
@@ -80,6 +89,14 @@ defmodule MobDev.StaticNifs do
     :ios_device,
     :android_arm64,
     :android_arm32
+  ]
+
+  @valid_extra_static_lib_archs [
+    :ios_sim,
+    :ios_device,
+    :android_arm64,
+    :android_arm32,
+    :android_x86_64
   ]
 
   @doc """
@@ -176,12 +193,29 @@ defmodule MobDev.StaticNifs do
       Map.has_key?(entry, :guard) and not is_binary(entry.guard) ->
         {:error, ":guard must be a string, got #{inspect(entry.guard)}"}
 
+      Map.has_key?(entry, :extra_static_libs) and
+          not valid_extra_static_libs?(entry.extra_static_libs) ->
+        {:error,
+         ":extra_static_libs must be a non-empty map of concrete arch => path string, got " <>
+           inspect(entry.extra_static_libs)}
+
       true ->
         validate_archs(Map.get(entry, :archs, [:all]))
     end
   end
 
   def validate_entry(other), do: {:error, "expected a map with :module, got #{inspect(other)}"}
+
+  # Per-ABI external static archives to add to the app link for this NIF. This
+  # lets a project NIF declare `extern` symbols and resolve them against an
+  # archive that is only valid for the current target ABI.
+  defp valid_extra_static_libs?(%{} = libs) when map_size(libs) > 0 do
+    Enum.all?(libs, fn {arch, path} ->
+      arch in @valid_extra_static_lib_archs and is_binary(path)
+    end)
+  end
+
+  defp valid_extra_static_libs?(_), do: false
 
   defp validate_archs(archs) when is_list(archs) do
     case Enum.reject(archs, &(&1 in @valid_archs)) do
