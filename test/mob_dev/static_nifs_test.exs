@@ -82,6 +82,35 @@ defmodule MobDev.StaticNifsTest do
       assert {:error, _} = StaticNifs.validate_entry(%{module: :foo, guard: :foo})
     end
 
+    test "accepts per-ABI extra static library paths" do
+      assert :ok =
+               StaticNifs.validate_entry(%{
+                 module: :ghostty_vt,
+                 archs: [:android_arm64],
+                 extra_static_libs: %{android_arm64: "native/libghostty-vt.a"}
+               })
+    end
+
+    test "rejects broad extra static library arch keys" do
+      assert {:error, msg} =
+               StaticNifs.validate_entry(%{
+                 module: :ghostty_vt,
+                 extra_static_libs: %{android: "native/libghostty-vt.a"}
+               })
+
+      assert msg =~ ":extra_static_libs"
+    end
+
+    test "rejects non-string extra static library paths" do
+      assert {:error, msg} =
+               StaticNifs.validate_entry(%{
+                 module: :ghostty_vt,
+                 extra_static_libs: %{android_arm64: :not_a_path}
+               })
+
+      assert msg =~ ":extra_static_libs"
+    end
+
     test "rejects entry without :module" do
       assert {:error, _} = StaticNifs.validate_entry(%{archs: [:all]})
     end

@@ -1275,6 +1275,67 @@ defmodule MobDev.NativeBuildTest do
     end
   end
 
+  describe "project_nif_zig_args/1" do
+    setup do
+      tmp = Path.join(System.tmp_dir!(), "project_nif_args_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+
+      old_static_nifs = Application.get_env(:mob_dev, :static_nifs)
+      cwd = File.cwd!()
+
+      on_exit(fn ->
+        if is_nil(old_static_nifs) do
+          Application.delete_env(:mob_dev, :static_nifs)
+        else
+          Application.put_env(:mob_dev, :static_nifs, old_static_nifs)
+        end
+
+        File.cd!(cwd)
+        File.rm_rf!(tmp)
+      end)
+
+      File.cd!(tmp)
+      :ok
+    end
+
+    test "adds per-ABI extra static archives to project_rust_libs and emits guard flag" do
+      Application.put_env(:mob_dev, :static_nifs, [
+        %{
+          module: :ghostty_vt,
+          archs: [:android_arm64],
+          guard: "MOB_STATIC_GHOSTTY_VT_NIF",
+          extra_static_libs: %{
+            android_arm64: "native/ghostty_vt/lib-android-arm64/libghostty-vt.a"
+          }
+        }
+      ])
+
+      assert {:ok, args} = NativeBuild.project_nif_zig_args(:android_arm64)
+
+      expected_lib = Path.expand("native/ghostty_vt/lib-android-arm64/libghostty-vt.a")
+      assert "-Dproject_rust_libs=#{expected_lib}" in args
+      assert "-Dghostty_vt_static=true" in args
+    end
+
+    test "does not add extra static archives or guard flags on non-matching ABIs" do
+      Application.put_env(:mob_dev, :static_nifs, [
+        %{
+          module: :ghostty_vt,
+          archs: [:android_arm64],
+          guard: "MOB_STATIC_GHOSTTY_VT_NIF",
+          extra_static_libs: %{
+            android_arm64: "native/ghostty_vt/lib-android-arm64/libghostty-vt.a"
+          }
+        }
+      ])
+
+      assert {:ok, args} = NativeBuild.project_nif_zig_args(:android_arm32)
+
+      assert "-Dproject_rust_libs=" in args
+      refute "-Dghostty_vt_static=true" in args
+    end
+  end
+
   # ── NxEigen integration helpers ──────────────────────────────────────────
   # Pure functions — no toolchain or filesystem touched.
 
