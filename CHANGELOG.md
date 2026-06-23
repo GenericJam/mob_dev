@@ -8,7 +8,7 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
-## [Unreleased]
+## [0.6.15] - 2026-06-23
 
 ### Security
 - **Bumped `req` 0.5.18 → 0.6.2** (pulls `finch` 0.22.0 → 0.23.0), clearing
