@@ -116,7 +116,7 @@ defmodule MobDev.Plugin.Manifest do
 
   defp check_mob_version(errors, _),
     do: [
-      ":mob_version is required and must be a version requirement string (e.g. \"~> 0.6\")"
+      ":mob_version is required and must be a version requirement string (e.g. \"~> 0.7\")"
       | errors
     ]
 
