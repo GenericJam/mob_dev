@@ -3527,7 +3527,8 @@ defmodule MobDev.NativeBuild do
           | :android_x86_64
         ) ::
           {:ok, [String.t()]} | {:error, String.t()}
-  defp project_nif_zig_args(platform) do
+  @doc false
+  def project_nif_zig_args(platform) do
     project_root = File.cwd!()
     # Respect each entry's `:archs` field — a NIF with
     # `archs: [:ios]` (in mob.exs `:static_nifs`) should be skipped on
@@ -3539,7 +3540,7 @@ defmodule MobDev.NativeBuild do
     # `on_platform?/2` understands.
     target_arch =
       case platform do
-        p when p in [:ios_device, :ios_sim] -> :ios
+        p when p in [:ios_device, :ios_sim] -> p
         :android_arm64 -> :android_arm64
         :android_arm32 -> :android_arm32
         :android_x86_64 -> :android
@@ -3566,19 +3567,34 @@ defmodule MobDev.NativeBuild do
         end
       end)
 
+    # Per-ABI external static archives declared via `:extra_static_libs` on the
+    # already platform-filtered entries. These resolve a project NIF's `extern`
+    # symbols at the app link without making the host-rendered NIF link against
+    # an archive for the wrong architecture.
+    extra_static_libs =
+      Enum.flat_map(entries, fn entry ->
+        case entry |> Map.get(:extra_static_libs, %{}) |> Map.get(platform) do
+          nil -> []
+          path -> [Path.expand(path, project_root)]
+        end
+      end)
+
+    nif_static_flags =
+      for entry <- entries, Map.has_key?(entry, :guard), do: "-D#{entry.module}_static=true"
+
     with {:ok, rust_libs} <- cross_compile_rust_nifs(rust_manifests, platform),
          {:ok, zig_libs} <- cross_compile_zig_nifs(zig_modules, platform) do
       # Pass both Rust and Zig static archives via the same flag
       # (they go to the same linker step). Name kept legacy-flavored
       # for the build template's existing consumer; sweep up later.
-      static_libs = Enum.reverse(rust_libs) ++ Enum.reverse(zig_libs)
+      static_libs = Enum.reverse(rust_libs) ++ Enum.reverse(zig_libs) ++ extra_static_libs
 
       {:ok,
        [
          "-Dproject_root=#{project_root}",
          "-Dproject_c_nifs=#{Enum.join(Enum.reverse(c_names), ",")}",
          "-Dproject_rust_libs=#{Enum.join(static_libs, ",")}"
-       ]}
+       ] ++ nif_static_flags}
     end
   end
 
@@ -3747,6 +3763,7 @@ defmodule MobDev.NativeBuild do
         # + armv7) doesn't overwrite the first build's archive — the
         # default `zig-out/` would clobber on the second invocation.
         prefix = "zig-out-#{target}"
+        path_args = zigler_build_path_args(module, staging_dir)
 
         args =
           [
@@ -3756,7 +3773,7 @@ defmodule MobDev.NativeBuild do
             "-Dnif_init_alias=#{name}_nif_init",
             "--prefix",
             prefix
-          ] ++ sdkroot_args
+          ] ++ path_args ++ sdkroot_args
 
         case System.cmd(zig_exe, args,
                cd: staging_dir,
@@ -3797,6 +3814,48 @@ defmodule MobDev.NativeBuild do
             {:error, "zig build for Zig NIF '#{name}' exited #{code}"}
         end
     end
+  end
+
+  defp zigler_build_path_args(module, staging_dir) do
+    erts_include =
+      Path.join([:code.root_dir(), "erts-#{:erlang.system_info(:version)}", "include"])
+
+    zigler_priv = :zigler |> :code.priv_dir() |> to_string()
+    erl_nif_win_path = Path.join(zigler_priv, "erl_nif_win")
+
+    erl_nif_header =
+      if :os.type() == {:win32, :nt},
+        do: Path.join(erl_nif_win_path, "erl_nif_win.h"),
+        else: Path.join(erts_include, "erl_nif.h")
+
+    module_root = zigler_module_root(module, staging_dir)
+
+    [
+      "-Derts_include=#{erts_include}",
+      "-Derl_nif_header=#{erl_nif_header}",
+      "-Derl_nif_win_path=#{erl_nif_win_path}",
+      "-Dzigler_priv=#{zigler_priv}",
+      "-Dmodule_root=#{module_root}"
+    ]
+  end
+
+  defp zigler_module_root(module, staging_dir) do
+    build_zig = Path.join(staging_dir, "build.zig")
+
+    with {:ok, source} <- File.read(build_zig),
+         [_match, basename] <- Regex.run(~r/&\.\{\s*module_root,\s*"([^"]+)"\s*\}/, source),
+         [path | _] <- Path.wildcard(Path.join(File.cwd!(), "**/#{basename}"), match_dot: true) do
+      Path.dirname(path)
+    else
+      _ -> module_source_root(module)
+    end
+  end
+
+  defp module_source_root(module) do
+    module.module_info(:compile)
+    |> Keyword.fetch!(:source)
+    |> to_string()
+    |> Path.dirname()
   end
 
   # Re-archives a Zig-built `.a` using `xcrun ar` so its members are
