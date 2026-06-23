@@ -10,6 +10,12 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ## [Unreleased]
 
+### Security
+- **Bumped `req` 0.5.18 → 0.6.2** (pulls `finch` 0.22.0 → 0.23.0), clearing
+  EEF-CVE-2026-49755 (HIGH) and EEF-CVE-2026-49756 (LOW) flagged by
+  `mix mob.security_scan`. `req` is a transitive dep (via `igniter`); the bump
+  stays within `igniter`'s `~> 0.5` requirement.
+
 ### Fixed
 - **`mix mob.new_plugin` no longer scaffolds plugins pinned to the abandoned
   `mob ~> 0.6`.** `MobDev.Plugin.Scaffold` hard-coded `{:mob, "~> 0.6"}` in the
