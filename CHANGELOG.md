@@ -8,7 +8,23 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
-## [0.6.13] - 2026-06-20
+## [0.6.14] - 2026-06-23
+
+### Added
+- **`:extra_static_libs` hook on `:static_nifs` entries** — a Mob app can now
+  link external per-ABI static archives alongside its project NIF archives.
+  Some project NIFs intentionally declare `extern` symbols and don't host-link
+  their backing archive (avoiding a host/device archive mismatch during `mix
+  compile`); this lets the native app link resolve those symbols against the
+  correct per-ABI `.a`. Entries require concrete per-ABI keys (`:ios_sim`,
+  `:ios_device`, `:android_arm64`, `:android_arm32`, `:android_x86_64`), and the
+  matching archive paths are appended to the existing `-Dproject_rust_libs=`
+  link argument. `-D<module>_static=true` is emitted only on the ABIs where the
+  entry applies, and iOS project-NIF filtering is now per-ABI so a device-only
+  guarded entry doesn't leak into simulator args. Also passes Zigler 0.16's
+  required generated-build flags when re-driving staged Zig NIF builds and
+  resolves Zigler dotfile sources with `match_dot: true`. Verified on a physical
+  SM-T577U (arm64-v8a) tablet via a Ghostty VT NIF. (#24)
 
 ### Changed
 - **`mix mob.deploy --native` now preserves on-device app data when the signing
