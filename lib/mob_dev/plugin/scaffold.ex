@@ -18,6 +18,13 @@ defmodule MobDev.Plugin.Scaffold do
 
   @supported_tiers [0, 1, 2, 3, 4]
 
+  # Mob version requirement baked into a freshly scaffolded plugin when the
+  # installed mob can't be detected (e.g. scaffolding outside a host app).
+  # `detect_mob_requirement/0` prefers the real installed version; this is the
+  # floor. Keep it tracking the current published mob major.minor — a Scaffold
+  # test pins it so it can't silently lag a mob release (see issue #21).
+  @fallback_mob_requirement "~> 0.7"
+
   # Names that pass the snake_case regex but produce a broken or non-buildable
   # plugin project. `nil`/`true`/`false` are the killers: the scaffold emits
   # `app: :<name>` in mix.exs, and Mix treats `:nil`/`:false` as "no app name"
@@ -79,43 +86,82 @@ defmodule MobDev.Plugin.Scaffold do
   end
 
   @doc """
+  Builds a `"~> MAJOR.MINOR"` mob version requirement from a concrete version.
+
+  `nil` (mob not detectable) yields the compiled `@fallback_mob_requirement`.
+  Pure so the derivation is unit-testable independent of what's installed.
+  """
+  @spec mob_requirement(String.t() | Version.t() | nil) :: String.t()
+  def mob_requirement(nil), do: @fallback_mob_requirement
+  def mob_requirement(%Version{major: major, minor: minor}), do: "~> #{major}.#{minor}"
+
+  def mob_requirement(version) when is_binary(version),
+    do: mob_requirement(Version.parse!(version))
+
+  @doc """
+  Resolves the mob version requirement for a freshly scaffolded plugin.
+
+  Prefers the version of `:mob` actually resolved in the current project (so a
+  plugin scaffolded inside a mob 0.7.x app pins `"~> 0.7"`), falling back to
+  the compiled `@fallback_mob_requirement` when mob isn't loadable (scaffolding
+  standalone). Impure — the Mix task calls this and threads the result into
+  `files_for/3`; the templates themselves stay pure.
+  """
+  @spec detect_mob_requirement() :: String.t()
+  def detect_mob_requirement do
+    _ = Application.load(:mob)
+
+    case Application.spec(:mob, :vsn) do
+      nil -> mob_requirement(nil)
+      vsn -> mob_requirement(List.to_string(vsn))
+    end
+  end
+
+  @doc """
   Returns the file list for a given tier + name. Each entry is
   `{relative_path, content}`. `relative_path` is relative to the plugin's
   root directory.
+
+  `mob_req` is the `mob` version requirement to embed in the generated
+  `mix.exs` and manifest; defaults to `@fallback_mob_requirement`. The Mix
+  task passes `detect_mob_requirement/0` so a scaffolded plugin pins the mob
+  it's being generated against.
   """
-  @spec files_for(tier(), String.t()) :: [file()]
-  def files_for(0, name) do
+  @spec files_for(tier(), String.t(), String.t()) :: [file()]
+  def files_for(tier, name, mob_req \\ @fallback_mob_requirement)
+
+  def files_for(0, name, mob_req) do
     [
-      {"mix.exs", mix_exs(name)},
+      {"mix.exs", mix_exs(name, mob_req)},
       {"lib/#{name}.ex", tier0_lib(name)},
       {"test/test_helper.exs", test_helper()},
       {"test/#{name}_test.exs", tier0_test(name)}
     ]
   end
 
-  def files_for(1, name) do
+  def files_for(1, name, mob_req) do
     nif_name = "#{name}_nif"
 
     [
-      {"mix.exs", mix_exs(name)},
+      {"mix.exs", mix_exs(name, mob_req)},
       {"lib/#{name}.ex", tier1_lib(name, nif_name)},
       {"src/#{nif_name}.erl", tier1_erl_stub(nif_name)},
-      {"priv/mob_plugin.exs", tier1_manifest(name, nif_name)},
+      {"priv/mob_plugin.exs", tier1_manifest(name, nif_name, mob_req)},
       {"priv/native/jni/#{nif_name}.c", tier1_c(nif_name)},
       {"test/test_helper.exs", test_helper()},
       {"test/#{name}_test.exs", plugin_test(name)}
     ]
   end
 
-  def files_for(2, name) do
+  def files_for(2, name, mob_req) do
     mod = module_name(name)
     registry_name = "#{mod}_View"
 
     [
-      {"mix.exs", mix_exs(name)},
+      {"mix.exs", mix_exs(name, mob_req)},
       {"lib/#{name}.ex", tier2_lib(name, mod)},
       {"lib/#{name}/view.ex", tier2_view(mod)},
-      {"priv/mob_plugin.exs", tier2_manifest(name, mod, registry_name)},
+      {"priv/mob_plugin.exs", tier2_manifest(name, mod, registry_name, mob_req)},
       {"priv/native/android/#{mod}.kt", tier2_kt(mod, registry_name)},
       {"priv/native/ios/#{mod}View.swift", tier2_swift(mod)},
       {"test/test_helper.exs", test_helper()},
@@ -123,30 +169,30 @@ defmodule MobDev.Plugin.Scaffold do
     ]
   end
 
-  def files_for(3, name) do
+  def files_for(3, name, mob_req) do
     mod = module_name(name)
 
     [
-      {"mix.exs", mix_exs(name)},
+      {"mix.exs", mix_exs(name, mob_req)},
       {"lib/#{name}/list_screen.ex", tier3_list_screen(mod)},
       {"lib/#{name}/detail_screen.ex", tier3_detail_screen(mod)},
-      {"priv/mob_plugin.exs", tier3_manifest(name, mod)},
+      {"priv/mob_plugin.exs", tier3_manifest(name, mod, mob_req)},
       {"priv/repo/migrations/20260101000000_create_#{name}_items.exs", tier3_migration(mod)},
       {"test/test_helper.exs", test_helper()},
       {"test/#{name}_test.exs", plugin_test(name)}
     ]
   end
 
-  def files_for(4, name) do
+  def files_for(4, name, mob_req) do
     mod = module_name(name)
 
     [
-      {"mix.exs", mix_exs(name)},
+      {"mix.exs", mix_exs(name, mob_req)},
       {"lib/#{name}.ex", tier4_lib(mod)},
       {"lib/#{name}/worker.ex", tier4_worker(mod)},
       {"lib/#{name}/notifications.ex", tier4_notifications(mod)},
       {"lib/#{name}/settings_screen.ex", tier4_settings_screen(mod)},
-      {"priv/mob_plugin.exs", tier4_manifest(name, mod)},
+      {"priv/mob_plugin.exs", tier4_manifest(name, mod, mob_req)},
       {"test/test_helper.exs", test_helper()},
       {"test/#{name}_test.exs", plugin_test(name)}
     ]
@@ -154,7 +200,7 @@ defmodule MobDev.Plugin.Scaffold do
 
   # ── mix.exs (same for all tiers) ──────────────────────────────────────────
 
-  defp mix_exs(name) do
+  defp mix_exs(name, mob_req) do
     mod = module_name(name)
 
     """
@@ -176,7 +222,7 @@ defmodule MobDev.Plugin.Scaffold do
 
       defp deps do
         [
-          {:mob, "~> 0.6"}
+          {:mob, "#{mob_req}"}
         ]
       end
     end
@@ -321,11 +367,11 @@ defmodule MobDev.Plugin.Scaffold do
     """
   end
 
-  defp tier1_manifest(name, nif_name) do
+  defp tier1_manifest(name, nif_name, mob_req) do
     """
     %{
       name: :#{name},
-      mob_version: "~> 0.6",
+      mob_version: "#{mob_req}",
       plugin_spec_version: 1,
       description: "TODO: describe your plugin",
       nifs: [
@@ -431,11 +477,11 @@ defmodule MobDev.Plugin.Scaffold do
     """
   end
 
-  defp tier2_manifest(name, mod, registry_name) do
+  defp tier2_manifest(name, mod, registry_name, mob_req) do
     """
     %{
       name: :#{name},
-      mob_version: "~> 0.6",
+      mob_version: "#{mob_req}",
       plugin_spec_version: 1,
       description: "TODO: describe your plugin",
 
@@ -569,11 +615,11 @@ defmodule MobDev.Plugin.Scaffold do
     """
   end
 
-  defp tier3_manifest(name, mod) do
+  defp tier3_manifest(name, mod, mob_req) do
     """
     %{
       name: :#{name},
-      mob_version: "~> 0.6",
+      mob_version: "#{mob_req}",
       plugin_spec_version: 1,
       description: "TODO: describe your plugin",
 
@@ -689,11 +735,11 @@ defmodule MobDev.Plugin.Scaffold do
     """
   end
 
-  defp tier4_manifest(name, mod) do
+  defp tier4_manifest(name, mod, mob_req) do
     """
     %{
       name: :#{name},
-      mob_version: "~> 0.6",
+      mob_version: "#{mob_req}",
       plugin_spec_version: 1,
       description: "TODO: describe your plugin",
 
