@@ -56,6 +56,65 @@ defmodule MobDev.Plugin.ScaffoldTest do
     end
   end
 
+  describe "mob version requirement (issue #21 — scaffolds must not pin a stale mob)" do
+    test "mob_requirement/1 derives ~> MAJOR.MINOR from a concrete version" do
+      assert Scaffold.mob_requirement("0.7.3") == "~> 0.7"
+      assert Scaffold.mob_requirement("1.2.10") == "~> 1.2"
+      assert Scaffold.mob_requirement(Version.parse!("0.8.0-rc.1")) == "~> 0.8"
+    end
+
+    test "mob_requirement/1 falls back to the compiled default on nil" do
+      assert Scaffold.mob_requirement(nil) =~ ~r/^~> \d+\.\d+$/
+    end
+
+    test "the compiled default is a parseable version requirement" do
+      assert {:ok, _} = Version.parse_requirement(Scaffold.mob_requirement(nil))
+    end
+
+    test "detect_mob_requirement/0 returns a parseable requirement" do
+      assert {:ok, _} = Version.parse_requirement(Scaffold.detect_mob_requirement())
+    end
+
+    test "the default does NOT pin the abandoned ~> 0.6 (the bug this fixes)" do
+      # mob is 0.7.x; a 0.6 pin can't activate against published mob. If mob's
+      # major.minor moves again, bump @fallback_mob_requirement — this guards
+      # against silently shipping the old floor.
+      refute Scaffold.mob_requirement(nil) == "~> 0.6"
+    end
+
+    test "every tier's mix.exs + manifest pin the same default requirement" do
+      req = Scaffold.mob_requirement(nil)
+
+      for tier <- 0..4 do
+        files = Scaffold.files_for(tier, "mob_demo_widget")
+        assert content_for(files, "mix.exs") =~ "{:mob, \"#{req}\"}"
+
+        # tier 0 has no manifest; tiers 1-4 must agree with mix.exs.
+        if tier > 0 do
+          {m, _} = Code.eval_string(content_for(files, "priv/mob_plugin.exs"))
+          assert m.mob_version == req, "tier #{tier} manifest mob_version drifted from mix.exs"
+        end
+      end
+    end
+
+    test "files_for/3 threads an explicit requirement into mix.exs + manifest" do
+      files = Scaffold.files_for(1, "mob_demo_widget", "~> 9.9")
+      assert content_for(files, "mix.exs") =~ "{:mob, \"~> 9.9\"}"
+      {m, _} = Code.eval_string(content_for(files, "priv/mob_plugin.exs"))
+      assert m.mob_version == "~> 9.9"
+    end
+
+    test "a scaffolded plugin's manifest is satisfied by a matching mob version" do
+      # The whole point: validate the generated manifest against a mob the
+      # default actually targets (not the stale 0.6 the validator used to OK).
+      for tier <- 1..4 do
+        dir = write_to_tmpdir!(Scaffold.files_for(tier, "mob_demo_widget"))
+        manifest = load_manifest!(dir)
+        assert %{errors: []} = Validator.validate_plugin(manifest, dir, satisfying_mob_version())
+      end
+    end
+  end
+
   describe "files_for/2 — tier 0" do
     setup do
       {:ok, files: Scaffold.files_for(0, "mob_demo_widget")}
@@ -72,7 +131,7 @@ defmodule MobDev.Plugin.ScaffoldTest do
       content = content_for(files, "mix.exs")
       assert content =~ "defmodule MobDemoWidget.MixProject"
       assert content =~ "app: :mob_demo_widget"
-      assert content =~ "{:mob, \"~> 0.6\"}"
+      assert content =~ "{:mob, \"#{Scaffold.mob_requirement(nil)}\"}"
     end
 
     test "lib module is the PascalCase name", %{files: files} do
@@ -127,7 +186,9 @@ defmodule MobDev.Plugin.ScaffoldTest do
 
       assert {:ok, ^manifest} = Manifest.validate(manifest)
       assert Manifest.tier(manifest) == 1
-      assert %{errors: [], warnings: []} = Validator.validate_plugin(manifest, dir, "0.6.20")
+
+      assert %{errors: [], warnings: []} =
+               Validator.validate_plugin(manifest, dir, satisfying_mob_version())
     end
   end
 
@@ -182,7 +243,7 @@ defmodule MobDev.Plugin.ScaffoldTest do
       manifest = load_manifest!(dir)
       assert {:ok, ^manifest} = Manifest.validate(manifest)
       assert Manifest.tier(manifest) == 2
-      assert %{errors: []} = Validator.validate_plugin(manifest, dir, "0.6.20")
+      assert %{errors: []} = Validator.validate_plugin(manifest, dir, satisfying_mob_version())
     end
   end
 
@@ -214,7 +275,7 @@ defmodule MobDev.Plugin.ScaffoldTest do
       manifest = load_manifest!(dir)
       assert {:ok, ^manifest} = Manifest.validate(manifest)
       assert Manifest.tier(manifest) == 3
-      assert %{errors: []} = Validator.validate_plugin(manifest, dir, "0.6.20")
+      assert %{errors: []} = Validator.validate_plugin(manifest, dir, satisfying_mob_version())
     end
   end
 
@@ -248,7 +309,7 @@ defmodule MobDev.Plugin.ScaffoldTest do
       manifest = load_manifest!(dir)
       assert {:ok, ^manifest} = Manifest.validate(manifest)
       assert Manifest.tier(manifest) == 4
-      assert %{errors: []} = Validator.validate_plugin(manifest, dir, "0.6.20")
+      assert %{errors: []} = Validator.validate_plugin(manifest, dir, satisfying_mob_version())
     end
   end
 
@@ -298,7 +359,7 @@ defmodule MobDev.Plugin.ScaffoldTest do
       # present in the scaffolded file set (on-disk File checks are covered by
       # the validate-in-tmpdir tests above).
       assert m.name == :mob_demo_widget
-      assert m.mob_version == "~> 0.6"
+      assert m.mob_version == Scaffold.mob_requirement(nil)
       assert m.plugin_spec_version == 1
 
       scaffolded_dirs = paths(files) |> Enum.map(&Path.dirname/1) |> MapSet.new()
@@ -310,6 +371,14 @@ defmodule MobDev.Plugin.ScaffoldTest do
   end
 
   # ── helpers ────────────────────────────────────────────────────────────────
+
+  # A concrete version that satisfies the scaffolded mob requirement, so the
+  # validate-in-tmpdir checks track the default and never lag a mob bump:
+  # "~> 0.7" → "0.7.0".
+  defp satisfying_mob_version do
+    "~> " <> base = Scaffold.mob_requirement(nil)
+    base <> ".0"
+  end
 
   defp paths(files), do: Enum.map(files, fn {p, _} -> p end)
 

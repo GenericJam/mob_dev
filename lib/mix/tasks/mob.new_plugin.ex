@@ -57,7 +57,7 @@ defmodule Mix.Tasks.Mob.NewPlugin do
          :ok <- Scaffold.validate_tier(tier) do
       dest = opts[:dest] || Path.join([File.cwd!(), "plugins", name])
       refuse_if_exists!(dest)
-      write_files!(dest, Scaffold.files_for(tier, name))
+      write_files!(dest, Scaffold.files_for(tier, name, Scaffold.detect_mob_requirement()))
       print_next_steps(name, tier)
     else
       {:error, reason} -> Mix.raise(reason)

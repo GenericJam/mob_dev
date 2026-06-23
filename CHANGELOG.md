@@ -8,6 +8,23 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **`mix mob.new_plugin` no longer scaffolds plugins pinned to the abandoned
+  `mob ~> 0.6`.** `MobDev.Plugin.Scaffold` hard-coded `{:mob, "~> 0.6"}` in the
+  generated `mix.exs` and `mob_version: "~> 0.6"` in every tier's manifest, so a
+  freshly scaffolded plugin could not activate against the published mob 0.7.x
+  (`installed :mob 0.7.x does not satisfy mob_version "~> 0.6"`). The requirement
+  is now derived at scaffold time from the mob actually resolved in the project
+  (`Scaffold.detect_mob_requirement/0`), falling back to a single
+  `@fallback_mob_requirement` constant (`"~> 0.7"`) when mob isn't loadable.
+  `mix.exs` and the manifest always agree. A `Scaffold` test pins the default and
+  asserts a generated manifest validates against a matching mob version, so the
+  pin can't silently lag a future mob release. (#21)
+
+---
+
 ## [0.6.14] - 2026-06-23
 
 ### Added
@@ -25,6 +42,10 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
   required generated-build flags when re-driving staged Zig NIF builds and
   resolves Zigler dotfile sources with `match_dot: true`. Verified on a physical
   SM-T577U (arm64-v8a) tablet via a Ghostty VT NIF. (#24)
+
+---
+
+## [0.6.13] - 2026-06-20
 
 ### Changed
 - **`mix mob.deploy --native` now preserves on-device app data when the signing
