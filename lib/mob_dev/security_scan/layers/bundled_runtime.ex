@@ -56,7 +56,13 @@ defmodule MobDev.SecurityScan.Layers.BundledRuntime do
     cache_dir_opts = if dir = Keyword.get(opts, :cache_dir), do: [cache_dir: dir], else: []
 
     tarballs = Fingerprint.locate_cached_tarballs(cache_dir_opts)
-    manifest = safe_load_manifest()
+    # `:manifest` lets callers (tests) inject a manifest so the override/drift
+    # mechanics can be exercised independently of the live bundled_versions.exs.
+    manifest =
+      case Keyword.get(opts, :manifest) do
+        nil -> safe_load_manifest()
+        injected -> {:ok, injected}
+      end
 
     {drift_findings, version_notes, status, error} =
       analyze(tarballs, manifest, project_root)

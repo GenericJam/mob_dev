@@ -107,8 +107,10 @@ defmodule MobDev.SecurityScan.Layers.BundledRuntimeTest do
   end
 
   test "per-platform override suppresses missing-artifact drift", %{tmp_dir: dir} do
-    # iOS sim does NOT ship exqlite per the active manifest. Building a
-    # tarball without exqlite should NOT generate a drift finding for it.
+    # A platform declared `exqlite_beam: nil` ships no exqlite, so a tarball
+    # built without one must NOT drift. Inject a manifest carrying that override
+    # (the live manifest records iOS as shipping exqlite, so this exercises the
+    # suppression mechanism independently of the live data).
     cache = Path.join(dir, "cache")
     File.mkdir_p!(cache)
 
@@ -117,10 +119,17 @@ defmodule MobDev.SecurityScan.Layers.BundledRuntimeTest do
     build_tarball(cache, :ios_sim, real_hash(),
       openssl: bundle.openssl,
       elixir: bundle.elixir
-      # no exqlite — matches per_platform override
+      # no exqlite — matches the injected per_platform override
     )
 
-    result = BundledRuntime.run(project_root: dir, cache_dir: cache)
+    manifest =
+      put_in(
+        MobDev.SecurityScan.BundledVersions.load(),
+        [:bundles, real_hash(), :per_platform],
+        %{ios_sim: %{exqlite_beam: nil}}
+      )
+
+    result = BundledRuntime.run(project_root: dir, cache_dir: cache, manifest: manifest)
 
     refute Enum.any?(result.findings, &(&1.id == "MOB-DRIFT-ios_sim-exqlite_beam"))
   end

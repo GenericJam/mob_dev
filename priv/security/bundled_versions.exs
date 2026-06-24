@@ -33,11 +33,11 @@
       openssl: "3.4.0",
       exqlite_beam: "0.36.0",
       openssl_release_date: "2024-10-22",
-      platforms: [:android, :android_arm32, :ios_sim, :ios_device],
-      per_platform: %{
-        ios_sim: %{exqlite_beam: nil},
-        ios_device: %{exqlite_beam: nil}
-      }
+      # iOS device + sim tarballs for this hash DO ship the exqlite beam
+      # (the Phase-B otp-5c9c69fc build bundled it), so they match the global
+      # 0.36.0 — no per_platform override. (Harmless redundancy with the
+      # _build copy; see decisions/2026-06-24-ios-exqlite-manifest-drift.md.)
+      platforms: [:android, :android_arm32, :ios_sim, :ios_device]
     },
     "7d46fdd4" => %{
       erts: "17.0",
