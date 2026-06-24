@@ -8,6 +8,19 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.6.16] - 2026-06-24
+
+### Added
+- **Plugins can contribute array-valued iOS plist keys** (e.g.
+  `UIBackgroundModes`). `apply_plugin_plist_keys!` previously skipped any
+  non-scalar `ios.plist_keys` value as unsupported; a list value now **merges**
+  into the host Info.plist array (creating it if absent, appending only the
+  missing string entries, deduped) instead of clobbering it. So one plugin can
+  add `bluetooth-central` while another (e.g. `mob_background`) keeps `audio`.
+  Merge decision extracted to the pure, tested `NativeBuild.plist_array_additions/2`.
+
+---
+
 ## [0.6.15] - 2026-06-23
 
 ### Security
