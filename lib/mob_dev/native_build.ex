@@ -4393,18 +4393,75 @@ defmodule MobDev.NativeBuild do
     activated_plugins = MobDev.Plugin.activated()
 
     for {key, value} <- MobDev.Plugin.Merge.plist_keys(activated_plugins) do
-      case plist_add_type(value) do
-        {:ok, type, str_value} ->
-          plist_add(info_plist, ":#{key}", type, str_value)
+      cond do
+        # Array-valued keys (e.g. UIBackgroundModes) MERGE into any existing
+        # array — append the missing string entries, deduped — rather than
+        # clobber. Lets a plugin contribute `bluetooth-central` without wiping a
+        # host's `audio` entry (mob_background) and vice versa.
+        is_list(value) ->
+          plist_merge_array!(info_plist, key, value)
 
-        :unsupported ->
-          Mix.shell().info(
-            "  [plugin plist] skipping :#{key} — unsupported value type #{inspect(value)}"
-          )
+        true ->
+          case plist_add_type(value) do
+            {:ok, type, str_value} ->
+              plist_add(info_plist, ":#{key}", type, str_value)
+
+            :unsupported ->
+              Mix.shell().info(
+                "  [plugin plist] skipping :#{key} — unsupported value type #{inspect(value)}"
+              )
+          end
       end
     end
 
     :ok
+  end
+
+  # Ensure `key` is an `<array>` in the plist and append every string item in
+  # `items` that isn't already present (order-preserving, deduped against what's
+  # on disk). PlistBuddy `Add :key array` is a no-op when the array already
+  # exists (the duplicate-key swallow in plist_add/4), so this composes with a
+  # host plist that already declares the key.
+  defp plist_merge_array!(plist, key, items) do
+    plist_add(plist, ":#{key}", "array", "")
+
+    existing = plist_array_entries(plist, ":#{key}")
+
+    for item <- plist_array_additions(existing, items) do
+      plist_add(plist, ":#{key}:", "string", item)
+    end
+
+    :ok
+  end
+
+  @doc false
+  # Pure: given the array entries already on disk and a plugin's desired items,
+  # return the string items to append — binaries only, not already present,
+  # de-duplicated, input order preserved. Extracted so the merge decision is
+  # unit-testable without PlistBuddy.
+  @spec plist_array_additions([String.t()], [term()]) :: [String.t()]
+  def plist_array_additions(existing, items) do
+    items
+    |> Enum.filter(&is_binary/1)
+    |> Enum.uniq()
+    |> Enum.reject(&(&1 in existing))
+  end
+
+  # Read the current string entries of an `<array>` plist key via PlistBuddy
+  # `Print`. Returns [] when the key is absent or not an array.
+  defp plist_array_entries(plist, key) do
+    case System.cmd("/usr/libexec/PlistBuddy", ["-c", "Print #{key}", plist],
+           stderr_to_stdout: true
+         ) do
+      {out, 0} ->
+        out
+        |> String.split("\n")
+        |> Enum.map(&String.trim/1)
+        |> Enum.reject(&(&1 in ["Array {", "}", ""]))
+
+      _ ->
+        []
+    end
   end
 
   defp plist_add_type(value) when is_binary(value), do: {:ok, "string", value}

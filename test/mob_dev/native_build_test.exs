@@ -1823,4 +1823,32 @@ defmodule MobDev.NativeBuildTest do
       assert NativeBuild.needs_clean_reinstall?("error: device offline", 1)
     end
   end
+
+  describe "plist_array_additions/2 (plugin array plist merge, e.g. UIBackgroundModes)" do
+    test "returns items not already present, input order preserved" do
+      assert NativeBuild.plist_array_additions(
+               ["audio"],
+               ["bluetooth-central", "bluetooth-peripheral"]
+             ) == ["bluetooth-central", "bluetooth-peripheral"]
+    end
+
+    test "skips items already on disk (idempotent re-merge)" do
+      assert NativeBuild.plist_array_additions(
+               ["audio", "bluetooth-central"],
+               ["bluetooth-central", "bluetooth-peripheral"]
+             ) == ["bluetooth-peripheral"]
+    end
+
+    test "de-duplicates within the requested items" do
+      assert NativeBuild.plist_array_additions([], ["x", "x", "y"]) == ["x", "y"]
+    end
+
+    test "drops non-binary entries" do
+      assert NativeBuild.plist_array_additions([], ["ok", :atom, 1, nil]) == ["ok"]
+    end
+
+    test "empty when everything is already present" do
+      assert NativeBuild.plist_array_additions(["a", "b"], ["a", "b"]) == []
+    end
+  end
 end
