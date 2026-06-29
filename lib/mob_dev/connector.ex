@@ -27,10 +27,11 @@ defmodule MobDev.Connector do
     cookie = Keyword.get(opts, :cookie, :mob_secret)
 
     only = opts |> Keyword.get(:only, []) |> List.wrap()
+    platforms = opts |> Keyword.get(:platforms, [:android, :ios]) |> List.wrap()
 
     IO.puts("\n#{color(:cyan)}Scanning for devices...#{color(:reset)}\n")
 
-    devices = discover_all() |> filter_only(only)
+    devices = platforms |> discover_all() |> filter_only(only)
 
     if devices == [] do
       if only != [] do
@@ -93,9 +94,13 @@ defmodule MobDev.Connector do
     end
   end
 
-  defp discover_all do
-    android = Android.list_devices()
-    ios = IOS.list_devices()
+  # Only scan the platforms the project targets. An iOS-only Mac (no Android
+  # platform-tools) skips Android discovery entirely — both so it never shells
+  # out to a missing `adb`, and so a plugged-in Android phone for some *other*
+  # project isn't swept into this session.
+  defp discover_all(platforms) do
+    android = if :android in platforms, do: Android.list_devices(), else: []
+    ios = if :ios in platforms, do: IOS.list_devices(), else: []
     android ++ ios
   end
 
