@@ -304,17 +304,28 @@ defmodule MobDev.Tunnel do
   # Pure-Elixir timeout via Task — avoids depending on the GNU `timeout`
   # binary, which doesn't ship with macOS or BSD by default. Calls adb
   # directly via System.cmd/3 (no shell, no quoting concerns).
+  #
+  # Resolves `adb` up front via System.find_executable/1: an iOS-only Mac
+  # has no Android platform-tools, and `System.cmd("adb", ...)` *raises*
+  # `:enoent` for a missing binary (it does not return a non-zero exit). That
+  # raise inside the linked Task would propagate an exit to the caller and
+  # crash the whole `mix mob.connect`. Returning `{:error, ...}` instead lets
+  # every caller's existing error branch degrade gracefully (no forwards →
+  # empty port set, no-op cleanup), so iOS-only setups never touch adb.
   defp run_adb(args) do
-    task =
-      Task.async(fn ->
-        System.cmd("adb", args, stderr_to_stdout: true)
-      end)
+    case System.find_executable("adb") do
+      nil ->
+        {:error, "adb not found on PATH"}
 
-    case Task.yield(task, 8_000) || Task.shutdown(task, :brutal_kill) do
-      {:ok, {output, 0}} -> {:ok, String.trim(output)}
-      {:ok, {output, _rc}} -> {:error, String.trim(output)}
-      nil -> {:error, "adb timed out"}
-      {:exit, reason} -> {:error, "adb crashed: #{inspect(reason)}"}
+      adb ->
+        task = Task.async(fn -> System.cmd(adb, args, stderr_to_stdout: true) end)
+
+        case Task.yield(task, 8_000) || Task.shutdown(task, :brutal_kill) do
+          {:ok, {output, 0}} -> {:ok, String.trim(output)}
+          {:ok, {output, _rc}} -> {:error, String.trim(output)}
+          nil -> {:error, "adb timed out"}
+          {:exit, reason} -> {:error, "adb crashed: #{inspect(reason)}"}
+        end
     end
   end
 end
