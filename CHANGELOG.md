@@ -8,6 +8,27 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.6.17] - 2026-06-29
+
+### Fixed
+- **`mix mob.connect` crashed on a Mac set up only for iOS.** The dist-port
+  collision check shelled out to `adb forward --list`, and `System.cmd("adb", …)`
+  *raises* `:enoent` for a missing binary rather than returning a non-zero exit —
+  inside a linked `Task`, so the crash propagated and killed the whole connect.
+  `MobDev.Tunnel.run_adb/1` now resolves `adb` via `System.find_executable/1`
+  first (mirroring `Discovery.Android.list_devices/0`) and returns `{:error, …}`
+  when it's absent, so the port scan degrades to "no forwards" and iOS-only
+  Macs work with no Android platform-tools installed. (#29)
+
+### Added
+- **`mix mob.connect --ios-only` / `--android-only`** restrict discovery to one
+  platform — handy when a phone for another project is plugged in. Set it
+  project-wide in `mob.exs` with `config :mob_dev, platforms: [:ios]`. New pure
+  helpers `MobDev.Config.parse_platforms/1` and
+  `Mix.Tasks.Mob.Connect.resolve_platforms/2`. (#29)
+
+---
+
 ## [0.6.16] - 2026-06-24
 
 ### Added
