@@ -46,6 +46,42 @@ defmodule MobDev.Config do
     end
   end
 
+  # The platforms a project develops for. `:android` and `:ios` are the only
+  # valid entries; order is irrelevant.
+  @all_platforms [:android, :ios]
+
+  @doc """
+  Platforms this project targets, read from `mob.exs`
+  (`config :mob_dev, platforms: [:ios]`).
+
+  Defaults to both platforms when unset. The chief use is letting a Mac-only
+  iOS developer opt out of Android discovery/tunnelling once, instead of
+  passing `--ios-only` on every command. A `--ios-only` / `--android-only`
+  flag overrides this at the call site.
+  """
+  @spec platforms() :: [:android | :ios]
+  def platforms, do: parse_platforms(load_mob_config()[:platforms])
+
+  @doc """
+  Normalises a raw `:platforms` config value to a valid platform list.
+
+  `nil` (unset) yields both platforms. A list is filtered to the known
+  platforms (`:android`, `:ios`); unknown or malformed entries are dropped.
+  If nothing valid remains, falls back to both platforms rather than leaving
+  the caller with no devices to discover. Pure — exposed for testing.
+  """
+  @spec parse_platforms(term()) :: [:android | :ios]
+  def parse_platforms(nil), do: @all_platforms
+
+  def parse_platforms(value) when is_list(value) do
+    case Enum.filter(@all_platforms, &(&1 in value)) do
+      [] -> @all_platforms
+      valid -> valid
+    end
+  end
+
+  def parse_platforms(_other), do: @all_platforms
+
   @doc """
   Reads the `mob_dev` section from `mob.exs` in the current directory.
   Returns an empty keyword list if the file does not exist.
