@@ -1851,4 +1851,28 @@ defmodule MobDev.NativeBuildTest do
       assert NativeBuild.plist_array_additions(["a", "b"], ["a", "b"]) == []
     end
   end
+
+  describe "build_file_supports_plugins?/1 (MOB-7: blank-iOS mob_register_plugins link)" do
+    test "true when the iOS build file exposes the plugin_swift_files option" do
+      src = ~s|
+        const plugin_swift_files = b.option([]const u8, "plugin_swift_files", "…") orelse "";
+        const plugin_frameworks = b.option([]const u8, "plugin_frameworks", "…") orelse "";
+      |
+
+      assert NativeBuild.build_file_supports_plugins?(src)
+    end
+
+    test "false for a pre-plugin build file (no plugin_swift_files option)" do
+      src = ~s|
+        const mob_dir = b.option([]const u8, "mob_dir", "…") orelse "";
+        const sdkroot = b.option([]const u8, "sdkroot", "…") orelse "";
+      |
+
+      refute NativeBuild.build_file_supports_plugins?(src)
+    end
+
+    test "false for empty content" do
+      refute NativeBuild.build_file_supports_plugins?("")
+    end
+  end
 end
