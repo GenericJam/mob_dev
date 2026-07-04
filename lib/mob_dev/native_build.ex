@@ -2440,6 +2440,53 @@ defmodule MobDev.NativeBuild do
     out_path
   end
 
+  @doc false
+  # Pure kernel: does an iOS build file (build.zig / build_device.zig) accept the
+  # `plugin_swift_files` option? Presence of that token means the app was
+  # scaffolded from a plugin-aware template — whose AppDelegate also always calls
+  # `mob_register_plugins()`. So even with zero plugins activated we must still
+  # feed it the (empty) bootstrap that defines that symbol, or the link fails
+  # with `undefined _mob_register_plugins` (MOB-7). Legacy scaffolds lack the
+  # token *and* never call the symbol, so they stay on the empty-flags path.
+  @spec build_file_supports_plugins?(String.t()) :: boolean()
+  def build_file_supports_plugins?(content), do: String.contains?(content, "plugin_swift_files")
+
+  # Thin I/O wrapper around build_file_supports_plugins?/1. Missing/unreadable
+  # file ⇒ false (treat as legacy: omit the flags rather than risk an unknown
+  # -D option on an old build.zig).
+  defp ios_build_file_supports_plugins?(path) do
+    case File.read(path) do
+      {:ok, content} -> build_file_supports_plugins?(content)
+      _ -> false
+    end
+  end
+
+  # Resolves the {plugin_swift_files, plugin_frameworks} pair for an iOS build,
+  # shared by the sim and device paths. Activated plugins ⇒ their Swift + the
+  # bootstrap. No plugins but a plugin-aware build file ⇒ just the bootstrap (so
+  # mob_register_plugins is defined — see MOB-7). Otherwise empty (flags omitted).
+  defp ios_plugin_swift_and_frameworks(activated_plugins, build_dir, ios_build_file) do
+    cond do
+      activated_plugins != [] ->
+        bootstrap_path = generate_ios_plugin_bootstrap(build_dir)
+
+        swift =
+          (MobDev.Plugin.Merge.swift_files(activated_plugins) ++ [bootstrap_path])
+          |> Enum.join(",")
+
+        frameworks =
+          activated_plugins |> MobDev.Plugin.Merge.ios_frameworks() |> Enum.join(",")
+
+        {swift, frameworks}
+
+      ios_build_file_supports_plugins?(ios_build_file) ->
+        {generate_ios_plugin_bootstrap(build_dir), ""}
+
+      true ->
+        {"", ""}
+    end
+  end
+
   defp zig_build_binary_ios_sim(
          mob_dir,
          otp_root,
@@ -2468,27 +2515,17 @@ defmodule MobDev.NativeBuild do
     MobDev.Plugin.Validator.raise_on_capability_drift!(activated_plugins)
 
     # Generated bootstrap Swift gets compiled alongside the plugins' own Swift
-    # files via -Dplugin_swift_files. But that flag (and the bootstrap, which
-    # makes it always non-empty) only matters when plugins are activated: an app
-    # scaffolded before the plugin system has no plugin_swift_files option in
-    # ios/build.zig, and mob's pre-plugin Swift never calls the bootstrap. So
-    # when nothing is activated, skip the bootstrap and leave the flags empty
-    # (omitted below) — keeping non-plugin apps on older mob building.
+    # files via -Dplugin_swift_files. The bootstrap also defines
+    # mob_register_plugins(), which a plugin-aware AppDelegate always calls — so
+    # even a zero-plugin app on a current build.zig needs it (see MOB-7). Legacy
+    # scaffolds (no plugin_swift_files option, no call to the symbol) get empty
+    # flags, omitted below, keeping them building.
     {plugin_swift_files, plugin_frameworks} =
-      if activated_plugins == [] do
-        {"", ""}
-      else
-        bootstrap_path = generate_ios_plugin_bootstrap(build_dir)
-
-        swift =
-          (MobDev.Plugin.Merge.swift_files(activated_plugins) ++ [bootstrap_path])
-          |> Enum.join(",")
-
-        frameworks =
-          activated_plugins |> MobDev.Plugin.Merge.ios_frameworks() |> Enum.join(",")
-
-        {swift, frameworks}
-      end
+      ios_plugin_swift_and_frameworks(
+        activated_plugins,
+        build_dir,
+        Path.expand("ios/build.zig")
+      )
 
     # Activated plugins' C NIF sources (tier-1 plugins). Mirrors the Android
     # plugin_c_nifs path and the iOS project_c_nifs path: each .c is compiled +
@@ -3947,26 +3984,15 @@ defmodule MobDev.NativeBuild do
     # MOB_PLUGIN_SECURITY.md, Layer 2.
     MobDev.Plugin.Validator.raise_on_capability_drift!(activated_plugins)
 
-    # See sim build for the rationale. Only generate the bootstrap + emit the
-    # -Dplugin_* flags when plugins are activated; an app scaffolded before the
-    # plugin system has no plugin_swift_files/plugin_frameworks option in
-    # ios/build_device.zig, and the bootstrap would otherwise make
-    # plugin_swift_files always non-empty.
+    # See sim build for the rationale (MOB-7). A plugin-aware build_device.zig
+    # implies an AppDelegate that always calls mob_register_plugins(), so a
+    # zero-plugin app still needs the bootstrap; legacy scaffolds get empty flags.
     {plugin_swift_files, plugin_frameworks} =
-      if activated_plugins == [] do
-        {"", ""}
-      else
-        bootstrap_path = generate_ios_plugin_bootstrap(build_dir)
-
-        swift =
-          (MobDev.Plugin.Merge.swift_files(activated_plugins) ++ [bootstrap_path])
-          |> Enum.join(",")
-
-        frameworks =
-          activated_plugins |> MobDev.Plugin.Merge.ios_frameworks() |> Enum.join(",")
-
-        {swift, frameworks}
-      end
+      ios_plugin_swift_and_frameworks(
+        activated_plugins,
+        build_dir,
+        Path.expand("ios/build_device.zig")
+      )
 
     # Activated plugins' C NIF sources — see the sim build for the full
     # rationale. Same path on device; the iPhone uses build_device.zig.
