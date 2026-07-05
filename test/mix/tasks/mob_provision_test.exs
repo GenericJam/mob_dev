@@ -151,4 +151,49 @@ defmodule Mix.Tasks.Mob.ProvisionTest do
       assert label =~ "App ID display name"
     end
   end
+
+  # ── asc_auth_args/1 — headless provisioning via App Store Connect API key ────
+  describe "asc_auth_args/1" do
+    test "no env vars set => [] (falls back to the signed-in Xcode account)" do
+      assert Provision.asc_auth_args(%{}) == []
+      assert Provision.asc_auth_args(%{"UNRELATED" => "x"}) == []
+    end
+
+    test "all three set => the three xcodebuild -authenticationKey* flags, in order" do
+      env = %{
+        "MOB_ASC_KEY_ID" => "ABC123",
+        "MOB_ASC_ISSUER_ID" => "69a6de00-1234",
+        "MOB_ASC_KEY_PATH" => "/keys/AuthKey_ABC123.p8"
+      }
+
+      assert Provision.asc_auth_args(env) == [
+               "-authenticationKeyID",
+               "ABC123",
+               "-authenticationKeyIssuerID",
+               "69a6de00-1234",
+               "-authenticationKeyPath",
+               "/keys/AuthKey_ABC123.p8"
+             ]
+    end
+
+    test "empty-string values count as absent (KEY_ID= is the same as unset)" do
+      assert Provision.asc_auth_args(%{
+               "MOB_ASC_KEY_ID" => "",
+               "MOB_ASC_ISSUER_ID" => "",
+               "MOB_ASC_KEY_PATH" => ""
+             }) == []
+    end
+
+    test "partial config raises, naming what's set and what's missing" do
+      err =
+        assert_raise Mix.Error, fn ->
+          Provision.asc_auth_args(%{"MOB_ASC_KEY_ID" => "ABC123"})
+        end
+
+      assert err.message =~ "Incomplete App Store Connect API key config"
+      assert err.message =~ "MOB_ASC_KEY_ID"
+      assert err.message =~ "MOB_ASC_ISSUER_ID"
+      assert err.message =~ "MOB_ASC_KEY_PATH"
+    end
+  end
 end
