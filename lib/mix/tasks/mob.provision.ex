@@ -28,6 +28,25 @@ defmodule Mix.Tasks.Mob.Provision do
 
   Distribution mode requires a paid Developer Program membership.
 
+  ## Headless / unattended provisioning (App Store Connect API key)
+
+  Step 2 (an interactive Xcode Apple ID account) is impossible for an unattended
+  user — a CI runner or a headless agent account with no GUI login. Instead,
+  authenticate `-allowProvisioningUpdates` with an **App Store Connect API key**
+  by setting three env vars; when they are present the task passes them to
+  `xcodebuild` and no signed-in Xcode account is needed:
+
+    * `MOB_ASC_KEY_ID`    — the API key's Key ID
+    * `MOB_ASC_ISSUER_ID` — your team's Issuer ID
+    * `MOB_ASC_KEY_PATH`  — path to the downloaded `AuthKey_<id>.p8`
+
+  Create the key at App Store Connect → Users and Access → Integrations → App
+  Store Connect API, with a role that can manage certificates/profiles/devices
+  (Admin or App Manager). The `.p8` downloads once — store it read-only. Set all
+  three or none (a partial set raises); with none set, the signed-in Xcode
+  account is used as before. Signing still needs the certificate + private key in
+  an unlocked keychain — the API key only authorizes the profile/device calls.
+
   ## What it does (development)
 
     1. Reads your signing team from the macOS keychain or existing profiles
@@ -398,22 +417,97 @@ defmodule Mix.Tasks.Mob.Provision do
 
   # ── xcodebuild ────────────────────────────────────────────────────────────────
 
+  @asc_key_id "MOB_ASC_KEY_ID"
+  @asc_issuer_id "MOB_ASC_ISSUER_ID"
+  @asc_key_path "MOB_ASC_KEY_PATH"
+
+  @doc false
+  # App Store Connect API-key auth flags for xcodebuild, from env. Lets an
+  # unattended user (a headless agent / CI) provision without an interactive
+  # Xcode Apple ID account: with the key set, `-allowProvisioningUpdates`
+  # authenticates against App Store Connect directly. Returns `[]` when none of
+  # the vars are set (falls back to the signed-in Xcode account, the default).
+  # Raises on partial config — a half-set key is a mistake worth surfacing, not
+  # a silent fall-back to a different auth path.
+  #
+  #   * `MOB_ASC_KEY_ID`     — the API key's Key ID
+  #   * `MOB_ASC_ISSUER_ID`  — your team's Issuer ID
+  #   * `MOB_ASC_KEY_PATH`   — path to the downloaded `AuthKey_<id>.p8`
+  @spec asc_auth_args(map()) :: [String.t()]
+  def asc_auth_args(env) do
+    id = present(env, @asc_key_id)
+    issuer = present(env, @asc_issuer_id)
+    path = present(env, @asc_key_path)
+
+    cond do
+      is_nil(id) and is_nil(issuer) and is_nil(path) ->
+        []
+
+      is_binary(id) and is_binary(issuer) and is_binary(path) ->
+        [
+          "-authenticationKeyID",
+          id,
+          "-authenticationKeyIssuerID",
+          issuer,
+          "-authenticationKeyPath",
+          path
+        ]
+
+      true ->
+        set =
+          for {v, k} <- [{id, @asc_key_id}, {issuer, @asc_issuer_id}, {path, @asc_key_path}],
+              v,
+              do: k
+
+        missing = Enum.reject([@asc_key_id, @asc_issuer_id, @asc_key_path], &(&1 in set))
+
+        Mix.raise("""
+        Incomplete App Store Connect API key config.
+
+        Set #{Enum.join(set, ", ")} but missing #{Enum.join(missing, ", ")}.
+        Provide all three (#{@asc_key_id}, #{@asc_issuer_id}, #{@asc_key_path}) to
+        provision via an API key, or none to use the signed-in Xcode account.
+        """)
+    end
+  end
+
+  # nil for an unset OR empty env var, so `MOB_ASC_KEY_ID=` counts as absent.
+  defp present(env, key) do
+    case Map.get(env, key) do
+      v when is_binary(v) and v != "" -> v
+      _ -> nil
+    end
+  end
+
+  # Fail early with a clear message rather than an opaque xcodebuild error when
+  # the key file is missing — the common headless-setup slip.
+  defp verify_asc_key_file!(path) when is_binary(path) and path != "" do
+    unless File.exists?(path) do
+      Mix.raise("#{@asc_key_path} points to a file that does not exist: #{path}")
+    end
+  end
+
+  defp verify_asc_key_file!(_), do: :ok
+
   defp run_xcodebuild!(mode) do
     # `-scheme MobProvision` rather than `-target MobProvision`: Xcode 16+
     # rejects `-archivePath` paired with `-target` ("The flag -scheme is
     # required when specifying -archivePath but not -exportArchive").
     # Both forms work for the build action, so we use scheme for both
     # to keep the invocation consistent.
-    base = [
-      "-project",
-      "ios/Provision.xcodeproj",
-      "-scheme",
-      "MobProvision",
-      "-destination",
-      "generic/platform=iOS",
-      "-allowProvisioningUpdates",
-      "-allowProvisioningDeviceRegistration"
-    ]
+    base =
+      [
+        "-project",
+        "ios/Provision.xcodeproj",
+        "-scheme",
+        "MobProvision",
+        "-destination",
+        "generic/platform=iOS",
+        "-allowProvisioningUpdates",
+        "-allowProvisioningDeviceRegistration"
+      ] ++ asc_auth_args(System.get_env())
+
+    verify_asc_key_file!(System.get_env(@asc_key_path))
 
     args =
       case mode do
