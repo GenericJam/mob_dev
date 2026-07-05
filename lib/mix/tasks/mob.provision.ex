@@ -36,9 +36,9 @@ defmodule Mix.Tasks.Mob.Provision do
   by setting three env vars; when they are present the task passes them to
   `xcodebuild` and no signed-in Xcode account is needed:
 
-    * `MOB_ASC_KEY_ID`    — the API key's Key ID
-    * `MOB_ASC_ISSUER_ID` — your team's Issuer ID
-    * `MOB_ASC_KEY_PATH`  — path to the downloaded `AuthKey_<id>.p8`
+    * `APP_STORE_CONNECT_KEY_ID` — the API key's Key ID
+    * `APP_STORE_CONNECT_ISSUER_ID` — your team's Issuer ID
+    * `APP_STORE_CONNECT_API_KEY_PATH` — path to the downloaded `AuthKey_<id>.p8`
 
   Create the key at App Store Connect → Users and Access → Integrations → App
   Store Connect API, with a role that can manage certificates/profiles/devices
@@ -417,9 +417,9 @@ defmodule Mix.Tasks.Mob.Provision do
 
   # ── xcodebuild ────────────────────────────────────────────────────────────────
 
-  @asc_key_id "MOB_ASC_KEY_ID"
-  @asc_issuer_id "MOB_ASC_ISSUER_ID"
-  @asc_key_path "MOB_ASC_KEY_PATH"
+  @asc_key_id "APP_STORE_CONNECT_KEY_ID"
+  @asc_issuer_id "APP_STORE_CONNECT_ISSUER_ID"
+  @asc_key_path "APP_STORE_CONNECT_API_KEY_PATH"
 
   @doc false
   # App Store Connect API-key auth flags for xcodebuild, from env. Lets an
@@ -430,9 +430,9 @@ defmodule Mix.Tasks.Mob.Provision do
   # Raises on partial config — a half-set key is a mistake worth surfacing, not
   # a silent fall-back to a different auth path.
   #
-  #   * `MOB_ASC_KEY_ID`     — the API key's Key ID
-  #   * `MOB_ASC_ISSUER_ID`  — your team's Issuer ID
-  #   * `MOB_ASC_KEY_PATH`   — path to the downloaded `AuthKey_<id>.p8`
+  #   * `APP_STORE_CONNECT_KEY_ID` — the API key's Key ID
+  #   * `APP_STORE_CONNECT_ISSUER_ID` — your team's Issuer ID
+  #   * `APP_STORE_CONNECT_API_KEY_PATH` — path to the downloaded `AuthKey_<id>.p8`
   @spec asc_auth_args(map()) :: [String.t()]
   def asc_auth_args(env) do
     id = present(env, @asc_key_id)
@@ -471,7 +471,7 @@ defmodule Mix.Tasks.Mob.Provision do
     end
   end
 
-  # nil for an unset OR empty env var, so `MOB_ASC_KEY_ID=` counts as absent.
+  # nil for an unset OR empty env var, so `APP_STORE_CONNECT_KEY_ID=` counts as absent.
   defp present(env, key) do
     case Map.get(env, key) do
       v when is_binary(v) and v != "" -> v

@@ -19,7 +19,7 @@ was gated on the interactive account.
 Support an **App Store Connect API key** (`.p8`) as an alternative auth path for
 the `xcodebuild -allowProvisioningUpdates` call, selected via three env vars:
 
-- `MOB_ASC_KEY_ID`, `MOB_ASC_ISSUER_ID`, `MOB_ASC_KEY_PATH`
+- `APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_ISSUER_ID`, `APP_STORE_CONNECT_API_KEY_PATH`
 
 `asc_auth_args/1` (pure, `@doc false`, tested) maps them to xcodebuild's
 `-authenticationKeyID` / `-authenticationKeyIssuerID` / `-authenticationKeyPath`.
