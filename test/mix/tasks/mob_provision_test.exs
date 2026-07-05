@@ -161,9 +161,9 @@ defmodule Mix.Tasks.Mob.ProvisionTest do
 
     test "all three set => the three xcodebuild -authenticationKey* flags, in order" do
       env = %{
-        "MOB_ASC_KEY_ID" => "ABC123",
-        "MOB_ASC_ISSUER_ID" => "69a6de00-1234",
-        "MOB_ASC_KEY_PATH" => "/keys/AuthKey_ABC123.p8"
+        "APP_STORE_CONNECT_KEY_ID" => "ABC123",
+        "APP_STORE_CONNECT_ISSUER_ID" => "69a6de00-1234",
+        "APP_STORE_CONNECT_API_KEY_PATH" => "/keys/AuthKey_ABC123.p8"
       }
 
       assert Provision.asc_auth_args(env) == [
@@ -178,22 +178,22 @@ defmodule Mix.Tasks.Mob.ProvisionTest do
 
     test "empty-string values count as absent (KEY_ID= is the same as unset)" do
       assert Provision.asc_auth_args(%{
-               "MOB_ASC_KEY_ID" => "",
-               "MOB_ASC_ISSUER_ID" => "",
-               "MOB_ASC_KEY_PATH" => ""
+               "APP_STORE_CONNECT_KEY_ID" => "",
+               "APP_STORE_CONNECT_ISSUER_ID" => "",
+               "APP_STORE_CONNECT_API_KEY_PATH" => ""
              }) == []
     end
 
     test "partial config raises, naming what's set and what's missing" do
       err =
         assert_raise Mix.Error, fn ->
-          Provision.asc_auth_args(%{"MOB_ASC_KEY_ID" => "ABC123"})
+          Provision.asc_auth_args(%{"APP_STORE_CONNECT_KEY_ID" => "ABC123"})
         end
 
       assert err.message =~ "Incomplete App Store Connect API key config"
-      assert err.message =~ "MOB_ASC_KEY_ID"
-      assert err.message =~ "MOB_ASC_ISSUER_ID"
-      assert err.message =~ "MOB_ASC_KEY_PATH"
+      assert err.message =~ "APP_STORE_CONNECT_KEY_ID"
+      assert err.message =~ "APP_STORE_CONNECT_ISSUER_ID"
+      assert err.message =~ "APP_STORE_CONNECT_API_KEY_PATH"
     end
   end
 end

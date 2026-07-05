@@ -8,6 +8,20 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.6.18] - 2026-07-05
+
+### Added
+- **`mix mob.provision` can authenticate via an App Store Connect API key**, so
+  an unattended user — a CI runner or a headless agent account with no GUI login
+  — can provision without a signed-in Xcode Apple ID account. Set `APP_STORE_CONNECT_KEY_ID`,
+  `APP_STORE_CONNECT_ISSUER_ID`, and `APP_STORE_CONNECT_API_KEY_PATH` (the downloaded `AuthKey_<id>.p8`)
+  and the task passes them to `xcodebuild` as `-authenticationKeyID` /
+  `-authenticationKeyIssuerID` / `-authenticationKeyPath`. All three or none
+  (a partial set raises, naming what's missing); with none set the signed-in
+  Xcode account is used exactly as before. Pure, tested `Mix.Tasks.Mob.Provision.asc_auth_args/1`.
+  Signing still needs the certificate + private key in an unlocked keychain — the
+  API key only authorizes the profile/device calls. (#31)
+
 ## [0.6.17] - 2026-06-29
 
 ### Fixed
