@@ -1875,4 +1875,43 @@ defmodule MobDev.NativeBuildTest do
       refute NativeBuild.build_file_supports_plugins?("")
     end
   end
+
+  describe "ios_plugin_swift_mode/2 (MOB-7: the actual bootstrap decision)" do
+    # This is the fix. The :bootstrap_only case — no plugins activated, but the
+    # build file supports plugins (so its AppDelegate calls mob_register_plugins)
+    # — is what a --blank iOS app needs; flipping it back to :none reintroduces
+    # the undefined-symbol link failure.
+    test "no plugins + plugin-aware build file => :bootstrap_only (the MOB-7 fix)" do
+      assert NativeBuild.ios_plugin_swift_mode([], true) == :bootstrap_only
+    end
+
+    test "no plugins + legacy build file => :none (omit flags, keep legacy building)" do
+      assert NativeBuild.ios_plugin_swift_mode([], false) == :none
+    end
+
+    test "activated plugins => :with_plugins regardless of build-file support" do
+      assert NativeBuild.ios_plugin_swift_mode([{"dir", %{}}], true) == :with_plugins
+      assert NativeBuild.ios_plugin_swift_mode([{"dir", %{}}], false) == :with_plugins
+    end
+  end
+
+  describe "ios_build_file_supports_plugins?/1 (file-read wrapper)" do
+    @describetag :tmp_dir
+
+    test "true when the file exists and declares the option", %{tmp_dir: dir} do
+      path = Path.join(dir, "build.zig")
+      File.write!(path, ~s|const plugin_swift_files = b.option(...);|)
+      assert NativeBuild.ios_build_file_supports_plugins?(path)
+    end
+
+    test "false when the file exists without the option", %{tmp_dir: dir} do
+      path = Path.join(dir, "build.zig")
+      File.write!(path, ~s|const mob_dir = b.option(...);|)
+      refute NativeBuild.ios_build_file_supports_plugins?(path)
+    end
+
+    test "false when the file is missing (legacy scaffold, no build.zig)", %{tmp_dir: dir} do
+      refute NativeBuild.ios_build_file_supports_plugins?(Path.join(dir, "does_not_exist.zig"))
+    end
+  end
 end

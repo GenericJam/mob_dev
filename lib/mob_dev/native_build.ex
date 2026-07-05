@@ -2451,23 +2451,42 @@ defmodule MobDev.NativeBuild do
   @spec build_file_supports_plugins?(String.t()) :: boolean()
   def build_file_supports_plugins?(content), do: String.contains?(content, "plugin_swift_files")
 
+  @doc false
   # Thin I/O wrapper around build_file_supports_plugins?/1. Missing/unreadable
   # file ⇒ false (treat as legacy: omit the flags rather than risk an unknown
-  # -D option on an old build.zig).
-  defp ios_build_file_supports_plugins?(path) do
+  # -D option on an old build.zig). Public (@doc false) so the missing-file
+  # branch is testable.
+  @spec ios_build_file_supports_plugins?(String.t()) :: boolean()
+  def ios_build_file_supports_plugins?(path) do
     case File.read(path) do
       {:ok, content} -> build_file_supports_plugins?(content)
       _ -> false
     end
   end
 
+  @doc false
+  # Pure decision — which iOS plugin-swift mode applies. Extracted from
+  # ios_plugin_swift_and_frameworks/3 so the MOB-7 branch (`:bootstrap_only` —
+  # no plugins, but a plugin-aware build file whose AppDelegate still calls
+  # mob_register_plugins) is unit-testable without file I/O or the plugin
+  # registry. A regression flipping that branch back to `:none` reintroduces
+  # MOB-7, so it must be pinned.
+  @spec ios_plugin_swift_mode([term()], boolean()) :: :with_plugins | :bootstrap_only | :none
+  def ios_plugin_swift_mode([], true), do: :bootstrap_only
+  def ios_plugin_swift_mode([], false), do: :none
+  def ios_plugin_swift_mode(_activated, _supports?), do: :with_plugins
+
   # Resolves the {plugin_swift_files, plugin_frameworks} pair for an iOS build,
   # shared by the sim and device paths. Activated plugins ⇒ their Swift + the
   # bootstrap. No plugins but a plugin-aware build file ⇒ just the bootstrap (so
   # mob_register_plugins is defined — see MOB-7). Otherwise empty (flags omitted).
   defp ios_plugin_swift_and_frameworks(activated_plugins, build_dir, ios_build_file) do
-    cond do
-      activated_plugins != [] ->
+    # `and` short-circuits: with plugins activated we never read the build file,
+    # so the activated path is byte-identical to before this MOB-7 change.
+    supports? = activated_plugins == [] and ios_build_file_supports_plugins?(ios_build_file)
+
+    case ios_plugin_swift_mode(activated_plugins, supports?) do
+      :with_plugins ->
         bootstrap_path = generate_ios_plugin_bootstrap(build_dir)
 
         swift =
@@ -2479,10 +2498,10 @@ defmodule MobDev.NativeBuild do
 
         {swift, frameworks}
 
-      ios_build_file_supports_plugins?(ios_build_file) ->
+      :bootstrap_only ->
         {generate_ios_plugin_bootstrap(build_dir), ""}
 
-      true ->
+      :none ->
         {"", ""}
     end
   end
