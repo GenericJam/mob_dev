@@ -148,6 +148,32 @@ defmodule MobDev.NativeBuildTest do
       assert length(String.split(once, "MobNfcApduService")) == 2
     end
 
+    test "removing the plugin (empty set) strips the previously-injected region" do
+      snippet = ~s(<service android:name="io.mob.nfc.MobNfcApduService"/>)
+      with_svc = NativeBuild.__merge_android_manifest_components__(@manifest, [snippet])
+      assert with_svc =~ "MobNfcApduService"
+      # plugin removed → next build contributes no components → region gone
+      cleaned = NativeBuild.__merge_android_manifest_components__(with_svc, [])
+      refute cleaned =~ "MobNfcApduService"
+      refute cleaned =~ "mob:plugin-components"
+      assert cleaned == @manifest
+    end
+
+    test "swapping which plugin is active replaces the component (old one gone)" do
+      a =
+        NativeBuild.__merge_android_manifest_components__(@manifest, [
+          ~s(<service android:name="io.a.Svc"/>)
+        ])
+
+      b =
+        NativeBuild.__merge_android_manifest_components__(a, [
+          ~s(<service android:name="io.b.Svc"/>)
+        ])
+
+      assert b =~ "io.b.Svc"
+      refute b =~ "io.a.Svc"
+    end
+
     test "no snippets → manifest unchanged" do
       assert NativeBuild.__merge_android_manifest_components__(@manifest, []) == @manifest
     end
@@ -480,6 +506,31 @@ defmodule MobDev.NativeBuildTest do
                @manifest_with_perms
     end
 
+    test "removing the plugin strips its managed permission region, keeping host perms" do
+      added =
+        NativeBuild.__merge_android_permissions__(@manifest_with_perms, [
+          "android.permission.BLUETOOTH_CONNECT"
+        ])
+
+      assert added =~ "BLUETOOTH_CONNECT"
+      cleaned = NativeBuild.__merge_android_permissions__(added, [])
+      refute cleaned =~ "BLUETOOTH_CONNECT"
+      refute cleaned =~ "mob:plugin-permissions"
+      # host-declared permissions are untouched
+      assert cleaned =~ "android.permission.INTERNET"
+      assert cleaned == @manifest_with_perms
+    end
+
+    test "a host-declared permission is not duplicated into the managed region" do
+      out =
+        NativeBuild.__merge_android_permissions__(@manifest_with_perms, [
+          "android.permission.CAMERA"
+        ])
+
+      # CAMERA already declared by hand → not added again
+      assert length(String.split(out, ~s(android:name="android.permission.CAMERA"))) == 2
+    end
+
     test "is a no-op when every permission is already declared" do
       perms = ["android.permission.CAMERA", "android.permission.INTERNET"]
 
@@ -568,6 +619,18 @@ defmodule MobDev.NativeBuildTest do
 
     test "is a no-op when dep list is empty" do
       assert NativeBuild.__merge_gradle_deps__(@gradle, []) == @gradle
+    end
+
+    test "removing the plugin strips its managed dep region, keeping host deps" do
+      added = NativeBuild.__merge_gradle_deps__(@gradle, ["com.example:foo:1.0.0"])
+      assert added =~ "com.example:foo:1.0.0"
+      # region lives inside the dependencies block
+      assert added =~ ~r/dependencies\s*\{.*mob:plugin-deps.*\}/s
+      cleaned = NativeBuild.__merge_gradle_deps__(added, [])
+      refute cleaned =~ "com.example:foo:1.0.0"
+      refute cleaned =~ "mob:plugin-deps"
+      assert cleaned =~ "androidx.appcompat:appcompat:1.6.1"
+      assert cleaned == @gradle
     end
 
     test "is a no-op when every dep is already present" do
