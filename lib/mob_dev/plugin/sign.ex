@@ -45,6 +45,8 @@ defmodule MobDev.Plugin.Sign do
   - `manifest.ios.swift_files` — single files (list of paths).
   - `manifest.android.bridge_kt` and `manifest.android.jni_source` —
     single paths each.
+  - `manifest.android.res_files` — the resource files copied verbatim
+    into the app `res/` tree (list of paths).
   - `manifest.nifs[].native_dir` — recursive over `.c`, `.h`, `.cpp`,
     `.zig` files inside. This is the only case where a directory is
     expanded.
@@ -153,9 +155,13 @@ defmodule MobDev.Plugin.Sign do
       ]
       |> Enum.filter(&is_binary/1)
 
+    # res_files are copied verbatim into the app res/ tree, so their bytes must
+    # be tamper-evident too (same as bridge_kt / jni_source).
+    res = list_of_strings(get_in(manifest, [:android, :res_files]))
+
     nifs = nif_files(manifest, plugin_dir)
 
-    swift ++ android ++ nifs
+    swift ++ android ++ res ++ nifs
   end
 
   defp nif_files(manifest, plugin_dir) do

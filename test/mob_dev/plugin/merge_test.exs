@@ -544,4 +544,71 @@ defmodule MobDev.Plugin.MergeTest do
              ] = Merge.host_requirements(plugins)
     end
   end
+
+  describe "android_manifest_snippets/1" do
+    test "collects <application> snippets across plugins, tagged with the plugin" do
+      plugins = [
+        {"/a", base(%{name: :a, android: %{manifest_application_snippets: ["<service a/>"]}})},
+        {"/z", nil},
+        {"/b",
+         base(%{
+           name: :b,
+           android: %{manifest_application_snippets: ["<receiver b/>", "<provider b/>"]}
+         })}
+      ]
+
+      assert [
+               %{plugin: :a, snippet: "<service a/>"},
+               %{plugin: :b, snippet: "<receiver b/>"},
+               %{plugin: :b, snippet: "<provider b/>"}
+             ] = Merge.android_manifest_snippets(plugins)
+    end
+
+    test "absent / malformed snippets contribute nothing" do
+      plugins = [
+        {"/a", base(%{name: :a})},
+        {"/b", base(%{name: :b, android: %{manifest_application_snippets: [:oops]}})}
+      ]
+
+      assert Merge.android_manifest_snippets(plugins) == []
+    end
+  end
+
+  describe "android_res_files/1" do
+    test "resolves src absolutely and derives the res/<type>/<file> dest" do
+      plugins = [
+        {"/plug",
+         base(%{
+           name: :plug,
+           android: %{res_files: ["priv/native/android/res/xml/foo_apduservice.xml"]}
+         })}
+      ]
+
+      assert [
+               %{
+                 plugin: :plug,
+                 src: "/plug/priv/native/android/res/xml/foo_apduservice.xml",
+                 dest: "res/xml/foo_apduservice.xml"
+               }
+             ] = Merge.android_res_files(plugins)
+    end
+
+    test "uses the LAST res segment when the path has more than one" do
+      plugins = [{"/p", base(%{android: %{res_files: ["res/drawable/res/icon.xml"]}})}]
+      assert [%{dest: "res/icon.xml"}] = Merge.android_res_files(plugins)
+    end
+
+    test "combines across plugins and ignores tier-0 manifests" do
+      plugins = [
+        {"/a", base(%{name: :a, android: %{res_files: ["x/res/values/strings.xml"]}})},
+        {"/z", nil},
+        {"/b", base(%{name: :b, android: %{res_files: ["y/res/xml/svc.xml"]}})}
+      ]
+
+      assert [
+               %{plugin: :a, dest: "res/values/strings.xml"},
+               %{plugin: :b, dest: "res/xml/svc.xml"}
+             ] = Merge.android_res_files(plugins)
+    end
+  end
 end

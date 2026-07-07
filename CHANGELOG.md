@@ -64,6 +64,21 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
   `mix mob.security_scan`. `req` is a transitive dep (via `igniter`); the bump
   stays within `igniter`'s `~> 0.5` requirement.
 
+### Added
+- **Plugins can contribute AndroidManifest `<application>` components and `res/`
+  files.** Two new optional `android:` manifest keys —
+  `manifest_application_snippets` (XML fragments spliced into the app's
+  `<application>` block, idempotent per `android:name`) and `res_files`
+  (plugin-relative paths copied into the app `res/` tree at their derived
+  `res/<type>/<file>` destination). This closes the gap that forced plugins
+  needing a `<service>`/`<receiver>`/`<provider>` + resource (e.g. `mob_nfc`'s
+  HCE `HostApduService` + `apduservice.xml`) to make it a manual
+  `host_requirement`. New `MobDev.Plugin.Merge.android_manifest_snippets/1` +
+  `android_res_files/1` gatherers (classified in the cross-plugin conflict
+  surface — duplicate component names / res destinations are build errors),
+  manifest-schema validation, and `NativeBuild` splice + copy (ledger-pruned
+  like `bridge_kt`). (MOB-39)
+
 ### Fixed
 - **`mix mob.new_plugin` no longer scaffolds plugins pinned to the abandoned
   `mob ~> 0.6`.** `MobDev.Plugin.Scaffold` hard-coded `{:mob, "~> 0.6"}` in the

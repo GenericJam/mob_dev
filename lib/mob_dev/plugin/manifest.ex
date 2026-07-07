@@ -83,6 +83,8 @@ defmodule MobDev.Plugin.Manifest do
       |> check_mob_version(manifest)
       |> check_spec_version(manifest)
       |> check_permissions(manifest)
+      |> check_android_manifest_snippets(manifest)
+      |> check_android_res_files(manifest)
       |> check_nifs(manifest)
       |> check_screens(manifest)
       |> check_screens_generator(manifest)
@@ -171,6 +173,71 @@ defmodule MobDev.Plugin.Manifest do
 
   defp check_permission_entry(errors, other, i),
     do: ["permissions entry ##{i} must be a map, got: #{inspect(other)}" | errors]
+
+  # `android.manifest_application_snippets` (optional) is a list of XML strings
+  # spliced into the app manifest's `<application>` block (a `<service>`,
+  # `<receiver>`, …). Each must be a non-empty string; content is the plugin
+  # author's responsibility (the native build inserts verbatim).
+  defp check_android_manifest_snippets(errors, manifest) do
+    case get_in(manifest, [:android, :manifest_application_snippets]) do
+      nil ->
+        errors
+
+      list when is_list(list) ->
+        if Enum.all?(list, &(is_binary(&1) and &1 != "")),
+          do: errors,
+          else: [
+            "android.manifest_application_snippets must be a list of non-empty XML strings"
+            | errors
+          ]
+
+      other ->
+        [
+          "android.manifest_application_snippets must be a list of XML strings, got: #{inspect(other)}"
+          | errors
+        ]
+    end
+  end
+
+  # `android.res_files` (optional) is a list of plugin-relative paths copied into
+  # the app's `res/` tree. Each must be a non-empty string containing a `res`
+  # path segment (the build derives the `res/<type>/<file>` destination from it)
+  # and must NOT contain a `..` segment — otherwise the derived destination could
+  # escape the app `res/` dir and `File.cp!` would write plugin bytes anywhere on
+  # the build host (path traversal). The native build enforces containment again
+  # at copy time as defense in depth.
+  defp check_android_res_files(errors, manifest) do
+    case get_in(manifest, [:android, :res_files]) do
+      nil ->
+        errors
+
+      list when is_list(list) ->
+        cond do
+          not Enum.all?(list, &(is_binary(&1) and &1 != "")) ->
+            ["android.res_files must be a list of non-empty path strings" | errors]
+
+          Enum.any?(list, &(".." in Path.split(&1))) ->
+            [
+              "android.res_files paths must not contain a \"..\" segment " <>
+                "(path traversal — the copy destination must stay under the app res/ dir)"
+              | errors
+            ]
+
+          not Enum.all?(list, &("res" in Path.split(&1))) ->
+            [
+              "android.res_files paths must contain a \"res\" segment (e.g. " <>
+                "priv/native/android/res/xml/foo.xml) so the build can place them"
+              | errors
+            ]
+
+          true ->
+            errors
+        end
+
+      other ->
+        ["android.res_files must be a list of path strings, got: #{inspect(other)}" | errors]
+    end
+  end
 
   # `:nifs` is optional. When present, each entry's optional `:platform` (used by
   # cross-platform plugins that ship a separate iOS + Android source for the same

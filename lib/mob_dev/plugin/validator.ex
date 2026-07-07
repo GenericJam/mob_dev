@@ -15,7 +15,7 @@ defmodule MobDev.Plugin.Validator do
   is `File.exists?/1` for path checks, isolated in `validate_plugin/3`).
   """
 
-  alias MobDev.Plugin.Manifest
+  alias MobDev.Plugin.{Manifest, Merge}
 
   @type result :: %{errors: [String.t()], warnings: [String.t()]}
 
@@ -38,6 +38,7 @@ defmodule MobDev.Plugin.Validator do
     [
       nif_dirs,
       [android[:bridge_kt], android[:jni_source]],
+      List.wrap(android[:res_files]),
       List.wrap(ios[:swift_files])
     ]
     |> List.flatten()
@@ -251,6 +252,14 @@ defmodule MobDev.Plugin.Validator do
         {:collision, [{"Android JNI source basename (android.jni_source)", &jni_basenames/1}]},
       bridge_classes:
         {:collision, [{"Android bridge class (android.bridge_class)", &bridge_class_names/1}]},
+      android_manifest_snippets:
+        {:collision,
+         [
+           {"AndroidManifest component (android.manifest_application_snippets android:name)",
+            &manifest_component_names/1}
+         ]},
+      android_res_files:
+        {:collision, [{"Android res destination (android.res_files)", &res_file_dests/1}]},
       plist_keys: {:collision, [{"iOS Info.plist key (ios.plist_keys)", &plist_key_names/1}]},
       lifecycle:
         {:collision, [{"supervised worker (lifecycle.supervised)", &supervised_workers/1}]},
@@ -622,6 +631,30 @@ defmodule MobDev.Plugin.Validator do
       c when is_binary(c) -> [c]
       _ -> []
     end
+  end
+
+  # Two plugins contributing a manifest component with the same android:name
+  # would duplicate it in the app's <application> (the merge is idempotent per
+  # name, so the second plugin's would be dropped — a silent loss). Key the
+  # collision on the component name. Reuses the Merge gatherer for the snippet
+  # set so the two can't drift.
+  defp manifest_component_names(manifest) do
+    Merge.android_manifest_snippets([{".", manifest}])
+    |> Enum.flat_map(fn %{snippet: s} -> component_name(s) end)
+  end
+
+  defp component_name(snippet) do
+    case Regex.run(~r/android:name="([^"]+)"/, snippet) do
+      [_, name] -> [name]
+      _ -> []
+    end
+  end
+
+  # Two plugins copying a res file to the same destination (e.g. both ship
+  # res/xml/apduservice.xml) would clobber each other. Key on the derived dest;
+  # reuses the Merge gatherer so the dest derivation stays single-sourced.
+  defp res_file_dests(manifest) do
+    Merge.android_res_files([{".", manifest}]) |> Enum.map(& &1.dest)
   end
 
   # Two plugins setting the same Info.plist key silently last-write-wins in the
