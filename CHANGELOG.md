@@ -8,6 +8,47 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Plugins can contribute AndroidManifest `<application>` components and `res/`
+  files.** Two new optional `android:` manifest keys —
+  `manifest_application_snippets` (XML fragments spliced into the app's
+  `<application>` block, idempotent per `android:name`) and `res_files`
+  (plugin-relative paths copied into the app `res/` tree at their derived
+  `res/<type>/<file>` destination, path-contained + host-clobber-guarded +
+  signed). This closes the gap that forced plugins needing a
+  `<service>`/`<receiver>`/`<provider>` + resource (e.g. `mob_nfc`'s HCE
+  `HostApduService` + `apduservice.xml`) to make it a manual `host_requirement`.
+  New `MobDev.Plugin.Merge.android_manifest_snippets/1` + `android_res_files/1`
+  gatherers (classified in the cross-plugin conflict surface), manifest-schema
+  validation, and `NativeBuild` splice + copy (ledger-pruned like `bridge_kt`).
+  (MOB-39)
+
+### Changed
+- **Plugin contributions merged into host-owned build files are now reversible.**
+  Plugin `<uses-permission>`s, `<application>` components, and Gradle deps are
+  fenced in a regenerated-each-build managed region (`MobDev.Plugin.ManagedBlock`)
+  in `AndroidManifest.xml` / `build.gradle`, so removing a plugin drops its
+  contributions (no more dangling `<service>` / orphan permission / orphan dep)
+  while hand-authored content outside the fence is untouched. Idempotent
+  (`strip(place(x)) == x`); de-dupes against host-declared entries. (MOB-40)
+
+### Fixed
+- **`mix mob.new_plugin` no longer scaffolds plugins pinned to the abandoned
+  `mob ~> 0.6`.** `MobDev.Plugin.Scaffold` hard-coded `{:mob, "~> 0.6"}` in the
+  generated `mix.exs` and `mob_version: "~> 0.6"` in every tier's manifest, so a
+  freshly scaffolded plugin could not activate against the published mob 0.7.x
+  (`installed :mob 0.7.x does not satisfy mob_version "~> 0.6"`). The requirement
+  is now derived at scaffold time from the mob actually resolved in the project
+  (`Scaffold.detect_mob_requirement/0`), falling back to a single
+  `@fallback_mob_requirement` constant (`"~> 0.7"`) when mob isn't loadable.
+  `mix.exs` and the manifest always agree. A `Scaffold` test pins the default and
+  asserts a generated manifest validates against a matching mob version, so the
+  pin can't silently lag a future mob release. (#21)
+
+---
+
 ## [0.6.18] - 2026-07-05
 
 ### Added
@@ -63,34 +104,6 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
   EEF-CVE-2026-49755 (HIGH) and EEF-CVE-2026-49756 (LOW) flagged by
   `mix mob.security_scan`. `req` is a transitive dep (via `igniter`); the bump
   stays within `igniter`'s `~> 0.5` requirement.
-
-### Added
-- **Plugins can contribute AndroidManifest `<application>` components and `res/`
-  files.** Two new optional `android:` manifest keys —
-  `manifest_application_snippets` (XML fragments spliced into the app's
-  `<application>` block, idempotent per `android:name`) and `res_files`
-  (plugin-relative paths copied into the app `res/` tree at their derived
-  `res/<type>/<file>` destination). This closes the gap that forced plugins
-  needing a `<service>`/`<receiver>`/`<provider>` + resource (e.g. `mob_nfc`'s
-  HCE `HostApduService` + `apduservice.xml`) to make it a manual
-  `host_requirement`. New `MobDev.Plugin.Merge.android_manifest_snippets/1` +
-  `android_res_files/1` gatherers (classified in the cross-plugin conflict
-  surface — duplicate component names / res destinations are build errors),
-  manifest-schema validation, and `NativeBuild` splice + copy (ledger-pruned
-  like `bridge_kt`). (MOB-39)
-
-### Fixed
-- **`mix mob.new_plugin` no longer scaffolds plugins pinned to the abandoned
-  `mob ~> 0.6`.** `MobDev.Plugin.Scaffold` hard-coded `{:mob, "~> 0.6"}` in the
-  generated `mix.exs` and `mob_version: "~> 0.6"` in every tier's manifest, so a
-  freshly scaffolded plugin could not activate against the published mob 0.7.x
-  (`installed :mob 0.7.x does not satisfy mob_version "~> 0.6"`). The requirement
-  is now derived at scaffold time from the mob actually resolved in the project
-  (`Scaffold.detect_mob_requirement/0`), falling back to a single
-  `@fallback_mob_requirement` constant (`"~> 0.7"`) when mob isn't loadable.
-  `mix.exs` and the manifest always agree. A `Scaffold` test pins the default and
-  asserts a generated manifest validates against a matching mob version, so the
-  pin can't silently lag a future mob release. (#21)
 
 ---
 
