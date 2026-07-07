@@ -5365,7 +5365,10 @@ defmodule MobDev.NativeBuild do
         MobDev.Plugin.ManagedBlock.insert_before(stripped, "</manifest>", region)
 
       true ->
-        stripped <> "\n" <> region <> "\n"
+        # Pathological manifest (no <application and no </manifest>): append the
+        # region as whole lines at EOF so strip/2 still reverses it.
+        sep = if stripped == "" or String.ends_with?(stripped, "\n"), do: "", else: "\n"
+        stripped <> sep <> region <> "\n"
     end
   end
 
