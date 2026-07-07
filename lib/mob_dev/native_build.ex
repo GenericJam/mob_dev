@@ -162,6 +162,7 @@ defmodule MobDev.NativeBuild do
          :ok <- apply_plugin_android_manifest!(),
          :ok <- apply_plugin_gradle_deps!(),
          :ok <- apply_plugin_android_kotlin!(),
+         :ok <- apply_plugin_android_res!(),
          :ok <- apply_fonts_to_android!(),
          :ok <- gradle_assemble(),
          :ok <- adb_install_all(apk, bundle_id, device_id),
@@ -4572,19 +4573,25 @@ defmodule MobDev.NativeBuild do
     # Layer 2.
     MobDev.Plugin.Validator.raise_on_capability_drift!(activated)
 
+    permissions = MobDev.Plugin.Merge.android_permissions(activated)
+    snippets = for s <- MobDev.Plugin.Merge.android_manifest_snippets(activated), do: s.snippet
+
     case File.read(@android_manifest_path) do
       {:error, :enoent} ->
-        if MobDev.Plugin.Merge.android_permissions(activated) != [] do
+        if permissions != [] or snippets != [] do
           IO.puts(
-            "  [plugin android] #{@android_manifest_path} not found — skipping plugin permissions."
+            "  [plugin android] #{@android_manifest_path} not found — skipping plugin " <>
+              "permissions + manifest components."
           )
         end
 
         :ok
 
       {:ok, content} ->
-        permissions = MobDev.Plugin.Merge.android_permissions(activated)
-        patched = merge_android_permissions(content, permissions)
+        patched =
+          content
+          |> merge_android_permissions(permissions)
+          |> merge_android_manifest_components(snippets)
 
         if patched != content, do: File.write!(@android_manifest_path, patched)
 
@@ -4636,16 +4643,21 @@ defmodule MobDev.NativeBuild do
   # (previous − current), then persists `current`. Per-scope and only called
   # when that concern's merge runs, so an iOS-only build never prunes Android
   # artifacts. Returns the pruned paths (for tests).
+  # The relative paths a prior build recorded for a plugin-artifact `scope`
+  # (empty when none). Shared by the prune and the res host-clobber guard.
+  defp read_plugin_artifact_ledger(scope) do
+    case File.read(Path.join(@plugin_artifact_ledger_dir, to_string(scope))) do
+      {:ok, body} -> String.split(body, "\n", trim: true)
+      _ -> []
+    end
+  end
+
   @spec __prune_plugin_artifacts__(atom(), [Path.t()]) :: [Path.t()]
   def __prune_plugin_artifacts__(scope, current) do
     ledger = Path.join(@plugin_artifact_ledger_dir, to_string(scope))
     current = current |> Enum.map(&Path.relative_to_cwd/1) |> Enum.uniq()
 
-    previous =
-      case File.read(ledger) do
-        {:ok, body} -> String.split(body, "\n", trim: true)
-        _ -> []
-      end
+    previous = read_plugin_artifact_ledger(scope)
 
     pruned =
       for stale <- previous -- current, File.exists?(stale) do
@@ -4916,6 +4928,110 @@ defmodule MobDev.NativeBuild do
     :ok
   end
 
+  @android_res_root "android/app/src/main"
+
+  # Copies each activated plugin's `android.res_files` into the app's `res/`
+  # tree (at its declared `res/<type>/<file>` destination), so a manifest
+  # component's `@xml/…` reference resolves at build time. Ledger-pruned like
+  # bridge_kt (a res file left by a since-removed plugin is deleted). Raises on
+  # two plugins targeting the same destination with different sources — the
+  # cross-plugin validator catches this at activation, this is the build-time
+  # backstop. No-op (with a notice) when the res root is missing.
+  #
+  # Two safety guards (the manifest validator enforces the first at activation
+  # too; these are the build-time backstop, since `activated/0` can feed
+  # unvalidated manifests):
+  #   * containment — the resolved destination must stay under the app `res/`
+  #     dir, so a `..`-bearing path can't make `File.cp!` write plugin bytes
+  #     anywhere on the build host (path traversal).
+  #   * no host clobber — refuse to overwrite a file this build didn't write on
+  #     a previous run (tracked in the ledger); otherwise a plugin could replace
+  #     a host-owned resource (e.g. res/values/styles.xml) and, worse, the
+  #     ledger prune would later delete the host's file on plugin removal.
+  defp apply_plugin_android_res! do
+    res_files = MobDev.Plugin.Merge.android_res_files(MobDev.Plugin.activated())
+
+    cond do
+      res_files == [] ->
+        :ok
+
+      not File.dir?(@android_res_root) ->
+        IO.puts("  [plugin android] #{@android_res_root} not found — skipping plugin res files.")
+        :ok
+
+      true ->
+        raise_on_res_dest_collision!(res_files)
+        prior = read_plugin_artifact_ledger(:android_res)
+
+        written =
+          for %{src: src, dest: dest} <- res_files do
+            target = safe_res_target!(dest)
+            rel = Path.relative_to_cwd(target)
+
+            if File.exists?(target) and rel not in prior do
+              Mix.raise(
+                "plugin res file #{dest} would overwrite host-owned #{rel} — rename it in the plugin"
+              )
+            end
+
+            File.mkdir_p!(Path.dirname(target))
+            File.cp!(src, target)
+            IO.puts("  ✓ android res → #{rel}")
+            target
+          end
+
+        __prune_plugin_artifacts__(:android_res, written)
+        :ok
+    end
+  end
+
+  # Resolve a plugin res destination to a copy target, raising if it escapes the
+  # app `res/` dir. The hard security boundary behind the manifest validator's
+  # `..` rejection.
+  defp safe_res_target!(dest) do
+    case __res_target__(@android_res_root, dest) do
+      {:ok, target} ->
+        target
+
+      {:error, :escapes_res_dir} ->
+        Mix.raise(
+          "plugin res file destination escapes the app res/ dir: #{dest} " <>
+            "(path traversal — declared res_files must not contain \"..\")"
+        )
+    end
+  end
+
+  @doc false
+  # Pure: {:ok, copy_target} when `dest` (joined onto `root`) stays inside
+  # `root/res`, else {:error, :escapes_res_dir}. `..` and absolute escapes are
+  # normalised by Path.expand before the containment check.
+  @spec __res_target__(String.t(), String.t()) :: {:ok, String.t()} | {:error, :escapes_res_dir}
+  def __res_target__(root, dest) do
+    res_dir = Path.expand(Path.join(root, "res"))
+    target_abs = Path.expand(Path.join(root, dest))
+
+    if target_abs == res_dir or String.starts_with?(target_abs, res_dir <> "/"),
+      do: {:ok, Path.join(root, dest)},
+      else: {:error, :escapes_res_dir}
+  end
+
+  defp raise_on_res_dest_collision!(res_files) do
+    res_files
+    |> Enum.group_by(& &1.dest, & &1.src)
+    |> Enum.each(fn {dest, srcs} ->
+      case Enum.uniq(srcs) do
+        [_single] ->
+          :ok
+
+        many ->
+          Mix.raise(
+            "Android res collision: multiple plugins target #{dest}:\n  " <>
+              Enum.join(many, "\n  ") <> "\nRename one so plugin res files don't clash."
+          )
+      end
+    end)
+  end
+
   # Copies each activated plugin's `bridge_kt` into the app's Kotlin sourceSet
   # (at its own package path, read from the file's `package` line) so Gradle
   # compiles it, and (re)generates `io.mob.plugin.MobPluginBootstrap` whose
@@ -5151,6 +5267,57 @@ defmodule MobDev.NativeBuild do
   @doc false
   @spec __merge_gradle_deps__(String.t(), [String.t()]) :: String.t()
   def __merge_gradle_deps__(content, deps), do: merge_gradle_deps(content, deps)
+
+  @doc false
+  @spec __merge_android_manifest_components__(String.t(), [String.t()]) :: String.t()
+  def __merge_android_manifest_components__(manifest, snippets),
+    do: merge_android_manifest_components(manifest, snippets)
+
+  # Pure transform: splice each plugin `<application>` snippet (a <service>,
+  # <receiver>, …) in just before `</application>`. Idempotent per component:
+  # skips any snippet whose `android:name` (or, lacking one, whose trimmed body)
+  # is already present, so re-runs and hand-added copies don't duplicate. Each
+  # snippet's own indentation is preserved and shifted 8 spaces to sit inside
+  # <application>. No `</application>` → returns the manifest untouched rather
+  # than risk corrupting it.
+  defp merge_android_manifest_components(manifest, []), do: manifest
+
+  defp merge_android_manifest_components(manifest, snippets) when is_binary(manifest) do
+    missing = Enum.reject(snippets, &manifest_component_present?(manifest, &1))
+
+    case missing do
+      [] ->
+        manifest
+
+      _ ->
+        block = Enum.map_join(missing, "\n\n", &indent_manifest_snippet/1)
+
+        if String.contains?(manifest, "</application>") do
+          String.replace(manifest, "</application>", "#{block}\n    </application>",
+            global: false
+          )
+        else
+          manifest
+        end
+    end
+  end
+
+  defp manifest_component_present?(manifest, snippet) do
+    case Regex.run(~r/android:name="([^"]+)"/, snippet) do
+      [_, name] -> String.contains?(manifest, ~s(android:name="#{name}"))
+      _ -> String.contains?(manifest, String.trim(snippet))
+    end
+  end
+
+  defp indent_manifest_snippet(snippet) do
+    snippet
+    |> String.trim("\n")
+    |> String.split("\n")
+    |> Enum.map_join("\n", fn
+      "" -> ""
+      line -> "        " <> line
+    end)
+  end
 
   # Pure transform: insert new `<uses-permission>` tags for each permission not
   # already declared. Insertion point is right after the last existing

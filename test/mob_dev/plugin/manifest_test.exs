@@ -37,6 +37,57 @@ defmodule MobDev.Plugin.ManifestTest do
     end
   end
 
+  describe "validate/1 android.manifest_application_snippets + res_files" do
+    test "accepts well-formed snippets and res_files" do
+      m =
+        Map.put(@valid, :android, %{
+          manifest_application_snippets: [~s(<service android:name="io.x.Svc"/>)],
+          res_files: ["priv/native/android/res/xml/svc.xml"]
+        })
+
+      assert {:ok, ^m} = Manifest.validate(m)
+    end
+
+    test "rejects non-list / non-string snippets" do
+      assert {:error, errs} =
+               Manifest.validate(
+                 Map.put(@valid, :android, %{manifest_application_snippets: "<x/>"})
+               )
+
+      assert Enum.any?(errs, &(&1 =~ "manifest_application_snippets"))
+
+      assert {:error, errs2} =
+               Manifest.validate(
+                 Map.put(@valid, :android, %{manifest_application_snippets: ["", :nope]})
+               )
+
+      assert Enum.any?(errs2, &(&1 =~ "manifest_application_snippets"))
+    end
+
+    test "rejects res_files without a res segment (dest can't be derived)" do
+      assert {:error, errs} =
+               Manifest.validate(Map.put(@valid, :android, %{res_files: ["priv/xml/svc.xml"]}))
+
+      assert Enum.any?(errs, &(&1 =~ "res"))
+    end
+
+    test "rejects a non-list res_files" do
+      assert {:error, errs} =
+               Manifest.validate(Map.put(@valid, :android, %{res_files: "res/xml/x.xml"}))
+
+      assert Enum.any?(errs, &(&1 =~ "res_files"))
+    end
+
+    test "rejects a res_files path containing .. (path traversal)" do
+      assert {:error, errs} =
+               Manifest.validate(
+                 Map.put(@valid, :android, %{res_files: ["x/res/../../../build.gradle"]})
+               )
+
+      assert Enum.any?(errs, &(&1 =~ ".." or &1 =~ "traversal"))
+    end
+  end
+
   describe "validate/1" do
     test "nil (no manifest) is valid" do
       assert {:ok, nil} = Manifest.validate(nil)

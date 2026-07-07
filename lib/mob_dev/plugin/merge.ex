@@ -42,6 +42,58 @@ defmodule MobDev.Plugin.Merge do
   @spec gradle_deps([plugin()]) :: [String.t()]
   def gradle_deps(plugins), do: collect_uniq(plugins, [:android, :gradle_deps])
 
+  @doc """
+  AndroidManifest `<application>` snippets each plugin contributes (a `<service>`,
+  `<receiver>`, `<provider>`, …), tagged with `:plugin`. `native_build` splices
+  each into the app manifest's `<application>` block (idempotent on the
+  component's `android:name`). Ships the manifest half of a component whose class
+  rides in the plugin's `bridge_kt`; see also `android_res_files/1` for the
+  `res/` half (e.g. an `apduservice.xml`).
+  """
+  @spec android_manifest_snippets([plugin()]) :: [%{plugin: atom(), snippet: String.t()}]
+  def android_manifest_snippets(plugins) do
+    for {_dir, manifest} <- with_manifests(plugins),
+        snippet <- List.wrap(get_in(manifest, [:android, :manifest_application_snippets])),
+        is_binary(snippet),
+        do: %{plugin: manifest[:name], snippet: snippet}
+  end
+
+  @doc """
+  Android `res/` files each plugin contributes, resolved to `{plugin, src, dest}`.
+  `src` is absolute (against the plugin dir); `dest` is the path under
+  `android/app/src/main/` derived from the declared path's last `res/` segment
+  (`priv/native/android/res/xml/foo.xml` → `res/xml/foo.xml`). `native_build`
+  copies each into the app res tree. Pairs with `android_manifest_snippets/1`
+  (a `<meta-data android:resource="@xml/foo"/>` needs its `res/xml/foo.xml`).
+  """
+  @spec android_res_files([plugin()]) :: [%{plugin: atom(), src: String.t(), dest: String.t()}]
+  def android_res_files(plugins) do
+    for {dir, manifest} <- with_manifests(plugins),
+        rel <- List.wrap(get_in(manifest, [:android, :res_files])),
+        is_binary(rel) do
+      %{plugin: manifest[:name], src: Path.join(dir, rel), dest: res_dest(rel)}
+    end
+  end
+
+  # Android res destination for a plugin-relative path: everything from the last
+  # `res` path segment onward, so it lands correctly typed under the app's
+  # `res/` tree. Falls back to `res/<basename>` when no `res` segment is present
+  # (the manifest validator rejects that case up front).
+  defp res_dest(rel) do
+    parts = Path.split(rel)
+
+    case last_index(parts, "res") do
+      nil -> Path.join("res", Path.basename(rel))
+      idx -> Path.join(Enum.drop(parts, idx))
+    end
+  end
+
+  defp last_index(list, value) do
+    list
+    |> Enum.with_index()
+    |> Enum.reduce(nil, fn {v, i}, acc -> if v == value, do: i, else: acc end)
+  end
+
   @doc "Unique iOS framework names across plugins."
   @spec ios_frameworks([plugin()]) :: [String.t()]
   def ios_frameworks(plugins), do: collect_uniq(plugins, [:ios, :frameworks])
