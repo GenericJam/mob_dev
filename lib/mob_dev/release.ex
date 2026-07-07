@@ -187,8 +187,64 @@ defmodule MobDev.Release do
       Enum.flat_map(profile_dirs, &Path.wildcard(Path.join(&1, "*.mobileprovision")))
       |> Enum.flat_map(&parse_mobileprovision/1)
 
-    # App Store distribution profiles have NO `ProvisionedDevices` array
-    # (development + ad-hoc do) and NO `ProvisionsAllDevices` (enterprise does).
+    case select_dist_profile(all_profiles, uuid, bundle_id) do
+      {:ok, %{uuid: u, team_id: t, app_id: aid}} ->
+        unless is_binary(uuid) do
+          IO.puts(
+            "  #{IO.ANSI.cyan()}Auto-detected App Store profile: #{u} (team #{t})#{IO.ANSI.reset()}"
+          )
+
+          if String.ends_with?(aid, ".*") do
+            IO.puts(
+              "  #{IO.ANSI.yellow()}  using wildcard profile — run `mix mob.provision --distribution` to create a dedicated one for #{bundle_id}#{IO.ANSI.reset()}"
+            )
+          end
+        end
+
+        {:ok, {u, t}}
+
+      :none ->
+        {:error,
+         """
+         No App Store provisioning profile found for bundle ID '#{bundle_id}'.
+
+         To create one:
+           1. Enroll in the Apple Developer Program (paid, $99/yr)
+           2. Run: mix mob.provision --distribution
+
+         Or in Xcode: Settings → Accounts → Download Manual Profiles after
+         registering an App Store distribution profile in App Store Connect.
+         """}
+
+      {:multiple, many} ->
+        choices = Enum.map_join(many, "\n", fn %{uuid: u, app_id: a} -> "    #{u}  (#{a})" end)
+
+        {:error,
+         """
+         Multiple App Store profiles match '#{bundle_id}' — set
+         ios_dist_profile_uuid in mob.exs:
+
+             config :mob_dev,
+               ios_dist_profile_uuid: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+
+         Matching profiles:
+         #{choices}
+         """}
+    end
+  end
+
+  @doc false
+  # Pure kernel of resolve_dist_profile/3: pick the App Store profile from an
+  # already-parsed list (the dir scan + parse + user-facing IO stay in the
+  # caller). App Store distribution profiles are the ones with NO
+  # `ProvisionedDevices` (development + ad-hoc have it) and NO
+  # `ProvisionsAllDevices` (enterprise has it). Matches by bundle id — exact
+  # `.<bundle_id>` or wildcard `.*`. With an explicit `uuid`, narrows to it;
+  # without one, prefers an exact-bundle profile over a wildcard. Returns the
+  # winning profile, `:none`, or `{:multiple, list}` for the caller to render.
+  @spec select_dist_profile([map()], String.t() | nil, String.t()) ::
+          {:ok, map()} | :none | {:multiple, [map()]}
+  def select_dist_profile(all_profiles, uuid, bundle_id) do
     app_store_profiles =
       Enum.filter(all_profiles, fn %{
                                      provisioned_devices?: pd,
@@ -212,48 +268,9 @@ defmodule MobDev.Release do
       end
 
     case candidates do
-      [] ->
-        {:error,
-         """
-         No App Store provisioning profile found for bundle ID '#{bundle_id}'.
-
-         To create one:
-           1. Enroll in the Apple Developer Program (paid, $99/yr)
-           2. Run: mix mob.provision --distribution
-
-         Or in Xcode: Settings → Accounts → Download Manual Profiles after
-         registering an App Store distribution profile in App Store Connect.
-         """}
-
-      [%{uuid: u, team_id: t, app_id: aid}] ->
-        unless is_binary(uuid) do
-          IO.puts(
-            "  #{IO.ANSI.cyan()}Auto-detected App Store profile: #{u} (team #{t})#{IO.ANSI.reset()}"
-          )
-
-          if String.ends_with?(aid, ".*") do
-            IO.puts(
-              "  #{IO.ANSI.yellow()}  using wildcard profile — run `mix mob.provision --distribution` to create a dedicated one for #{bundle_id}#{IO.ANSI.reset()}"
-            )
-          end
-        end
-
-        {:ok, {u, t}}
-
-      many ->
-        choices = Enum.map_join(many, "\n", fn %{uuid: u, app_id: a} -> "    #{u}  (#{a})" end)
-
-        {:error,
-         """
-         Multiple App Store profiles match '#{bundle_id}' — set
-         ios_dist_profile_uuid in mob.exs:
-
-             config :mob_dev,
-               ios_dist_profile_uuid: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-
-         Matching profiles:
-         #{choices}
-         """}
+      [] -> :none
+      [profile] -> {:ok, profile}
+      many -> {:multiple, many}
     end
   end
 
