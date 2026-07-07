@@ -5280,25 +5280,47 @@ defmodule MobDev.NativeBuild do
   # snippet's own indentation is preserved and shifted 8 spaces to sit inside
   # <application>. No `</application>` → returns the manifest untouched rather
   # than risk corrupting it.
-  defp merge_android_manifest_components(manifest, []), do: manifest
+  # Managed-block markers (MobDev.Plugin.ManagedBlock) fence each plugin
+  # contribution so the region is regenerated every build and vanishes when the
+  # plugin is removed — the app manifest / build.gradle are host-owned and
+  # hand-edited, so there's no ledger to prune (unlike bridge_kt / res_files).
+  # Comment syntax matches the host file (XML for the manifest, `//` for Gradle).
+  @perm_markers {
+    "    <!-- mob:plugin-permissions BEGIN (managed — regenerated each build; do not edit) -->",
+    "    <!-- mob:plugin-permissions END -->"
+  }
+  @component_markers {
+    "        <!-- mob:plugin-components BEGIN (managed — regenerated each build; do not edit) -->",
+    "        <!-- mob:plugin-components END -->"
+  }
+  @gradle_dep_markers {
+    "    // mob:plugin-deps BEGIN (managed — regenerated each build; do not edit)",
+    "    // mob:plugin-deps END"
+  }
 
+  # Splice plugin `<application>` components (a `<service>`, `<receiver>`, …)
+  # into a managed region just before `</application>`. De-duped against
+  # host-authored content (post-strip) so a hand-declared component isn't
+  # doubled; removed automatically when no plugin contributes one (empty region
+  # → stripped).
   defp merge_android_manifest_components(manifest, snippets) when is_binary(manifest) do
-    missing = Enum.reject(snippets, &manifest_component_present?(manifest, &1))
+    stripped = MobDev.Plugin.ManagedBlock.strip(manifest, @component_markers)
+    missing = Enum.reject(snippets, &manifest_component_present?(stripped, &1))
+    body = Enum.map_join(missing, "\n\n", &indent_manifest_snippet/1)
 
-    case missing do
-      [] ->
-        manifest
+    MobDev.Plugin.ManagedBlock.upsert(
+      manifest,
+      @component_markers,
+      body,
+      &place_before_application_close/2
+    )
+  end
 
-      _ ->
-        block = Enum.map_join(missing, "\n\n", &indent_manifest_snippet/1)
-
-        if String.contains?(manifest, "</application>") do
-          String.replace(manifest, "</application>", "#{block}\n    </application>",
-            global: false
-          )
-        else
-          manifest
-        end
+  defp place_before_application_close(stripped, region) do
+    if String.contains?(stripped, "</application>") do
+      MobDev.Plugin.ManagedBlock.insert_before(stripped, "</application>", region)
+    else
+      stripped
     end
   end
 
@@ -5319,24 +5341,14 @@ defmodule MobDev.NativeBuild do
     end)
   end
 
-  # Pure transform: insert new `<uses-permission>` tags for each permission not
-  # already declared. Insertion point is right after the last existing
-  # `<uses-permission ...>` line; failing that (no permissions declared yet),
-  # right before the first `<application` tag; failing *that*, just before
-  # `</manifest>`. The four-space indent matches the template's style.
-  defp merge_android_permissions(manifest, []), do: manifest
-
+  # Splice plugin `<uses-permission>` tags into a managed region before
+  # `<application` (or `</manifest>`). De-duped against host-authored content so
+  # a hand-declared permission isn't doubled; removed on plugin removal.
   defp merge_android_permissions(manifest, permissions) when is_binary(manifest) do
-    missing = Enum.reject(permissions, &permission_present?(manifest, &1))
-
-    case missing do
-      [] ->
-        manifest
-
-      _ ->
-        tags = Enum.map_join(missing, "\n", &~s(    <uses-permission android:name="#{&1}" />))
-        insert_uses_permissions(manifest, tags)
-    end
+    stripped = MobDev.Plugin.ManagedBlock.strip(manifest, @perm_markers)
+    missing = Enum.reject(permissions, &permission_present?(stripped, &1))
+    body = Enum.map_join(missing, "\n", &~s(    <uses-permission android:name="#{&1}" />))
+    MobDev.Plugin.ManagedBlock.upsert(manifest, @perm_markers, body, &place_before_application/2)
   end
 
   defp permission_present?(manifest, permission) do
@@ -5344,70 +5356,57 @@ defmodule MobDev.NativeBuild do
       String.contains?(manifest, "uses-permission")
   end
 
-  defp insert_uses_permissions(manifest, tags) do
-    matches = Regex.scan(~r/<uses-permission\b[^>]*>/, manifest, return: :index)
-
+  defp place_before_application(stripped, region) do
     cond do
-      matches != [] ->
-        # After the last existing uses-permission tag — keep new ones grouped
-        # with the project's hand-rolled set.
-        [{start, len}] = List.last(matches)
-        insert_at = start + len
-        head = binary_part(manifest, 0, insert_at)
-        tail = binary_part(manifest, insert_at, byte_size(manifest) - insert_at)
-        head <> "\n#{tags}" <> tail
+      String.contains?(stripped, "<application") ->
+        MobDev.Plugin.ManagedBlock.insert_before(stripped, "<application", region)
 
-      # No existing permissions — slot in just before <application.
-      String.contains?(manifest, "<application") ->
-        String.replace(manifest, "<application", "#{tags}\n\n    <application", global: false)
+      String.contains?(stripped, "</manifest>") ->
+        MobDev.Plugin.ManagedBlock.insert_before(stripped, "</manifest>", region)
 
-      # Pathological manifest with neither — last resort, before </manifest>.
       true ->
-        String.replace(manifest, "</manifest>", "#{tags}\n</manifest>", global: false)
+        # Pathological manifest (no <application and no </manifest>): append the
+        # region as whole lines at EOF so strip/2 still reverses it.
+        sep = if stripped == "" or String.ends_with?(stripped, "\n"), do: "", else: "\n"
+        stripped <> sep <> region <> "\n"
     end
   end
 
-  # Pure transform: insert `implementation "<dep>"` for each dep not already
-  # present anywhere in the gradle content (broad substring check — see comment
-  # on apply_plugin_gradle_deps!/0). The new lines are appended at the end of
-  # the dependencies block, indented to match the template.
-  defp merge_gradle_deps(content, []), do: content
-
+  # Splice plugin `implementation "<dep>"` lines into a managed region inside the
+  # top-level `dependencies { }` block. Broad substring de-dupe against
+  # host-authored content (Gradle allows several syntaxes for one dep, so we'd
+  # rather under-add than duplicate); removed on plugin removal.
   defp merge_gradle_deps(content, deps) when is_binary(content) do
-    missing = Enum.reject(deps, &String.contains?(content, &1))
+    stripped = MobDev.Plugin.ManagedBlock.strip(content, @gradle_dep_markers)
+    missing = Enum.reject(deps, &String.contains?(stripped, &1))
+    body = Enum.map_join(missing, "\n", &~s(    implementation "#{&1}"))
 
-    case missing do
-      [] ->
-        content
-
-      _ ->
-        lines = Enum.map_join(missing, "\n", &~s(    implementation "#{&1}"))
-        insert_gradle_deps(content, lines)
-    end
+    MobDev.Plugin.ManagedBlock.upsert(
+      content,
+      @gradle_dep_markers,
+      body,
+      &place_in_dependencies/2
+    )
   end
 
-  defp insert_gradle_deps(content, lines) do
-    # Locate the top-level `dependencies { ... }` block, then find its matching
-    # close-brace by counting depth from the opening `{`. The mob_new template
-    # has a clean dependencies block; if a project gets exotic and the block
-    # can't be found, we fall back to appending a fresh block at end-of-file
-    # (Gradle merges multiple `dependencies { }` blocks, so this still works).
-    case Regex.run(~r/^dependencies\s*\{/m, content, return: :index) do
+  # Insert the region just before the matching close-brace of the top-level
+  # `dependencies { ... }` block; fall back to a fresh appended block (Gradle
+  # merges multiple `dependencies {}` blocks) when it can't be located.
+  defp place_in_dependencies(stripped, region) do
+    case Regex.run(~r/^dependencies\s*\{/m, stripped, return: :index) do
       [{start_idx, len}] ->
         open_brace_idx = start_idx + len - 1
 
-        case find_matching_close_brace(content, open_brace_idx) do
+        case find_matching_close_brace(stripped, open_brace_idx) do
           {:ok, close_idx} ->
-            head = binary_part(content, 0, close_idx)
-            tail = binary_part(content, close_idx, byte_size(content) - close_idx)
-            head <> "#{lines}\n" <> tail
+            MobDev.Plugin.ManagedBlock.insert_before_index(stripped, close_idx, region)
 
           :not_found ->
-            content <> "\ndependencies {\n#{lines}\n}\n"
+            stripped <> "\ndependencies {\n#{region}\n}\n"
         end
 
       nil ->
-        content <> "\ndependencies {\n#{lines}\n}\n"
+        stripped <> "\ndependencies {\n#{region}\n}\n"
     end
   end
 
