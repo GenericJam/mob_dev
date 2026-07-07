@@ -99,6 +99,31 @@ defmodule MobDev.Plugin.ConflictSurfaceTest do
       assert Enum.any?(errs, &(&1 =~ "Info.plist key"))
     end
 
+    test "duplicate AndroidManifest component name across plugins" do
+      plugins =
+        same(%{
+          android: %{
+            manifest_application_snippets: [
+              ~s(<service android:name="io.mob.x.Svc" android:exported="true"/>)
+            ]
+          }
+        })
+
+      assert %{errors: errs} = Validator.cross_validate(plugins)
+      assert Enum.any?(errs, &(&1 =~ "AndroidManifest component"))
+    end
+
+    test "duplicate Android res destination across plugins" do
+      plugins =
+        two(
+          %{android: %{res_files: ["priv/a/res/xml/svc.xml"]}},
+          %{android: %{res_files: ["priv/b/res/xml/svc.xml"]}}
+        )
+
+      assert %{errors: errs} = Validator.cross_validate(plugins)
+      assert Enum.any?(errs, &(&1 =~ "Android res destination"))
+    end
+
     test "duplicate supervised worker across plugins" do
       plugins = same(%{lifecycle: %{supervised: [MyApp.Worker]}})
       assert %{errors: errs} = Validator.cross_validate(plugins)
