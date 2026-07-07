@@ -77,6 +77,15 @@ defmodule MobDev.Plugin.ManifestTest do
 
       assert Enum.any?(errs, &(&1 =~ "res_files"))
     end
+
+    test "rejects a res_files path containing .. (path traversal)" do
+      assert {:error, errs} =
+               Manifest.validate(
+                 Map.put(@valid, :android, %{res_files: ["x/res/../../../build.gradle"]})
+               )
+
+      assert Enum.any?(errs, &(&1 =~ ".." or &1 =~ "traversal"))
+    end
   end
 
   describe "validate/1" do

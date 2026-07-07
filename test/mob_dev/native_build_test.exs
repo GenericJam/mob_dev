@@ -165,6 +165,30 @@ defmodule MobDev.NativeBuildTest do
     end
   end
 
+  describe "__res_target__/2 (plugin res path containment)" do
+    @root "android/app/src/main"
+
+    test "a normal res destination resolves to a copy target under res/" do
+      assert {:ok, "android/app/src/main/res/xml/svc.xml"} =
+               NativeBuild.__res_target__(@root, "res/xml/svc.xml")
+    end
+
+    test "a .. traversal that escapes res/ is rejected" do
+      assert {:error, :escapes_res_dir} =
+               NativeBuild.__res_target__(@root, "res/../../../build.gradle")
+    end
+
+    test "a deeper traversal to an arbitrary host path is rejected" do
+      assert {:error, :escapes_res_dir} =
+               NativeBuild.__res_target__(@root, "res/../../../../../../etc/hosts")
+    end
+
+    test "the res dir itself is allowed but a sibling of res/ is not" do
+      assert {:ok, _} = NativeBuild.__res_target__(@root, "res")
+      assert {:error, :escapes_res_dir} = NativeBuild.__res_target__(@root, "res/../resx/x")
+    end
+  end
+
   describe "__notify_hub_kotlin__/0" do
     test "generated hub is the stable io.mob.plugin seam with the three members" do
       src = NativeBuild.__notify_hub_kotlin__()

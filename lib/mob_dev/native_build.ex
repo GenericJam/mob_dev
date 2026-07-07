@@ -4541,16 +4541,21 @@ defmodule MobDev.NativeBuild do
   # (previous − current), then persists `current`. Per-scope and only called
   # when that concern's merge runs, so an iOS-only build never prunes Android
   # artifacts. Returns the pruned paths (for tests).
+  # The relative paths a prior build recorded for a plugin-artifact `scope`
+  # (empty when none). Shared by the prune and the res host-clobber guard.
+  defp read_plugin_artifact_ledger(scope) do
+    case File.read(Path.join(@plugin_artifact_ledger_dir, to_string(scope))) do
+      {:ok, body} -> String.split(body, "\n", trim: true)
+      _ -> []
+    end
+  end
+
   @spec __prune_plugin_artifacts__(atom(), [Path.t()]) :: [Path.t()]
   def __prune_plugin_artifacts__(scope, current) do
     ledger = Path.join(@plugin_artifact_ledger_dir, to_string(scope))
     current = current |> Enum.map(&Path.relative_to_cwd/1) |> Enum.uniq()
 
-    previous =
-      case File.read(ledger) do
-        {:ok, body} -> String.split(body, "\n", trim: true)
-        _ -> []
-      end
+    previous = read_plugin_artifact_ledger(scope)
 
     pruned =
       for stale <- previous -- current, File.exists?(stale) do
@@ -4830,6 +4835,17 @@ defmodule MobDev.NativeBuild do
   # two plugins targeting the same destination with different sources — the
   # cross-plugin validator catches this at activation, this is the build-time
   # backstop. No-op (with a notice) when the res root is missing.
+  #
+  # Two safety guards (the manifest validator enforces the first at activation
+  # too; these are the build-time backstop, since `activated/0` can feed
+  # unvalidated manifests):
+  #   * containment — the resolved destination must stay under the app `res/`
+  #     dir, so a `..`-bearing path can't make `File.cp!` write plugin bytes
+  #     anywhere on the build host (path traversal).
+  #   * no host clobber — refuse to overwrite a file this build didn't write on
+  #     a previous run (tracked in the ledger); otherwise a plugin could replace
+  #     a host-owned resource (e.g. res/values/styles.xml) and, worse, the
+  #     ledger prune would later delete the host's file on plugin removal.
   defp apply_plugin_android_res! do
     res_files = MobDev.Plugin.Merge.android_res_files(MobDev.Plugin.activated())
 
@@ -4843,19 +4859,58 @@ defmodule MobDev.NativeBuild do
 
       true ->
         raise_on_res_dest_collision!(res_files)
+        prior = read_plugin_artifact_ledger(:android_res)
 
         written =
           for %{src: src, dest: dest} <- res_files do
-            target = Path.join(@android_res_root, dest)
+            target = safe_res_target!(dest)
+            rel = Path.relative_to_cwd(target)
+
+            if File.exists?(target) and rel not in prior do
+              Mix.raise(
+                "plugin res file #{dest} would overwrite host-owned #{rel} — rename it in the plugin"
+              )
+            end
+
             File.mkdir_p!(Path.dirname(target))
             File.cp!(src, target)
-            IO.puts("  ✓ android res → #{Path.relative_to_cwd(target)}")
+            IO.puts("  ✓ android res → #{rel}")
             target
           end
 
         __prune_plugin_artifacts__(:android_res, written)
         :ok
     end
+  end
+
+  # Resolve a plugin res destination to a copy target, raising if it escapes the
+  # app `res/` dir. The hard security boundary behind the manifest validator's
+  # `..` rejection.
+  defp safe_res_target!(dest) do
+    case __res_target__(@android_res_root, dest) do
+      {:ok, target} ->
+        target
+
+      {:error, :escapes_res_dir} ->
+        Mix.raise(
+          "plugin res file destination escapes the app res/ dir: #{dest} " <>
+            "(path traversal — declared res_files must not contain \"..\")"
+        )
+    end
+  end
+
+  @doc false
+  # Pure: {:ok, copy_target} when `dest` (joined onto `root`) stays inside
+  # `root/res`, else {:error, :escapes_res_dir}. `..` and absolute escapes are
+  # normalised by Path.expand before the containment check.
+  @spec __res_target__(String.t(), String.t()) :: {:ok, String.t()} | {:error, :escapes_res_dir}
+  def __res_target__(root, dest) do
+    res_dir = Path.expand(Path.join(root, "res"))
+    target_abs = Path.expand(Path.join(root, dest))
+
+    if target_abs == res_dir or String.starts_with?(target_abs, res_dir <> "/"),
+      do: {:ok, Path.join(root, dest)},
+      else: {:error, :escapes_res_dir}
   end
 
   defp raise_on_res_dest_collision!(res_files) do
