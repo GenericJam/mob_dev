@@ -59,6 +59,24 @@ defmodule MobDev.Plugin.SignTest do
              ]
     end
 
+    test "hashes android.res_files so copied resource bytes are signed", %{dir: dir} do
+      write_file(dir, "android/res/xml/svc.xml", "<host-apdu-service/>")
+      write_file(dir, "android/res/values/strings.xml", "<resources/>")
+
+      manifest = %{
+        name: :mob_x,
+        mob_version: "~> 0.6",
+        plugin_spec_version: 1,
+        android: %{
+          res_files: ["android/res/xml/svc.xml", "android/res/values/strings.xml"]
+        }
+      }
+
+      paths = Sign.compute_file_hashes(dir, manifest) |> Enum.map(&elem(&1, 0))
+      assert "android/res/xml/svc.xml" in paths
+      assert "android/res/values/strings.xml" in paths
+    end
+
     test "is independent of the order swift_files appear in the manifest", %{dir: dir} do
       write_file(dir, "ios/A.swift", "alpha")
       write_file(dir, "ios/B.swift", "beta")

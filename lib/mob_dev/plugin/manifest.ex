@@ -201,7 +201,11 @@ defmodule MobDev.Plugin.Manifest do
 
   # `android.res_files` (optional) is a list of plugin-relative paths copied into
   # the app's `res/` tree. Each must be a non-empty string containing a `res`
-  # path segment (the build derives the `res/<type>/<file>` destination from it).
+  # path segment (the build derives the `res/<type>/<file>` destination from it)
+  # and must NOT contain a `..` segment — otherwise the derived destination could
+  # escape the app `res/` dir and `File.cp!` would write plugin bytes anywhere on
+  # the build host (path traversal). The native build enforces containment again
+  # at copy time as defense in depth.
   defp check_android_res_files(errors, manifest) do
     case get_in(manifest, [:android, :res_files]) do
       nil ->
@@ -211,6 +215,13 @@ defmodule MobDev.Plugin.Manifest do
         cond do
           not Enum.all?(list, &(is_binary(&1) and &1 != "")) ->
             ["android.res_files must be a list of non-empty path strings" | errors]
+
+          Enum.any?(list, &(".." in Path.split(&1))) ->
+            [
+              "android.res_files paths must not contain a \"..\" segment " <>
+                "(path traversal — the copy destination must stay under the app res/ dir)"
+              | errors
+            ]
 
           not Enum.all?(list, &("res" in Path.split(&1))) ->
             [
