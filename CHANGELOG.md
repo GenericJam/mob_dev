@@ -8,7 +8,7 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
-## [Unreleased]
+## [0.6.19] - 2026-07-07
 
 ### Added
 - **Plugins can contribute AndroidManifest `<application>` components and `res/`
