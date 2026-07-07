@@ -55,14 +55,30 @@ defmodule MobDev.Plugin.ManagedBlock do
   end
 
   @doc """
-  Remove the managed region delimited by `markers` (the full lines the begin and
-  end markers sit on, inclusive), or return `content` unchanged when the region
-  isn't present or is malformed (end before begin / missing marker).
+  Remove every managed region delimited by `markers` (the full lines the begin
+  and end markers sit on, inclusive), or return `content` unchanged when no
+  well-formed region is present.
+
+  Each region is identified as **the last BEGIN before the first END**, never
+  "first BEGIN → first END". That distinction matters: with a stray/duplicate
+  BEGIN (an interrupted write, a hand-edit, a bad merge-conflict resolution),
+  "first BEGIN → first END" would delete everything from the orphan through the
+  real region's END — silently eating host-authored lines in between. Anchoring
+  on the last BEGIN before the first END guarantees the removed span contains no
+  other marker, so only the region itself is deleted. Loops until no well-formed
+  region remains, so duplicates are all cleared.
   """
   @spec strip(String.t(), markers()) :: String.t()
-  def strip(content, {begin_line, end_line}) when is_binary(content) do
-    with {bs, _} <- match(content, begin_line),
-         {es, el} <- match_from(content, end_line, bs) do
+  def strip(content, markers) when is_binary(content) do
+    case strip_one(content, markers) do
+      ^content -> content
+      shorter -> strip(shorter, markers)
+    end
+  end
+
+  defp strip_one(content, {begin_line, end_line}) do
+    with {es, el} <- match(content, end_line),
+         {bs, _} <- last_match_before(content, begin_line, es) do
       region_start = line_start(content, bs)
       region_stop = line_stop(content, es + el)
 
@@ -106,13 +122,11 @@ defmodule MobDev.Plugin.ManagedBlock do
     end
   end
 
-  # First occurrence of `needle` at or after `from`.
-  defp match_from(hay, needle, from) do
-    tail = binary_part(hay, from, byte_size(hay) - from)
-
-    case :binary.match(tail, needle) do
-      {s, l} -> {from + s, l}
-      :nomatch -> nil
+  # Last occurrence of `needle` strictly before byte index `limit` (nil if none).
+  defp last_match_before(hay, needle, limit) do
+    case :binary.matches(binary_part(hay, 0, limit), needle) do
+      [] -> nil
+      list -> List.last(list)
     end
   end
 

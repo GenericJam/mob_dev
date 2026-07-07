@@ -26,13 +26,19 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
   (MOB-39)
 
 ### Changed
-- **Plugin contributions merged into host-owned build files are now reversible.**
-  Plugin `<uses-permission>`s, `<application>` components, and Gradle deps are
-  fenced in a regenerated-each-build managed region (`MobDev.Plugin.ManagedBlock`)
-  in `AndroidManifest.xml` / `build.gradle`, so removing a plugin drops its
-  contributions (no more dangling `<service>` / orphan permission / orphan dep)
-  while hand-authored content outside the fence is untouched. Idempotent
-  (`strip(place(x)) == x`); de-dupes against host-declared entries. (MOB-40)
+- **Plugin contributions merged into host-owned build files are now reversible
+  (going forward).** Plugin `<uses-permission>`s, `<application>` components, and
+  Gradle deps are fenced in a regenerated-each-build managed region
+  (`MobDev.Plugin.ManagedBlock`) in `AndroidManifest.xml` / `build.gradle`, so
+  removing a plugin drops its **fenced** contributions (no more dangling
+  `<service>` / orphan permission / orphan dep) while hand-authored content
+  outside the fence is untouched. Idempotent (`strip(place(x)) == x`); de-dupes
+  against existing entries; `strip` is orphan-BEGIN-safe (never deletes host
+  lines between a stray marker and a real region). **Forward-only:** entries an
+  older mob_dev already appended *unfenced* are indistinguishable from
+  hand-authored ones, so they're left in place (not double-added, not
+  auto-removed) — regenerate the app, or remove them by hand, to fence them.
+  (MOB-40)
 
 ### Fixed
 - **`mix mob.new_plugin` no longer scaffolds plugins pinned to the abandoned

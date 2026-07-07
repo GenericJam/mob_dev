@@ -69,6 +69,33 @@ defmodule MobDev.Plugin.ManagedBlockTest do
       assert ManagedBlock.strip(content, @markers) == content
     end
 
+    test "an orphan BEGIN before a real region does NOT eat the host lines between them (F1)" do
+      # The data-loss case: naive first-BEGIN→first-END would delete
+      # "host-line" too. We must remove only the real region.
+      content =
+        "<!-- BEGIN -->\nhost-line-that-must-survive\n" <>
+          "<!-- BEGIN -->\nplugin-body\n<!-- END -->\nafter\n"
+
+      out = ManagedBlock.strip(content, @markers)
+      assert out =~ "host-line-that-must-survive"
+      refute out =~ "plugin-body"
+      # the real region (2nd BEGIN + END) is gone; the orphan BEGIN marker lingers
+      # harmlessly but no host content was lost
+      assert out == "<!-- BEGIN -->\nhost-line-that-must-survive\nafter\n"
+    end
+
+    test "clears duplicate well-formed regions (loops until none remain)" do
+      content =
+        "<!-- BEGIN -->\na\n<!-- END -->\nkeep\n<!-- BEGIN -->\nb\n<!-- END -->\n"
+
+      assert ManagedBlock.strip(content, @markers) == "keep\n"
+    end
+
+    test "a trailing orphan BEGIN after a region is left alone (no host loss)" do
+      content = "<!-- BEGIN -->\nbody\n<!-- END -->\nhost\n<!-- BEGIN -->\n"
+      assert ManagedBlock.strip(content, @markers) == "host\n<!-- BEGIN -->\n"
+    end
+
     test "strip is the left inverse of place (round-trip)" do
       base = "line1\nline2\n</application>\ntail\n"
       placed = ManagedBlock.upsert(base, @markers, "  body1\n  body2", place(@doc_anchor))

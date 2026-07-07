@@ -531,6 +531,23 @@ defmodule MobDev.NativeBuildTest do
       assert length(String.split(out, ~s(android:name="android.permission.CAMERA"))) == 2
     end
 
+    test "forward-only: an existing UNFENCED entry is treated as host-authored" do
+      # Simulates an app an older mob_dev already patched (CAMERA appended
+      # unfenced). It's indistinguishable from a hand-added permission, so it is
+      # neither re-added to the fence nor removed when the plugin goes away.
+      with_plugin =
+        NativeBuild.__merge_android_permissions__(@manifest_with_perms, [
+          "android.permission.CAMERA"
+        ])
+
+      assert with_plugin == @manifest_with_perms
+      refute with_plugin =~ "mob:plugin-permissions"
+
+      # plugin removed → the pre-existing unfenced CAMERA line survives
+      cleaned = NativeBuild.__merge_android_permissions__(with_plugin, [])
+      assert cleaned =~ "android.permission.CAMERA"
+    end
+
     test "is a no-op when every permission is already declared" do
       perms = ["android.permission.CAMERA", "android.permission.INTERNET"]
 
@@ -562,11 +579,12 @@ defmodule MobDev.NativeBuildTest do
       assert "android.permission.POST_NOTIFICATIONS" in names
     end
 
-    test "inserts after the LAST existing uses-permission line" do
+    test "the managed region sits after host permissions (before <application)" do
       perms = ["android.permission.BLUETOOTH_CONNECT"]
       result = NativeBuild.__merge_android_permissions__(@manifest_with_perms, perms)
 
-      # Order: INTERNET, CAMERA, RECORD_AUDIO, BLUETOOTH_CONNECT
+      # Host perms stay first; the fenced plugin perm follows, still before
+      # <application: INTERNET, CAMERA, RECORD_AUDIO, then BLUETOOTH_CONNECT.
       offsets =
         for tag <- [
               "android.permission.INTERNET",
