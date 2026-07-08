@@ -137,6 +137,43 @@ defmodule MobDev.IconGeneratorTest do
         assert Image.height(img) == px, "icon_#{px}: height #{Image.height(img)} != #{px}"
       end)
     end
+
+    test "from a transparent source: iOS icons are opaque, Android keeps alpha", %{tmp: tmp} do
+      # Apple rejects any alpha channel on the App Store icon (error 90717), but
+      # Android adaptive/legacy icons need transparency. A transparent source must
+      # therefore flatten on iOS and stay transparent on Android.
+      source = write_transparent_png(tmp)
+      assert Image.has_alpha?(Image.open!(source)), "fixture should have an alpha channel"
+
+      IconGenerator.generate_from_source(source, tmp)
+
+      Enum.each(IconGenerator.ios_sizes(), fn px ->
+        path = Path.join(tmp, "ios/Assets.xcassets/AppIcon.appiconset/icon_#{px}.png")
+        refute Image.has_alpha?(Image.open!(path)), "icon_#{px}.png must be opaque (no alpha)"
+      end)
+
+      Enum.each(IconGenerator.android_sizes(), fn {bucket, _px} ->
+        path = Path.join(tmp, "android/app/src/main/res/#{bucket}/ic_launcher.png")
+        assert Image.has_alpha?(Image.open!(path)), "#{bucket} ic_launcher.png must keep alpha"
+      end)
+    end
+
+    test "an explicit :background_color fills the flattened iOS icon", %{tmp: tmp} do
+      # Fully-transparent source → the whole opaque icon becomes the background.
+      source = write_transparent_png(tmp)
+      IconGenerator.generate_from_source(source, tmp, background_color: "#00FF00")
+
+      img = Image.open!(Path.join(tmp, "ios/Assets.xcassets/AppIcon.appiconset/icon_1024.png"))
+      refute Image.has_alpha?(img)
+      assert {:ok, [r, g, b | _]} = Image.get_pixel(img, 512, 512)
+      assert g > 200 and r < 80 and b < 80, "expected green fill, got #{inspect([r, g, b])}"
+    end
+
+    test "an opaque source is left unflattened (still writes iOS icons)", %{tmp: tmp} do
+      source = write_test_png(tmp)
+      assert :ok = IconGenerator.generate_from_source(source, tmp)
+      assert File.exists?(Path.join(tmp, "ios/Assets.xcassets/AppIcon.appiconset/icon_1024.png"))
+    end
   end
 
   # ── generate_random/1 (integration — requires Avatarz + libvips) ─────────────
@@ -359,6 +396,14 @@ defmodule MobDev.IconGeneratorTest do
     path = Path.join(dir, "test_source.png")
     color = Keyword.get(opts, :color, :white)
     Image.new!(64, 64, color: color) |> Image.write!(path)
+    path
+  end
+
+  # A source PNG carrying an alpha channel (fully transparent), for exercising
+  # the iOS-flatten path.
+  defp write_transparent_png(dir) do
+    path = Path.join(dir, "transparent_source.png")
+    Image.new!(64, 64, color: :red) |> Image.add_alpha!(0) |> Image.write!(path)
     path
   end
 end

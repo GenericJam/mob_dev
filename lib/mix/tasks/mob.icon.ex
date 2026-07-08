@@ -55,11 +55,16 @@ defmodule Mix.Tasks.Mob.Icon do
       Mix.raise("No mix.exs found. Run mix mob.icon from your project root.")
     end
 
+    # `--adaptive-bg` (if given) sets the flatten background for the opaque iOS
+    # icons too, so both platforms share one background colour; otherwise it's
+    # sampled from the source per platform.
+    icon_opts = if opts[:adaptive_bg], do: [background_color: opts[:adaptive_bg]], else: []
+
     source =
       case opts[:source] do
         nil ->
           Mix.shell().info("Generating random robot icon...")
-          MobDev.IconGenerator.generate_random(project_dir)
+          MobDev.IconGenerator.generate_random(project_dir, icon_opts)
           Path.join(project_dir, "icon_source.png")
 
         source ->
@@ -68,14 +73,13 @@ defmodule Mix.Tasks.Mob.Icon do
           end
 
           Mix.shell().info("Resizing icon from #{source}...")
-          MobDev.IconGenerator.generate_from_source(source, project_dir)
+          MobDev.IconGenerator.generate_from_source(source, project_dir, icon_opts)
           source
       end
 
     if opts[:adaptive] do
       Mix.shell().info("Generating adaptive Android icons...")
-      adaptive_opts = if opts[:adaptive_bg], do: [background_color: opts[:adaptive_bg]], else: []
-      MobDev.IconGenerator.generate_adaptive(source, project_dir, adaptive_opts)
+      MobDev.IconGenerator.generate_adaptive(source, project_dir, icon_opts)
     end
 
     Mix.shell().info("Icons written to #{project_dir}")
