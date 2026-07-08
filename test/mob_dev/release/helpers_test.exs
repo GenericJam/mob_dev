@@ -75,23 +75,35 @@ defmodule MobDev.Release.HelpersTest do
     setup do
       tmp = mk_tmpdir("git_hash")
 
-      File.mkdir_p!(tmp)
-      {_, 0} = System.cmd("git", ["init", "--quiet", "-b", "main", tmp])
-      File.write!(Path.join(tmp, "vsn.mk"), "VSN = 17.0\n")
-      {_, 0} = System.cmd("git", ["-C", tmp, "add", "vsn.mk"])
-      # Disable signing + use a stable identity so the hash is reproducible
-      # *only* within a single test run (we don't pin the value — we just
-      # assert it's a valid 8-char hex).
-      env = [
+      # Sanitize the ambient git environment. When the suite runs from inside a
+      # git hook (e.g. `.githooks/pre-push`), git exports GIT_DIR / GIT_WORK_TREE
+      # / GIT_INDEX_FILE / … into the environment; the fixture's git commands
+      # would inherit them and operate on the *outer* repo instead of `tmp`
+      # (`git add` matches nothing → `git commit` exits non-zero → setup crashes).
+      # nil removes the var for the child process. The stable author/committer
+      # identity keeps the commit reproducible within a run (we assert the hash
+      # is 8-char hex, not a pinned value).
+      git_env = [
+        {"GIT_DIR", nil},
+        {"GIT_WORK_TREE", nil},
+        {"GIT_INDEX_FILE", nil},
+        {"GIT_OBJECT_DIRECTORY", nil},
+        {"GIT_COMMON_DIR", nil},
+        {"GIT_PREFIX", nil},
         {"GIT_AUTHOR_NAME", "test"},
         {"GIT_AUTHOR_EMAIL", "test@example.com"},
         {"GIT_COMMITTER_NAME", "test"},
         {"GIT_COMMITTER_EMAIL", "test@example.com"}
       ]
 
+      File.mkdir_p!(tmp)
+      {_, 0} = System.cmd("git", ["init", "--quiet", "-b", "main", tmp], env: git_env)
+      File.write!(Path.join(tmp, "vsn.mk"), "VSN = 17.0\n")
+      {_, 0} = System.cmd("git", ["-C", tmp, "add", "vsn.mk"], env: git_env)
+
       {_, 0} =
         System.cmd("git", ["-C", tmp, "commit", "-m", "init", "--no-gpg-sign", "--quiet"],
-          env: env
+          env: git_env
         )
 
       on_exit(fn -> File.rm_rf!(tmp) end)

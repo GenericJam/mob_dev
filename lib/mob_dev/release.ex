@@ -353,6 +353,35 @@ defmodule MobDev.Release do
       {"MOB_IOS_PROFILE_UUID", cfg[:ios_dist_profile_uuid]},
       {"MOB_APP_NAME", app_name},
       {"MOB_APP_MODULE", app_module}
+    ] ++ plugin_ios_build_env(MobDev.Plugin.activated())
+  end
+
+  @doc false
+  # Env vars that drive `release_device.sh`'s activated-plugin NIF compile + link
+  # step. Pure over the activated-plugin list (each `{plugin_dir, manifest}`, the
+  # shape `MobDev.Plugin.activated/0` returns) so it can be unit-tested without a
+  # real deps tree.
+  #
+  # - `MOB_PLUGIN_IOS_NIF_SOURCES` — space-joined absolute paths of each activated
+  #   plugin's iOS C/ObjC NIF source (`priv/native/ios/<module>.m`). The generated
+  #   `driver_tab_ios` references every activated plugin's `<module>_nif_init`, so
+  #   the release link fails with "Undefined symbols: _<module>_nif_init" unless
+  #   these are compiled in. Each source's basename is the NIF libname → the script
+  #   compiles it with `-DSTATIC_ERLANG_NIF_LIBNAME=<basename>` so `ERL_NIF_INIT`
+  #   emits `<basename>_nif_init`, matching the table. Mirrors the dev path's
+  #   `build.zig -Dplugin_c_nifs` (`MobDev.Plugin.Merge.nif_sources/2`).
+  # - `MOB_PLUGIN_IOS_FRAMEWORKS` — space-joined union of the frameworks the
+  #   activated plugins' iOS code drives. Belt-and-suspenders: the sources are
+  #   compiled with `-fmodules` (Clang autolinks every imported framework), and
+  #   these are also passed explicitly to the linker.
+  @spec plugin_ios_build_env([MobDev.Plugin.Merge.plugin()]) :: [{String.t(), String.t()}]
+  def plugin_ios_build_env(activated) do
+    sources = activated |> MobDev.Plugin.Merge.nif_sources(:ios) |> Enum.map(&Path.expand/1)
+    frameworks = MobDev.Plugin.Merge.ios_frameworks(activated)
+
+    [
+      {"MOB_PLUGIN_IOS_NIF_SOURCES", Enum.join(sources, " ")},
+      {"MOB_PLUGIN_IOS_FRAMEWORKS", Enum.join(frameworks, " ")}
     ]
   end
 
@@ -591,6 +620,36 @@ defmodule MobDev.Release do
     printf '%s\n' '__attribute__((weak)) const char *erl_errno_id_unknown(int error) { (void)error; return "unknown"; }' > "$BUILD_DIR/erl_errno_id_compat.c"
     $CC $IFLAGS -c "$BUILD_DIR/erl_errno_id_compat.c" -o "$BUILD_DIR/erl_errno_id_compat.o"
 
+    # ── Activated-plugin NIFs ─────────────────────────────────────────────────
+    # driver_tab_ios references each activated plugin's <module>_nif_init; those
+    # definitions live in the plugin's iOS NIF source (priv/native/ios/<module>.m,
+    # lang: :objc). The dev build compiles these via build.zig -Dplugin_c_nifs; the
+    # release build must do the same or the final link dies with "Undefined
+    # symbols: _<module>_nif_init". The source basename is the NIF libname →
+    # -DSTATIC_ERLANG_NIF_LIBNAME=<name> makes ERL_NIF_INIT emit <name>_nif_init.
+    # -fmodules lets Clang autolink every framework the source @imports (a plugin
+    # may import frameworks beyond its manifest's declared set, e.g. Accelerate).
+    PLUGIN_OBJS=""
+    for SRC in $MOB_PLUGIN_IOS_NIF_SOURCES; do
+        NAME=$(basename "$SRC"); NAME="${NAME%.*}"
+        case "$SRC" in
+            *.m) ARC="-fobjc-arc" ;;
+            *)   ARC="" ;;
+        esac
+        echo "  plugin NIF: $NAME  ($SRC)"
+        $CC $ARC -fmodules $IFLAGS \
+            -DSTATIC_ERLANG_NIF -DSTATIC_ERLANG_NIF_LIBNAME="$NAME" \
+            -c "$SRC" -o "$BUILD_DIR/$NAME.o"
+        PLUGIN_OBJS="$PLUGIN_OBJS $BUILD_DIR/$NAME.o"
+    done
+
+    # Frameworks the activated plugins declare (explicit, alongside -fmodules
+    # autolink above): -framework <FW> for each unique name.
+    PLUGIN_FRAMEWORK_FLAGS=""
+    for FW in $MOB_PLUGIN_IOS_FRAMEWORKS; do
+        PLUGIN_FRAMEWORK_FLAGS="$PLUGIN_FRAMEWORK_FLAGS -Xlinker -framework -Xlinker $FW"
+    done
+
     echo "=== Linking $APP_NAME (release, no EPMD) ==="
     xcrun -sdk iphoneos swiftc \
         -target arm64-apple-ios17.0 \
@@ -602,6 +661,7 @@ defmodule MobDev.Release do
         "$BUILD_DIR/AppDelegate.o" \
         "$BUILD_DIR/beam_main.o" \
         "$BUILD_DIR/erl_errno_id_compat.o" \
+        $PLUGIN_OBJS \
         $LIBS \
         "$SQLITE_STATIC_LIB" \
         -lz -lc++ -lpthread \
@@ -610,6 +670,7 @@ defmodule MobDev.Release do
         -Xlinker -framework -Xlinker CoreGraphics \
         -Xlinker -framework -Xlinker QuartzCore \
         -Xlinker -framework -Xlinker SwiftUI \
+        $PLUGIN_FRAMEWORK_FLAGS \
         -o "$BUILD_DIR/$APP_NAME"
 
     echo "=== Building .app bundle ==="

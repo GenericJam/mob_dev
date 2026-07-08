@@ -139,6 +139,85 @@ defmodule MobDev.ReleaseTest do
     end
   end
 
+  describe "plugin_ios_build_env/1" do
+    # The two env vars feed release_device.sh's plugin NIF compile + link loop.
+    # Pure over the activated-plugin list, so the matrix runs without a deps tree.
+
+    test "no activated plugins → empty source + framework strings" do
+      assert Release.plugin_ios_build_env([]) == [
+               {"MOB_PLUGIN_IOS_NIF_SOURCES", ""},
+               {"MOB_PLUGIN_IOS_FRAMEWORKS", ""}
+             ]
+    end
+
+    test "one ObjC plugin → its .m source (absolute) + declared frameworks" do
+      activated = [
+        {"/deps/mob_camera",
+         %{
+           nifs: [
+             %{
+               module: :mob_camera_nif,
+               native_dir: "priv/native/ios",
+               lang: :objc,
+               platform: :ios
+             }
+           ],
+           ios: %{frameworks: ["AVFoundation", "Photos"]}
+         }}
+      ]
+
+      assert [
+               {"MOB_PLUGIN_IOS_NIF_SOURCES", srcs},
+               {"MOB_PLUGIN_IOS_FRAMEWORKS", fws}
+             ] = Release.plugin_ios_build_env(activated)
+
+      assert srcs == "/deps/mob_camera/priv/native/ios/mob_camera_nif.m"
+      assert fws == "AVFoundation Photos"
+    end
+
+    test "multiple plugins → space-joined sources; frameworks de-duped across the union" do
+      activated = [
+        {"/deps/a",
+         %{
+           nifs: [%{module: :a_nif, native_dir: "priv/native/ios", lang: :objc, platform: :ios}],
+           ios: %{frameworks: ["CoreBluetooth", "Foundation"]}
+         }},
+        {"/deps/b",
+         %{
+           nifs: [%{module: :b_nif, native_dir: "priv/native/ios", lang: :objc, platform: :ios}],
+           ios: %{frameworks: ["Foundation", "AVFoundation"]}
+         }}
+      ]
+
+      assert [
+               {"MOB_PLUGIN_IOS_NIF_SOURCES", srcs},
+               {"MOB_PLUGIN_IOS_FRAMEWORKS", fws}
+             ] = Release.plugin_ios_build_env(activated)
+
+      assert srcs == "/deps/a/priv/native/ios/a_nif.m /deps/b/priv/native/ios/b_nif.m"
+      # collect_uniq preserves first-seen order across plugins.
+      assert fws == "CoreBluetooth Foundation AVFoundation"
+    end
+
+    test "an Android-only NIF entry on the same plugin is excluded from iOS sources" do
+      activated = [
+        {"/deps/x",
+         %{
+           nifs: [
+             %{module: :x_nif, native_dir: "priv/native/ios", lang: :objc, platform: :ios},
+             %{module: :x_nif, native_dir: "priv/native/jni", lang: :c, platform: :android}
+           ],
+           ios: %{frameworks: []}
+         }}
+      ]
+
+      assert [{"MOB_PLUGIN_IOS_NIF_SOURCES", srcs}, {"MOB_PLUGIN_IOS_FRAMEWORKS", ""}] =
+               Release.plugin_ios_build_env(activated)
+
+      assert srcs == "/deps/x/priv/native/ios/x_nif.m"
+    end
+  end
+
   # A parsed-profile map in the shape parse_mobileprovision/1 returns; App Store by
   # default (no provisioned devices, not provisions-all).
   defp profile(overrides) do
