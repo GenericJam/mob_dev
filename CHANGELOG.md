@@ -8,6 +8,36 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.6.20] - 2026-07-07
+
+### Fixed
+- **iOS release builds now compile + link activated-plugin NIFs.** `mix
+  mob.release --ios` produced a binary that failed to link for any app with NIF
+  plugins — `Undefined symbols: _<module>_nif_init, referenced from
+  _erts_static_nif_tab in driver_tab_ios.o`. iOS statically links every NIF into
+  the single app binary (no `dlopen` under the App Store sandbox), so the
+  generated `driver_tab_ios.c` references each activated plugin's
+  `<module>_nif_init`, but the release path (`release.ex` → `release_device.sh`)
+  hand-compiled a fixed object list and never touched plugins (the dev path
+  already compiled them via `build.zig -Dplugin_c_nifs`). `release_env/2` now
+  emits `MOB_PLUGIN_IOS_NIF_SOURCES` + `MOB_PLUGIN_IOS_FRAMEWORKS` from
+  `MobDev.Plugin.activated()` (via the new pure, tested
+  `MobDev.Release.plugin_ios_build_env/1`); `release_device.sh` compiles each
+  plugin NIF source with `-DSTATIC_ERLANG_NIF_LIBNAME=<basename>` + `-fmodules`
+  (framework autolink) and links the objects plus the declared frameworks.
+  Verified end-to-end: a 10-plugin app links and the IPA validates against its
+  App Store distribution profile. Scope: covers `nif_sources` (`lang: :c |
+  :objc`) + `ios_frameworks`; plugin `swift_files` and `:cpp_archive` static
+  archives on the release path remain a follow-up. (#36)
+- **Test: `MobDev.Release.HelpersTest`'s git fixture no longer inherits the
+  ambient git environment.** Run inside a git hook (`.githooks/pre-push`), git
+  exports `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE`; the fixture's `git`
+  commands inherited them and operated on the outer repo instead of their
+  tmpdir, crashing setup — so the suite passed standalone but failed only on
+  push. The fixture now clears those vars on every `git` invocation. (#36)
+
+---
+
 ## [0.6.19] - 2026-07-07
 
 ### Added
