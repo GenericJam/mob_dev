@@ -138,6 +138,45 @@ defmodule MobDev.ReleaseScriptTest do
     end
   end
 
+  describe "activated-plugin NIFs are compiled + linked" do
+    # driver_tab_ios references each activated plugin's <module>_nif_init.
+    # Before this fix the release script hand-compiled a fixed object list and
+    # never touched plugins, so any app with NIF plugins (all of them) died at
+    # link with "Undefined symbols: _<module>_nif_init". The dev build already
+    # compiled these via build.zig -Dplugin_c_nifs; this brings the release
+    # path to parity.
+
+    test "loops over MOB_PLUGIN_IOS_NIF_SOURCES and compiles each", %{sh: sh} do
+      assert sh =~ ~s|for SRC in $MOB_PLUGIN_IOS_NIF_SOURCES|
+    end
+
+    test "derives the NIF libname from the source basename", %{sh: sh} do
+      # basename minus extension → STATIC_ERLANG_NIF_LIBNAME, so ERL_NIF_INIT
+      # emits <name>_nif_init matching the driver table.
+      assert sh =~ ~s|NAME=$(basename "$SRC"); NAME="${NAME%.*}"|
+      assert sh =~ ~s|-DSTATIC_ERLANG_NIF -DSTATIC_ERLANG_NIF_LIBNAME="$NAME"|
+    end
+
+    test "compiles ObjC (.m) sources with -fobjc-arc and always -fmodules", %{sh: sh} do
+      # -fmodules autolinks every framework the source @imports (a plugin may
+      # import frameworks beyond its manifest set, e.g. Accelerate).
+      assert sh =~ ~s|*.m) ARC="-fobjc-arc" ;;|
+      assert sh =~ ~s|$CC $ARC -fmodules $IFLAGS|
+    end
+
+    test "adds the compiled plugin objects to the final link line", %{sh: sh} do
+      assert sh =~ ~r/PLUGIN_OBJS="\$PLUGIN_OBJS \$BUILD_DIR\/\$NAME\.o"/
+      # $PLUGIN_OBJS is on the swiftc link command (unquoted so it word-splits).
+      assert sh =~ ~r/"\$BUILD_DIR\/erl_errno_id_compat\.o" \\\n\s*\$PLUGIN_OBJS \\/
+    end
+
+    test "passes each declared framework explicitly to the linker", %{sh: sh} do
+      assert sh =~ ~s|for FW in $MOB_PLUGIN_IOS_FRAMEWORKS|
+      assert sh =~ ~s|-Xlinker -framework -Xlinker $FW|
+      assert sh =~ ~s|$PLUGIN_FRAMEWORK_FLAGS \\|
+    end
+  end
+
   describe "test harness compiled out of release builds" do
     # Apple error code 50 — non-public selectors. Mob's synthetic-touch
     # NIFs (`tap_xy`, `swipe_xy`, …) use private UIKit APIs. mob 0.5.12
