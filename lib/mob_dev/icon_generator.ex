@@ -78,8 +78,8 @@ defmodule MobDev.IconGenerator do
 
   Returns `:ok` on success.
   """
-  @spec generate_random(output_dir :: String.t()) :: :ok
-  def generate_random(output_dir) do
+  @spec generate_random(output_dir :: String.t(), keyword()) :: :ok
+  def generate_random(output_dir, opts \\ []) do
     if image_available?() do
       renders_path = Path.join(output_dir, ".icon_renders")
       File.mkdir_p!(renders_path)
@@ -90,7 +90,7 @@ defmodule MobDev.IconGenerator do
       source_png = Path.join(output_dir, "icon_source.png")
       Image.write!(avatar.image, source_png)
 
-      resize_for_platforms(source_png, output_dir)
+      resize_for_platforms(source_png, output_dir, opts)
     else
       Mix.shell().info("""
       \nNote: the `image` dependency is not available so a random icon could not
@@ -121,12 +121,20 @@ defmodule MobDev.IconGenerator do
   Resizes an existing image at `source_path` to all platform icon sizes,
   writing them into `output_dir`.
 
+  ## Options
+    * `:background_color` — hex string like `"#E8B53C"` used to flatten the
+      **iOS** icons (which must be opaque — Apple rejects any alpha channel on
+      the App Store marketing icon, error 90717). Android icons keep their
+      transparency. If absent, the colour is sampled from the source (same as
+      the adaptive-icon background), so the two platforms stay consistent.
+
   Returns `:ok`.
   """
-  @spec generate_from_source(source_path :: String.t(), output_dir :: String.t()) :: :ok
-  def generate_from_source(source_path, output_dir) do
+  @spec generate_from_source(source_path :: String.t(), output_dir :: String.t(), keyword()) ::
+          :ok
+  def generate_from_source(source_path, output_dir, opts \\ []) do
     if image_available?() do
-      resize_for_platforms(source_path, output_dir)
+      resize_for_platforms(source_path, output_dir, opts)
     else
       Mix.raise("""
       The `image` dependency is required to generate icons from a source file.
@@ -269,10 +277,13 @@ defmodule MobDev.IconGenerator do
     Code.ensure_loaded?(Image)
   end
 
-  defp resize_for_platforms(source_png, output_dir) do
+  defp resize_for_platforms(source_png, output_dir, opts) do
     source = Image.open!(source_png)
+    # Android keeps the source's transparency — adaptive-icon foregrounds and
+    # legacy launcher icons rely on it, and a flat background renders badly on
+    # some launchers. iOS is flattened opaque (see write_ios_icons).
     write_android_icons(source, output_dir)
-    write_ios_icons(source, output_dir)
+    write_ios_icons(source, output_dir, opts)
     :ok
   end
 
@@ -293,16 +304,40 @@ defmodule MobDev.IconGenerator do
     end)
   end
 
-  defp write_ios_icons(source, output_dir) do
+  defp write_ios_icons(source, output_dir, opts) do
     dest_dir = Path.join([output_dir, "ios", "Assets.xcassets", "AppIcon.appiconset"])
     File.mkdir_p!(dest_dir)
 
+    # iOS icons must be opaque: Apple rejects any alpha channel on the App Store
+    # marketing icon (error 90717 "Invalid large app icon … can't be
+    # transparent"), and iOS applies its own corner mask, so a flat, full-bleed
+    # icon is correct. Flatten the source once, then resize the opaque result.
+    ios_source = flatten_for_ios(source, opts)
+
     Enum.each(@ios_sizes, fn px ->
       dest = Path.join(dest_dir, "icon_#{px}.png")
-      source |> Image.thumbnail!(px) |> Image.write!(dest)
+      ios_source |> Image.thumbnail!(px) |> Image.write!(dest)
     end)
 
     write_ios_contents_json(dest_dir)
+  end
+
+  # Flatten an alpha-bearing source onto an opaque background for iOS. Reuses the
+  # adaptive-icon background colour (explicit `:background_color` or sampled), so
+  # the iOS icon's fill matches the Android adaptive background. A source with no
+  # alpha is returned unchanged.
+  defp flatten_for_ios(source, opts) do
+    if Image.has_alpha?(source) do
+      bg =
+        case opts[:background_color] do
+          hex when is_binary(hex) -> normalise_hex!(hex)
+          _ -> extract_background_color(source)
+        end
+
+      Image.flatten!(source, background_color: bg)
+    else
+      source
+    end
   end
 
   defp write_ios_icons_from_priv(output_dir) do
