@@ -8,6 +8,24 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.6.21] - 2026-07-08
+
+### Fixed
+- **iOS app icons are flattened opaque so App Store upload validation accepts
+  them.** A transparent source icon (a common design — a rounded badge on
+  transparent corners) produced transparent iOS icons and tripped altool error
+  90717 ("Invalid large app icon … can't be transparent or contain an alpha
+  channel"). `IconGenerator.write_ios_icons` now composites an alpha-bearing
+  source onto an opaque background (`Image.flatten!`) before resizing — using the
+  explicit `--adaptive-bg` colour when given, else the same colour sampled for
+  the Android adaptive background, so both platforms stay consistent; an opaque
+  source is left untouched. **Android icons keep their transparency** (adaptive
+  foregrounds + legacy launcher icons need it), and the bundled fallback
+  `mob_logo` iOS assets were pre-flattened. Verified: a transparent-badge icon
+  now passes App Store validation and reaches TestFlight. (#37)
+
+---
+
 ## [0.6.20] - 2026-07-07
 
 ### Fixed
