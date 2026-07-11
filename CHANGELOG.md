@@ -8,6 +8,20 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.6.22] - 2026-07-11
+
+### Added
+- **`ios_release_screenshot` config — opt mob's public-API `screenshot` NIF into
+  release builds.** Companion to mob 0.7.20 (mob#71), which carves `screenshot/3`
+  into `#if !MOB_RELEASE || defined(MOB_ENABLE_SCREENSHOT)`. Setting
+  `config :mob_dev, ios_release_screenshot: true` exports `MOB_ENABLE_SCREENSHOT=1`,
+  and the generated `release_device.sh` compiles `mob_nif.m` with
+  `${MOB_ENABLE_SCREENSHOT:+-DMOB_ENABLE_SCREENSHOT}` — so a release build can ship the
+  screenshot NIF (letting an agent SEE a shipped app's screen to error-correct) while
+  the private synthetic-input NIFs (tap/type) stay stripped. Default is unchanged and
+  byte-identical (screenshot stays stripped); enabling it is a deliberate choice because
+  the NIF captures the app's own window with no OS prompt or indicator. (#39)
+
 ## [0.6.21] - 2026-07-08
 
 ### Fixed
