@@ -139,6 +139,24 @@ defmodule MobDev.ReleaseTest do
     end
   end
 
+  describe "screenshot_build_env/1" do
+    # Drives -DMOB_ENABLE_SCREENSHOT on the release mob_nif.m compile. Opt-in: the
+    # public-API screenshot NIF ships in release only when the host asks for it.
+    test "opts in when ios_release_screenshot: true" do
+      assert Release.screenshot_build_env(ios_release_screenshot: true) ==
+               {"MOB_ENABLE_SCREENSHOT", "1"}
+    end
+
+    test "off (empty) when the key is false" do
+      assert Release.screenshot_build_env(ios_release_screenshot: false) ==
+               {"MOB_ENABLE_SCREENSHOT", ""}
+    end
+
+    test "off (empty) by default when the key is absent" do
+      assert Release.screenshot_build_env([]) == {"MOB_ENABLE_SCREENSHOT", ""}
+    end
+  end
+
   describe "plugin_ios_build_env/1" do
     # The two env vars feed release_device.sh's plugin NIF compile + link loop.
     # Pure over the activated-plugin list, so the matrix runs without a deps tree.
