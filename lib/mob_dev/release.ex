@@ -21,6 +21,17 @@ defmodule MobDev.Release do
   Auto-detection looks for `Apple Distribution: ...` certificates in the
   keychain and picks the first matching App Store provisioning profile
   (one with no `ProvisionedDevices` and no `ProvisionsAllDevices`).
+
+  ## Optional keys
+
+      config :mob_dev,
+        # Ship mob's public-API `screenshot` NIF in the release build (default: false).
+        # Normally the whole iOS test harness is stripped from release because its
+        # synthetic-input NIFs use private selectors the App Store rejects; `screenshot`
+        # uses only public APIs, so this opts just it back in — letting an agent SEE a
+        # shipped app's screen to error-correct. It captures the app's own window with no
+        # OS prompt/indicator, so enabling it is a deliberate choice. tap/type stay stripped.
+        ios_release_screenshot: true
   """
 
   @doc """
@@ -352,9 +363,22 @@ defmodule MobDev.Release do
       {"MOB_IOS_SIGN_IDENTITY", cfg[:ios_dist_sign_identity]},
       {"MOB_IOS_PROFILE_UUID", cfg[:ios_dist_profile_uuid]},
       {"MOB_APP_NAME", app_name},
-      {"MOB_APP_MODULE", app_module}
+      {"MOB_APP_MODULE", app_module},
+      screenshot_build_env(cfg)
     ] ++ plugin_ios_build_env(MobDev.Plugin.activated())
   end
+
+  @doc false
+  # Opt-in to shipping mob's public-API `screenshot` NIF in the release build (stripped
+  # by default with the rest of the test harness). Drives `-DMOB_ENABLE_SCREENSHOT` on
+  # the mob_nif.m compile in `release_device.sh`. Enabled only by
+  # `config :mob_dev, ios_release_screenshot: true` — an agent can then SEE a shipped
+  # app's screen to error-correct, but the private input-synthesis NIFs (tap/type) stay
+  # stripped regardless. Shipping a remotely-triggerable capture must be a conscious
+  # choice, so it defaults off. Pure so it's unit-tested.
+  @spec screenshot_build_env(keyword()) :: {String.t(), String.t()}
+  def screenshot_build_env(cfg),
+    do: {"MOB_ENABLE_SCREENSHOT", if(cfg[:ios_release_screenshot], do: "1", else: "")}
 
   @doc false
   # Env vars that drive `release_device.sh`'s activated-plugin NIF compile + link
@@ -582,8 +606,12 @@ defmodule MobDev.Release do
 
     # MOB_RELEASE on mob_nif.m strips the test harness (synthetic-input
     # NIFs that use private UIKit selectors — App Store auto-rejects).
+    # MOB_ENABLE_SCREENSHOT (set when `ios_release_screenshot: true`) opts the
+    # public-API screenshot NIF back in — it stays stripped otherwise. `${VAR:+flag}`
+    # expands to the flag only when VAR is non-empty, so the default build is byte-identical.
     $CC -fobjc-arc -fmodules $IFLAGS \
         -I "$BUILD_DIR" -DSTATIC_ERLANG_NIF -DMOB_RELEASE \
+        ${MOB_ENABLE_SCREENSHOT:+-DMOB_ENABLE_SCREENSHOT} \
         -c "$MOB_DIR/ios/mob_nif.m" -o "$BUILD_DIR/mob_nif.o"
 
     # MOB_RELEASE on mob_beam.m drops -name/-setcookie/-kernel-dist BEAM

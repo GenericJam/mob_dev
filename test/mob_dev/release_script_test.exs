@@ -99,6 +99,16 @@ defmodule MobDev.ReleaseScriptTest do
       refute sh =~ ~s|"$MOB_DIR/ios/MobRootView.swift"|
     end
 
+    test "screenshot NIF is opt-in: mob_nif.m compile passes -DMOB_ENABLE_SCREENSHOT only when set",
+         %{sh: sh} do
+      # `${VAR:+flag}` expands to the flag only when MOB_ENABLE_SCREENSHOT is non-empty
+      # (set by ios_release_screenshot: true), so a default release build never gets it
+      # and the public-API screenshot NIF stays stripped unless the host opts in.
+      assert sh =~ ~s|${MOB_ENABLE_SCREENSHOT:+-DMOB_ENABLE_SCREENSHOT}|
+      # Still always stripping the private-input harness via -DMOB_RELEASE.
+      assert sh =~ "-DMOB_RELEASE"
+    end
+
     test "compiles the per-app generated driver_tab, not $MOB_DIR/ios", %{sh: sh} do
       # driver_tab moved to priv/generated (regenerated per-app via
       # `mix mob.regen_driver_tab`). The legacy $MOB_DIR/ios/driver_tab_ios.c
