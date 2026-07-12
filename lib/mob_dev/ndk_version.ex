@@ -189,15 +189,47 @@ defmodule MobDev.NdkVersion do
       default_sdk_root_for_os()
   end
 
-  defp default_sdk_root_for_os do
+  @doc false
+  # The Android NDK toolchain host tag — the NDK ships a single prebuilt
+  # (darwin-x86_64 even on Apple Silicon; Apple's Rosetta 2 covers it).
+  @spec host() :: String.t()
+  def host do
     case :os.type() do
-      {:unix, :darwin} -> Path.expand("~/Library/Android/sdk")
-      {:unix, _} -> Path.expand("~/Android/Sdk")
-      _ -> nil
+      {:unix, :darwin} -> "darwin-x86_64"
+      {:unix, :linux} -> "linux-x86_64"
+      other -> raise "unsupported host for NDK: #{inspect(other)}"
     end
-    |> then(fn path ->
-      if path && File.dir?(path), do: path, else: nil
-    end)
+  end
+
+  @doc false
+  # NDK root for the effective version, honoring ANDROID_HOME / ANDROID_SDK_ROOT
+  # (falls back to the OS-conventional SDK dir even when it doesn't exist, so a
+  # "toolchain not found at <path>" error still names a sensible location). The
+  # single source of truth for `native_build`, `cpp_archive`, and `nx_eigen_nif`
+  # — none of them should re-derive this (see MOB-89).
+  @spec root() :: String.t()
+  def root, do: Path.join([sdk_root() || os_default_sdk_dir(), "ndk", effective()])
+
+  @doc false
+  @spec toolchain_bin() :: String.t()
+  def toolchain_bin, do: Path.join([root(), "toolchains", "llvm", "prebuilt", host(), "bin"])
+
+  @doc false
+  @spec sysroot() :: String.t()
+  def sysroot, do: Path.join([root(), "toolchains", "llvm", "prebuilt", host(), "sysroot"])
+
+  # The OS-conventional SDK dir (path only, no existence check) — used by
+  # `root/0` as the last-resort fallback so error messages name a real path.
+  defp os_default_sdk_dir do
+    case :os.type() do
+      {:unix, :linux} -> Path.expand("~/Android/Sdk")
+      _ -> Path.expand("~/Library/Android/sdk")
+    end
+  end
+
+  defp default_sdk_root_for_os do
+    path = os_default_sdk_dir()
+    if File.dir?(path), do: path, else: nil
   end
 
   @doc """

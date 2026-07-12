@@ -289,12 +289,15 @@ defmodule MobDev.Plugin.CppArchive do
   defp ios_min_flag(:ios_sim), do: "-mios-simulator-version-min=#{@ios_min_version}"
   defp ios_min_flag(:ios_device), do: "-miphoneos-version-min=#{@ios_min_version}"
 
-  defp default_ndk_root do
-    Path.join([System.user_home!(), "Library/Android/sdk/ndk", NdkVersion.effective()])
-  end
+  # Honors ANDROID_HOME / ANDROID_SDK_ROOT via the shared NdkVersion helper —
+  # do NOT re-derive the SDK path here (MOB-89: this used to hardcode
+  # ~/Library/Android/sdk, breaking builds where the NDK lives elsewhere).
+  defp default_ndk_root, do: NdkVersion.root()
 
   defp android_toolchain_bin(opts) do
-    ndk_root = opts[:ndk_root] || default_ndk_root()
-    Path.join([ndk_root, "toolchains/llvm/prebuilt/darwin-x86_64/bin"])
+    case opts[:ndk_root] do
+      nil -> NdkVersion.toolchain_bin()
+      root -> Path.join([root, "toolchains", "llvm", "prebuilt", NdkVersion.host(), "bin"])
+    end
   end
 end
