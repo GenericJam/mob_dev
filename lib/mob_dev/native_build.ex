@@ -495,20 +495,10 @@ defmodule MobDev.NativeBuild do
     end
   end
 
-  defp ndk_sysroot do
-    # NDK ships only one prebuilt — darwin-x86_64 even on Apple Silicon
-    # (Apple's Rosetta 2 covers it). On Linux it'd be linux-x86_64.
-    host =
-      case :os.type() do
-        {:unix, :darwin} -> "darwin-x86_64"
-        {:unix, :linux} -> "linux-x86_64"
-        other -> raise "unsupported host for NDK: #{inspect(other)}"
-      end
-
-    sdk_root = System.get_env("ANDROID_HOME") || Path.expand("~/Library/Android/sdk")
-    ndk_version = MobDev.NdkVersion.effective()
-    Path.join([sdk_root, "ndk", ndk_version, "toolchains", "llvm", "prebuilt", host, "sysroot"])
-  end
+  # Single source of truth in MobDev.NdkVersion (honors ANDROID_HOME /
+  # ANDROID_SDK_ROOT + host detection) — shared with cpp_archive / nx_eigen_nif
+  # so the NDK path can't diverge again (MOB-89).
+  defp ndk_sysroot, do: MobDev.NdkVersion.sysroot()
 
   defp resolve_driver_tab_android(mob_dir) do
     resolve_driver_tab(mob_dir, "android", ["android", "jni"])

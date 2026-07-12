@@ -149,4 +149,51 @@ defmodule MobDev.NdkVersionTest do
       assert cmd =~ NdkVersion.recommended()
     end
   end
+
+  # The single source of truth cpp_archive / nx_eigen_nif / native_build all use.
+  # MOB-89: cpp_archive + nx_eigen_nif used to hardcode ~/Library/Android/sdk,
+  # ignoring ANDROID_HOME — so a cpp_archive build failed wherever the NDK lived
+  # elsewhere. These pin that root/sysroot/toolchain honor the SDK env.
+  describe "root/0 + host/0 + sysroot/0 (shared NDK path — MOB-89)" do
+    setup do
+      prev_home = System.get_env("ANDROID_HOME")
+      prev_root = System.get_env("ANDROID_SDK_ROOT")
+
+      on_exit(fn ->
+        restore = fn k, v -> if v, do: System.put_env(k, v), else: System.delete_env(k) end
+        restore.("ANDROID_HOME", prev_home)
+        restore.("ANDROID_SDK_ROOT", prev_root)
+      end)
+
+      :ok
+    end
+
+    test "root/0 honors ANDROID_HOME, not a hardcoded ~/Library path" do
+      System.delete_env("ANDROID_SDK_ROOT")
+      System.put_env("ANDROID_HOME", "/opt/custom-sdk")
+
+      assert NdkVersion.root() == Path.join(["/opt/custom-sdk", "ndk", NdkVersion.effective()])
+      refute NdkVersion.root() =~ "Library/Android/sdk"
+    end
+
+    test "root/0 falls back to ANDROID_SDK_ROOT when ANDROID_HOME is unset" do
+      System.delete_env("ANDROID_HOME")
+      System.put_env("ANDROID_SDK_ROOT", "/opt/sdkroot")
+
+      assert NdkVersion.root() =~ "/opt/sdkroot/ndk/"
+    end
+
+    test "host/0 is the single NDK prebuilt tag for this OS" do
+      assert NdkVersion.host() in ["darwin-x86_64", "linux-x86_64"]
+    end
+
+    test "sysroot/0 and toolchain_bin/0 compose root + host" do
+      System.delete_env("ANDROID_SDK_ROOT")
+      System.put_env("ANDROID_HOME", "/opt/custom-sdk")
+      base = Path.join([NdkVersion.root(), "toolchains", "llvm", "prebuilt", NdkVersion.host()])
+
+      assert NdkVersion.sysroot() == Path.join(base, "sysroot")
+      assert NdkVersion.toolchain_bin() == Path.join(base, "bin")
+    end
+  end
 end
