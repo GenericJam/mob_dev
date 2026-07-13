@@ -8,6 +8,22 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.6.23] - 2026-07-12
+
+### Fixed
+- **`cpp_archive` / nx_eigen NDK resolution honors `ANDROID_HOME`.**
+  `MobDev.Plugin.CppArchive` and `MobDev.NxEigenNif` hardcoded
+  `~/Library/Android/sdk/ndk/<ver>` (+ the `darwin-x86_64` host), ignoring
+  `ANDROID_HOME` / `ANDROID_SDK_ROOT` — so a `lang: :cpp_archive` plugin build
+  failed with `NDK toolchain not found` wherever the NDK lives elsewhere (CI, a
+  shared SDK), unlike the main `NativeBuild` path. Extracted shared
+  `MobDev.NdkVersion.{root,host,toolchain_bin,sysroot}/0` (on the existing
+  env-aware `sdk_root/0`) and routed `cpp_archive`, `nx_eigen_nif`, and
+  `native_build`'s `ndk_sysroot` through them — one source of truth, so the NDK
+  path can't diverge again. (MOB-89)
+
+---
+
 ## [0.6.22] - 2026-07-11
 
 ### Added
