@@ -2064,4 +2064,44 @@ defmodule MobDev.NativeBuildTest do
       refute NativeBuild.ios_build_file_supports_plugins?(Path.join(dir, "does_not_exist.zig"))
     end
   end
+
+  describe "remove_stale_release_otp_zip/1" do
+    @describetag :tmp_dir
+
+    # Regression guard: `mix mob.release --android` used to write
+    # `assets/otp.zip` into the shared `src/main/assets/` source set, which
+    # Gradle merges into every build variant. A checkout that had ever run a
+    # release build carried that file into every subsequent debug build too,
+    # where MobBridge.kt's extractOtpIfNeeded() would re-extract it on the
+    # next app launch and silently overwrite freshly pushed dev BEAMs with
+    # the stale release snapshot. Release builds now write to the
+    # variant-scoped `src/release/assets/` instead, but existing checkouts
+    # may still carry the leftover file — the debug build path removes it
+    # so it can't keep poisoning deploys.
+    test "removes a leftover otp.zip from the shared main asset source set", %{tmp_dir: dir} do
+      assets_dir = Path.join([dir, "app", "src", "main", "assets"])
+      File.mkdir_p!(assets_dir)
+      stale = Path.join(assets_dir, "otp.zip")
+      File.write!(stale, "stale release bundle")
+
+      assert NativeBuild.remove_stale_release_otp_zip(dir) == :ok
+      refute File.exists?(stale)
+    end
+
+    test "is a no-op when no stale zip is present", %{tmp_dir: dir} do
+      assert NativeBuild.remove_stale_release_otp_zip(dir) == :ok
+    end
+
+    test "leaves sibling assets (e.g. logos) untouched", %{tmp_dir: dir} do
+      assets_dir = Path.join([dir, "app", "src", "main", "assets"])
+      File.mkdir_p!(assets_dir)
+      File.write!(Path.join(assets_dir, "otp.zip"), "stale")
+      logo = Path.join(assets_dir, "mob_logo_dark.png")
+      File.write!(logo, "logo bytes")
+
+      NativeBuild.remove_stale_release_otp_zip(dir)
+
+      assert File.exists?(logo)
+    end
+  end
 end
