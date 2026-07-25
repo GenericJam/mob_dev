@@ -11,16 +11,27 @@ defmodule MobDev.ReleaseAndroid do
        - exqlite BEAMs → `lib/exqlite-{vsn}/ebin/` (OTP lib structure needed
          for `:code.lib_dir(:exqlite)` to resolve correctly at runtime)
     3. Run `MobDev.OtpAssetBundle.build/2` — strips unused OTP libs and
-       optional BEAM chunks, then zips the tree to `assets/otp.zip`.
+       optional BEAM chunks, then zips the tree to
+       `src/release/assets/otp.zip`.
     4. Run `./gradlew bundleRelease` — signs the AAB using the keystore
        configured in `android/keystore.properties`.
 
   `MobBridge.extractOtpIfNeeded()` (Kotlin) extracts `otp.zip` into
   `<filesDir>/otp/` on first launch. Without this zip the app crashes
   immediately — the BEAM has no runtime or application BEAMs to load.
+
+  The zip is written to the `release`-variant asset source set, not the
+  shared `main` one — Gradle only merges `src/release/assets/` into release
+  builds, so a leftover zip from a prior release build can never leak into
+  (and silently poison) a subsequent debug build. See
+  `decisions/2026-07-24-release-otp-zip-variant-scoped-assets.md`.
   """
 
-  @app_assets "android/app/src/main/assets"
+  @app_assets "android/app/src/release/assets"
+
+  @doc false
+  @spec otp_zip_path() :: String.t()
+  def otp_zip_path, do: Path.expand(Path.join(@app_assets, "otp.zip"))
 
   @doc """
   Runs the full Android release pipeline and returns `{:ok, aab_path}` or
@@ -230,7 +241,7 @@ defmodule MobDev.ReleaseAndroid do
   # ── otp.zip ──────────────────────────────────────────────────────────────────
 
   defp build_zip(staging, slim) do
-    zip_path = Path.expand(Path.join(@app_assets, "otp.zip"))
+    zip_path = otp_zip_path()
     File.mkdir_p!(Path.dirname(zip_path))
     MobDev.OtpAssetBundle.build(staging, zip_path, slim: slim)
   end
