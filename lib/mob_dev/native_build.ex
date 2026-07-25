@@ -1170,6 +1170,7 @@ defmodule MobDev.NativeBuild do
     # force-stop, etc.) and cause subsequent runs to hang silently while the wrapper
     # waits to acquire the lock. Clear them before every build.
     clear_stale_gradle_locks()
+    remove_stale_release_otp_zip(android_dir)
 
     if File.exists?(gradlew) do
       # Run gradlew as `bash scriptpath args` rather than exec-ing it directly
@@ -1200,6 +1201,24 @@ defmodule MobDev.NativeBuild do
     else
       {:error, "gradlew not found at #{gradlew}"}
     end
+  end
+
+  # `mix mob.release --android` used to write the release OTP bundle to the
+  # shared `src/main/assets/otp.zip`, which Gradle merges into every build
+  # variant including debug. A prior release build then poisons every
+  # subsequent debug deploy: MobBridge.kt's extractOtpIfNeeded() re-extracts
+  # that stale zip on the next app launch (keyed off PackageInfo.lastUpdateTime,
+  # which changes on every reinstall), silently overwriting freshly pushed dev
+  # BEAMs with the release snapshot. Release builds now write to the
+  # variant-scoped `src/release/assets/` instead (never merged into debug), but
+  # existing checkouts may still carry a leftover `src/main/assets/otp.zip`
+  # from before that fix — remove it so debug builds can't be poisoned by it.
+  @doc false
+  @spec remove_stale_release_otp_zip(String.t()) :: :ok
+  def remove_stale_release_otp_zip(android_dir) do
+    stale = Path.join([android_dir, "app", "src", "main", "assets", "otp.zip"])
+    if File.exists?(stale), do: File.rm!(stale)
+    :ok
   end
 
   # Remove stale Gradle lock files left behind when a build is interrupted
