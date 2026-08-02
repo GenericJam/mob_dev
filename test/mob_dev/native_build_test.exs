@@ -1970,19 +1970,91 @@ defmodule MobDev.NativeBuildTest do
       refute_received {:command, _, _}
     end
 
-    test "default fanout resolves every ready serial and ignores non-ready rows" do
+    test "default fanout resolves every ready serial when the full snapshot is ready" do
       runner = fn "adb", ["devices"] ->
         {"""
+         * daemon not running; starting now at tcp:5037
+         * daemon started successfully
          List of devices attached
          serial-a\tdevice
-         offline-one\toffline
          serial-b\tdevice
-         auth-one\tunauthorized
          """, 0}
       end
 
       assert {:ok, ["serial-a", "serial-b"]} =
                NativeBuild.resolve_android_update_targets(nil, runner)
+    end
+
+    test "implicit fanout rejects mixed offline, unauthorized, and unknown states" do
+      cases = [
+        {"offline", :offline},
+        {"unauthorized", :unauthorized},
+        {"recovery", :unknown_state}
+      ]
+
+      Enum.each(cases, fn {state, reason} ->
+        output = "List of devices attached\nready\tdevice\nblocked\t#{state}\n"
+        runner = fn "adb", ["devices"] -> {output, 0} end
+
+        assert {:error, ^reason} =
+                 NativeBuild.resolve_android_update_targets(nil, runner)
+      end)
+    end
+
+    test "rejects duplicate and malformed discovery snapshots" do
+      duplicate = "List of devices attached\nserial-a\tdevice\nserial-a\tdevice\n"
+      malformed = "List of devices attached\nserial-a\tdevice\textra\n"
+
+      assert {:error, :duplicate_target} =
+               NativeBuild.resolve_android_update_targets(
+                 nil,
+                 fn "adb", ["devices"] -> {duplicate, 0} end
+               )
+
+      for output <- [malformed, "serial-a\tdevice\n", <<255, 254>>] do
+        assert {:error, :malformed_discovery} =
+                 NativeBuild.resolve_android_update_targets(
+                   nil,
+                   fn "adb", ["devices"] -> {output, 0} end
+                 )
+      end
+    end
+
+    test "accepts exactly 32 maximum-length serials and rejects larger target sets" do
+      serials =
+        for index <- 1..33 do
+          prefix = Integer.to_string(index)
+          prefix <> String.duplicate("a", 128 - byte_size(prefix))
+        end
+
+      output = fn selected ->
+        "List of devices attached\n" <>
+          Enum.map_join(selected, "", &"#{&1}\tdevice\n")
+      end
+
+      accepted = Enum.take(serials, 32)
+
+      assert {:ok, ^accepted} =
+               NativeBuild.resolve_android_update_targets(
+                 nil,
+                 fn "adb", ["devices"] -> {output.(accepted), 0} end
+               )
+
+      assert {:error, :too_many_targets} =
+               NativeBuild.resolve_android_update_targets(
+                 nil,
+                 fn "adb", ["devices"] -> {output.(serials), 0} end
+               )
+    end
+
+    test "rejects oversized discovery output instead of parsing a truncated prefix" do
+      output = "List of devices attached\n" <> String.duplicate("x", 8_193)
+
+      assert {:error, :discovery_output_too_large} =
+               NativeBuild.resolve_android_update_targets(
+                 nil,
+                 fn "adb", ["devices"] -> {output, 0} end
+               )
     end
 
     test "resolves only the requested online serial, including a bare WiFi address" do
@@ -2026,6 +2098,79 @@ defmodule MobDev.NativeBuildTest do
                NativeBuild.resolve_android_update_targets("--transport-any", runner)
     end
 
+    test "explicit resolution rejects a case-variant discovery collision before mutation" do
+      parent = self()
+      apk = "/tmp/app-debug.apk"
+
+      runner = fn
+        "adb", ["devices"] = args ->
+          send(parent, {:command, "adb", args})
+
+          {"List of devices attached\nCaseTarget\tdevice\ncasetarget\tdevice\n", 0}
+
+        command, args ->
+          send(parent, {:command, command, args})
+          {"Success\n", 0}
+      end
+
+      deliver = fn serial ->
+        send(parent, {:delivered, serial})
+        :ok
+      end
+
+      result =
+        with {:ok, serials} <-
+               NativeBuild.resolve_android_update_targets("CaseTarget", runner) do
+          NativeBuild.install_and_deliver_android(apk, serials, runner, deliver)
+        end
+
+      assert result == {:error, :ambiguous_target}
+      assert_received {:command, "adb", ["devices"]}
+      refute_received {:command, _, _}
+      refute_received {:delivered, _}
+    end
+
+    test "explicit resolution ignores unrelated non-ready rows without interacting with them" do
+      parent = self()
+      apk = "/tmp/app-debug.apk"
+
+      runner = fn
+        "adb", ["devices"] = args ->
+          send(parent, {:command, "adb", args})
+
+          {"List of devices attached\nCaseTarget\tdevice\nblocked\tunauthorized\nstale\toffline\n",
+           0}
+
+        "adb", ["-s", "CaseTarget", "install", "-r", ^apk] = args ->
+          send(parent, {:command, "adb", args})
+          {"Success\n", 0}
+      end
+
+      deliver = fn serial ->
+        send(parent, {:delivered, serial})
+        :ok
+      end
+
+      assert {:ok, ["CaseTarget"]} =
+               NativeBuild.resolve_android_update_targets("CaseTarget", runner)
+
+      assert :ok =
+               NativeBuild.install_and_deliver_android(
+                 apk,
+                 ["CaseTarget"],
+                 runner,
+                 deliver
+               )
+
+      assert_received {:command, "adb", ["devices"]}
+
+      assert_received {:command, "adb", ["-s", "CaseTarget", "install", "-r", ^apk]}
+
+      assert_received {:delivered, "CaseTarget"}
+      refute_received {:command, _, _}
+      refute_received {:delivered, _}
+    end
+
     test "accepts only recognized adb success output" do
       assert :updated = NativeBuild.interpret_adb_update("Success\n", 0)
 
@@ -2038,6 +2183,21 @@ defmodule MobDev.NativeBuildTest do
       assert {:failed, :suspicious_success} = NativeBuild.interpret_adb_update("", 0)
       assert {:failed, :unknown_failure} = NativeBuild.interpret_adb_update("Success\n", 1)
       assert {:failed, :unknown_failure} = NativeBuild.interpret_adb_update(<<255, 254>>, 0)
+    end
+
+    test "accepts exactly 4096 verified bytes and rejects every oversized install result" do
+      exact = "Success" <> String.duplicate("\n", 4_096 - byte_size("Success"))
+      assert byte_size(exact) == 4_096
+      assert :updated = NativeBuild.interpret_adb_update(exact, 0)
+
+      assert {:failed, :unknown_failure} =
+               NativeBuild.interpret_adb_update(exact <> "\n", 0)
+
+      assert {:failed, :unknown_failure} =
+               NativeBuild.interpret_adb_update(
+                 exact <> "Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE]\n",
+                 0
+               )
     end
 
     test "classifies destructive and recoverable adb failures without returning raw output" do
@@ -2075,7 +2235,7 @@ defmodule MobDev.NativeBuildTest do
           assert {:ok, %{succeeded: ["serial-a", "serial-b"], failed: []}} =
                    NativeBuild.install_android_updates(
                      apk,
-                     ["serial-a", "serial-b", "serial-a"],
+                     ["serial-a", "serial-b"],
                      runner
                    )
         end)
@@ -2084,6 +2244,72 @@ defmodule MobDev.NativeBuildTest do
       assert_received {:command, "adb", ["-s", "serial-a", "install", "-r", ^apk]}
       assert_received {:command, "adb", ["-s", "serial-b", "install", "-r", ^apk]}
       refute_received {:command, _, _}
+    end
+
+    test "duplicate canonical installer inputs fail before install or delivery" do
+      parent = self()
+      apk = "/tmp/app-debug.apk"
+
+      runner = fn command, args ->
+        send(parent, {:command, command, args})
+        {"Success\n", 0}
+      end
+
+      deliver = fn serial ->
+        send(parent, {:delivered, serial})
+        :ok
+      end
+
+      assert {:error, :duplicate_target} =
+               NativeBuild.install_android_updates(
+                 apk,
+                 ["CaseTarget", "CaseTarget"],
+                 runner
+               )
+
+      assert {:error, _message} =
+               NativeBuild.install_and_deliver_android(
+                 apk,
+                 ["CaseTarget", "CaseTarget"],
+                 runner,
+                 deliver
+               )
+
+      refute_received {:command, _, _}
+      refute_received {:delivered, _}
+    end
+
+    test "case-fold duplicate canonical installer inputs fail before install or delivery" do
+      parent = self()
+      apk = "/tmp/app-debug.apk"
+
+      runner = fn command, args ->
+        send(parent, {:command, command, args})
+        {"Success\n", 0}
+      end
+
+      deliver = fn serial ->
+        send(parent, {:delivered, serial})
+        :ok
+      end
+
+      assert {:error, :ambiguous_target} =
+               NativeBuild.install_android_updates(
+                 apk,
+                 ["CaseTarget", "casetarget"],
+                 runner
+               )
+
+      assert {:error, _message} =
+               NativeBuild.install_and_deliver_android(
+                 apk,
+                 ["CaseTarget", "casetarget"],
+                 runner,
+                 deliver
+               )
+
+      refute_received {:command, _, _}
+      refute_received {:delivered, _}
     end
 
     test "never retries signature mismatch, downgrade, or suspicious exit-zero" do
@@ -2126,8 +2352,8 @@ defmodule MobDev.NativeBuildTest do
         end
       end
 
-      deliver = fn serials ->
-        send(parent, {:delivered, serials})
+      deliver = fn serial ->
+        send(parent, {:delivered, serial})
         :ok
       end
 
@@ -2149,10 +2375,58 @@ defmodule MobDev.NativeBuildTest do
 
       assert captured =~ "app data preserved"
       refute captured =~ "raw-private-detail"
-      assert_received {:delivered, ["updated"]}
+      assert_received {:delivered, "updated"}
       assert_received {:command, "adb", ["-s", "updated", "install", "-r", ^apk]}
       assert_received {:command, "adb", ["-s", "full", "install", "-r", ^apk]}
       assert_received {:command, "adb", ["-s", "offline", "install", "-r", ^apk]}
+      refute_received {:command, _, _}
+    end
+
+    test "continues OTP delivery and reports install plus delivery failures together" do
+      parent = self()
+      apk = "/tmp/app-debug.apk"
+
+      runner = fn "adb", ["-s", serial, "install", "-r", ^apk] = args ->
+        send(parent, {:command, "adb", args})
+
+        case serial do
+          "otp-fails" -> {"Success\n", 0}
+          "otp-succeeds" -> {"Success\n", 0}
+          "downgrade" -> {"Failure [INSTALL_FAILED_VERSION_DOWNGRADE]", 1}
+        end
+      end
+
+      deliver = fn serial ->
+        send(parent, {:delivery_attempted, serial})
+
+        case serial do
+          "otp-fails" -> {:error, "raw-private-delivery-detail"}
+          "otp-succeeds" -> :ok
+        end
+      end
+
+      captured =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert {:error, message} =
+                   NativeBuild.install_and_deliver_android(
+                     apk,
+                     ["otp-fails", "downgrade", "otp-succeeds"],
+                     runner,
+                     deliver
+                   )
+
+          assert message =~ "downgrade=a version downgrade"
+          assert message =~ "OTP delivery failed on updated Android device(s): otp-fails"
+          refute message =~ "raw-private-delivery-detail"
+        end)
+
+      refute captured =~ "raw-private-delivery-detail"
+      assert_received {:delivery_attempted, "otp-fails"}
+      assert_received {:delivery_attempted, "otp-succeeds"}
+      refute_received {:delivery_attempted, "downgrade"}
+      assert_received {:command, "adb", ["-s", "otp-fails", "install", "-r", ^apk]}
+      assert_received {:command, "adb", ["-s", "downgrade", "install", "-r", ^apk]}
+      assert_received {:command, "adb", ["-s", "otp-succeeds", "install", "-r", ^apk]}
       refute_received {:command, _, _}
     end
 
@@ -2164,8 +2438,8 @@ defmodule MobDev.NativeBuildTest do
         {"Failure [INSTALL_FAILED_VERSION_DOWNGRADE]", 1}
       end
 
-      deliver = fn serials ->
-        send(parent, {:delivered, serials})
+      deliver = fn serial ->
+        send(parent, {:delivered, serial})
         :ok
       end
 
@@ -2185,7 +2459,7 @@ defmodule MobDev.NativeBuildTest do
       assert {:error, :no_explicit_targets} =
                NativeBuild.install_android_updates("/tmp/app.apk", [], runner)
 
-      assert {:error, %{succeeded: [], failed: [%{reason: :invalid_target}]}} =
+      assert {:error, :invalid_target} =
                NativeBuild.install_android_updates("/tmp/app.apk", ["--all"], runner)
 
       refute_received {:command, _, _}

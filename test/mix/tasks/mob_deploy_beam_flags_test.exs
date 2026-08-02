@@ -216,7 +216,12 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
 
       assert_raise Mix.Error, "Native build failed", fn ->
         ExUnit.CaptureIO.capture_io(fn ->
-          Deploy.deploy_after_native_build!(true, false, [device: "serial-a"], deployer)
+          Deploy.deploy_after_native_build!(
+            true,
+            %{ok?: false, android_serials: []},
+            [device: "serial-a"],
+            deployer
+          )
         end)
       end
 
@@ -240,24 +245,80 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
       refute_received {:deployer_called, _}
     end
 
-    test "successful native build reaches the final Deployer pass exactly once" do
+    test "changing discovery snapshot cannot widen the canonical Android allowlist" do
       parent = self()
-      expected = {[%MobDev.Device{serial: "serial-a", platform: :android}], [], []}
+      discovered_after_build = ["serial-a", "serial-b", "late-device"]
 
       deployer = fn opts ->
         send(parent, {:deployer_called, opts})
-        expected
+
+        deployed =
+          discovered_after_build
+          |> Enum.filter(&(&1 in opts[:canonical_android_serials]))
+          |> Enum.map(&%MobDev.Device{serial: &1, platform: :android})
+
+        {deployed, [], []}
       end
 
-      assert ^expected =
+      assert {deployed, [], []} =
                Deploy.deploy_after_native_build!(
                  true,
-                 true,
-                 [device: "serial-a"],
+                 %{ok?: true, android_serials: ["serial-a", "serial-b"]},
+                 [platforms: [:android], device: nil, restart: true],
                  deployer
                )
 
-      assert_received {:deployer_called, [device: "serial-a"]}
+      assert Enum.map(deployed, & &1.serial) == ["serial-a", "serial-b"]
+
+      assert_receive {:deployer_called, android_opts}
+      assert android_opts[:platforms] == [:android]
+      assert android_opts[:canonical_android_serials] == ["serial-a", "serial-b"]
+      refute Keyword.has_key?(android_opts, :device)
+      assert android_opts[:restart]
+
+      refute_received {:deployer_called, _}
+    end
+
+    test "canonical WiFi serial replaces the user alias in the final Android pass" do
+      parent = self()
+
+      deployer = fn opts ->
+        send(parent, {:deployer_called, opts})
+        {[], [], []}
+      end
+
+      assert {[], [], []} =
+               Deploy.deploy_after_native_build!(
+                 true,
+                 %{ok?: true, android_serials: ["10.0.0.17:5555"]},
+                 [platforms: [:android], device: "10.0.0.17"],
+                 deployer
+               )
+
+      assert_receive {:deployer_called, opts}
+      assert opts[:platforms] == [:android]
+      assert opts[:canonical_android_serials] == ["10.0.0.17:5555"]
+      refute Keyword.has_key?(opts, :device)
+
+      refute_received {:deployer_called, _}
+    end
+
+    test "native Android with no successful update target never runs a broad final pass" do
+      parent = self()
+
+      deployer = fn opts ->
+        send(parent, {:deployer_called, opts})
+        {[], [], []}
+      end
+
+      assert {[], [], []} =
+               Deploy.deploy_after_native_build!(
+                 true,
+                 %{ok?: true, android_serials: []},
+                 [platforms: [:android], device: nil],
+                 deployer
+               )
+
       refute_received {:deployer_called, _}
     end
   end

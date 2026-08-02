@@ -3,7 +3,8 @@ defmodule MobDev.NativeBuild do
 
   @max_android_update_targets 32
   @max_adb_serial_bytes 128
-  @max_adb_result_bytes 4_096
+  @max_adb_discovery_bytes 8_192
+  @max_adb_install_result_bytes 4_096
 
   @type android_update_failure_reason ::
           :insufficient_storage
@@ -25,6 +26,16 @@ defmodule MobDev.NativeBuild do
   @type android_update_outcome :: %{
           required(:succeeded) => [String.t()],
           required(:failed) => [android_update_failure()]
+        }
+
+  @type android_delivery_outcome :: %{
+          required(:succeeded) => [String.t()],
+          required(:failed) => [String.t()]
+        }
+
+  @type build_outcome :: %{
+          required(:ok?) => boolean(),
+          required(:android_serials) => [String.t()]
         }
 
   @type command_runner :: (String.t(), [String.t()] -> {String.t(), integer()})
@@ -55,8 +66,14 @@ defmodule MobDev.NativeBuild do
   `ios/build.zig` exists. Selection between sim and device is driven
   by the `device:` opt.
   """
-  @spec build_all(keyword()) :: [:ok | {:error, term()}]
+  @spec build_all(keyword()) :: boolean()
   def build_all(opts \\ []) do
+    build_all_with_outcome(opts).ok?
+  end
+
+  @doc false
+  @spec build_all_with_outcome(keyword()) :: build_outcome()
+  def build_all_with_outcome(opts \\ []) do
     cfg = load_config()
     platforms = Keyword.get(opts, :platforms, [:android, :ios])
     device_id = Keyword.get(opts, :device, nil)
@@ -158,14 +175,21 @@ defmodule MobDev.NativeBuild do
       {:ok, platform} ->
         IO.puts("  #{IO.ANSI.green()}✓ #{platform} native build complete#{IO.ANSI.reset()}")
 
+      {:ok, platform, _metadata} ->
+        IO.puts("  #{IO.ANSI.green()}✓ #{platform} native build complete#{IO.ANSI.reset()}")
+
       {:error, platform, reason} ->
         IO.puts(
           "  #{IO.ANSI.red()}✗ #{platform} native build failed: #{reason}#{IO.ANSI.reset()}"
         )
     end)
 
-    ok_count = Enum.count(results, &match?({:ok, _}, &1))
-    ok_count == length(results)
+    ok_count = Enum.count(results, &successful_native_build?/1)
+
+    %{
+      ok?: ok_count == length(results),
+      android_serials: android_serials_from_results(results)
+    }
   end
 
   # ── Android ──────────────────────────────────────────────────────────────────
@@ -199,8 +223,8 @@ defmodule MobDev.NativeBuild do
              apk,
              update_targets,
              &run_system_command/2,
-             fn succeeded ->
-               Enum.each(succeeded, &fix_erts_helper_labels(&1, bundle_id))
+             fn serial ->
+               fix_erts_helper_labels(serial, bundle_id)
 
                push_otp_release_android(
                  bundle_id,
@@ -208,11 +232,11 @@ defmodule MobDev.NativeBuild do
                  otp_arm64,
                  otp_arm32,
                  otp_x86_64,
-                 succeeded
+                 serial
                )
              end
            ) do
-      {:ok, "Android"}
+      {:ok, "Android", update_targets}
     else
       {:error, reason} -> {:error, "Android", reason}
     end
@@ -221,6 +245,17 @@ defmodule MobDev.NativeBuild do
   defp print_android_build_start do
     IO.puts("  Building Android APK...")
     :ok
+  end
+
+  defp successful_native_build?({:ok, _platform}), do: true
+  defp successful_native_build?({:ok, _platform, _metadata}), do: true
+  defp successful_native_build?(_result), do: false
+
+  defp android_serials_from_results(results) do
+    case Enum.find(results, &match?({:ok, "Android", _serials}, &1)) do
+      {:ok, "Android", serials} -> serials
+      nil -> []
+    end
   end
 
   # Phase 2 iter 8: invoke build.zig per-ABI before Gradle. Produces
@@ -1339,17 +1374,16 @@ defmodule MobDev.NativeBuild do
       do: {:error, :too_many_targets}
 
   def install_android_updates(apk, serials, runner) do
-    results =
-      serials
-      |> Enum.uniq()
-      |> Enum.map(&install_android_update(apk, &1, runner))
+    with :ok <- validate_android_update_serials(serials) do
+      results = Enum.map(serials, &install_android_update(apk, &1, runner))
 
-    outcome = %{
-      succeeded: for({:ok, serial} <- results, do: serial),
-      failed: for({:error, failure} <- results, do: failure)
-    }
+      outcome = %{
+        succeeded: for({:ok, serial} <- results, do: serial),
+        failed: for({:error, failure} <- results, do: failure)
+      }
 
-    if outcome.failed == [], do: {:ok, outcome}, else: {:error, outcome}
+      if outcome.failed == [], do: {:ok, outcome}, else: {:error, outcome}
+    end
   end
 
   @doc false
@@ -1357,14 +1391,14 @@ defmodule MobDev.NativeBuild do
           String.t(),
           [String.t()],
           command_runner(),
-          ([String.t()] -> :ok | {:error, term()})
+          (String.t() -> :ok | {:error, term()})
         ) :: :ok | {:error, String.t()}
   def install_and_deliver_android(apk, serials, runner, deliver) do
     case install_android_updates(apk, serials, runner) do
       {install_status, %{succeeded: succeeded} = outcome}
       when install_status in [:ok, :error] ->
-        delivery_status = if succeeded == [], do: :ok, else: deliver.(succeeded)
-        finish_android_delivery(install_status, outcome, delivery_status)
+        delivery_outcome = deliver_android_otp(succeeded, deliver)
+        finish_android_delivery(install_status, outcome, delivery_outcome)
 
       {:error, reason} ->
         {:error, android_update_request_error(reason)}
@@ -1374,12 +1408,12 @@ defmodule MobDev.NativeBuild do
   @doc false
   @spec interpret_adb_update(String.t(), integer()) ::
           :updated | {:failed, android_update_failure_reason()}
-  def interpret_adb_update(output, exit_code) when is_binary(output) and is_integer(exit_code) do
-    bounded = bounded_adb_result(output)
-
-    if String.valid?(bounded) do
-      case known_adb_failure(bounded) do
-        nil -> interpret_adb_update_status(bounded, exit_code)
+  def interpret_adb_update(output, exit_code)
+      when is_binary(output) and is_integer(exit_code) and
+             byte_size(output) <= @max_adb_install_result_bytes do
+    if String.valid?(output) do
+      case known_adb_failure(output) do
+        nil -> interpret_adb_update_status(output, exit_code)
         reason -> {:failed, reason}
       end
     else
@@ -1397,51 +1431,118 @@ defmodule MobDev.NativeBuild do
   end
 
   defp resolve_adb_targets(output, nil) do
-    states = parse_adb_device_states(output)
-    ready = for {serial, "device"} <- states, do: serial
-
-    cond do
-      ready != [] -> {:ok, ready}
-      Enum.any?(states, &match?({_serial, "unauthorized"}, &1)) -> {:error, :unauthorized}
-      Enum.any?(states, &match?({_serial, "offline"}, &1)) -> {:error, :offline}
-      true -> {:error, :no_targets}
+    with {:ok, states} <- parse_adb_device_states(output) do
+      case Enum.find(states, fn {_serial, state} -> state != "device" end) do
+        {_serial, "offline"} -> {:error, :offline}
+        {_serial, "unauthorized"} -> {:error, :unauthorized}
+        {_serial, _state} -> {:error, :unknown_state}
+        nil -> ready_android_targets(states)
+      end
     end
   end
 
   defp resolve_adb_targets(output, device_id) do
-    matches =
-      output
-      |> parse_adb_device_states()
-      |> Enum.filter(fn {serial, _state} -> matching_adb_serial?(serial, device_id) end)
+    with {:ok, states} <- parse_adb_device_states(output) do
+      matches =
+        Enum.filter(states, fn {serial, _state} -> matching_adb_serial?(serial, device_id) end)
 
-    case matches do
-      [{serial, "device"}] -> {:ok, [serial]}
-      [{_serial, "offline"}] -> {:error, :offline}
-      [{_serial, "unauthorized"}] -> {:error, :unauthorized}
-      [{_serial, _state}] -> {:error, :unavailable}
-      [] -> {:error, :target_not_connected}
-      _ -> {:error, :ambiguous_target}
+      case matches do
+        [{serial, "device"}] -> {:ok, [serial]}
+        [{_serial, "offline"}] -> {:error, :offline}
+        [{_serial, "unauthorized"}] -> {:error, :unauthorized}
+        [{_serial, _state}] -> {:error, :unknown_state}
+        [] -> {:error, :target_not_connected}
+        _ -> {:error, :ambiguous_target}
+      end
     end
   end
 
-  defp parse_adb_device_states(output) do
-    bounded = bounded_adb_result(output)
+  defp ready_android_targets([]), do: {:error, :no_targets}
 
-    if String.valid?(bounded) do
-      bounded
-      |> String.split("\n")
-      |> Enum.flat_map(fn line ->
-        case String.split(line) do
-          [serial, state | _] ->
-            if valid_adb_serial?(serial) and serial != "List", do: [{serial, state}], else: []
+  defp ready_android_targets(states) do
+    {:ok, Enum.map(states, fn {serial, "device"} -> serial end)}
+  end
+
+  defp parse_adb_device_states(output)
+       when is_binary(output) and byte_size(output) > @max_adb_discovery_bytes,
+       do: {:error, :discovery_output_too_large}
+
+  defp parse_adb_device_states(output) when is_binary(output) do
+    if String.valid?(output) do
+      lines =
+        output
+        |> String.split("\n")
+        |> Enum.map(&String.trim/1)
+        |> Enum.reject(&(&1 == ""))
+
+      with {:ok, rows} <- adb_device_rows(lines),
+           {:ok, states} <- parse_adb_device_rows(rows),
+           :ok <- validate_adb_device_states(states) do
+        {:ok, states}
+      end
+    else
+      {:error, :malformed_discovery}
+    end
+  end
+
+  defp parse_adb_device_states(_output), do: {:error, :malformed_discovery}
+
+  defp adb_device_rows(lines) do
+    {_notices, after_notices} = Enum.split_while(lines, &adb_daemon_notice?/1)
+
+    case after_notices do
+      ["List of devices attached" | rows] -> {:ok, rows}
+      _ -> {:error, :malformed_discovery}
+    end
+  end
+
+  defp adb_daemon_notice?(line), do: String.starts_with?(line, "* daemon ")
+
+  defp parse_adb_device_rows(rows) do
+    result =
+      Enum.reduce_while(rows, [], fn row, states ->
+        case String.split(row) do
+          [serial, state] ->
+            if valid_adb_serial?(serial) do
+              {:cont, [{serial, state} | states]}
+            else
+              {:halt, :error}
+            end
 
           _ ->
-            []
+            {:halt, :error}
         end
       end)
-    else
-      []
+
+    case result do
+      :error -> {:error, :malformed_discovery}
+      states -> {:ok, Enum.reverse(states)}
     end
+  end
+
+  defp validate_adb_device_states(states) do
+    serials = Enum.map(states, &elem(&1, 0))
+
+    cond do
+      Enum.uniq(serials) != serials -> {:error, :duplicate_target}
+      casefold_duplicates?(serials) -> {:error, :ambiguous_target}
+      length(states) > @max_android_update_targets -> {:error, :too_many_targets}
+      true -> :ok
+    end
+  end
+
+  defp validate_android_update_serials(serials) do
+    cond do
+      Enum.any?(serials, &(not valid_adb_serial?(&1))) -> {:error, :invalid_target}
+      Enum.uniq(serials) != serials -> {:error, :duplicate_target}
+      casefold_duplicates?(serials) -> {:error, :ambiguous_target}
+      true -> :ok
+    end
+  end
+
+  defp casefold_duplicates?(serials) do
+    normalized = Enum.map(serials, &String.downcase/1)
+    Enum.uniq(normalized) != normalized
   end
 
   defp matching_adb_serial?(serial, device_id) do
@@ -1475,23 +1576,50 @@ defmodule MobDev.NativeBuild do
     end
   end
 
-  defp finish_android_delivery(:ok, _outcome, :ok), do: :ok
+  @spec deliver_android_otp([String.t()], (String.t() -> :ok | {:error, term()})) ::
+          android_delivery_outcome()
+  defp deliver_android_otp(serials, deliver) do
+    results =
+      Enum.map(serials, fn serial ->
+        case deliver.(serial) do
+          :ok -> {:ok, serial}
+          {:error, _reason} -> {:error, serial}
+          _invalid -> {:error, serial}
+        end
+      end)
 
-  defp finish_android_delivery(_install_status, _outcome, {:error, _reason}) do
-    {:error, "OTP delivery failed for an APK update that succeeded"}
+    %{
+      succeeded: for({:ok, serial} <- results, do: serial),
+      failed: for({:error, serial} <- results, do: serial)
+    }
   end
 
-  defp finish_android_delivery(:error, outcome, :ok) do
+  defp finish_android_delivery(_install_status, install_outcome, delivery_outcome) do
     failures =
-      Enum.map_join(outcome.failed, ", ", fn %{serial: serial, reason: reason} ->
+      [
+        android_install_failures(install_outcome.failed),
+        android_delivery_failures(delivery_outcome.failed)
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    if failures == [], do: :ok, else: {:error, Enum.join(failures, "; ")}
+  end
+
+  defp android_install_failures([]), do: nil
+
+  defp android_install_failures(failed) do
+    details =
+      Enum.map_join(failed, ", ", fn %{serial: serial, reason: reason} ->
         "#{serial}=#{android_update_reason(reason)}"
       end)
 
-    {:error, "APK update failed on requested Android device(s): #{failures}"}
+    "APK update failed on requested Android device(s): #{details}"
   end
 
-  defp finish_android_delivery(_install_status, _outcome, _delivery_status) do
-    {:error, "OTP delivery returned an invalid result"}
+  defp android_delivery_failures([]), do: nil
+
+  defp android_delivery_failures(serials) do
+    "OTP delivery failed on updated Android device(s): #{Enum.join(serials, ", ")}"
   end
 
   defp interpret_adb_update_status(output, 0) do
@@ -1570,8 +1698,13 @@ defmodule MobDev.NativeBuild do
   defp android_update_request_error(_reason), do: "Android APK update request is invalid"
 
   defp android_update_reason(:device_discovery_failed), do: "not discoverable"
+  defp android_update_reason(:discovery_output_too_large), do: "too large to validate safely"
+  defp android_update_reason(:malformed_discovery), do: "malformed"
+  defp android_update_reason(:duplicate_target), do: "duplicated"
+  defp android_update_reason(:too_many_targets), do: "over the target safety limit"
   defp android_update_reason(:target_not_connected), do: "not connected"
   defp android_update_reason(:ambiguous_target), do: "ambiguous"
+  defp android_update_reason(:unknown_state), do: "in an unknown adb state"
   defp android_update_reason(:insufficient_storage), do: "out of storage"
   defp android_update_reason(:signature_mismatch), do: "signed by a different key"
   defp android_update_reason(:version_downgrade), do: "a version downgrade"
@@ -1599,11 +1732,6 @@ defmodule MobDev.NativeBuild do
   end
 
   defp valid_adb_serial?(_serial), do: false
-
-  defp bounded_adb_result(output) when byte_size(output) <= @max_adb_result_bytes, do: output
-
-  defp bounded_adb_result(output),
-    do: binary_part(output, 0, @max_adb_result_bytes)
 
   defp invoke_command(runner, executable, args) do
     case runner.(executable, args) do
@@ -1660,27 +1788,18 @@ defmodule MobDev.NativeBuild do
          otp_arm64,
          otp_arm32,
          otp_x86_64,
-         serials
+         serial
        ) do
     app_data = "/data/data/#{bundle_id}/files"
 
-    IO.puts("  Pushing OTP release to device(s)...")
+    IO.puts("  Pushing OTP release to #{serial}...")
+    otp_dir = device_otp_dir(serial, otp_arm64, otp_arm32, otp_x86_64)
 
-    Enum.reduce_while(serials, :ok, fn serial, _ ->
-      otp_dir = device_otp_dir(serial, otp_arm64, otp_arm32, otp_x86_64)
-
-      result =
-        try do
-          push_otp_to_device(serial, bundle_id, app_data, otp_dir, elixir_lib)
-        catch
-          {:skip, _} -> :ok
-        end
-
-      case result do
-        :ok -> {:cont, :ok}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
+    try do
+      push_otp_to_device(serial, bundle_id, app_data, otp_dir, elixir_lib)
+    catch
+      {:skip, ^serial} -> {:error, :app_not_installed_after_update}
+    end
   end
 
   defp device_otp_dir(serial, otp_arm64, otp_arm32, otp_x86_64) do

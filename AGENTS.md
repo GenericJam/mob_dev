@@ -128,10 +128,12 @@ narrowing functions). Don't make them private:
 - `PythonAppleSupport.valid_dir?/1`
 - `NativeBuild.narrow_platforms_for_device/2`, `ios_toolchain_available?/0`, `read_sdk_dir/1`, `fallback_entitlements_plist/3`
 - `NativeBuild.pythonx_in_project?/1`, `python_apple_support_env/2`
-- `NativeBuild.resolve_android_update_targets/2`,
+- `NativeBuild.build_all_with_outcome/1`, `resolve_android_update_targets/2`,
   `install_android_updates/3`, and `install_and_deliver_android/4` (update-only
   Android deploy safety seams; injected command/delivery functions are for
   hermetic command-history tests)
+- `Deployer.select_canonical_android_devices/2` (native final-pass exact-target
+  selection; ordinary `--device` matching remains user-friendly)
 - `NativeBuild.__prune_plugin_artifacts__/2` (the plugin-removal prune; ledger-tracked per merge concern)
 - `Enable.inject_pythonx_dep/1`, `inject_pythonx_uv_init_gate/2`, `python_paths_module_template/1`
 - `Emulators.parse_simctl_json/1`, `find_emulator_binary/1`
@@ -173,7 +175,10 @@ by `--device <id>` when supplied) and run only the data-preserving
 `adb -s <serial> install -r <apk>` update path. They never force-stop first,
 uninstall, or fall back to a clean install. A failed update must prevent the
 final `MobDev.Deployer` pass, though successful devices in a multi-target plan
-may receive their matching OTP payload first.
+may receive their matching OTP payload first. OTP delivery is attempted and
+aggregated per successful serial, and a fully successful native build carries
+that exact canonical Android serial allowlist into the final BEAM deploy so a
+later discovery snapshot cannot widen the set.
 
 **TODO:** apply the full physical-device selection pattern to the fast
 `mix mob.deploy` BEAM fan-out (today's broad deploy can push BEAMs to a personal

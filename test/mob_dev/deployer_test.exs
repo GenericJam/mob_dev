@@ -162,6 +162,174 @@ defmodule MobDev.DeployerTest do
     end
   end
 
+  describe "select_canonical_android_devices/2" do
+    defp canonical_device(serial, status \\ :discovered) do
+      %MobDev.Device{platform: :android, serial: serial, status: status}
+    end
+
+    test "selects the full exact set in canonical order and ignores unrelated devices" do
+      abc = canonical_device("ABC")
+      serial_b = canonical_device("serial-b")
+
+      devices = [
+        canonical_device("unrelated"),
+        serial_b,
+        canonical_device("blocked", :unauthorized),
+        abc,
+        canonical_device("recovery", :error)
+      ]
+
+      assert {:ok, [^abc, ^serial_b]} =
+               Deployer.select_canonical_android_devices(devices, ["ABC", "serial-b"])
+    end
+
+    test "fails closed on a missing canonical serial" do
+      assert {:error, :canonical_target_missing} =
+               Deployer.select_canonical_android_devices(
+                 [canonical_device("unrelated")],
+                 ["ABC"]
+               )
+    end
+
+    test "fails closed on exact duplicate discovery rows" do
+      assert {:error, :canonical_target_duplicated} =
+               Deployer.select_canonical_android_devices(
+                 [canonical_device("ABC"), canonical_device("ABC")],
+                 ["ABC"]
+               )
+    end
+
+    test "fails closed on case-collision ambiguity" do
+      assert {:error, :canonical_case_collision} =
+               Deployer.select_canonical_android_devices(
+                 [canonical_device("ABC"), canonical_device("abc")],
+                 ["ABC"]
+               )
+
+      assert {:error, :canonical_case_collision} =
+               Deployer.select_canonical_android_devices(
+                 [canonical_device("abc")],
+                 ["ABC"]
+               )
+    end
+
+    test "fails closed on duplicated or unavailable canonical targets" do
+      assert {:error, :duplicate_canonical_target} =
+               Deployer.select_canonical_android_devices(
+                 [canonical_device("ABC")],
+                 ["ABC", "ABC"]
+               )
+
+      assert {:error, :canonical_target_unavailable} =
+               Deployer.select_canonical_android_devices(
+                 [canonical_device("ABC", :unauthorized)],
+                 ["ABC"]
+               )
+
+      assert {:error, :canonical_target_unavailable} =
+               Deployer.select_canonical_android_devices(
+                 [%MobDev.Device{platform: :ios, serial: "ABC", status: :discovered}],
+                 ["ABC"]
+               )
+    end
+  end
+
+  describe "deploy_all/1 native canonical Android selection" do
+    test "mutates the exact canonical set once and ignores unrelated late devices" do
+      parent = self()
+      abc = canonical_device("ABC")
+      serial_b = canonical_device("serial-b")
+
+      lister = fn ->
+        [
+          canonical_device("late-device"),
+          serial_b,
+          canonical_device("blocked", :unauthorized),
+          abc
+        ]
+      end
+
+      deploy = fn device ->
+        send(parent, {:mutated, device.serial})
+        {:ok, device}
+      end
+
+      result =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert {[^abc, ^serial_b], [], []} =
+                   Deployer.deploy_all(
+                     platforms: [:android],
+                     force_fs: true,
+                     canonical_android_serials: ["ABC", "serial-b"],
+                     android_lister: lister,
+                     device_deployer: deploy
+                   )
+        end)
+
+      assert result =~ "2 device(s)"
+      assert_received {:mutated, "ABC"}
+      assert_received {:mutated, "serial-b"}
+      refute_received {:mutated, _}
+    end
+
+    test "validates the complete canonical set before any mutation" do
+      parent = self()
+
+      deploy = fn device ->
+        send(parent, {:mutated, device.serial})
+        {:ok, device}
+      end
+
+      invalid_snapshots = [
+        [canonical_device("unrelated")],
+        [canonical_device("ABC"), canonical_device("ABC")],
+        [canonical_device("ABC"), canonical_device("abc")]
+      ]
+
+      Enum.each(invalid_snapshots, fn devices ->
+        assert_raise Mix.Error,
+                     "Canonical Android target set no longer matches discovery; refusing final deploy",
+                     fn ->
+                       ExUnit.CaptureIO.capture_io(fn ->
+                         Deployer.deploy_all(
+                           platforms: [:android],
+                           force_fs: true,
+                           canonical_android_serials: ["ABC"],
+                           android_lister: fn -> devices end,
+                           device_deployer: deploy
+                         )
+                       end)
+                     end
+
+        refute_received {:mutated, _}
+      end)
+    end
+
+    test "ordinary --device matching remains case-insensitive" do
+      parent = self()
+      abc = canonical_device("ABC")
+
+      deploy = fn device ->
+        send(parent, {:mutated, device.serial})
+        {:ok, device}
+      end
+
+      ExUnit.CaptureIO.capture_io(fn ->
+        assert {[^abc], [], []} =
+                 Deployer.deploy_all(
+                   platforms: [:android],
+                   force_fs: true,
+                   device: "abc",
+                   android_lister: fn -> [abc, canonical_device("unrelated")] end,
+                   device_deployer: deploy
+                 )
+      end)
+
+      assert_received {:mutated, "ABC"}
+      refute_received {:mutated, _}
+    end
+  end
+
   # ── android_package_installed?/2 ────────────────────────────────────────
 
   describe "android_package_installed?/2" do

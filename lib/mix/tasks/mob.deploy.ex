@@ -18,7 +18,8 @@ defmodule Mix.Tasks.Mob.Deploy do
   Use this after changes to native C/Java/Swift code. Android native updates
   resolve a non-empty connected-device set, use only serial-scoped
   `adb install -r`, and never uninstall the existing app, so a signing mismatch
-  or downgrade fails while preserving app data.
+  or downgrade fails while preserving app data. The validated serial snapshot
+  also scopes the final BEAM push, even if device discovery changes mid-deploy.
 
       mix mob.deploy --native
 
@@ -209,9 +210,9 @@ defmodule Mix.Tasks.Mob.Deploy do
     # (and the inevitable extra TestFlight build that confuses testers).
     slim = Keyword.get(opts, :slim, false)
 
-    native_ok =
+    native_outcome =
       if native do
-        MobDev.NativeBuild.build_all(
+        MobDev.NativeBuild.build_all_with_outcome(
           platforms: platforms,
           device: effective_device_id,
           slim: slim
@@ -233,27 +234,45 @@ defmodule Mix.Tasks.Mob.Deploy do
       ]
 
     {deployed, failed, skipped} =
-      deploy_after_native_build!(native, native_ok, deploy_opts)
+      deploy_after_native_build!(native, native_outcome, deploy_opts)
 
     Enum.each(format_summary(deployed, failed, skipped, restart: restart), &IO.puts/1)
   end
 
   @doc false
-  @spec deploy_after_native_build!(boolean(), boolean() | nil, keyword()) ::
+  @spec deploy_after_native_build!(
+          boolean(),
+          MobDev.NativeBuild.build_outcome() | nil,
+          keyword()
+        ) ::
           {[Device.t()], [Device.t()], [Device.t()]}
-  def deploy_after_native_build!(native, native_ok, deploy_opts) do
-    deploy_after_native_build!(native, native_ok, deploy_opts, &MobDev.Deployer.deploy_all/1)
+  def deploy_after_native_build!(native, native_outcome, deploy_opts) do
+    deploy_after_native_build!(
+      native,
+      native_outcome,
+      deploy_opts,
+      &MobDev.Deployer.deploy_all/1
+    )
   end
 
   @doc false
   @spec deploy_after_native_build!(
           boolean(),
-          boolean() | nil,
+          MobDev.NativeBuild.build_outcome() | nil,
           keyword(),
           (keyword() -> {[Device.t()], [Device.t()], [Device.t()]})
         ) :: {[Device.t()], [Device.t()], [Device.t()]}
-  def deploy_after_native_build!(true, native_ok, _deploy_opts, _deployer)
-      when native_ok != true do
+  def deploy_after_native_build!(
+        true,
+        %{ok?: true, android_serials: android_serials},
+        deploy_opts,
+        deployer
+      )
+      when is_list(android_serials) do
+    deploy_native_targets(deploy_opts, android_serials, deployer)
+  end
+
+  def deploy_after_native_build!(true, _native_outcome, _deploy_opts, _deployer) do
     IO.puts("\n#{IO.ANSI.red()}Native build had failures — see errors above.#{IO.ANSI.reset()}")
 
     IO.puts(
@@ -263,8 +282,45 @@ defmodule Mix.Tasks.Mob.Deploy do
     Mix.raise("Native build failed")
   end
 
-  def deploy_after_native_build!(_native, _native_ok, deploy_opts, deployer) do
+  def deploy_after_native_build!(false, _native_outcome, deploy_opts, deployer) do
     deployer.(deploy_opts)
+  end
+
+  defp deploy_native_targets(deploy_opts, android_serials, deployer) do
+    platforms = Keyword.get(deploy_opts, :platforms, [:android, :ios])
+
+    android_results =
+      if :android in platforms and android_serials != [] do
+        [
+          deployer.(
+            deploy_opts
+            |> Keyword.put(:platforms, [:android])
+            |> Keyword.put(:canonical_android_serials, android_serials)
+            |> Keyword.delete(:device)
+          )
+        ]
+      else
+        []
+      end
+
+    remaining_platforms = platforms -- [:android]
+
+    remaining_results =
+      if remaining_platforms == [] do
+        []
+      else
+        [deployer.(Keyword.put(deploy_opts, :platforms, remaining_platforms))]
+      end
+
+    merge_deploy_results(android_results ++ remaining_results)
+  end
+
+  defp merge_deploy_results(results) do
+    {
+      Enum.flat_map(results, fn {deployed, _failed, _skipped} -> deployed end),
+      Enum.flat_map(results, fn {_deployed, failed, _skipped} -> failed end),
+      Enum.flat_map(results, fn {_deployed, _failed, skipped} -> skipped end)
+    }
   end
 
   @doc """

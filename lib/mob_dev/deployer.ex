@@ -64,15 +64,17 @@ defmodule MobDev.Deployer do
     force_fs = Keyword.get(opts, :force_fs, false)
     device_id = Keyword.get(opts, :device, nil)
     ios_device_id = Keyword.get(opts, :ios_device, nil)
+    canonical_android_serials = Keyword.get(opts, :canonical_android_serials, nil)
+    android_lister = Keyword.get(opts, :android_lister, &Android.list_devices/0)
+    device_deployer = Keyword.get(opts, :device_deployer, nil)
     beam_flags = Keyword.get(opts, :beam_flags, nil)
     beam_dirs = collect_beam_dirs()
 
     android =
       if :android in platforms,
         do:
-          Android.list_devices()
-          |> Enum.reject(&(&1.status == :unauthorized))
-          |> filter_by_device_id(device_id),
+          android_lister.()
+          |> select_android_devices!(device_id, canonical_android_serials),
         else: []
 
     ios =
@@ -93,7 +95,7 @@ defmodule MobDev.Deployer do
       # get BEAMs via RPC, the rest fall back to adb/cp + restart.
       # force_fs: true skips dist and always writes to the filesystem — required
       # after a native build/install where the old BEAM process is dead.
-      dist_nodes = if force_fs, do: [], else: connect_dist(all)
+      dist_nodes = if force_fs or is_function(device_deployer, 1), do: [], else: connect_dist(all)
 
       # Manual overrides from `mix mob.deploy --dist-port N --node-suffix X`.
       # When set, all targeted devices share the same port/suffix (the user
@@ -113,29 +115,34 @@ defmodule MobDev.Deployer do
           node = Device.node_name(device)
 
           {method, result} =
-            if node in dist_nodes do
-              {:dist, push_via_dist(node, device)}
-            else
-              fallback =
-                case device.platform do
-                  :android ->
-                    deploy_android(device, beam_dirs,
-                      restart: restart,
-                      dist_port: dist_port,
-                      node_suffix: node_suffix_override,
-                      beam_flags: beam_flags
-                    )
+            cond do
+              is_function(device_deployer, 1) ->
+                {:injected, device_deployer.(device)}
 
-                  :ios ->
-                    deploy_ios(device, beam_dirs,
-                      restart: restart,
-                      dist_port: dist_port,
-                      node_suffix: node_suffix_override,
-                      beam_flags: beam_flags
-                    )
-                end
+              node in dist_nodes ->
+                {:dist, push_via_dist(node, device)}
 
-              {:adb, fallback}
+              true ->
+                fallback =
+                  case device.platform do
+                    :android ->
+                      deploy_android(device, beam_dirs,
+                        restart: restart,
+                        dist_port: dist_port,
+                        node_suffix: node_suffix_override,
+                        beam_flags: beam_flags
+                      )
+
+                    :ios ->
+                      deploy_ios(device, beam_dirs,
+                        restart: restart,
+                        dist_port: dist_port,
+                        node_suffix: node_suffix_override,
+                        beam_flags: beam_flags
+                      )
+                  end
+
+                {:adb, fallback}
             end
 
           case result do
@@ -202,6 +209,85 @@ defmodule MobDev.Deployer do
   end
 
   # ── Device filtering ─────────────────────────────────────────────────────────
+
+  @doc false
+  @spec select_canonical_android_devices([Device.t()], [String.t()]) ::
+          {:ok, [Device.t()]} | {:error, atom()}
+  def select_canonical_android_devices(devices, canonical_serials)
+      when is_list(devices) and is_list(canonical_serials) do
+    cond do
+      canonical_serials == [] ->
+        {:error, :invalid_canonical_targets}
+
+      Enum.any?(canonical_serials, &(not is_binary(&1) or &1 == "" or not String.valid?(&1))) ->
+        {:error, :invalid_canonical_targets}
+
+      Enum.uniq(canonical_serials) != canonical_serials ->
+        {:error, :duplicate_canonical_target}
+
+      true ->
+        Enum.reduce_while(canonical_serials, {:ok, []}, fn serial, {:ok, selected} ->
+          case select_canonical_android_device(devices, serial) do
+            {:ok, device} -> {:cont, {:ok, [device | selected]}}
+            {:error, reason} -> {:halt, {:error, reason}}
+          end
+        end)
+        |> case do
+          {:ok, selected} -> {:ok, Enum.reverse(selected)}
+          {:error, reason} -> {:error, reason}
+        end
+    end
+  end
+
+  def select_canonical_android_devices(_devices, _canonical_serials),
+    do: {:error, :invalid_canonical_targets}
+
+  defp select_android_devices!(devices, device_id, nil) do
+    devices
+    |> Enum.reject(&(&1.status == :unauthorized))
+    |> filter_by_device_id(device_id)
+  end
+
+  defp select_android_devices!(devices, _device_id, canonical_serials) do
+    case select_canonical_android_devices(devices, canonical_serials) do
+      {:ok, selected} ->
+        selected
+
+      {:error, _reason} ->
+        Mix.raise(
+          "Canonical Android target set no longer matches discovery; refusing final deploy"
+        )
+    end
+  end
+
+  defp select_canonical_android_device(devices, serial) do
+    case_insensitive = Enum.filter(devices, &same_android_serial?(&1, serial, :case_insensitive))
+    exact = Enum.filter(case_insensitive, &same_android_serial?(&1, serial, :exact))
+
+    cond do
+      exact == [] and case_insensitive != [] -> {:error, :canonical_case_collision}
+      exact == [] -> {:error, :canonical_target_missing}
+      length(exact) > 1 -> {:error, :canonical_target_duplicated}
+      length(case_insensitive) > 1 -> {:error, :canonical_case_collision}
+      not canonical_android_device_ready?(hd(exact)) -> {:error, :canonical_target_unavailable}
+      true -> {:ok, hd(exact)}
+    end
+  end
+
+  defp same_android_serial?(%Device{serial: candidate}, serial, :exact),
+    do: candidate == serial
+
+  defp same_android_serial?(%Device{serial: candidate}, serial, :case_insensitive)
+       when is_binary(candidate) do
+    String.valid?(candidate) and String.downcase(candidate) == String.downcase(serial)
+  end
+
+  defp same_android_serial?(_device, _serial, :case_insensitive), do: false
+
+  defp canonical_android_device_ready?(%Device{platform: :android, status: status}),
+    do: status in [:discovered, :connected, :tunneled]
+
+  defp canonical_android_device_ready?(_device), do: false
 
   defp filter_by_device_id(devices, nil), do: devices
 
