@@ -128,6 +128,10 @@ narrowing functions). Don't make them private:
 - `PythonAppleSupport.valid_dir?/1`
 - `NativeBuild.narrow_platforms_for_device/2`, `ios_toolchain_available?/0`, `read_sdk_dir/1`, `fallback_entitlements_plist/3`
 - `NativeBuild.pythonx_in_project?/1`, `python_apple_support_env/2`
+- `NativeBuild.resolve_android_update_targets/2`,
+  `install_android_updates/3`, and `install_and_deliver_android/4` (update-only
+  Android deploy safety seams; injected command/delivery functions are for
+  hermetic command-history tests)
 - `NativeBuild.__prune_plugin_artifacts__/2` (the plugin-removal prune; ledger-tracked per merge concern)
 - `Enable.inject_pythonx_dep/1`, `inject_pythonx_uv_init_gate/2`, `python_paths_module_template/1`
 - `Emulators.parse_simctl_json/1`, `find_emulator_binary/1`
@@ -164,8 +168,16 @@ needing the same fan-out behavior. Pin the headline guarantee in
 each task's tests — "personal iPhone + dev emulators + `--all-devices`
 must leave the iPhone alone."
 
-**TODO:** apply this pattern to `mix mob.deploy` (today's `--all-devices`
-deploy can push BEAMs to a personal phone). When that fan-out exists
+Android **native** deploys resolve a non-empty connected serial set (narrowed
+by `--device <id>` when supplied) and run only the data-preserving
+`adb -s <serial> install -r <apk>` update path. They never force-stop first,
+uninstall, or fall back to a clean install. A failed update must prevent the
+final `MobDev.Deployer` pass, though successful devices in a multi-target plan
+may receive their matching OTP payload first.
+
+**TODO:** apply the full physical-device selection pattern to the fast
+`mix mob.deploy` BEAM fan-out (today's broad deploy can push BEAMs to a personal
+phone). When that fan-out exists
 or grows, factor `select_devices/3` plus the flag plumbing into a
 shared `MobDev.TaskTargets` (or similar) module so the rules don't
 drift between tasks.

@@ -1,6 +1,34 @@
 defmodule MobDev.NativeBuild do
   alias MobDev.Release
 
+  @max_android_update_targets 32
+  @max_adb_serial_bytes 128
+  @max_adb_result_bytes 4_096
+
+  @type android_update_failure_reason ::
+          :insufficient_storage
+          | :signature_mismatch
+          | :version_downgrade
+          | :offline
+          | :unauthorized
+          | :unavailable
+          | :install_rejected
+          | :suspicious_success
+          | :unknown_failure
+          | :invalid_target
+
+  @type android_update_failure :: %{
+          required(:serial) => String.t(),
+          required(:reason) => android_update_failure_reason()
+        }
+
+  @type android_update_outcome :: %{
+          required(:succeeded) => [String.t()],
+          required(:failed) => [android_update_failure()]
+        }
+
+  @type command_runner :: (String.t(), [String.t()] -> {String.t(), integer()})
+
   @moduledoc """
   Builds native binaries (APK for Android, .app bundle for iOS simulator)
   for the current Mob project.
@@ -143,12 +171,13 @@ defmodule MobDev.NativeBuild do
   # ── Android ──────────────────────────────────────────────────────────────────
 
   defp build_android(cfg, device_id) do
-    IO.puts("  Building Android APK...")
     bundle_id = cfg[:bundle_id] || MobDev.Config.bundle_id()
     apk = "android/app/build/outputs/apk/debug/app-debug.apk"
     mob_dir = Path.expand(cfg[:mob_dir])
 
-    with {:ok, otp_arm64} <- MobDev.OtpDownloader.ensure_android("arm64-v8a"),
+    with {:ok, update_targets} <- android_update_targets(device_id),
+         :ok <- print_android_build_start(),
+         {:ok, otp_arm64} <- MobDev.OtpDownloader.ensure_android("arm64-v8a"),
          {:ok, otp_arm32} <- MobDev.OtpDownloader.ensure_android("armeabi-v7a"),
          {:ok, otp_x86_64} <- MobDev.OtpDownloader.ensure_android("x86_64"),
          {:ok, python_android_bundle} <- maybe_ensure_python_android_bundle(),
@@ -165,20 +194,33 @@ defmodule MobDev.NativeBuild do
          :ok <- apply_plugin_android_res!(),
          :ok <- apply_fonts_to_android!(),
          :ok <- gradle_assemble(),
-         :ok <- adb_install_all(apk, bundle_id, device_id),
          :ok <-
-           push_otp_release_android(
-             bundle_id,
-             cfg[:elixir_lib],
-             otp_arm64,
-             otp_arm32,
-             otp_x86_64,
-             device_id
+           install_and_deliver_android(
+             apk,
+             update_targets,
+             &run_system_command/2,
+             fn succeeded ->
+               Enum.each(succeeded, &fix_erts_helper_labels(&1, bundle_id))
+
+               push_otp_release_android(
+                 bundle_id,
+                 cfg[:elixir_lib],
+                 otp_arm64,
+                 otp_arm32,
+                 otp_x86_64,
+                 succeeded
+               )
+             end
            ) do
       {:ok, "Android"}
     else
       {:error, reason} -> {:error, "Android", reason}
     end
+  end
+
+  defp print_android_build_start do
+    IO.puts("  Building Android APK...")
+    :ok
   end
 
   # Phase 2 iter 8: invoke build.zig per-ABI before Gradle. Produces
@@ -1242,91 +1284,341 @@ defmodule MobDev.NativeBuild do
     end)
   end
 
-  @doc """
-  Decide whether an `adb install -r` result forces a clean (uninstall + install)
-  reinstall.
-
-  True when the in-place update was rejected — a non-zero exit or an
-  `INSTALL_FAILED_*` line (signature mismatch, version downgrade, etc.). A clean
-  reinstall wipes app data (on-device identity, screen stores), so the caller
-  only falls back to it when the in-place update genuinely cannot apply.
-  """
-  @spec needs_clean_reinstall?(String.t(), integer()) :: boolean()
-  def needs_clean_reinstall?(install_output, exit_code) do
-    exit_code != 0 or String.contains?(install_output, "INSTALL_FAILED")
+  @doc false
+  @spec resolve_android_update_targets(String.t() | nil) ::
+          {:ok, [String.t()]} | {:error, atom()}
+  def resolve_android_update_targets(device_id) do
+    resolve_android_update_targets(device_id, &run_system_command/2)
   end
 
-  defp adb_install_all(apk, bundle_id, device_id) do
-    case System.cmd("adb", ["devices"], stderr_to_stdout: true) do
-      {output, 0} ->
-        serials =
-          output
-          |> String.split("\n")
-          |> Enum.drop(1)
-          |> Enum.filter(&String.contains?(&1, "\tdevice"))
-          |> Enum.map(&hd(String.split(&1, "\t")))
-          |> filter_serials(device_id)
+  @doc false
+  @spec resolve_android_update_targets(String.t() | nil, command_runner()) ::
+          {:ok, [String.t()]} | {:error, atom()}
+  def resolve_android_update_targets(nil, runner) do
+    case invoke_command(runner, "adb", ["devices"]) do
+      {:ok, output, 0} -> resolve_adb_targets(output, nil)
+      _ -> {:error, :device_discovery_failed}
+    end
+  end
 
-        Enum.each(serials, fn serial ->
-          IO.puts("  Installing APK on #{serial}...")
+  def resolve_android_update_targets(device_id, runner) when is_binary(device_id) do
+    if valid_adb_serial?(device_id) do
+      case invoke_command(runner, "adb", ["devices"]) do
+        {:ok, output, 0} -> resolve_adb_targets(output, device_id)
+        _ -> {:error, :device_discovery_failed}
+      end
+    else
+      {:error, :invalid_target}
+    end
+  end
 
-          System.cmd("adb", ["-s", serial, "shell", "am", "force-stop", bundle_id],
-            stderr_to_stdout: true
+  def resolve_android_update_targets(_device_id, _runner), do: {:error, :invalid_target}
+
+  @doc false
+  @spec install_android_updates(String.t(), [String.t()]) ::
+          {:ok, android_update_outcome()}
+          | {:error, android_update_outcome() | atom()}
+  def install_android_updates(apk, serials) do
+    install_android_updates(apk, serials, &run_system_command/2)
+  end
+
+  @doc false
+  @spec install_android_updates(String.t(), [String.t()], command_runner()) ::
+          {:ok, android_update_outcome()}
+          | {:error, android_update_outcome() | atom()}
+  def install_android_updates(apk, serials, runner)
+
+  def install_android_updates(apk, serials, _runner)
+      when not is_binary(apk) or apk == "" or not is_list(serials),
+      do: {:error, :invalid_update_request}
+
+  def install_android_updates(_apk, [], _runner), do: {:error, :no_explicit_targets}
+
+  def install_android_updates(_apk, serials, _runner)
+      when length(serials) > @max_android_update_targets,
+      do: {:error, :too_many_targets}
+
+  def install_android_updates(apk, serials, runner) do
+    results =
+      serials
+      |> Enum.uniq()
+      |> Enum.map(&install_android_update(apk, &1, runner))
+
+    outcome = %{
+      succeeded: for({:ok, serial} <- results, do: serial),
+      failed: for({:error, failure} <- results, do: failure)
+    }
+
+    if outcome.failed == [], do: {:ok, outcome}, else: {:error, outcome}
+  end
+
+  @doc false
+  @spec install_and_deliver_android(
+          String.t(),
+          [String.t()],
+          command_runner(),
+          ([String.t()] -> :ok | {:error, term()})
+        ) :: :ok | {:error, String.t()}
+  def install_and_deliver_android(apk, serials, runner, deliver) do
+    case install_android_updates(apk, serials, runner) do
+      {install_status, %{succeeded: succeeded} = outcome}
+      when install_status in [:ok, :error] ->
+        delivery_status = if succeeded == [], do: :ok, else: deliver.(succeeded)
+        finish_android_delivery(install_status, outcome, delivery_status)
+
+      {:error, reason} ->
+        {:error, android_update_request_error(reason)}
+    end
+  end
+
+  @doc false
+  @spec interpret_adb_update(String.t(), integer()) ::
+          :updated | {:failed, android_update_failure_reason()}
+  def interpret_adb_update(output, exit_code) when is_binary(output) and is_integer(exit_code) do
+    bounded = bounded_adb_result(output)
+
+    if String.valid?(bounded) do
+      case known_adb_failure(bounded) do
+        nil -> interpret_adb_update_status(bounded, exit_code)
+        reason -> {:failed, reason}
+      end
+    else
+      {:failed, :unknown_failure}
+    end
+  end
+
+  def interpret_adb_update(_output, _exit_code), do: {:failed, :unknown_failure}
+
+  defp android_update_targets(device_id) do
+    case resolve_android_update_targets(device_id) do
+      {:ok, serials} -> {:ok, serials}
+      {:error, reason} -> {:error, android_target_error(device_id, reason)}
+    end
+  end
+
+  defp resolve_adb_targets(output, nil) do
+    states = parse_adb_device_states(output)
+    ready = for {serial, "device"} <- states, do: serial
+
+    cond do
+      ready != [] -> {:ok, ready}
+      Enum.any?(states, &match?({_serial, "unauthorized"}, &1)) -> {:error, :unauthorized}
+      Enum.any?(states, &match?({_serial, "offline"}, &1)) -> {:error, :offline}
+      true -> {:error, :no_targets}
+    end
+  end
+
+  defp resolve_adb_targets(output, device_id) do
+    matches =
+      output
+      |> parse_adb_device_states()
+      |> Enum.filter(fn {serial, _state} -> matching_adb_serial?(serial, device_id) end)
+
+    case matches do
+      [{serial, "device"}] -> {:ok, [serial]}
+      [{_serial, "offline"}] -> {:error, :offline}
+      [{_serial, "unauthorized"}] -> {:error, :unauthorized}
+      [{_serial, _state}] -> {:error, :unavailable}
+      [] -> {:error, :target_not_connected}
+      _ -> {:error, :ambiguous_target}
+    end
+  end
+
+  defp parse_adb_device_states(output) do
+    bounded = bounded_adb_result(output)
+
+    if String.valid?(bounded) do
+      bounded
+      |> String.split("\n")
+      |> Enum.flat_map(fn line ->
+        case String.split(line) do
+          [serial, state | _] ->
+            if valid_adb_serial?(serial) and serial != "List", do: [{serial, state}], else: []
+
+          _ ->
+            []
+        end
+      end)
+    else
+      []
+    end
+  end
+
+  defp matching_adb_serial?(serial, device_id) do
+    serial == device_id or serial == "#{device_id}:5555" or strip_port(serial) == device_id
+  end
+
+  defp install_android_update(apk, serial, runner) do
+    if valid_adb_serial?(serial) do
+      IO.puts("  Updating APK on #{serial} (preserving app data)...")
+
+      result =
+        case invoke_command(runner, "adb", ["-s", serial, "install", "-r", apk]) do
+          {:ok, output, exit_code} -> interpret_adb_update(output, exit_code)
+          {:error, _reason} -> {:failed, :unknown_failure}
+        end
+
+      case result do
+        :updated ->
+          {:ok, serial}
+
+        {:failed, reason} ->
+          IO.puts(
+            "  #{IO.ANSI.yellow()}⚠  #{serial}: APK update failed " <>
+              "(#{android_update_reason(reason)}); app data preserved#{IO.ANSI.reset()}"
           )
 
-          # Try an in-place reinstall first (`install -r`): it preserves app data
-          # (on-device identity, screen stores) when the signing key matches —
-          # the common case once an app pins a committed debug keystore. Only
-          # when the package can't be updated in place (signature mismatch,
-          # version downgrade) do we uninstall + install, which clears app data.
-          {first_out, first_rc} =
-            System.cmd("adb", ["-s", serial, "install", "-r", apk], stderr_to_stdout: true)
+          {:error, %{serial: serial, reason: reason}}
+      end
+    else
+      {:error, %{serial: bounded_serial_label(serial), reason: :invalid_target}}
+    end
+  end
 
-          {install_out, install_rc} =
-            if needs_clean_reinstall?(first_out, first_rc) do
-              # Distinguish a genuine package-state rejection (signature or
-              # version mismatch) from a transient adb error (e.g. device
-              # offline): a clean reinstall reliably clears app data only in the
-              # former case, so word the notice accordingly rather than always
-              # promising "app data will be cleared".
-              if String.contains?(first_out, "INSTALL_FAILED") do
-                IO.puts(
-                  "  #{IO.ANSI.yellow()}In-place update rejected (signature or version " <>
-                    "mismatch), reinstalling clean (app data will be cleared)#{IO.ANSI.reset()}"
-                )
-              else
-                IO.puts(
-                  "  #{IO.ANSI.yellow()}In-place update failed (adb exit #{first_rc}), " <>
-                    "retrying with a clean install#{IO.ANSI.reset()}"
-                )
-              end
+  defp finish_android_delivery(:ok, _outcome, :ok), do: :ok
 
-              System.cmd("adb", ["-s", serial, "uninstall", bundle_id], stderr_to_stdout: true)
-              System.cmd("adb", ["-s", serial, "install", apk], stderr_to_stdout: true)
-            else
-              {first_out, first_rc}
-            end
+  defp finish_android_delivery(_install_status, _outcome, {:error, _reason}) do
+    {:error, "OTP delivery failed for an APK update that succeeded"}
+  end
 
-          if install_rc != 0 or String.contains?(install_out, "INSTALL_FAILED") do
-            reason =
-              install_out
-              |> String.split("\n")
-              |> Enum.find(&String.contains?(&1, "INSTALL_FAILED")) || String.trim(install_out)
+  defp finish_android_delivery(:error, outcome, :ok) do
+    failures =
+      Enum.map_join(outcome.failed, ", ", fn %{serial: serial, reason: reason} ->
+        "#{serial}=#{android_update_reason(reason)}"
+      end)
 
-            IO.puts(
-              "  #{IO.ANSI.yellow()}⚠  #{serial}: APK install failed — #{reason}#{IO.ANSI.reset()}"
-            )
+    {:error, "APK update failed on requested Android device(s): #{failures}"}
+  end
 
-            IO.puts("     (OTP push will be skipped for this device)")
-          else
-            fix_erts_helper_labels(serial, bundle_id)
-          end
-        end)
+  defp finish_android_delivery(_install_status, _outcome, _delivery_status) do
+    {:error, "OTP delivery returned an invalid result"}
+  end
 
-        :ok
+  defp interpret_adb_update_status(output, 0) do
+    lines =
+      output
+      |> String.split("\n", trim: true)
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == ""))
 
-      {out, _} ->
-        {:error, "adb devices failed: #{out}"}
+    allowed = ["Performing Streamed Install", "Performing Incremental Install"]
+
+    case Enum.reverse(lines) do
+      ["Success" | preceding] ->
+        if Enum.all?(preceding, &(&1 in allowed)),
+          do: :updated,
+          else: {:failed, :suspicious_success}
+
+      _ ->
+        {:failed, :suspicious_success}
+    end
+  end
+
+  defp interpret_adb_update_status(_output, _exit_code), do: {:failed, :unknown_failure}
+
+  defp known_adb_failure(output) do
+    lower = String.downcase(output)
+
+    cond do
+      String.contains?(output, "INSTALL_FAILED_INSUFFICIENT_STORAGE") ->
+        :insufficient_storage
+
+      String.contains?(output, "INSTALL_FAILED_UPDATE_INCOMPATIBLE") or
+        String.contains?(output, "INSTALL_PARSE_FAILED_INCONSISTENT_CERTIFICATES") or
+          String.contains?(output, "INSTALL_FAILED_SHARED_USER_INCOMPATIBLE") ->
+        :signature_mismatch
+
+      String.contains?(output, "INSTALL_FAILED_VERSION_DOWNGRADE") ->
+        :version_downgrade
+
+      String.contains?(lower, "unauthorized") ->
+        :unauthorized
+
+      String.contains?(lower, "device offline") or String.contains?(lower, "offline") ->
+        :offline
+
+      String.contains?(lower, "no devices/emulators found") or
+          String.contains?(lower, "device not found") ->
+        :unavailable
+
+      String.contains?(output, "INSTALL_FAILED_") or
+          String.contains?(output, "INSTALL_PARSE_FAILED_") ->
+        :install_rejected
+
+      true ->
+        nil
+    end
+  end
+
+  defp android_target_error(nil, :no_targets), do: "No connected Android update targets found"
+
+  defp android_target_error(nil, reason) do
+    "Connected Android update targets are #{android_update_reason(reason)}"
+  end
+
+  defp android_target_error(device_id, reason) do
+    "Android update target #{bounded_serial_label(device_id)} is " <>
+      android_update_reason(reason)
+  end
+
+  defp android_update_request_error(:no_explicit_targets),
+    do: "Android APK update requires at least one explicit target"
+
+  defp android_update_request_error(:too_many_targets),
+    do: "Android APK update target count exceeds the safety limit"
+
+  defp android_update_request_error(_reason), do: "Android APK update request is invalid"
+
+  defp android_update_reason(:device_discovery_failed), do: "not discoverable"
+  defp android_update_reason(:target_not_connected), do: "not connected"
+  defp android_update_reason(:ambiguous_target), do: "ambiguous"
+  defp android_update_reason(:insufficient_storage), do: "out of storage"
+  defp android_update_reason(:signature_mismatch), do: "signed by a different key"
+  defp android_update_reason(:version_downgrade), do: "a version downgrade"
+  defp android_update_reason(:offline), do: "offline"
+  defp android_update_reason(:unauthorized), do: "unauthorized"
+  defp android_update_reason(:unavailable), do: "unavailable"
+  defp android_update_reason(:install_rejected), do: "rejected by Android"
+  defp android_update_reason(:suspicious_success), do: "an unverified adb success"
+  defp android_update_reason(:unknown_failure), do: "an unknown adb failure"
+  defp android_update_reason(:invalid_target), do: "an invalid target"
+
+  defp bounded_serial_label(serial) when is_binary(serial) do
+    if valid_adb_serial?(serial), do: serial, else: "<invalid>"
+  end
+
+  defp bounded_serial_label(_serial), do: "<invalid>"
+
+  defp valid_adb_serial?(serial) when is_binary(serial) do
+    byte_size(serial) in 1..@max_adb_serial_bytes and not String.starts_with?(serial, "-") and
+      serial
+      |> :binary.bin_to_list()
+      |> Enum.all?(fn byte ->
+        byte in ?0..?9 or byte in ?A..?Z or byte in ?a..?z or byte in ~c".:-_"
+      end)
+  end
+
+  defp valid_adb_serial?(_serial), do: false
+
+  defp bounded_adb_result(output) when byte_size(output) <= @max_adb_result_bytes, do: output
+
+  defp bounded_adb_result(output),
+    do: binary_part(output, 0, @max_adb_result_bytes)
+
+  defp invoke_command(runner, executable, args) do
+    case runner.(executable, args) do
+      {output, exit_code} when is_binary(output) and is_integer(exit_code) ->
+        {:ok, output, exit_code}
+
+      _ ->
+        {:error, :invalid_command_result}
+    end
+  end
+
+  defp run_system_command(executable, args) do
+    case System.find_executable(executable) do
+      nil -> {"", 127}
+      path -> System.cmd(path, args, stderr_to_stdout: true)
     end
   end
 
@@ -1368,36 +1660,27 @@ defmodule MobDev.NativeBuild do
          otp_arm64,
          otp_arm32,
          otp_x86_64,
-         device_id
+         serials
        ) do
     app_data = "/data/data/#{bundle_id}/files"
 
     IO.puts("  Pushing OTP release to device(s)...")
 
-    case System.cmd("adb", ["devices"], stderr_to_stdout: true) do
-      {output, 0} ->
-        serials = parse_adb_serials(output) |> filter_serials(device_id)
-        if serials == [], do: IO.puts("  (no devices connected, skipping OTP push)")
+    Enum.reduce_while(serials, :ok, fn serial, _ ->
+      otp_dir = device_otp_dir(serial, otp_arm64, otp_arm32, otp_x86_64)
 
-        Enum.reduce_while(serials, :ok, fn serial, _ ->
-          otp_dir = device_otp_dir(serial, otp_arm64, otp_arm32, otp_x86_64)
+      result =
+        try do
+          push_otp_to_device(serial, bundle_id, app_data, otp_dir, elixir_lib)
+        catch
+          {:skip, _} -> :ok
+        end
 
-          result =
-            try do
-              push_otp_to_device(serial, bundle_id, app_data, otp_dir, elixir_lib)
-            catch
-              {:skip, _} -> :ok
-            end
-
-          case result do
-            :ok -> {:cont, :ok}
-            {:error, reason} -> {:halt, {:error, reason}}
-          end
-        end)
-
-      {out, _} ->
-        {:error, "adb devices failed: #{out}"}
-    end
+      case result do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
   end
 
   defp device_otp_dir(serial, otp_arm64, otp_arm32, otp_x86_64) do
@@ -1561,14 +1844,6 @@ defmodule MobDev.NativeBuild do
       File.rm(stage_local)
       File.rm_rf(Path.join(System.tmp_dir!(), "mob_otp_stage_#{serial}"))
     end
-  end
-
-  defp parse_adb_serials(output) do
-    output
-    |> String.split("\n")
-    |> Enum.drop(1)
-    |> Enum.filter(&String.contains?(&1, "\tdevice"))
-    |> Enum.map(&hd(String.split(&1, "\t")))
   end
 
   # Filters a list of adb serials by `--device <id>`. The id is matched against

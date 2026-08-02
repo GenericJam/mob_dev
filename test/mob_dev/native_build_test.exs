@@ -1954,23 +1954,241 @@ defmodule MobDev.NativeBuildTest do
     end
   end
 
-  describe "needs_clean_reinstall?/2 (in-place install -r vs uninstall fallback)" do
-    test "false on a successful in-place reinstall — app data is preserved" do
-      refute NativeBuild.needs_clean_reinstall?("Success\n", 0)
+  describe "Android update-only native install" do
+    test "fails closed when discovery resolves no update targets" do
+      parent = self()
+
+      runner = fn command, args ->
+        send(parent, {:command, command, args})
+        {"List of devices attached\n", 0}
+      end
+
+      assert {:error, :no_targets} =
+               NativeBuild.resolve_android_update_targets(nil, runner)
+
+      assert_received {:command, "adb", ["devices"]}
+      refute_received {:command, _, _}
     end
 
-    test "true on signature mismatch (INSTALL_FAILED_UPDATE_INCOMPATIBLE)" do
-      out = "adb: failed to install app.apk: Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE]"
-      assert NativeBuild.needs_clean_reinstall?(out, 1)
+    test "default fanout resolves every ready serial and ignores non-ready rows" do
+      runner = fn "adb", ["devices"] ->
+        {"""
+         List of devices attached
+         serial-a\tdevice
+         offline-one\toffline
+         serial-b\tdevice
+         auth-one\tunauthorized
+         """, 0}
+      end
+
+      assert {:ok, ["serial-a", "serial-b"]} =
+               NativeBuild.resolve_android_update_targets(nil, runner)
     end
 
-    test "true on version downgrade (INSTALL_FAILED_VERSION_DOWNGRADE)" do
-      out = "Failure [INSTALL_FAILED_VERSION_DOWNGRADE]"
-      assert NativeBuild.needs_clean_reinstall?(out, 1)
+    test "resolves only the requested online serial, including a bare WiFi address" do
+      output = """
+      List of devices attached
+      ZY22K6BSJM\tdevice
+      10.0.0.17:5555\tdevice
+      emulator-5554\tdevice
+      """
+
+      runner = fn "adb", ["devices"] -> {output, 0} end
+
+      assert {:ok, ["10.0.0.17:5555"]} =
+               NativeBuild.resolve_android_update_targets("10.0.0.17", runner)
     end
 
-    test "true on a non-zero exit even without an INSTALL_FAILED line" do
-      assert NativeBuild.needs_clean_reinstall?("error: device offline", 1)
+    test "fails closed for offline, unauthorized, missing, ambiguous, and invalid targets" do
+      runner = fn "adb", ["devices"] ->
+        {"""
+         List of devices attached
+         offline-one\toffline
+         auth-one\tunauthorized
+         10.0.0.17\tdevice
+         10.0.0.17:5555\tdevice
+         """, 0}
+      end
+
+      assert {:error, :offline} =
+               NativeBuild.resolve_android_update_targets("offline-one", runner)
+
+      assert {:error, :unauthorized} =
+               NativeBuild.resolve_android_update_targets("auth-one", runner)
+
+      assert {:error, :target_not_connected} =
+               NativeBuild.resolve_android_update_targets("missing", runner)
+
+      assert {:error, :ambiguous_target} =
+               NativeBuild.resolve_android_update_targets("10.0.0.17", runner)
+
+      assert {:error, :invalid_target} =
+               NativeBuild.resolve_android_update_targets("--transport-any", runner)
+    end
+
+    test "accepts only recognized adb success output" do
+      assert :updated = NativeBuild.interpret_adb_update("Success\n", 0)
+
+      assert :updated =
+               NativeBuild.interpret_adb_update("Performing Streamed Install\nSuccess\n", 0)
+
+      assert {:failed, :suspicious_success} =
+               NativeBuild.interpret_adb_update("Success\nunexpected extra line\n", 0)
+
+      assert {:failed, :suspicious_success} = NativeBuild.interpret_adb_update("", 0)
+      assert {:failed, :unknown_failure} = NativeBuild.interpret_adb_update("Success\n", 1)
+      assert {:failed, :unknown_failure} = NativeBuild.interpret_adb_update(<<255, 254>>, 0)
+    end
+
+    test "classifies destructive and recoverable adb failures without returning raw output" do
+      cases = [
+        {"Failure [INSTALL_FAILED_INSUFFICIENT_STORAGE] raw-private-detail",
+         :insufficient_storage},
+        {"Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE] raw-private-detail", :signature_mismatch},
+        {"Failure [INSTALL_PARSE_FAILED_INCONSISTENT_CERTIFICATES]", :signature_mismatch},
+        {"Failure [INSTALL_FAILED_VERSION_DOWNGRADE]", :version_downgrade},
+        {"error: device offline", :offline},
+        {"error: device unauthorized. Please check the confirmation dialog", :unauthorized},
+        {"error: device not found", :unavailable},
+        {"Failure [INSTALL_FAILED_DEXOPT]", :install_rejected},
+        {"some unrecognized failure containing raw-private-detail", :unknown_failure}
+      ]
+
+      Enum.each(cases, fn {output, reason} ->
+        result = NativeBuild.interpret_adb_update(output, 1)
+        assert result == {:failed, reason}
+        refute inspect(result) =~ "raw-private-detail"
+      end)
+    end
+
+    test "runs exactly one explicit adb install -r per valid target" do
+      parent = self()
+      apk = "/tmp/app-debug.apk"
+
+      runner = fn command, args ->
+        send(parent, {:command, command, args})
+        {"Success\n", 0}
+      end
+
+      output =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert {:ok, %{succeeded: ["serial-a", "serial-b"], failed: []}} =
+                   NativeBuild.install_android_updates(
+                     apk,
+                     ["serial-a", "serial-b", "serial-a"],
+                     runner
+                   )
+        end)
+
+      assert output =~ "preserving app data"
+      assert_received {:command, "adb", ["-s", "serial-a", "install", "-r", ^apk]}
+      assert_received {:command, "adb", ["-s", "serial-b", "install", "-r", ^apk]}
+      refute_received {:command, _, _}
+    end
+
+    test "never retries signature mismatch, downgrade, or suspicious exit-zero" do
+      parent = self()
+      apk = "/tmp/app-debug.apk"
+
+      results = [
+        {"signature", "Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE]", 1, :signature_mismatch},
+        {"downgrade", "Failure [INSTALL_FAILED_VERSION_DOWNGRADE]", 1, :version_downgrade},
+        {"suspicious", "not a verified success", 0, :suspicious_success}
+      ]
+
+      Enum.each(results, fn {serial, output, exit_code, reason} ->
+        runner = fn command, args ->
+          send(parent, {:command, command, args})
+          {output, exit_code}
+        end
+
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert {:error, %{succeeded: [], failed: [%{serial: ^serial, reason: ^reason}]}} =
+                   NativeBuild.install_android_updates(apk, [serial], runner)
+        end)
+
+        assert_received {:command, "adb", ["-s", ^serial, "install", "-r", ^apk]}
+        refute_received {:command, _, _}
+      end)
+    end
+
+    test "partial failure delivers OTP only to updated serials and returns aggregate failure" do
+      parent = self()
+      apk = "/tmp/app-debug.apk"
+
+      runner = fn "adb", ["-s", serial, "install", "-r", ^apk] = args ->
+        send(parent, {:command, "adb", args})
+
+        case serial do
+          "updated" -> {"Success\n", 0}
+          "full" -> {"Failure [INSTALL_FAILED_INSUFFICIENT_STORAGE] raw-private-detail", 1}
+          "offline" -> {"error: device offline raw-private-detail", 1}
+        end
+      end
+
+      deliver = fn serials ->
+        send(parent, {:delivered, serials})
+        :ok
+      end
+
+      captured =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert {:error, message} =
+                   NativeBuild.install_and_deliver_android(
+                     apk,
+                     ["updated", "full", "offline"],
+                     runner,
+                     deliver
+                   )
+
+          assert message =~ "requested Android device(s)"
+          assert message =~ "full=out of storage"
+          assert message =~ "offline=offline"
+          refute message =~ "raw-private-detail"
+        end)
+
+      assert captured =~ "app data preserved"
+      refute captured =~ "raw-private-detail"
+      assert_received {:delivered, ["updated"]}
+      assert_received {:command, "adb", ["-s", "updated", "install", "-r", ^apk]}
+      assert_received {:command, "adb", ["-s", "full", "install", "-r", ^apk]}
+      assert_received {:command, "adb", ["-s", "offline", "install", "-r", ^apk]}
+      refute_received {:command, _, _}
+    end
+
+    test "all failed targets receive no OTP delivery and invalid/no target runs no adb command" do
+      parent = self()
+
+      runner = fn command, args ->
+        send(parent, {:command, command, args})
+        {"Failure [INSTALL_FAILED_VERSION_DOWNGRADE]", 1}
+      end
+
+      deliver = fn serials ->
+        send(parent, {:delivered, serials})
+        :ok
+      end
+
+      ExUnit.CaptureIO.capture_io(fn ->
+        assert {:error, _message} =
+                 NativeBuild.install_and_deliver_android(
+                   "/tmp/app.apk",
+                   ["failed"],
+                   runner,
+                   deliver
+                 )
+      end)
+
+      assert_received {:command, "adb", ["-s", "failed", "install", "-r", "/tmp/app.apk"]}
+      refute_received {:delivered, _}
+
+      assert {:error, :no_explicit_targets} =
+               NativeBuild.install_android_updates("/tmp/app.apk", [], runner)
+
+      assert {:error, %{succeeded: [], failed: [%{reason: :invalid_target}]}} =
+               NativeBuild.install_android_updates("/tmp/app.apk", ["--all"], runner)
+
+      refute_received {:command, _, _}
     end
   end
 

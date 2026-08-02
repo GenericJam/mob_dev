@@ -204,4 +204,61 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
       refute joined =~ "Failed", "Bug fix: 5 not-installed devices must NOT count as failed"
     end
   end
+
+  describe "deploy_after_native_build!/4" do
+    test "aggregate native failure raises before the final Deployer pass" do
+      parent = self()
+
+      deployer = fn opts ->
+        send(parent, {:deployer_called, opts})
+        {[], [], []}
+      end
+
+      assert_raise Mix.Error, "Native build failed", fn ->
+        ExUnit.CaptureIO.capture_io(fn ->
+          Deploy.deploy_after_native_build!(true, false, [device: "serial-a"], deployer)
+        end)
+      end
+
+      refute_received {:deployer_called, _}
+    end
+
+    test "missing native result also fails closed before the final Deployer pass" do
+      parent = self()
+
+      deployer = fn opts ->
+        send(parent, {:deployer_called, opts})
+        {[], [], []}
+      end
+
+      assert_raise Mix.Error, "Native build failed", fn ->
+        ExUnit.CaptureIO.capture_io(fn ->
+          Deploy.deploy_after_native_build!(true, nil, [device: "serial-a"], deployer)
+        end)
+      end
+
+      refute_received {:deployer_called, _}
+    end
+
+    test "successful native build reaches the final Deployer pass exactly once" do
+      parent = self()
+      expected = {[%MobDev.Device{serial: "serial-a", platform: :android}], [], []}
+
+      deployer = fn opts ->
+        send(parent, {:deployer_called, opts})
+        expected
+      end
+
+      assert ^expected =
+               Deploy.deploy_after_native_build!(
+                 true,
+                 true,
+                 [device: "serial-a"],
+                 deployer
+               )
+
+      assert_received {:deployer_called, [device: "serial-a"]}
+      refute_received {:deployer_called, _}
+    end
+  end
 end

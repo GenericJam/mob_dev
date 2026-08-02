@@ -14,8 +14,11 @@ defmodule Mix.Tasks.Mob.Deploy do
 
       mix mob.deploy
 
-  **Full deploy** — build native binary + install APK/app + push BEAMs.
-  Use this the first time, or after changes to native C/Java/Swift code.
+  **Full deploy** — build native binary + update APK/app + push BEAMs.
+  Use this after changes to native C/Java/Swift code. Android native updates
+  resolve a non-empty connected-device set, use only serial-scoped
+  `adb install -r`, and never uninstall the existing app, so a signing mismatch
+  or downgrade fails while preserving app data.
 
       mix mob.deploy --native
 
@@ -215,20 +218,8 @@ defmodule Mix.Tasks.Mob.Deploy do
         )
       end
 
-    # Skip BEAM push if native build failed — the APK/app bundle isn't installed
-    # so run-as / simctl push would fail with misleading errors.
-    if native and native_ok == false do
-      IO.puts("\n#{IO.ANSI.red()}Native build had failures — see errors above.#{IO.ANSI.reset()}")
-
-      IO.puts(
-        "#{IO.ANSI.yellow()}Run `mix mob.doctor` to check your environment, or `mix mob.deploy` (without --native) once the issue is fixed.#{IO.ANSI.reset()}"
-      )
-
-      Mix.raise("Native build failed")
-    end
-
-    {deployed, failed, skipped} =
-      MobDev.Deployer.deploy_all(
+    deploy_opts =
+      [
         restart: restart,
         platforms: platforms,
         force_fs: native,
@@ -239,9 +230,41 @@ defmodule Mix.Tasks.Mob.Deploy do
         # Set → all targeted devices use these values verbatim.
         dist_port: opts[:dist_port],
         node_suffix: opts[:node_suffix]
-      )
+      ]
+
+    {deployed, failed, skipped} =
+      deploy_after_native_build!(native, native_ok, deploy_opts)
 
     Enum.each(format_summary(deployed, failed, skipped, restart: restart), &IO.puts/1)
+  end
+
+  @doc false
+  @spec deploy_after_native_build!(boolean(), boolean() | nil, keyword()) ::
+          {[Device.t()], [Device.t()], [Device.t()]}
+  def deploy_after_native_build!(native, native_ok, deploy_opts) do
+    deploy_after_native_build!(native, native_ok, deploy_opts, &MobDev.Deployer.deploy_all/1)
+  end
+
+  @doc false
+  @spec deploy_after_native_build!(
+          boolean(),
+          boolean() | nil,
+          keyword(),
+          (keyword() -> {[Device.t()], [Device.t()], [Device.t()]})
+        ) :: {[Device.t()], [Device.t()], [Device.t()]}
+  def deploy_after_native_build!(true, native_ok, _deploy_opts, _deployer)
+      when native_ok != true do
+    IO.puts("\n#{IO.ANSI.red()}Native build had failures — see errors above.#{IO.ANSI.reset()}")
+
+    IO.puts(
+      "#{IO.ANSI.yellow()}Run `mix mob.doctor` to check your environment, or `mix mob.deploy` (without --native) once the issue is fixed.#{IO.ANSI.reset()}"
+    )
+
+    Mix.raise("Native build failed")
+  end
+
+  def deploy_after_native_build!(_native, _native_ok, deploy_opts, deployer) do
+    deployer.(deploy_opts)
   end
 
   @doc """
