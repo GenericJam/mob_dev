@@ -42,7 +42,7 @@ defmodule MobDev.NativeBuild do
   @type build_outcome :: %{
           required(:ok?) => boolean(),
           required(:android_device_disposition) =>
-            :not_attempted | :artifact_only | :held | :failed | :retained,
+            :not_attempted | :artifact_only | :held | :failed | :retained | :partial_update,
           required(:android_serials) => [String.t()],
           required(:android_deploy_lock) => map() | nil,
           required(:android_payload_plan) => map() | nil
@@ -195,6 +195,11 @@ defmodule MobDev.NativeBuild do
         IO.puts(
           "  #{IO.ANSI.red()}✗ #{platform} native build failed: #{reason} (deploy lock retained)#{IO.ANSI.reset()}"
         )
+
+      {:error, platform, reason, _retained_lock, :partial_update} ->
+        IO.puts(
+          "  #{IO.ANSI.red()}✗ #{platform} native update partially applied: #{reason} (deploy lock retained)#{IO.ANSI.reset()}"
+        )
     end)
 
     build_outcome(results, opts)
@@ -334,8 +339,14 @@ defmodule MobDev.NativeBuild do
            ) do
       {:ok, "Android", Map.put(metadata, :serials, update_targets)}
     else
-      {:error, reason, deploy_lock} -> {:error, "Android", reason, deploy_lock}
-      {:error, reason} -> {:error, "Android", reason}
+      {:error, {:partial_update, reason}, deploy_lock} ->
+        {:error, "Android", reason, deploy_lock, :partial_update}
+
+      {:error, reason, deploy_lock} ->
+        {:error, "Android", reason, deploy_lock}
+
+      {:error, reason} ->
+        {:error, "Android", reason}
     end
   end
 
@@ -403,9 +414,17 @@ defmodule MobDev.NativeBuild do
         classify_android_device_result(result)
 
       multiple ->
-        if Enum.any?(multiple, &android_authority_present?/1), do: :retained, else: :failed
+        cond do
+          Enum.any?(multiple, &partial_android_update?/1) -> :partial_update
+          Enum.any?(multiple, &android_authority_present?/1) -> :retained
+          true -> :failed
+        end
     end
   end
+
+  defp classify_android_device_result({:error, "Android", _reason, lock, :partial_update})
+       when is_map(lock),
+       do: :partial_update
 
   defp classify_android_device_result({:error, "Android", _reason, lock}) when is_map(lock),
     do: :retained
@@ -427,6 +446,16 @@ defmodule MobDev.NativeBuild do
 
   defp artifact_only_android_result?(_result), do: false
 
+  defp partial_android_update?({:error, "Android", _reason, lock, :partial_update})
+       when is_map(lock),
+       do: true
+
+  defp partial_android_update?(_result), do: false
+
+  defp android_authority_present?({:error, "Android", _reason, lock, :partial_update})
+       when is_map(lock),
+       do: true
+
   defp android_authority_present?({:error, "Android", _reason, lock}) when is_map(lock),
     do: true
 
@@ -436,15 +465,17 @@ defmodule MobDev.NativeBuild do
   defp android_authority_present?(_result), do: false
 
   defp android_serials_from_results(results) do
-    case Enum.find(results, &match?({:ok, "Android", _serials}, &1)) do
+    Enum.find_value(results, [], fn
       {:ok, "Android", %{serials: serials, deploy_lock: %{}}} -> serials
-      _build_only_or_absent -> []
-    end
+      {:error, "Android", _reason, %{serials: serials}, :partial_update} -> serials
+      _build_only_or_absent -> nil
+    end)
   end
 
   defp android_deploy_lock_from_results(results) do
     Enum.find_value(results, fn
       {:ok, "Android", %{deploy_lock: lock}} -> lock
+      {:error, "Android", _reason, lock, :partial_update} -> lock
       {:error, "Android", _reason, lock} -> lock
       _result -> nil
     end)
@@ -1665,7 +1696,11 @@ defmodule MobDev.NativeBuild do
           String.t(),
           String.t(),
           keyword()
-        ) :: {:ok, map()} | {:error, String.t()} | {:error, String.t(), map()}
+        ) ::
+          {:ok, map()}
+          | {:error, String.t()}
+          | {:error, String.t(), map()}
+          | {:error, {:partial_update, String.t()}, map()}
   def install_and_deliver_android_runtime(
         apk,
         serials,
@@ -2150,7 +2185,11 @@ defmodule MobDev.NativeBuild do
                          otp_runner
                        ) do
                     :ok ->
-                      transition_android_deploy_lock(lock, :acquired, :native_ready, runner)
+                      transition_android_after_update(lock, runner)
+
+                    {:error, {:android_partial_update, state, reason}}
+                    when state in [:retained_failure, :retained_ambiguous] ->
+                      {:error, {:partial_update, reason}, %{lock | state: state}}
 
                     {:error, {:android_deploy_lease_ambiguous, reason}} ->
                       {:error, reason, %{lock | state: :retained_ambiguous}}
@@ -2203,6 +2242,26 @@ defmodule MobDev.NativeBuild do
     end
   end
 
+  defp transition_android_after_update(lock, runner) do
+    try do
+      case transition_android_deploy_lock(lock, :acquired, :native_ready, runner) do
+        {:ok, _transitioned} = ok ->
+          ok
+
+        {:error, reason, retained} ->
+          {:error,
+           {:partial_update,
+            "Android target set was updated but native-ready commit failed: #{reason}"}, retained}
+      end
+    catch
+      _kind, _reason ->
+        {:error,
+         {:partial_update,
+          "Android native-ready commit became ambiguous after device update; deploy lease retained"},
+         %{lock | state: :retained_ambiguous}}
+    end
+  end
+
   defp verify_android_apk_snapshot(%{path: path, size: size, sha256: expected_sha256}) do
     with {:ok, %{size: ^size}} <- File.stat(path),
          {:ok, ^expected_sha256} <- file_sha256(path) do
@@ -2239,54 +2298,156 @@ defmodule MobDev.NativeBuild do
          runner,
          otp_runner
        ) do
-    Enum.reduce_while(serials, :ok, fn serial, :ok ->
-      %{abi: expected_abi, otp_dir: otp_dir} = Map.fetch!(selections, serial)
-      plan = Map.fetch!(prepared, otp_dir)
+    context = %{
+      apk: apk,
+      bundle_id: bundle_id,
+      app_data: app_data,
+      selections: selections,
+      prepared: prepared,
+      lock: lock,
+      runner: runner,
+      otp_runner: otp_runner
+    }
 
-      result =
+    deploy_locked_android_targets(serials, context, false)
+  end
+
+  defp deploy_locked_android_targets([], _context, _updated?), do: :ok
+
+  defp deploy_locked_android_targets([serial | remaining], context, updated?) do
+    try do
+      %{abi: expected_abi, otp_dir: otp_dir} = Map.fetch!(context.selections, serial)
+      plan = Map.fetch!(context.prepared, otp_dir)
+
+      preinstall_result =
         with :ok <- verify_android_prepared_otp_archive(plan, otp_dir, expected_abi),
-             :ok <- validate_android_local_file_identity(apk, @max_android_apk_bytes),
-             :ok <- verify_android_deploy_lock_set(lock, runner),
-             {:ok, ^serial} <- install_android_update(apk.path, serial, runner),
-             :ok <- verify_android_deploy_lock_set(lock, runner),
-             :ok <-
-               repair_erts_helper_labels(
-                 serial,
-                 bundle_id,
-                 expected_abi,
-                 lock,
-                 runner
-               ),
-             :ok <- verify_android_deploy_lock_set(lock, runner),
-             :ok <- verify_android_prepared_otp_archive(plan, otp_dir, expected_abi) do
-          deploy_prepared_otp(
-            otp_runner,
-            runner,
-            lock,
-            serial,
-            bundle_id,
-            app_data,
-            plan
-          )
-        else
-          {:error, %{reason: reason}} ->
-            if definite_android_install_rejection?(reason) do
-              {:error, "APK update failed: #{android_update_reason(reason)}"}
-            else
-              {:error,
-               {:android_deploy_lease_ambiguous,
-                "Android APK update result was not authoritative; deploy lease retained"}}
-            end
-
-          {:error, _reason} = error ->
-            error
+             :ok <- validate_android_local_file_identity(context.apk, @max_android_apk_bytes),
+             :ok <- verify_android_deploy_lock_set(context.lock, context.runner) do
+          :ok
         end
 
-      case result do
-        :ok -> {:cont, :ok}
-        {:error, _reason} = error -> {:halt, error}
+      case preinstall_result do
+        :ok ->
+          install_locked_android_target(
+            serial,
+            remaining,
+            expected_abi,
+            otp_dir,
+            plan,
+            context,
+            updated?
+          )
+
+        {:error, _reason} = error ->
+          maybe_partial_android_update(error, updated?)
       end
-    end)
+    catch
+      kind, reason ->
+        if updated? do
+          partial_android_update_ambiguous()
+        else
+          :erlang.raise(kind, reason, __STACKTRACE__)
+        end
+    end
+  end
+
+  defp install_locked_android_target(
+         serial,
+         remaining,
+         expected_abi,
+         otp_dir,
+         plan,
+         context,
+         updated?
+       ) do
+    case invoke_android_install(context.apk.path, serial, context.runner) do
+      {:ok, ^serial} ->
+        case deliver_android_otp_after_install(serial, expected_abi, otp_dir, plan, context) do
+          :ok -> deploy_locked_android_targets(remaining, context, true)
+          {:error, _reason} = error -> partial_android_update_error(error)
+        end
+
+      {:error, %{reason: reason}} ->
+        if definite_android_install_rejection?(reason) do
+          maybe_partial_android_update(
+            {:error, "APK update failed: #{android_update_reason(reason)}"},
+            updated?
+          )
+        else
+          partial_android_update_ambiguous(
+            "Android APK update result was not authoritative; deploy lease retained"
+          )
+        end
+
+      _invalid_or_ambiguous ->
+        partial_android_update_ambiguous(
+          "Android APK update result was not authoritative; deploy lease retained"
+        )
+    end
+  end
+
+  defp invoke_android_install(apk, serial, runner) do
+    try do
+      install_android_update(apk, serial, runner)
+    catch
+      _kind, _reason ->
+        {:error,
+         {:android_install_ambiguous,
+          "Android APK update result was not authoritative; deploy lease retained"}}
+    end
+  end
+
+  defp deliver_android_otp_after_install(serial, expected_abi, otp_dir, plan, context) do
+    try do
+      with :ok <- verify_android_deploy_lock_set(context.lock, context.runner),
+           :ok <-
+             repair_erts_helper_labels(
+               serial,
+               context.bundle_id,
+               expected_abi,
+               context.lock,
+               context.runner
+             ),
+           :ok <- verify_android_deploy_lock_set(context.lock, context.runner),
+           :ok <- verify_android_prepared_otp_archive(plan, otp_dir, expected_abi) do
+        deploy_prepared_otp(
+          context.otp_runner,
+          context.runner,
+          context.lock,
+          serial,
+          context.bundle_id,
+          context.app_data,
+          plan
+        )
+      end
+    catch
+      _kind, _reason ->
+        {:error,
+         {:android_deploy_lease_ambiguous,
+          "Android device transaction became ambiguous after APK update; deploy lease retained"}}
+    end
+  end
+
+  defp maybe_partial_android_update({:error, _reason} = error, false), do: error
+
+  defp maybe_partial_android_update({:error, _reason} = error, true),
+    do: partial_android_update_error(error)
+
+  defp partial_android_update_error({:error, {:android_deploy_lease_ambiguous, reason}}),
+    do: partial_android_update_ambiguous(reason)
+
+  defp partial_android_update_error({:error, reason}) when is_binary(reason) do
+    {:error,
+     {:android_partial_update, :retained_failure,
+      "Android target set was partially updated before failure: #{reason}; deploy lease retained"}}
+  end
+
+  defp partial_android_update_error(_invalid), do: partial_android_update_ambiguous()
+
+  defp partial_android_update_ambiguous(
+         reason \\ "Android device transaction became ambiguous after APK update; deploy lease retained"
+       ) do
+    {:error, {:android_partial_update, :retained_ambiguous, reason}}
   end
 
   defp verify_android_deploy_lock_owner(

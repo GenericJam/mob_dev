@@ -1608,6 +1608,134 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
       refute_received :finalizer_called
     end
 
+    test "a forged partial-update disposition uses the generic fail-closed path" do
+      parent = self()
+      serials = ["serial-a"]
+
+      forged = %{
+        ok?: false,
+        android_device_disposition: :partial_update,
+        android_serials: serials,
+        android_deploy_lock: native_lock(serials),
+        android_payload_plan: nil
+      }
+
+      output =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert_raise Mix.Error, "Native build failed", fn ->
+            Deploy.deploy_after_native_build!(
+              true,
+              forged,
+              [platforms: [:android]],
+              fn _opts -> send(parent, :deployer_called) end,
+              fn _lock -> send(parent, :finalizer_called) end
+            )
+          end
+        end)
+
+      refute output =~ "APK update completed before runtime delivery failed"
+      refute_received :deployer_called
+      refute_received :finalizer_called
+    end
+
+    test "a retained partial-update lease for another bundle uses the generic fail-closed path" do
+      parent = self()
+      serials = ["serial-a"]
+
+      cross_bundle = %{
+        ok?: false,
+        android_device_disposition: :partial_update,
+        android_serials: serials,
+        android_deploy_lock:
+          native_lock(serials, %{
+            bundle_id: "com.other.app",
+            phase: :acquired,
+            state: :retained_failure
+          }),
+        android_payload_plan: nil
+      }
+
+      output =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert_raise Mix.Error, "Native build failed", fn ->
+            Deploy.deploy_after_native_build!(
+              true,
+              cross_bundle,
+              [platforms: [:android]],
+              fn _opts -> send(parent, :deployer_called) end,
+              fn _lock -> send(parent, :finalizer_called) end
+            )
+          end
+        end)
+
+      refute output =~ "APK update completed before runtime delivery failed"
+      refute_received :deployer_called
+      refute_received :finalizer_called
+    end
+
+    test "a retained partial-update outcome in an iOS-only deploy uses the generic fail-closed path" do
+      parent = self()
+      serials = ["serial-a"]
+
+      outcome = %{
+        ok?: false,
+        android_device_disposition: :partial_update,
+        android_serials: serials,
+        android_deploy_lock: native_lock(serials, %{phase: :acquired, state: :retained_failure}),
+        android_payload_plan: nil
+      }
+
+      output =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert_raise Mix.Error, "Native build failed", fn ->
+            Deploy.deploy_after_native_build!(
+              true,
+              outcome,
+              [platforms: [:ios]],
+              fn _opts -> send(parent, :deployer_called) end,
+              fn _lock -> send(parent, :finalizer_called) end
+            )
+          end
+        end)
+
+      refute output =~ "APK update completed before runtime delivery failed"
+      refute_received :deployer_called
+      refute_received :finalizer_called
+    end
+
+    test "a partial Android update fails closed with recovery guidance" do
+      parent = self()
+      serials = ["serial-a"]
+      retained = native_lock(serials, %{phase: :acquired, state: :retained_ambiguous})
+
+      outcome = %{
+        ok?: false,
+        android_device_disposition: :partial_update,
+        android_serials: serials,
+        android_deploy_lock: retained,
+        android_payload_plan: nil
+      }
+
+      output =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert_raise Mix.Error, "Android native deploy partially applied", fn ->
+            Deploy.deploy_after_native_build!(
+              true,
+              outcome,
+              [platforms: [:android]],
+              fn _opts -> send(parent, :deployer_called) end,
+              fn _lock -> send(parent, :finalizer_called) end
+            )
+          end
+        end)
+
+      assert output =~ "APK update completed before runtime delivery failed"
+      assert output =~ "mix mob.deploy_lock --device <exact-serial>"
+      assert output =~ "Do not retry blindly, uninstall, or clear app data"
+      refute_received :deployer_called
+      refute_received :finalizer_called
+    end
+
     test "native Android releases only after every canonical final result succeeds" do
       parent = self()
       serial = "serial-a"
