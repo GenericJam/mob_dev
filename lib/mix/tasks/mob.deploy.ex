@@ -5,6 +5,8 @@ defmodule Mix.Tasks.Mob.Deploy do
 
   @shortdoc "Build and deploy to all connected mob devices"
   @native_android_success_statuses [:discovered, :connected, :tunneled]
+  @zigler_staging_env "ZIGLER_STAGING_ROOT"
+  @zigler_staging_dir "zigler-staging"
 
   @moduledoc """
   Compiles the project then pushes BEAM files to all connected
@@ -208,58 +210,98 @@ defmodule Mix.Tasks.Mob.Deploy do
       fetch_native_dependencies!()
     end
 
-    Mix.Task.run("compile")
-    IO.puts("\n#{IO.ANSI.cyan()}Deploying to devices...#{IO.ANSI.reset()}\n")
+    with_zigler_staging(native, fn ->
+      IO.puts("\n#{IO.ANSI.cyan()}Deploying to devices...#{IO.ANSI.reset()}\n")
 
-    # Default OFF for dev iteration: slim adds the strip pass + erl spawn
-    # for beam_lib:strip_release + xcrun strip, which costs seconds. Dev
-    # cycle wants those seconds back. Opt in with `--slim` when you want
-    # to size-test before mix mob.republish round-trips through TestFlight
-    # (and the inevitable extra TestFlight build that confuses testers).
-    slim = Keyword.get(opts, :slim, false)
+      # Default OFF for dev iteration: slim adds the strip pass + erl spawn
+      # for beam_lib:strip_release + xcrun strip, which costs seconds. Dev
+      # cycle wants those seconds back. Opt in with `--slim` when you want
+      # to size-test before mix mob.republish round-trips through TestFlight
+      # (and the inevitable extra TestFlight build that confuses testers).
+      slim = Keyword.get(opts, :slim, false)
 
-    deploy_opts =
-      [
-        restart: restart,
-        platforms: platforms,
-        force_fs: native,
-        device: device_id,
-        ios_device: effective_device_id,
-        beam_flags: beam_flags,
-        # nil → auto-allocation (per-device port + auto-derived suffix).
-        # Set → all targeted devices use these values verbatim.
-        dist_port: opts[:dist_port],
-        node_suffix: opts[:node_suffix]
-      ]
-
-    deploy_result =
-      if native do
-        native_opts = [
-          slim: slim,
-          android_preinstall: fn native_context ->
-            MobDev.Deployer.prepare_android_payload(native_context,
-              restart: restart,
-              beam_flags: beam_flags,
-              dist_port: opts[:dist_port],
-              node_suffix: opts[:node_suffix]
-            )
-          end,
-          android_preinstall_cleanup: &MobDev.Deployer.cleanup_android_payload/1
+      deploy_opts =
+        [
+          restart: restart,
+          platforms: platforms,
+          force_fs: native,
+          device: device_id,
+          ios_device: effective_device_id,
+          beam_flags: beam_flags,
+          # nil → auto-allocation (per-device port + auto-derived suffix).
+          # Set → all targeted devices use these values verbatim.
+          dist_port: opts[:dist_port],
+          node_suffix: opts[:node_suffix]
         ]
 
-        execute_native_deploy!(
-          platforms,
-          device_id,
-          effective_device_id,
-          native_opts,
-          deploy_opts
-        )
-      else
-        deploy_after_native_build!(false, nil, deploy_opts)
-      end
+      deploy_result =
+        if native do
+          native_opts = [
+            slim: slim,
+            android_preinstall: fn native_context ->
+              MobDev.Deployer.prepare_android_payload(native_context,
+                restart: restart,
+                beam_flags: beam_flags,
+                dist_port: opts[:dist_port],
+                node_suffix: opts[:node_suffix]
+              )
+            end,
+            android_preinstall_cleanup: &MobDev.Deployer.cleanup_android_payload/1
+          ]
 
-    report_deploy_result!(deploy_result, restart: restart)
+          execute_native_deploy!(
+            platforms,
+            device_id,
+            effective_device_id,
+            native_opts,
+            deploy_opts
+          )
+        else
+          deploy_after_native_build!(false, nil, deploy_opts)
+        end
+
+      report_deploy_result!(deploy_result, restart: restart)
+    end)
   end
+
+  @doc false
+  @spec with_zigler_staging(boolean(), (-> term()), keyword()) :: term()
+  def with_zigler_staging(native?, operation, opts \\ [])
+
+  def with_zigler_staging(false, operation, opts) when is_function(operation, 0) do
+    compiler = Keyword.get(opts, :compiler, &Mix.Task.run/2)
+    compiler.("compile", [])
+    operation.()
+  end
+
+  def with_zigler_staging(true, operation, opts) when is_function(operation, 0) do
+    compiler = Keyword.get(opts, :compiler, &Mix.Task.run/2)
+    previous_staging_root = System.fetch_env(@zigler_staging_env)
+    staging_root = zigler_staging_root(previous_staging_root, opts)
+
+    File.mkdir_p!(staging_root)
+    System.put_env(@zigler_staging_env, staging_root)
+
+    try do
+      compiler.("compile", ["--force"])
+      operation.()
+    after
+      restore_zigler_staging_root(previous_staging_root)
+    end
+  end
+
+  defp zigler_staging_root({:ok, staging_root}, _opts) when staging_root != "",
+    do: staging_root
+
+  defp zigler_staging_root(_previous_staging_root, opts) do
+    build_path = Keyword.get_lazy(opts, :build_path, &Mix.Project.build_path/0)
+    Path.join(build_path, @zigler_staging_dir)
+  end
+
+  defp restore_zigler_staging_root({:ok, staging_root}),
+    do: System.put_env(@zigler_staging_env, staging_root)
+
+  defp restore_zigler_staging_root(:error), do: System.delete_env(@zigler_staging_env)
 
   @doc false
   @spec execute_native_deploy!(
