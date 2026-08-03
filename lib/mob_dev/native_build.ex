@@ -1683,16 +1683,16 @@ defmodule MobDev.NativeBuild do
 
     with :ok <- validate_android_bundle_id(bundle_id),
          :ok <- validate_android_app_data(app_data, bundle_id),
+         {:ok, canonical_serials} <- canonical_android_runtime_serials(serials),
          :ok <- preflight_android_otp_candidates(otp_arm64, otp_arm32, otp_x86_64, elixir_lib),
-         :ok <- validate_android_update_serials(serials),
          {:ok, preinstall, cleanup} <- android_preinstall_callbacks(opts),
          {:ok, apk_snapshot} <- snapshot_android_apk(apk, opts) do
       try do
         with :ok <- validate_android_apk_identity(apk_snapshot.path, bundle_id, manifest_runner),
-             :ok <- preflight_installed_android_targets(serials, bundle_id, runner),
+             :ok <- preflight_installed_android_targets(canonical_serials, bundle_id, runner),
              {:ok, selections} <-
                select_android_otp_sources(
-                 serials,
+                 canonical_serials,
                  otp_arm64,
                  otp_arm32,
                  otp_x86_64,
@@ -1703,13 +1703,13 @@ defmodule MobDev.NativeBuild do
                  preinstall,
                  cleanup,
                  bundle_id,
-                 serials,
+                 canonical_serials,
                  selections,
                  apk_snapshot
                ) do
           run_android_runtime_transaction(
             apk_snapshot,
-            serials,
+            canonical_serials,
             bundle_id,
             app_data,
             elixir_lib,
@@ -2187,10 +2187,9 @@ defmodule MobDev.NativeBuild do
       end
     catch
       kind, reason ->
-        case cleanup_android_payload(cleanup, payload_plan) do
-          :ok -> :erlang.raise(kind, reason, __STACKTRACE__)
-          {:error, cleanup_reason} -> {:error, cleanup_reason}
-        end
+        stacktrace = __STACKTRACE__
+        cleanup_android_payload(cleanup, payload_plan)
+        :erlang.raise(kind, reason, stacktrace)
     end
   end
 
@@ -2225,16 +2224,8 @@ defmodule MobDev.NativeBuild do
   end
 
   defp cleanup_android_payload_after_failure(cleanup, payload_plan, failure) do
-    case cleanup_android_payload(cleanup, payload_plan) do
-      :ok ->
-        failure
-
-      {:error, cleanup_reason} ->
-        case failure do
-          {:error, _reason, lock} -> {:error, cleanup_reason, lock}
-          _failure -> {:error, cleanup_reason}
-        end
-    end
+    cleanup_android_payload(cleanup, payload_plan)
+    failure
   end
 
   defp deploy_locked_android_otp(
@@ -3043,6 +3034,28 @@ defmodule MobDev.NativeBuild do
       true -> :ok
     end
   end
+
+  defp canonical_android_runtime_serials(serials) do
+    with {:ok, proper_serials} <-
+           collect_android_runtime_serials(serials, [], 0),
+         :ok <- validate_android_update_serials(proper_serials) do
+      {:ok, Enum.sort(proper_serials)}
+    else
+      {:error, reason} -> {:error, android_update_request_error(reason)}
+    end
+  end
+
+  defp collect_android_runtime_serials([], [], 0), do: {:error, :no_explicit_targets}
+  defp collect_android_runtime_serials([], serials, _count), do: {:ok, Enum.reverse(serials)}
+
+  defp collect_android_runtime_serials([_serial | _rest], _serials, @max_android_update_targets),
+    do: {:error, :too_many_targets}
+
+  defp collect_android_runtime_serials([serial | rest], serials, count),
+    do: collect_android_runtime_serials(rest, [serial | serials], count + 1)
+
+  defp collect_android_runtime_serials(_improper_or_invalid, _serials, _count),
+    do: {:error, :invalid_target}
 
   defp casefold_duplicates?(serials) do
     normalized = Enum.map(serials, &String.downcase/1)

@@ -2619,6 +2619,88 @@ defmodule MobDev.NativeBuildTest do
       assert cleanup_authoritative_android_plan(plan) == :ok
     end
 
+    test "canonicalizes one unsorted target set before planning and every mutation", %{
+      tmp_dir: dir
+    } do
+      fixture = authoritative_android_fixture!(dir, ["serial-b", "serial-a"])
+      owner_state = start_supervised!({Agent, fn -> true end})
+      probe_runner = authoritative_android_probe_runner(self(), fixture, owner_state)
+      otp_runner = authoritative_android_otp_runner(self())
+
+      preinstall = fn input -> {:ok, authoritative_android_payload_plan!(dir, input)} end
+      cleanup = fn plan -> cleanup_authoritative_android_plan(plan) end
+
+      assert {:ok,
+              %{
+                deploy_lock: %{serials: ["serial-a", "serial-b"], phase: :native_ready},
+                payload_plan: %{serials: ["serial-a", "serial-b"]} = plan
+              }} =
+               run_authoritative_android(
+                 fixture,
+                 dir,
+                 probe_runner,
+                 otp_runner,
+                 preinstall,
+                 cleanup
+               )
+
+      install_serials =
+        for {"adb", ["-s", serial, "install", "-r", _apk]} <-
+              drain_native_commands(:native_probe),
+            do: serial
+
+      assert install_serials == ["serial-a", "serial-b"]
+      assert cleanup_authoritative_android_plan(plan) == :ok
+    end
+
+    test "rejects empty, oversized, duplicate, ambiguous, and unbounded sets before work", %{
+      tmp_dir: dir
+    } do
+      fixture = authoritative_android_fixture!(dir, ["fixture-serial"])
+      owner_state = start_supervised!({Agent, fn -> true end})
+      probe_runner = authoritative_android_probe_runner(self(), fixture, owner_state)
+      otp_runner = authoritative_android_otp_runner(self())
+
+      invalid_sets = [
+        {[], "Android APK update requires at least one explicit target"},
+        {Enum.map(1..33, &"serial-#{&1}"),
+         "Android APK update target count exceeds the safety limit"},
+        {["serial-a", "serial-a"], "Android APK update request is invalid"},
+        {["serial-a", "SERIAL-A"], "Android APK update request is invalid"},
+        {[String.duplicate("a", 129)], "Android APK update request is invalid"},
+        {["serial-a" | "invalid-tail"], "Android APK update request is invalid"}
+      ]
+
+      for {serials, expected_reason} <- invalid_sets do
+        invalid_fixture = %{fixture | serials: serials}
+
+        preinstall = fn _input ->
+          send(self(), :unexpected_preinstall)
+          {:error, :unexpected}
+        end
+
+        cleanup = fn _plan ->
+          send(self(), :unexpected_cleanup)
+          :ok
+        end
+
+        assert {:error, ^expected_reason} =
+                 run_authoritative_android(
+                   invalid_fixture,
+                   dir,
+                   probe_runner,
+                   otp_runner,
+                   preinstall,
+                   cleanup
+                 )
+      end
+
+      refute_received :unexpected_preinstall
+      refute_received :unexpected_cleanup
+      refute_received {:native_probe, _, _}
+      refute_received {:native_otp, _, _}
+    end
+
     test "accepts only the bounded binary beam-flags payload contract", %{tmp_dir: dir} do
       fixture = authoritative_android_fixture!(dir, ["serial-a"])
       owner_state = start_supervised!({Agent, fn -> true end})
@@ -2651,7 +2733,7 @@ defmodule MobDev.NativeBuildTest do
           {:ok, put_in(invalid_plan.beam.beam_flags, invalid_flags)}
         end
 
-        assert {:error, "Could not clean authoritative Android payload"} =
+        assert {:error, "Authoritative Android payload plan identity is invalid"} =
                  run_authoritative_android(
                    fixture,
                    dir,
@@ -2694,7 +2776,7 @@ defmodule MobDev.NativeBuildTest do
         {:error, :injected_cleanup_failure}
       end
 
-      assert {:error, "Could not clean authoritative Android payload"} =
+      assert {:error, "Authoritative Android payload plan identity is invalid"} =
                run_authoritative_android(
                  fixture,
                  dir,
@@ -2712,6 +2794,91 @@ defmodule MobDev.NativeBuildTest do
 
       [leaked_apk] = Path.wildcard(Path.join(dir, "authoritative-plan-*.apk"))
       File.rm!(leaked_apk)
+      Enum.each(Path.wildcard(Path.join(dir, "authoritative-beams-*.tar")), &File.rm!/1)
+    end
+
+    test "cleanup failure cannot replace a primary device error or its exact retained lease", %{
+      tmp_dir: dir
+    } do
+      fixture = authoritative_android_fixture!(dir, ["serial-a"])
+      owner_state = start_supervised!({Agent, fn -> true end})
+      base_runner = authoritative_android_probe_runner(self(), fixture, owner_state)
+
+      probe_runner = fn
+        "adb", ["-s", "serial-a", "install", "-r", _apk] = args ->
+          send(self(), {:native_probe, "adb", args})
+          {"Failure [INSTALL_FAILED_INSUFFICIENT_STORAGE]\n", 1}
+
+        executable, args ->
+          base_runner.(executable, args)
+      end
+
+      preinstall = fn input -> {:ok, authoritative_android_payload_plan!(dir, input)} end
+
+      cleanup = fn plan ->
+        send(self(), {:payload_cleanup, plan.attempt_id})
+        {:error, :injected_cleanup_failure}
+      end
+
+      assert {:error, reason,
+              %{
+                owner: "ownerproof000001",
+                state: :retained_failure,
+                phase: :acquired,
+                serials: ["serial-a"]
+              }} =
+               run_authoritative_android(
+                 fixture,
+                 dir,
+                 probe_runner,
+                 authoritative_android_otp_runner(self()),
+                 preinstall,
+                 cleanup
+               )
+
+      assert reason == "APK update failed: out of storage"
+      assert_received {:payload_cleanup, "planbeam00000001"}
+      refute_received {:payload_cleanup, "planbeam00000001"}
+
+      Enum.each(Path.wildcard(Path.join(dir, "authoritative-plan-*.apk")), &File.rm!/1)
+      Enum.each(Path.wildcard(Path.join(dir, "authoritative-beams-*.tar")), &File.rm!/1)
+    end
+
+    test "cleanup throw cannot replace a primary raised exception and runs exactly once", %{
+      tmp_dir: dir
+    } do
+      fixture = authoritative_android_fixture!(dir, ["serial-a"])
+      owner_state = start_supervised!({Agent, fn -> true end})
+      probe_runner = authoritative_android_probe_runner(self(), fixture, owner_state)
+      base_otp_runner = authoritative_android_otp_runner(self())
+
+      otp_runner = fn
+        "cp", _args, _opts -> raise "primary OTP preparation failure"
+        executable, args, opts -> base_otp_runner.(executable, args, opts)
+      end
+
+      preinstall = fn input -> {:ok, authoritative_android_payload_plan!(dir, input)} end
+
+      cleanup = fn plan ->
+        send(self(), {:payload_cleanup, plan.attempt_id})
+        throw(:secondary_cleanup_failure)
+      end
+
+      assert_raise RuntimeError, "primary OTP preparation failure", fn ->
+        run_authoritative_android(
+          fixture,
+          dir,
+          probe_runner,
+          otp_runner,
+          preinstall,
+          cleanup
+        )
+      end
+
+      assert_received {:payload_cleanup, "planbeam00000001"}
+      refute_received {:payload_cleanup, "planbeam00000001"}
+
+      Enum.each(Path.wildcard(Path.join(dir, "authoritative-plan-*.apk")), &File.rm!/1)
       Enum.each(Path.wildcard(Path.join(dir, "authoritative-beams-*.tar")), &File.rm!/1)
     end
 
@@ -2756,6 +2923,7 @@ defmodule MobDev.NativeBuildTest do
 
       assert reason =~ "OTP archive changed"
       assert_received {:payload_cleanup, "planbeam00000001"}
+      refute_received {:payload_cleanup, "planbeam00000001"}
       probe_commands = drain_native_commands(:native_probe)
       otp_commands = drain_native_commands(:native_otp)
 
@@ -2880,7 +3048,7 @@ defmodule MobDev.NativeBuildTest do
         {:error, :injected_cleanup_failure}
       end
 
-      assert {:error, "Could not clean authoritative Android payload",
+      assert {:error, "Android device transaction became ambiguous; deploy lease retained",
               %{
                 owner: "ownerproof000001",
                 state: :retained_ambiguous,
@@ -2897,6 +3065,7 @@ defmodule MobDev.NativeBuildTest do
                )
 
       assert_received {:payload_cleanup, "planbeam00000001"}
+      refute_received {:payload_cleanup, "planbeam00000001"}
       probe_commands = drain_native_commands(:native_probe)
 
       refute Enum.any?(probe_commands, fn
