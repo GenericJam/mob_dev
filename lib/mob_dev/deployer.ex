@@ -394,7 +394,7 @@ defmodule MobDev.Deployer do
                "."
              ]),
            {:ok, archive} <- payload_archive_identity(archive_path),
-           {:ok, dist_snapshot} <- payload_dist_snapshot(beam_dirs) do
+           {:ok, dist_snapshot} <- payload_dist_snapshot(stage) do
         {:ok,
          %{
            archive: archive,
@@ -540,9 +540,10 @@ defmodule MobDev.Deployer do
     end
   end
 
-  defp payload_dist_snapshot(beam_dirs) do
-    beam_dirs
-    |> Enum.flat_map(&Path.wildcard(Path.join(&1, "*.beam")))
+  defp payload_dist_snapshot(stage) do
+    stage
+    |> Path.join("*.beam")
+    |> Path.wildcard()
     |> Enum.sort()
     |> HotPush.prepare()
   end
@@ -1128,8 +1129,31 @@ defmodule MobDev.Deployer do
         )
 
       :filesystem ->
-        deploy_native_android_targets(devices, opts, lease, plan, identity, lock_runner)
+        deploy_fast_android_via_filesystem(
+          devices,
+          opts,
+          lease,
+          plan,
+          identity,
+          lock_runner
+        )
     end
+  end
+
+  defp deploy_fast_android_via_filesystem(devices, opts, lease, plan, identity, lock_runner) do
+    try do
+      deploy_native_android_targets(devices, opts, lease, plan, identity, lock_runner)
+    rescue
+      _error -> failed_fast_filesystem_result(devices, lease, lock_runner)
+    catch
+      _kind, _reason -> failed_fast_filesystem_result(devices, lease, lock_runner)
+    end
+  end
+
+  defp failed_fast_filesystem_result(devices, lease, lock_runner) do
+    reason = "Fast Android filesystem deploy failed before exact-set commit"
+    retained = retained_lease_after_failure(lease, lock_runner)
+    {{[], Enum.map(devices, &failed_android_device(&1, reason)), []}, retained}
   end
 
   defp connected_fast_android_nodes(devices, opts) do
@@ -1620,6 +1644,7 @@ defmodule MobDev.Deployer do
     ios_device_id = Keyword.get(opts, :ios_device, nil)
     canonical_android_serials = Keyword.get(opts, :canonical_android_serials, nil)
     android_lister = Keyword.get(opts, :android_lister, &Android.list_devices/0)
+    ios_lister = Keyword.get(opts, :ios_lister, &IOS.list_devices/0)
     device_deployer = Keyword.get(opts, :device_deployer, nil)
     beam_flags = Keyword.get(opts, :beam_flags, nil)
     beam_dirs = collect_beam_dirs()
@@ -1633,7 +1658,7 @@ defmodule MobDev.Deployer do
 
     ios =
       if :ios in platforms,
-        do: IOS.list_devices() |> filter_by_device_id(ios_device_id || device_id),
+        do: ios_lister.() |> filter_by_device_id(ios_device_id || device_id),
         else: []
 
     all = android ++ ios

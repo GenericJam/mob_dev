@@ -307,6 +307,44 @@ defmodule MobDev.DeployerTest do
       refute File.exists?(plan.apk.path)
     end
 
+    test "dist snapshot and filesystem archive use the same staged bytes after source mutation",
+         %{
+           tmp_dir: dir
+         } do
+      {context, opts} = android_payload_fixture!(dir)
+      beam_dir = opts |> Keyword.fetch!(:beam_dirs) |> List.first()
+      source_path = Path.join(beam_dir, "Elixir.MobDev.Deployer.beam")
+      mutated_source = alternate_deployer_beam!()
+
+      local_runner = fn executable, args, command_opts ->
+        result = System.cmd(executable, args, command_opts)
+
+        if executable == "cp" and elem(result, 1) == 0 do
+          File.write!(source_path, mutated_source)
+        end
+
+        result
+      end
+
+      assert {:ok, plan} =
+               Deployer.prepare_android_payload(
+                 context,
+                 Keyword.put(opts, :local_runner, local_runner)
+               )
+
+      archive_dir = Path.join(dir, "archive-contents")
+      File.mkdir_p!(archive_dir)
+      assert {"", 0} = System.cmd("tar", ["xf", plan.beam.archive.path, "-C", archive_dir])
+
+      archived_beam = File.read!(Path.join(archive_dir, "Elixir.MobDev.Deployer.beam"))
+
+      assert [%{module: MobDev.Deployer, binary: dist_beam}] = plan.beam.dist_snapshot
+      assert dist_beam == archived_beam
+      refute dist_beam == mutated_source
+
+      assert :ok = Deployer.cleanup_android_payload(plan)
+    end
+
     test "rejects unchecked restart before reserving any artifact root", %{tmp_dir: dir} do
       {context, opts} = android_payload_fixture!(dir)
 
@@ -535,6 +573,56 @@ defmodule MobDev.DeployerTest do
       assert_received {:mutated, "serial-a"}
       assert_received {:mutated, "serial-b"}
       refute_received {:mutated, _}
+    end
+
+    test "a target throw after the first filesystem mutation retains the lease and never starts iOS",
+         %{
+           tmp_dir: dir
+         } do
+      first = canonical_device("serial-a")
+      second = canonical_device("serial-b")
+      ios = %MobDev.Device{platform: :ios, serial: "ios-a", status: :discovered}
+      parent = self()
+
+      opts =
+        [
+          platforms: [:android, :ios],
+          force_fs: true,
+          canonical_android_serials: ["serial-a", "serial-b"],
+          android_lister: fn -> [second, first] end,
+          ios_lister: fn ->
+            send(parent, :ios_discovery_started)
+            [ios]
+          end,
+          device_deployer: fn
+            %{platform: :android, serial: "serial-a"} = target ->
+              send(parent, {:mutated, :android, "serial-a"})
+              {:ok, target}
+
+            %{platform: :android, serial: "serial-b"} ->
+              send(parent, {:mutated, :android, "serial-b"})
+              throw(:target_runner_lost)
+
+            %{platform: :ios, serial: serial} = target ->
+              send(parent, {:mutated, :ios, serial})
+              {:ok, target}
+          end
+        ] ++ fast_deploy_test_opts(dir)
+
+      ExUnit.CaptureIO.capture_io(fn ->
+        assert {{[], failed, []}, retained} = Deployer.deploy_all_with_lease(opts)
+
+        assert retained.state == :retained_failure
+        assert retained.phase == :acquired
+        assert retained.serials == ["serial-a", "serial-b"]
+        assert Enum.map(failed, & &1.serial) == ["serial-a", "serial-b"]
+        assert Enum.all?(failed, &(&1.status == :error))
+      end)
+
+      assert_received {:mutated, :android, "serial-a"}
+      assert_received {:mutated, :android, "serial-b"}
+      refute_received :ios_discovery_started
+      refute_received {:mutated, :ios, _}
     end
 
     test "an entirely connected exact set hot-pushes and repaints inside one lease", %{
@@ -1674,6 +1762,18 @@ defmodule MobDev.DeployerTest do
     ]
 
     {context, opts}
+  end
+
+  defp alternate_deployer_beam! do
+    forms = [
+      {:attribute, 1, :module, MobDev.Deployer},
+      {:attribute, 1, :export, [{:staged_snapshot_marker, 0}]},
+      {:function, 1, :staged_snapshot_marker, 0,
+       [{:clause, 1, [], [], [{:atom, 1, :mutated_live_source}]}]}
+    ]
+
+    assert {:ok, MobDev.Deployer, binary} = :compile.forms(forms, [:return_errors])
+    binary
   end
 
   defp fast_deploy_test_opts(dir) do
