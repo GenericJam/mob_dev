@@ -663,6 +663,80 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
                {:deploy, [:ios]}
              ]
     end
+
+    test "iOS target selection is frozen before the native builder runs" do
+      parent = self()
+      full_id = "78354490-EF38-44D7-A437-DD941C20524D"
+      target = ios_simulator(full_id)
+
+      lister = fn ->
+        send(parent, :original_ios_lister_called)
+        [target]
+      end
+
+      builder = fn opts ->
+        send(parent, {:builder_called, opts})
+        native_outcome([])
+      end
+
+      deployer = fn opts ->
+        send(parent, {:deployer_called, opts})
+        assert opts[:ios_lister].() == [target]
+        {[target], [], []}
+      end
+
+      assert {[^target], [], []} =
+               Deploy.execute_native_deploy!(
+                 [:ios],
+                 nil,
+                 "78354490",
+                 [],
+                 [restart: true, ios_lister: lister],
+                 builder: builder,
+                 deployer: deployer,
+                 finalizer: fn _lock -> flunk("iOS must not release Android state") end,
+                 cleanup: fn _plan -> flunk("iOS must not clean Android state") end
+               )
+
+      assert_received :original_ios_lister_called
+      refute_received :original_ios_lister_called
+
+      assert_received {:builder_called, builder_opts}
+      assert builder_opts[:device] == full_id
+      assert builder_opts[:platforms] == [:ios]
+
+      assert_received {:deployer_called, deployer_opts}
+      assert deployer_opts[:ios_device] == full_id
+      assert deployer_opts[:device] == nil
+    end
+
+    test "ambiguous iOS target selection fails before native build or deploy mutation" do
+      parent = self()
+
+      first = ios_simulator("78354490-EF38-44D7-A437-DD941C20524D")
+      second = ios_simulator("78354490-A111-4D7A-B222-DD941C20524D")
+
+      assert_raise Mix.Error, "Native build failed", fn ->
+        ExUnit.CaptureIO.capture_io(fn ->
+          Deploy.execute_native_deploy!(
+            [:ios],
+            nil,
+            "78354490",
+            [],
+            [restart: true, ios_lister: fn -> [first, second] end],
+            builder: fn _opts -> send(parent, :builder_called) end,
+            deployer: fn _opts -> send(parent, :deployer_called) end,
+            finalizer: fn _lock -> send(parent, :finalizer_called) end,
+            cleanup: fn _plan -> send(parent, :cleanup_called) end
+          )
+        end)
+      end
+
+      refute_received :builder_called
+      refute_received :deployer_called
+      refute_received :finalizer_called
+      refute_received :cleanup_called
+    end
   end
 
   describe "deploy_after_native_build!/4" do

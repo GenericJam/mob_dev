@@ -428,6 +428,40 @@ defmodule Mix.Tasks.Mob.Deploy do
   end
 
   defp run_native_platform!(
+         :ios,
+         device_id,
+         native_opts,
+         deploy_opts,
+         builder,
+         deployer,
+         finalizer,
+         cleanup
+       ) do
+    ios_opts =
+      deploy_opts
+      |> Keyword.put(:platforms, [:ios])
+      |> Keyword.put(:ios_device, device_id)
+
+    case freeze_remaining_ios_target(ios_opts, [:ios]) do
+      {:ok, frozen_deploy_opts, selected} ->
+        outcome = builder.(native_platform_build_opts(native_opts, :ios, selected.serial))
+
+        deploy_native_platform_outcome!(
+          :ios,
+          selected.serial,
+          outcome,
+          frozen_deploy_opts,
+          deployer,
+          finalizer,
+          cleanup
+        )
+
+      {:error, _reason} ->
+        raise_native_build_failed!()
+    end
+  end
+
+  defp run_native_platform!(
          platform,
          device_id,
          native_opts,
