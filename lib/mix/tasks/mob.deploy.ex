@@ -321,7 +321,7 @@ defmodule Mix.Tasks.Mob.Deploy do
   defp matching_inventory_devices(devices, platform, device_id) when is_list(devices) do
     Enum.filter(devices, fn
       %Device{platform: ^platform, serial: serial} = device when is_binary(serial) ->
-        Device.match_id?(device, device_id)
+        device_matches_selector?(device, device_id)
 
       _invalid_or_other_platform ->
         false
@@ -330,6 +330,23 @@ defmodule Mix.Tasks.Mob.Deploy do
 
   defp matching_inventory_devices(_invalid_inventory, _platform, _device_id) do
     []
+  end
+
+  defp device_matches_selector?(%Device{platform: :android, serial: serial} = device, device_id) do
+    Device.match_id?(device, device_id) or
+      serial == "#{device_id}:5555" or
+      android_serial_host(serial) == device_id
+  end
+
+  defp device_matches_selector?(%Device{} = device, device_id) do
+    Device.match_id?(device, device_id)
+  end
+
+  defp android_serial_host(serial) do
+    case String.split(serial, ":", parts: 2) do
+      [host, _port] -> host
+      _serial_without_port -> serial
+    end
   end
 
   defp raise_no_device_match!(device_id) do

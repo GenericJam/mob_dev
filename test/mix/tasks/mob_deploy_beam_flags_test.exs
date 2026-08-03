@@ -166,6 +166,7 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
       for {id, device} <- [
             {"ZY22CRLMWK", android_device("ZY22CRLMWK")},
             {"emulator-5554", android_device("emulator-5554", :emulator)},
+            {"10.0.0.17", android_device("10.0.0.17:5555")},
             {"10.0.0.17:5555", android_device("10.0.0.17:5555")}
           ] do
         assert Deploy.resolve_target_platforms!(
@@ -232,6 +233,24 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
       end
     end
 
+    test "fails closed when a bare IP matches multiple WiFi ADB serials" do
+      id = "10.0.0.17"
+
+      devices = [
+        android_device("10.0.0.17:5555"),
+        android_device("10.0.0.17:4444")
+      ]
+
+      assert_raise Mix.Error, no_device_match_pattern(), fn ->
+        Deploy.resolve_target_platforms!(
+          [:android, :ios],
+          id,
+          fn -> devices end,
+          fn -> [] end
+        )
+      end
+    end
+
     test "fails closed on iOS simulator display-ID collisions" do
       id = "12345678"
 
@@ -263,6 +282,8 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
         {["--android"], ios.serial, [android], [ios]},
         {["--android", "--ios"], "r5cw3089hvb",
          [android_device("R5CW3089HVB"), android_device("r5cw3089hvb")], []},
+        {["--android", "--ios"], "10.0.0.17",
+         [android_device("10.0.0.17:5555"), android_device("10.0.0.17:4444")], []},
         {["--android", "--ios"], "12345678", [],
          [
            ios_simulator("12345678-ABCD-1234-ABCD-1234567890AB"),
@@ -309,6 +330,34 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
 
       assert_received {:orchestration_called, opts, [:android], ^id}
       assert opts[:native]
+    end
+
+    test "enters the injected orchestrator for WiFi ADB selectors" do
+      parent = self()
+
+      cases = [
+        {"10.0.0.17", [android_device("10.0.0.17:5555")]},
+        {"10.0.0.17:5555", [android_device("10.0.0.17:5555"), android_device("10.0.0.17:4444")]}
+      ]
+
+      for {id, devices} <- cases do
+        ref = make_ref()
+
+        callbacks = [
+          android_lister: fn -> devices end,
+          ios_lister: fn -> [] end,
+          orchestrator: fn opts, platforms, device_id ->
+            send(parent, {ref, :orchestration_called, opts, platforms, device_id})
+            :orchestrated
+          end
+        ]
+
+        assert Deploy.run(["--android", "--ios", "--native", "--device", id], callbacks) ==
+                 :orchestrated
+
+        assert_received {^ref, :orchestration_called, opts, [:android], ^id}
+        assert opts[:native]
+      end
     end
   end
 
