@@ -136,6 +136,9 @@ narrowing functions). Don't make them private:
 - `AndroidDeployLock.valid?/2`, `acquire/4`, `verify_owner/3`, `transition/4`,
   `release/2`, `status/3`, and `cleanup_committed_tombstone/3` (the shared,
   exact-target Android mutation lease and its bounded recovery surface)
+- `HotPush.prepare/1`, `push_prepared/2`, `push_prepared/3`,
+  `validate_prepared_snapshot/1`, and `push_prepared_fenced/3` (immutable BEAM
+  snapshot and lease-fenced RPC seams; raw Android pushes intentionally reject)
 - `Mix.Tasks.Mob.DeployLock.inspect_or_cleanup/4` (hermetic task decision seam;
   production still requires an explicit exact `--device`)
 - `Deployer.select_canonical_android_devices/2` (native final-pass exact-target
