@@ -2959,7 +2959,12 @@ defmodule MobDev.NativeBuild do
   defp ready_android_targets([]), do: {:error, :no_targets}
 
   defp ready_android_targets(states) do
-    {:ok, Enum.map(states, fn {serial, "device"} -> serial end)}
+    serials =
+      states
+      |> Enum.map(fn {serial, "device"} -> serial end)
+      |> Enum.sort()
+
+    {:ok, serials}
   end
 
   defp parse_adb_device_states(output)

@@ -2139,14 +2139,14 @@ defmodule MobDev.NativeBuildTest do
       refute_received {:command, _, _}
     end
 
-    test "default fanout resolves every ready serial when the full snapshot is ready" do
+    test "default fanout canonicalizes every ready serial before the device phase" do
       runner = fn "adb", ["devices"] ->
         {"""
          * daemon not running; starting now at tcp:5037
          * daemon started successfully
          List of devices attached
-         serial-a\tdevice
          serial-b\tdevice
+         serial-a\tdevice
          """, 0}
       end
 
@@ -2203,7 +2203,9 @@ defmodule MobDev.NativeBuildTest do
 
       accepted = Enum.take(serials, 32)
 
-      assert {:ok, ^accepted} =
+      canonical_accepted = Enum.sort(accepted)
+
+      assert {:ok, ^canonical_accepted} =
                NativeBuild.resolve_android_update_targets(
                  nil,
                  fn "adb", ["devices"] -> {output.(accepted), 0} end

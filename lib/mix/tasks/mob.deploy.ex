@@ -608,38 +608,37 @@ defmodule Mix.Tasks.Mob.Deploy do
       )
       when is_list(android_serials) and is_function(deployer, 1) and
              is_function(lock_finalizer, 1) and is_function(payload_cleanup, 1) do
-    try do
-      valid_opts? = is_list(deploy_opts) and Keyword.keyword?(deploy_opts)
-      platforms = if valid_opts?, do: Keyword.get(deploy_opts, :platforms, [:android, :ios])
-      restart = if valid_opts?, do: Keyword.get(deploy_opts, :restart, true)
+    valid_opts? = is_list(deploy_opts) and Keyword.keyword?(deploy_opts)
+    platforms = if valid_opts?, do: Keyword.get(deploy_opts, :platforms, [:android, :ios])
+    restart = if valid_opts?, do: Keyword.get(deploy_opts, :restart, true)
 
-      consistent_platform? =
-        is_list(platforms) and
-          ((android_device_disposition == :not_attempted and android_serials == [] and
-              is_nil(android_deploy_lock) and
-              is_nil(android_payload_plan)) or
-             (android_device_disposition == :held and android_serials != [] and
-                :android in platforms and is_map(android_deploy_lock) and
-                is_map(android_payload_plan)))
+    consistent_platform? =
+      is_list(platforms) and
+        ((android_device_disposition == :not_attempted and android_serials == [] and
+            is_nil(android_deploy_lock) and
+            is_nil(android_payload_plan)) or
+           (android_device_disposition == :held and android_serials != [] and
+              :android in platforms and is_map(android_deploy_lock) and
+              is_map(android_payload_plan)))
 
-      with true <- valid_opts?,
-           true <- valid_native_platforms?(platforms),
-           true <- consistent_platform?,
-           :ok <- validate_native_android_lock(android_deploy_lock, android_serials),
-           true <- valid_native_restart?(restart, android_serials) do
-        deploy_native_targets(
-          deploy_opts,
-          android_serials,
-          android_deploy_lock,
-          android_payload_plan,
-          deployer,
-          lock_finalizer
-        )
-      else
-        _invalid_or_noncommittable -> raise_native_build_failed!()
-      end
-    after
-      cleanup_native_android_payload(android_payload_plan, payload_cleanup)
+    with true <- valid_opts?,
+         true <- valid_native_platforms?(platforms),
+         true <- consistent_platform?,
+         :ok <- validate_native_android_lock(android_deploy_lock, android_serials),
+         true <- valid_native_restart?(restart, android_serials) do
+      deploy_native_targets(
+        deploy_opts,
+        android_serials,
+        android_deploy_lock,
+        android_payload_plan,
+        deployer,
+        lock_finalizer,
+        payload_cleanup
+      )
+    else
+      _invalid_or_noncommittable ->
+        _cleanup_result = cleanup_native_android_payload(android_payload_plan, payload_cleanup)
+        raise_native_build_failed!()
     end
   end
 
@@ -728,7 +727,8 @@ defmodule Mix.Tasks.Mob.Deploy do
          android_deploy_lock,
          android_payload_plan,
          deployer,
-         lock_finalizer
+         lock_finalizer,
+         payload_cleanup
        ) do
     platforms = Keyword.get(deploy_opts, :platforms, [:android, :ios])
     remaining_platforms = platforms -- [:android]
@@ -739,29 +739,45 @@ defmodule Mix.Tasks.Mob.Deploy do
 
     android_results =
       if :android in platforms and android_serials != [] do
-        {raw_android_result, committed_lock} =
-          deploy_opts
-          |> Keyword.put(:platforms, [:android])
-          |> Keyword.put(:canonical_android_serials, android_serials)
-          |> Keyword.put(:android_deploy_lock, android_deploy_lock)
-          |> Keyword.put(:android_payload_plan, android_payload_plan)
-          |> Keyword.delete(:device)
-          |> deployer.()
-          |> normalize_native_deployer_result()
+        try do
+          {raw_android_result, committed_lock} =
+            deploy_opts
+            |> Keyword.put(:platforms, [:android])
+            |> Keyword.put(:canonical_android_serials, android_serials)
+            |> Keyword.put(:android_deploy_lock, android_deploy_lock)
+            |> Keyword.put(:android_payload_plan, android_payload_plan)
+            |> Keyword.delete(:device)
+            |> deployer.()
+            |> normalize_native_deployer_result()
 
-        android_result = enforce_native_android_targets(raw_android_result, android_serials)
+          android_result = enforce_native_android_targets(raw_android_result, android_serials)
 
-        [
-          finalize_native_android_lock(
-            android_result,
-            android_deploy_lock,
-            committed_lock,
-            lock_finalizer
-          )
-        ]
+          [
+            finalize_native_android_lock(
+              android_result,
+              android_deploy_lock,
+              committed_lock,
+              lock_finalizer
+            )
+          ]
+        catch
+          kind, reason ->
+            _cleanup_result =
+              cleanup_native_android_payload(android_payload_plan, payload_cleanup)
+
+            :erlang.raise(kind, reason, __STACKTRACE__)
+        end
       else
         []
       end
+
+    android_results =
+      finalize_native_android_payload(
+        android_results,
+        android_serials,
+        android_payload_plan,
+        payload_cleanup
+      )
 
     case android_results do
       [{_deployed, [_failure | _], _skipped}] ->
@@ -784,6 +800,55 @@ defmodule Mix.Tasks.Mob.Deploy do
 
         merge_deploy_results(android_results ++ remaining_results)
     end
+  end
+
+  defp finalize_native_android_payload(
+         [],
+         _android_serials,
+         _android_payload_plan,
+         _payload_cleanup
+       ),
+       do: []
+
+  defp finalize_native_android_payload(
+         [{deployed, [], []}] = successful_results,
+         android_serials,
+         android_payload_plan,
+         payload_cleanup
+       ) do
+    case cleanup_native_android_payload(android_payload_plan, payload_cleanup) do
+      :ok ->
+        successful_results
+
+      {:error, _cleanup_reason} ->
+        failed =
+          case deployed do
+            [] ->
+              Enum.map(android_serials, fn serial ->
+                native_target_failure(
+                  %Device{platform: :android, serial: serial},
+                  "Native Android payload cleanup failed"
+                )
+              end)
+
+            devices ->
+              Enum.map(devices, fn device ->
+                native_target_failure(device, "Native Android payload cleanup failed")
+              end)
+          end
+
+        [{[], failed, []}]
+    end
+  end
+
+  defp finalize_native_android_payload(
+         failed_results,
+         _android_serials,
+         android_payload_plan,
+         payload_cleanup
+       ) do
+    _cleanup_result = cleanup_native_android_payload(android_payload_plan, payload_cleanup)
+    failed_results
   end
 
   defp finalize_native_android_lock(
@@ -905,21 +970,22 @@ defmodule Mix.Tasks.Mob.Deploy do
     try do
       case cleanup.(payload_plan) do
         :ok -> :ok
-        _failed_or_invalid -> warn_android_payload_cleanup_failed()
+        _failed_or_invalid -> android_payload_cleanup_error()
       end
     catch
-      _kind, _reason -> warn_android_payload_cleanup_failed()
+      _kind, _reason -> android_payload_cleanup_error()
     end
   end
 
-  defp cleanup_native_android_payload(_untrusted_payload_plan, _cleanup), do: :ok
+  defp cleanup_native_android_payload(_untrusted_payload_plan, _cleanup),
+    do: {:error, :invalid_android_payload_plan}
 
-  defp warn_android_payload_cleanup_failed do
+  defp android_payload_cleanup_error do
     IO.puts(
       "#{IO.ANSI.yellow()}Could not clean local Android deploy staging; no device cleanup was attempted.#{IO.ANSI.reset()}"
     )
 
-    :ok
+    {:error, :android_payload_cleanup_failed}
   end
 
   defp enforce_native_android_targets({deployed, failed, skipped}, serials) do

@@ -378,6 +378,167 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
              }
     end
 
+    test "cleanup errors and exceptions turn Android non-green before every iOS callback" do
+      events = start_supervised!({Agent, fn -> [] end})
+      serial = "serial-a"
+
+      for cleanup_failure <- [:error, :raise] do
+        Agent.update(events, fn _events -> [] end)
+        record = fn event -> Agent.update(events, &(&1 ++ [event])) end
+
+        builder = fn opts ->
+          record.({:build, opts[:platforms]})
+          native_outcome([serial])
+        end
+
+        deployer = fn opts ->
+          record.({:deploy, opts[:platforms]})
+
+          committed_result(
+            {[%MobDev.Device{platform: :android, serial: serial}], [], []},
+            [serial]
+          )
+        end
+
+        finalizer = fn lock ->
+          record.({:release, lock.phase})
+          :ok
+        end
+
+        cleanup = fn plan ->
+          record.({:cleanup, plan.attempt_id})
+
+          case cleanup_failure do
+            :error -> {:error, :injected_cleanup_failure}
+            :raise -> raise "injected cleanup failure"
+          end
+        end
+
+        assert {[], [%MobDev.Device{serial: ^serial, status: :error} = failure], []} =
+                 Deploy.execute_native_deploy!(
+                   [:android, :ios],
+                   nil,
+                   "ios-device",
+                   [],
+                   [restart: true],
+                   builder: builder,
+                   deployer: deployer,
+                   finalizer: finalizer,
+                   cleanup: cleanup
+                 )
+
+        assert failure.error == "Native Android payload cleanup failed"
+
+        assert Agent.get(events, & &1) == [
+                 {:build, [:android]},
+                 {:deploy, [:android]},
+                 {:release, :final_committed},
+                 {:cleanup, "0123456789abcdef"}
+               ]
+      end
+    end
+
+    test "a malformed cleanup result makes an Android-only deploy non-green exactly once" do
+      parent = self()
+      serial = "serial-a"
+
+      builder = fn _opts -> native_outcome([serial]) end
+
+      deployer = fn _opts ->
+        committed_result(
+          {[%MobDev.Device{platform: :android, serial: serial}], [], []},
+          [serial]
+        )
+      end
+
+      cleanup = fn plan ->
+        send(parent, {:cleanup, plan.attempt_id})
+        :malformed_cleanup_reply
+      end
+
+      assert {[], [%MobDev.Device{serial: ^serial, status: :error}], []} =
+               Deploy.execute_native_deploy!(
+                 [:android],
+                 nil,
+                 nil,
+                 [],
+                 [restart: true],
+                 builder: builder,
+                 deployer: deployer,
+                 finalizer: &successful_finalizer/1,
+                 cleanup: cleanup
+               )
+
+      assert_received {:cleanup, "0123456789abcdef"}
+      refute_received {:cleanup, _attempt_id}
+    end
+
+    test "Android failures and exceptions clean once without masking the primary failure" do
+      parent = self()
+      serial = "serial-a"
+      builder = fn _opts -> native_outcome([serial]) end
+
+      failed_deployer = fn _opts ->
+        {
+          {[],
+           [
+             %MobDev.Device{
+               platform: :android,
+               serial: serial,
+               status: :error,
+               error: "primary Android failure"
+             }
+           ], []},
+          native_lock([serial], %{state: :retained_failure})
+        }
+      end
+
+      failed_cleanup = fn plan ->
+        send(parent, {:failed_cleanup, plan.attempt_id})
+        {:error, :secondary_cleanup_failure}
+      end
+
+      assert {[], [%MobDev.Device{error: "primary Android failure"}], []} =
+               Deploy.execute_native_deploy!(
+                 [:android, :ios],
+                 nil,
+                 "ios-device",
+                 [],
+                 [restart: true],
+                 builder: builder,
+                 deployer: failed_deployer,
+                 finalizer: fn _lock -> flunk("failed Android must not release") end,
+                 cleanup: failed_cleanup
+               )
+
+      assert_received {:failed_cleanup, "0123456789abcdef"}
+      refute_received {:failed_cleanup, _attempt_id}
+
+      raising_deployer = fn _opts -> raise "primary deploy exception" end
+
+      raising_cleanup = fn plan ->
+        send(parent, {:raising_cleanup, plan.attempt_id})
+        raise "secondary cleanup exception"
+      end
+
+      assert_raise RuntimeError, "primary deploy exception", fn ->
+        Deploy.execute_native_deploy!(
+          [:android, :ios],
+          nil,
+          "ios-device",
+          [],
+          [restart: true],
+          builder: builder,
+          deployer: raising_deployer,
+          finalizer: fn _lock -> flunk("raising Android must not release") end,
+          cleanup: raising_cleanup
+        )
+      end
+
+      assert_received {:raising_cleanup, "0123456789abcdef"}
+      refute_received {:raising_cleanup, _attempt_id}
+    end
+
     test "an uncommitted Android result suppresses every iOS callback" do
       parent = self()
       serial = "serial-a"
@@ -532,7 +693,8 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
                  native_outcome(["serial-a", "serial-b"]),
                  [platforms: [:android], device: nil, restart: true],
                  deployer,
-                 &successful_finalizer/1
+                 &successful_finalizer/1,
+                 fn _plan -> :ok end
                )
 
       assert Enum.map(deployed, & &1.serial) == ["serial-a", "serial-b"]
@@ -544,6 +706,60 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
       assert android_opts[:restart]
 
       refute_received {:deployer_called, _}
+    end
+
+    test "unsorted implicit ADB discovery stays canonical through held outcome and release" do
+      parent = self()
+
+      runner = fn "adb", ["devices"] ->
+        {"List of devices attached\nserial-b\tdevice\nserial-a\tdevice\n", 0}
+      end
+
+      assert {:ok, ["serial-a", "serial-b"] = serials} =
+               MobDev.NativeBuild.resolve_android_update_targets(nil, runner)
+
+      native_outcome =
+        MobDev.NativeBuild.build_outcome([
+          {:ok, "Android",
+           %{
+             serials: serials,
+             deploy_lock: native_lock(serials),
+             payload_plan: payload_plan(serials)
+           }}
+        ])
+
+      assert native_outcome.android_device_disposition == :held
+      assert native_outcome.android_serials == serials
+
+      deployer = fn opts ->
+        send(parent, {:canonical_serials, opts[:canonical_android_serials]})
+
+        devices =
+          Enum.map(opts[:canonical_android_serials], fn serial ->
+            %MobDev.Device{platform: :android, serial: serial}
+          end)
+
+        committed_result({devices, [], []}, serials)
+      end
+
+      finalizer = fn lock ->
+        send(parent, {:released_serials, lock.serials})
+        :ok
+      end
+
+      assert {deployed, [], []} =
+               Deploy.deploy_after_native_build!(
+                 true,
+                 native_outcome,
+                 [platforms: [:android], restart: true],
+                 deployer,
+                 finalizer,
+                 fn _plan -> :ok end
+               )
+
+      assert Enum.map(deployed, & &1.serial) == serials
+      assert_received {:canonical_serials, ^serials}
+      assert_received {:released_serials, ^serials}
     end
 
     test "canonical WiFi serial replaces the user alias in the final Android pass" do
@@ -571,7 +787,8 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
                  native_outcome(["10.0.0.17:5555"]),
                  [platforms: [:android], device: "10.0.0.17"],
                  deployer,
-                 &successful_finalizer/1
+                 &successful_finalizer/1,
+                 fn _plan -> :ok end
                )
 
       assert_receive {:deployer_called, opts}
@@ -1117,7 +1334,8 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
                    android_deploy_lock: %{stale: true}
                  ],
                  deployer,
-                 &successful_finalizer/1
+                 &successful_finalizer/1,
+                 fn _plan -> :ok end
                )
 
       assert_receive {:deployer_called, android_opts}
