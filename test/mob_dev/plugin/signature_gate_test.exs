@@ -1,7 +1,7 @@
 defmodule MobDev.Plugin.SignatureGateTest do
   use ExUnit.Case, async: true
 
-  alias MobDev.Plugin.{Crypto, Sign, SignatureGate}
+  alias MobDev.Plugin.{Crypto, Sign, SignatureGate, Verify}
 
   setup do
     dir =
@@ -17,7 +17,7 @@ defmodule MobDev.Plugin.SignatureGateTest do
     File.write!(Path.join(dir, "priv/mob_plugin.pub"), Base.encode64(pub) <> "\n")
     :ok = Sign.sign_plugin(dir, priv)
 
-    {:ok, dir: dir, manifest: manifest, pub: pub}
+    {:ok, dir: dir, manifest: manifest, priv: priv, pub: pub}
   end
 
   describe "check_plugin/4" do
@@ -28,6 +28,27 @@ defmodule MobDev.Plugin.SignatureGateTest do
     } do
       trust = %{mob_demo: Crypto.fingerprint(pub)}
       assert SignatureGate.check_plugin(dir, manifest, trust, []) == :ok
+    end
+
+    test "keeps trusted v1 plugins valid for checksum-pinned official plugin compatibility", %{
+      dir: dir,
+      manifest: manifest,
+      priv: priv,
+      pub: pub
+    } do
+      file_hashes = Sign.compute_file_hashes(dir, manifest, 1)
+      payload = Sign.build_payload(manifest, file_hashes, 1)
+      signature = Crypto.sign(payload, priv)
+
+      File.write!(
+        Sign.signature_path(dir),
+        Crypto.canonical_encode(%{signature: signature, envelope_version: 1})
+      )
+
+      trust = %{mob_demo: Crypto.fingerprint(pub)}
+      assert {:ok, 1} = Verify.verify_plugin_with_version(dir, manifest)
+      assert SignatureGate.check_plugin(dir, manifest, trust, []) == :ok
+      assert SignatureGate.check_activated([{dir, manifest}], trust, []) == :ok
     end
 
     test "untrusted when fingerprint not in trust map", %{

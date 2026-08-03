@@ -117,6 +117,34 @@ defmodule MobDev.Plugin.SignTest do
       refute "priv/native/skip.txt" in paths
     end
 
+    test "uses the frozen legacy native extension set for v1 and expanded set for v2", %{
+      dir: dir
+    } do
+      write_file(dir, "priv/native/n.c", "c source")
+      write_file(dir, "priv/native/n.m", "objective-c source")
+      write_file(dir, "priv/native/n.mm", "objective-c++ source")
+
+      manifest = %{
+        name: :mob_x,
+        mob_version: "~> 0.6",
+        plugin_spec_version: 1,
+        nifs: [%{module: :mob_x_nif, native_dir: "priv/native"}]
+      }
+
+      v1_paths =
+        dir
+        |> Sign.compute_file_hashes(manifest, 1)
+        |> Enum.map(&elem(&1, 0))
+
+      v2_paths =
+        dir
+        |> Sign.compute_file_hashes(manifest, 2)
+        |> Enum.map(&elem(&1, 0))
+
+      assert v1_paths == ["priv/native/n.c"]
+      assert v2_paths == ["priv/native/n.c", "priv/native/n.m", "priv/native/n.mm"]
+    end
+
     test "different file contents produce different hashes", %{dir: dir} do
       write_file(dir, "ios/A.swift", "version 1")
 
@@ -137,11 +165,21 @@ defmodule MobDev.Plugin.SignTest do
   end
 
   describe "build_payload/2" do
-    test "wraps manifest + file_hashes in envelope_version: 1" do
+    test "defaults to the current v2 payload" do
       payload = Sign.build_payload(%{name: :mob_x}, [{"a", <<1, 2, 3>>}])
       assert payload.manifest == %{name: :mob_x}
       assert payload.file_hashes == [{"a", <<1, 2, 3>>}]
-      assert payload.envelope_version == 1
+      assert payload.envelope_version == 2
+    end
+
+    test "can reconstruct the exact legacy v1 payload" do
+      payload = Sign.build_payload(%{name: :mob_x}, [{"a", <<1, 2, 3>>}], 1)
+
+      assert payload == %{
+               manifest: %{name: :mob_x},
+               file_hashes: [{"a", <<1, 2, 3>>}],
+               envelope_version: 1
+             }
     end
   end
 
@@ -158,6 +196,18 @@ defmodule MobDev.Plugin.SignTest do
 
       {:ok, loaded_manifest} = Manifest.load(dir)
       assert :ok = Verify.verify_plugin(dir, loaded_manifest)
+      assert {:ok, 2} = Verify.verify_plugin_with_version(dir, loaded_manifest)
+
+      raw_envelope = dir |> Sign.signature_path() |> File.read!()
+
+      assert %{signature: signature, envelope_version: 2} =
+               envelope =
+               :erlang.binary_to_term(raw_envelope, [:safe])
+
+      assert byte_size(signature) == 64
+      assert envelope == %{signature: signature, envelope_version: 2}
+      assert raw_envelope == Crypto.canonical_encode(envelope)
+      assert Sign.envelope_version() == 2
     end
 
     test "errors when no manifest is present", %{dir: dir} do
