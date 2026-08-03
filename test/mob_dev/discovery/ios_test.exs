@@ -194,4 +194,53 @@ defmodule MobDev.Discovery.IOSTest do
       assert {"SIMCTL_CHILD_MOB_NODE_SUFFIX", "alt"} in env
     end
   end
+
+  describe "build_simctl_launch_args/2" do
+    test "launch atomically terminates an existing simulator process" do
+      assert IOS.build_simctl_launch_args("SIM-UDID", "com.example.app") == [
+               "simctl",
+               "launch",
+               "--terminate-running-process",
+               "SIM-UDID",
+               "com.example.app"
+             ]
+    end
+  end
+
+  describe "physical app-scoped restart" do
+    test "uses one atomic launch for the exact target and never enumerates or terminates unrelated apps" do
+      parent = self()
+
+      runner = fn executable, args, opts ->
+        send(parent, {:command, executable, args, opts})
+        {"launched", 0}
+      end
+
+      assert IOS.restart_app_physical("PHONE-UDID", "com.example.app", runner) ==
+               {"launched", 0}
+
+      assert_received {:command, "xcrun", args, [stderr_to_stdout: true]}
+
+      assert args == [
+               "devicectl",
+               "device",
+               "process",
+               "launch",
+               "--device",
+               "PHONE-UDID",
+               "--terminate-existing",
+               "com.example.app"
+             ]
+
+      refute "terminate" in args
+      refute "--pid" in args
+      refute_received {:command, _executable, _args, _opts}
+    end
+
+    test "returns the exact runner result for authoritative validation" do
+      assert IOS.restart_app_physical("PHONE-UDID", "com.example.app", fn _, _, _ ->
+               {"private output", 17}
+             end) == {"private output", 17}
+    end
+  end
 end
