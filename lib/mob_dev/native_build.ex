@@ -184,10 +184,14 @@ defmodule MobDev.NativeBuild do
         )
     end)
 
-    ok_count = Enum.count(results, &successful_native_build?/1)
+    build_outcome(results)
+  end
 
+  @doc false
+  @spec build_outcome([tuple()]) :: build_outcome()
+  def build_outcome(results) when is_list(results) do
     %{
-      ok?: ok_count == length(results),
+      ok?: not Enum.empty?(results) and Enum.all?(results, &successful_native_build?/1),
       android_serials: android_serials_from_results(results)
     }
   end

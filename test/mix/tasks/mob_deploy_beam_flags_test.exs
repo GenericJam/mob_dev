@@ -303,7 +303,29 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
       refute_received {:deployer_called, _}
     end
 
-    test "native Android with no successful update target never runs a broad final pass" do
+    test "native Android with no successful update target fails before the final pass" do
+      parent = self()
+
+      deployer = fn opts ->
+        send(parent, {:deployer_called, opts})
+        {[], [], []}
+      end
+
+      assert_raise Mix.Error, "Native build failed", fn ->
+        ExUnit.CaptureIO.capture_io(fn ->
+          Deploy.deploy_after_native_build!(
+            true,
+            %{ok?: true, android_serials: []},
+            [platforms: [:android], device: nil],
+            deployer
+          )
+        end)
+      end
+
+      refute_received {:deployer_called, _}
+    end
+
+    test "a successful iOS build still deploys when unavailable Android was skipped" do
       parent = self()
 
       deployer = fn opts ->
@@ -315,10 +337,13 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
                Deploy.deploy_after_native_build!(
                  true,
                  %{ok?: true, android_serials: []},
-                 [platforms: [:android], device: nil],
+                 [platforms: [:android, :ios], device: nil],
                  deployer
                )
 
+      assert_receive {:deployer_called, opts}
+      assert opts[:platforms] == [:ios]
+      refute Keyword.has_key?(opts, :canonical_android_serials)
       refute_received {:deployer_called, _}
     end
   end

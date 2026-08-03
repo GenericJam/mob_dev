@@ -273,6 +273,14 @@ defmodule Mix.Tasks.Mob.Deploy do
   end
 
   def deploy_after_native_build!(true, _native_outcome, _deploy_opts, _deployer) do
+    raise_native_build_failed!()
+  end
+
+  def deploy_after_native_build!(false, _native_outcome, deploy_opts, deployer) do
+    deployer.(deploy_opts)
+  end
+
+  defp raise_native_build_failed! do
     IO.puts("\n#{IO.ANSI.red()}Native build had failures — see errors above.#{IO.ANSI.reset()}")
 
     IO.puts(
@@ -282,12 +290,13 @@ defmodule Mix.Tasks.Mob.Deploy do
     Mix.raise("Native build failed")
   end
 
-  def deploy_after_native_build!(false, _native_outcome, deploy_opts, deployer) do
-    deployer.(deploy_opts)
-  end
-
   defp deploy_native_targets(deploy_opts, android_serials, deployer) do
     platforms = Keyword.get(deploy_opts, :platforms, [:android, :ios])
+    remaining_platforms = platforms -- [:android]
+
+    if android_serials == [] and remaining_platforms == [] do
+      raise_native_build_failed!()
+    end
 
     android_results =
       if :android in platforms and android_serials != [] do
@@ -302,8 +311,6 @@ defmodule Mix.Tasks.Mob.Deploy do
       else
         []
       end
-
-    remaining_platforms = platforms -- [:android]
 
     remaining_results =
       if remaining_platforms == [] do
