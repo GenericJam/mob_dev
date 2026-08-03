@@ -608,35 +608,25 @@ defmodule Mix.Tasks.Mob.Deploy do
       )
       when is_list(android_serials) and is_function(deployer, 1) and
              is_function(lock_finalizer, 1) and is_function(payload_cleanup, 1) do
-    valid_opts? = is_list(deploy_opts) and Keyword.keyword?(deploy_opts)
-    platforms = if valid_opts?, do: Keyword.get(deploy_opts, :platforms, [:android, :ios])
-    restart = if valid_opts?, do: Keyword.get(deploy_opts, :restart, true)
+    case validate_native_deploy_inputs(
+           deploy_opts,
+           android_device_disposition,
+           android_serials,
+           android_deploy_lock,
+           android_payload_plan
+         ) do
+      :ok ->
+        deploy_native_targets(
+          deploy_opts,
+          android_serials,
+          android_deploy_lock,
+          android_payload_plan,
+          deployer,
+          lock_finalizer,
+          payload_cleanup
+        )
 
-    consistent_platform? =
-      is_list(platforms) and
-        ((android_device_disposition == :not_attempted and android_serials == [] and
-            is_nil(android_deploy_lock) and
-            is_nil(android_payload_plan)) or
-           (android_device_disposition == :held and android_serials != [] and
-              :android in platforms and is_map(android_deploy_lock) and
-              is_map(android_payload_plan)))
-
-    with true <- valid_opts?,
-         true <- valid_native_platforms?(platforms),
-         true <- consistent_platform?,
-         :ok <- validate_native_android_lock(android_deploy_lock, android_serials),
-         true <- valid_native_restart?(restart, android_serials) do
-      deploy_native_targets(
-        deploy_opts,
-        android_serials,
-        android_deploy_lock,
-        android_payload_plan,
-        deployer,
-        lock_finalizer,
-        payload_cleanup
-      )
-    else
-      _invalid_or_noncommittable ->
+      {:error, _invalid_or_noncommittable} ->
         _cleanup_result = cleanup_native_android_payload(android_payload_plan, payload_cleanup)
         raise_native_build_failed!()
     end
@@ -693,6 +683,41 @@ defmodule Mix.Tasks.Mob.Deploy do
     end
   end
 
+  defp validate_native_deploy_inputs(
+         deploy_opts,
+         android_device_disposition,
+         android_serials,
+         android_deploy_lock,
+         android_payload_plan
+       ) do
+    try do
+      valid_opts? = is_list(deploy_opts) and Keyword.keyword?(deploy_opts)
+      platforms = if valid_opts?, do: Keyword.get(deploy_opts, :platforms, [:android, :ios])
+      restart = if valid_opts?, do: Keyword.get(deploy_opts, :restart, true)
+
+      consistent_platform? =
+        proper_list?(android_serials) and proper_list?(platforms) and
+          ((android_device_disposition == :not_attempted and android_serials == [] and
+              is_nil(android_deploy_lock) and
+              is_nil(android_payload_plan)) or
+             (android_device_disposition == :held and android_serials != [] and
+                :android in platforms and is_map(android_deploy_lock) and
+                is_map(android_payload_plan)))
+
+      with true <- valid_opts?,
+           true <- valid_native_platforms?(platforms),
+           true <- consistent_platform?,
+           :ok <- validate_native_android_lock(android_deploy_lock, android_serials),
+           true <- valid_native_restart?(restart, android_serials) do
+        :ok
+      else
+        _invalid_or_noncommittable -> {:error, :invalid_native_deploy_inputs}
+      end
+    catch
+      _kind, _reason -> {:error, :invalid_native_deploy_inputs}
+    end
+  end
+
   defp validate_native_android_lock(nil, []), do: :ok
 
   defp validate_native_android_lock(lock, canonical_serials)
@@ -711,11 +736,15 @@ defmodule Mix.Tasks.Mob.Deploy do
     do: {:error, :invalid_native_android_lock}
 
   defp valid_native_platforms?(platforms) when is_list(platforms) do
-    platforms != [] and Enum.uniq(platforms) == platforms and
+    proper_list?(platforms) and platforms != [] and Enum.uniq(platforms) == platforms and
       Enum.all?(platforms, &(&1 in [:android, :ios]))
   end
 
   defp valid_native_platforms?(_platforms), do: false
+
+  defp proper_list?([]), do: true
+  defp proper_list?([_head | tail]), do: proper_list?(tail)
+  defp proper_list?(_improper_tail), do: false
 
   defp valid_native_restart?(restart, []), do: restart in [true, false]
   defp valid_native_restart?(true, [_serial | _]), do: true

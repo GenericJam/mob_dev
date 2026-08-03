@@ -1215,6 +1215,68 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
       refute_received :deployer_called
     end
 
+    test "an improper Android serial list cleans the held payload once and fails closed" do
+      parent = self()
+      plan = payload_plan(["serial-a"])
+
+      outcome =
+        ["serial-a"]
+        |> native_outcome()
+        |> Map.put(:android_serials, ["serial-a" | :malformed_tail])
+
+      cleanup = fn received_plan ->
+        send(parent, {:payload_cleaned, received_plan})
+        raise "secondary cleanup failure"
+      end
+
+      assert_raise Mix.Error, "Native build failed", fn ->
+        ExUnit.CaptureIO.capture_io(fn ->
+          Deploy.deploy_after_native_build!(
+            true,
+            outcome,
+            [platforms: [:android, :ios], restart: true],
+            fn _opts -> send(parent, :deployer_called) end,
+            fn _lock -> send(parent, :finalizer_called) end,
+            cleanup
+          )
+        end)
+      end
+
+      assert_receive {:payload_cleaned, ^plan}
+      refute_received {:payload_cleaned, _}
+      refute_received :deployer_called
+      refute_received :finalizer_called
+    end
+
+    test "an improper platform list cleans the held payload once and fails closed" do
+      parent = self()
+      outcome = native_outcome(["serial-a"])
+      plan = payload_plan(["serial-a"])
+
+      cleanup = fn received_plan ->
+        send(parent, {:payload_cleaned, received_plan})
+        {:error, :secondary_cleanup_failure}
+      end
+
+      assert_raise Mix.Error, "Native build failed", fn ->
+        ExUnit.CaptureIO.capture_io(fn ->
+          Deploy.deploy_after_native_build!(
+            true,
+            outcome,
+            [platforms: [:android | :malformed_tail], restart: true],
+            fn _opts -> send(parent, :deployer_called) end,
+            fn _lock -> send(parent, :finalizer_called) end,
+            cleanup
+          )
+        end)
+      end
+
+      assert_receive {:payload_cleaned, ^plan}
+      refute_received {:payload_cleaned, _}
+      refute_received :deployer_called
+      refute_received :finalizer_called
+    end
+
     test "an untrusted payload shape cannot mask the primary native-build failure" do
       parent = self()
 
