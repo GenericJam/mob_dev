@@ -73,6 +73,84 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
     }
   end
 
+  defp no_device_match_pattern do
+    Regex.compile!("No device matched.*mix mob\\.devices", "s")
+  end
+
+  describe "resolve_target_platforms!/3" do
+    test "rejects a CoreDevice-shaped identifier before any continuation can mutate" do
+      parent = self()
+      hardware_udid = "00008110-001E1C3A34F8401E"
+      core_device_id = "11111111-2222-3333-4444-555555555555"
+      target = physical_ios_device(hardware_udid)
+
+      error =
+        assert_raise Mix.Error, fn ->
+          Deploy.resolve_target_platforms!([:ios], core_device_id, fn -> [target] end)
+          send(parent, :builder_called)
+          send(parent, :deployer_called)
+          send(parent, :install_called)
+        end
+
+      assert error.message ==
+               ~s(No device matched "#{core_device_id}". Run `mix mob.devices` to see available device IDs.)
+
+      refute_received :builder_called
+      refute_received :deployer_called
+      refute_received :install_called
+    end
+
+    test "rejects an ordinary nonmatching identifier" do
+      target = physical_ios_device("00008110-001E1C3A34F8401E")
+
+      assert_raise Mix.Error, no_device_match_pattern(), fn ->
+        Deploy.resolve_target_platforms!([:ios], "not-a-device", fn -> [target] end)
+      end
+    end
+
+    test "rejects an explicit selection when discovery is empty" do
+      assert_raise Mix.Error, no_device_match_pattern(), fn ->
+        Deploy.resolve_target_platforms!([:ios], "not-a-device", fn -> [] end)
+      end
+    end
+
+    test "does not infer a CoreDevice identifier across multiple physical devices" do
+      devices = [
+        physical_ios_device("00008110-001E1C3A34F8401E"),
+        physical_ios_device("00008120-001A2B3C4D5E6F78")
+      ]
+
+      assert_raise Mix.Error, no_device_match_pattern(), fn ->
+        Deploy.resolve_target_platforms!(
+          [:ios],
+          "11111111-2222-3333-4444-555555555555",
+          fn -> devices end
+        )
+      end
+    end
+
+    test "accepts the exact hardware UDID among multiple physical devices" do
+      hardware_udid = "00008110-001E1C3A34F8401E"
+
+      devices = [
+        physical_ios_device(hardware_udid),
+        physical_ios_device("00008120-001A2B3C4D5E6F78")
+      ]
+
+      assert Deploy.resolve_target_platforms!([:ios], hardware_udid, fn -> devices end) ==
+               [:ios]
+    end
+
+    test "rejects a hardware UDID that contradicts the explicit platform" do
+      hardware_udid = "00008110-001E1C3A34F8401E"
+      target = physical_ios_device(hardware_udid)
+
+      assert_raise Mix.Error, no_device_match_pattern(), fn ->
+        Deploy.resolve_target_platforms!([:android], hardware_udid, fn -> [target] end)
+      end
+    end
+  end
+
   # ── combine_beam_flags/2 ──────────────────────────────────────────────────────
 
   describe "combine_beam_flags/2" do

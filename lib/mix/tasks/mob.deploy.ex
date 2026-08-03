@@ -168,7 +168,13 @@ defmodule Mix.Tasks.Mob.Deploy do
     # same platform list. Without this, the deployer iterates over the
     # irrelevant platform and `filter_by_device_id` emits a misleading
     # "No device matched" warning even when the targeted platform succeeded.
-    platforms = MobDev.NativeBuild.narrow_platforms_for_device(platforms, device_id)
+    platforms =
+      resolve_target_platforms!(
+        platforms,
+        device_id,
+        &MobDev.Discovery.IOS.list_devices/0
+      )
+
     beam_flags = resolve_beam_flags(opts)
 
     if native and not restart and :android in platforms do
@@ -262,6 +268,25 @@ defmodule Mix.Tasks.Mob.Deploy do
 
       report_deploy_result!(deploy_result, restart: restart)
     end)
+  end
+
+  @doc false
+  @spec resolve_target_platforms!(
+          [:android | :ios],
+          String.t() | nil,
+          (-> [Device.t()])
+        ) :: [:android | :ios]
+  def resolve_target_platforms!(platforms, device_id, ios_lister) do
+    narrowed =
+      MobDev.NativeBuild.narrow_platforms_for_device(platforms, device_id, ios_lister)
+
+    if is_binary(device_id) and narrowed == [] do
+      Mix.raise(
+        ~s(No device matched "#{device_id}". Run `mix mob.devices` to see available device IDs.)
+      )
+    end
+
+    narrowed
   end
 
   @doc false
