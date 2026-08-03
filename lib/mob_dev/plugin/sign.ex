@@ -9,7 +9,7 @@ defmodule MobDev.Plugin.Sign do
      (Swift sources, Android bridge/JNI sources, NIF native_dir contents).
   3. Building the canonical payload (manifest + sorted file hashes).
   4. Signing the canonical encoding of the payload via `Crypto.sign/2`.
-  5. Writing a binary `priv/mob_plugin.sig` containing the signature.
+  5. Writing a versioned binary envelope to `priv/mob_plugin.sig`.
 
   Pure helpers are exposed for tests: `compute_file_hashes/2` and
   `build_payload/2` are deterministic given their inputs.
@@ -17,7 +17,9 @@ defmodule MobDev.Plugin.Sign do
 
   alias MobDev.Plugin.{Crypto, Manifest}
 
-  @envelope_version 1
+  @legacy_envelope_version 1
+  @envelope_version 2
+  @supported_envelope_versions [@legacy_envelope_version, @envelope_version]
 
   @signature_file "priv/mob_plugin.sig"
   @manifest_file "priv/mob_plugin.exs"
@@ -25,7 +27,11 @@ defmodule MobDev.Plugin.Sign do
   # File extensions to include when a manifest entry points at a
   # `:native_dir` (NIF C/C++/Objective-C/Objective-C++/Zig sources + headers).
   # The set is fixed because the build pipeline only compiles these extensions.
+  @legacy_nif_extensions [".c", ".h", ".cpp", ".zig"]
   @nif_extensions [".c", ".h", ".cpp", ".m", ".mm", ".zig"]
+
+  @typedoc "A supported plugin-signature envelope and payload version."
+  @type signature_version :: 1 | 2
 
   @typedoc "Relative path inside the plugin directory."
   @type rel_path :: String.t()
@@ -61,11 +67,20 @@ defmodule MobDev.Plugin.Sign do
   declared paths, so the signing surface assumes paths that exist.
   """
   @spec compute_file_hashes(Path.t(), map() | nil) :: file_hashes()
-  def compute_file_hashes(_plugin_dir, nil), do: []
+  def compute_file_hashes(plugin_dir, manifest) do
+    compute_file_hashes(plugin_dir, manifest, @envelope_version)
+  end
 
-  def compute_file_hashes(plugin_dir, manifest) when is_map(manifest) do
+  @doc false
+  @spec compute_file_hashes(Path.t(), map() | nil, signature_version()) :: file_hashes()
+  def compute_file_hashes(_plugin_dir, nil, version)
+      when version in @supported_envelope_versions,
+      do: []
+
+  def compute_file_hashes(plugin_dir, manifest, version)
+      when is_map(manifest) and version in @supported_envelope_versions do
     manifest
-    |> referenced_files(plugin_dir)
+    |> referenced_files(plugin_dir, version)
     |> Enum.uniq()
     |> Enum.sort()
     |> Enum.map(fn rel -> {rel, sha256!(Path.join(plugin_dir, rel))} end)
@@ -79,18 +94,27 @@ defmodule MobDev.Plugin.Sign do
       %{
         manifest: <the loaded mob_plugin manifest>,
         file_hashes: [{rel_path, sha256}, ...],
-        envelope_version: 1
+        envelope_version: 2
       }
 
-  Authoritative for what's inside the signature — any new field added
-  here needs both author and host updates.
+  The two-argument form always builds the current v2 payload. Verification
+  uses the versioned form to reconstruct the exact frozen v1 payload for
+  already-shipped signatures. The version is part of the signed payload, so
+  changing the envelope version without resigning fails cryptographically.
   """
   @spec build_payload(map() | nil, file_hashes()) :: map()
   def build_payload(manifest, file_hashes) do
+    build_payload(manifest, file_hashes, @envelope_version)
+  end
+
+  @doc false
+  @spec build_payload(map() | nil, file_hashes(), signature_version()) :: map()
+  def build_payload(manifest, file_hashes, version)
+      when version in @supported_envelope_versions do
     %{
       manifest: manifest,
       file_hashes: file_hashes,
-      envelope_version: @envelope_version
+      envelope_version: version
     }
   end
 
@@ -145,7 +169,7 @@ defmodule MobDev.Plugin.Sign do
 
   # ── referenced-file collection ────────────────────────────────────────────
 
-  defp referenced_files(manifest, plugin_dir) do
+  defp referenced_files(manifest, plugin_dir, version) do
     swift = list_of_strings(get_in(manifest, [:ios, :swift_files]))
 
     android =
@@ -159,35 +183,39 @@ defmodule MobDev.Plugin.Sign do
     # be tamper-evident too (same as bridge_kt / jni_source).
     res = list_of_strings(get_in(manifest, [:android, :res_files]))
 
-    nifs = nif_files(manifest, plugin_dir)
+    nifs = nif_files(manifest, plugin_dir, version)
 
     swift ++ android ++ res ++ nifs
   end
 
-  defp nif_files(manifest, plugin_dir) do
+  defp nif_files(manifest, plugin_dir, version) do
     for nif <- Map.get(manifest, :nifs, []) || [],
         is_map(nif),
         rel = nif[:native_dir],
         is_binary(rel),
-        path <- expand_native_dir(plugin_dir, rel) do
+        path <- expand_native_dir(plugin_dir, rel, version) do
       path
     end
   end
 
-  defp expand_native_dir(plugin_dir, rel_dir) do
+  defp expand_native_dir(plugin_dir, rel_dir, version) do
     abs_dir = Path.join(plugin_dir, rel_dir)
+    extensions = nif_extensions(version)
 
     if File.dir?(abs_dir) do
       abs_dir
       |> Path.join("**/*")
       |> Path.wildcard()
       |> Enum.filter(&File.regular?/1)
-      |> Enum.filter(fn p -> Path.extname(p) in @nif_extensions end)
+      |> Enum.filter(fn p -> Path.extname(p) in extensions end)
       |> Enum.map(&Path.relative_to(&1, plugin_dir))
     else
       []
     end
   end
+
+  defp nif_extensions(@legacy_envelope_version), do: @legacy_nif_extensions
+  defp nif_extensions(@envelope_version), do: @nif_extensions
 
   defp list_of_strings(value) do
     for s <- List.wrap(value), is_binary(s), do: s

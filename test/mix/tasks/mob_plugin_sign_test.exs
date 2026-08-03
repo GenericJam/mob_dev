@@ -39,6 +39,7 @@ defmodule Mix.Tasks.Mob.Plugin.SignTest do
 
     {:ok, manifest} = Manifest.load(dir)
     assert :ok = Verify.verify_plugin(dir, manifest)
+    assert {:ok, 2} = Verify.verify_plugin_with_version(dir, manifest)
   end
 
   test "errors when no keygen has been run for the plugin", %{plugin_dir: dir} do

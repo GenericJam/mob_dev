@@ -4,9 +4,9 @@ defmodule MobDev.Plugin.Verify do
 
   Given a plugin directory + its loaded manifest, this module:
 
-  1. Loads `priv/mob_plugin.sig` (the signed envelope).
+  1. Loads `priv/mob_plugin.sig` and validates its exact versioned envelope.
   2. Loads `priv/mob_plugin.pub` (the plugin author's public key).
-  3. Recomputes the file-hash list via `Sign.compute_file_hashes/2`.
+  3. Recomputes the file-hash list using the policy bound to that version.
   4. Reconstructs the canonical payload and runs `Crypto.verify/3`.
 
   Failure modes are distinguished:
@@ -27,24 +27,28 @@ defmodule MobDev.Plugin.Verify do
 
   @signature_file "priv/mob_plugin.sig"
   @pubkey_file "priv/mob_plugin.pub"
+  @supported_signature_versions [1, 2]
+  @max_signature_envelope_bytes 256
 
   # Atom keys that appear in the signed envelope term (see `Sign.sign_plugin/2`).
   # `load_signature/1` decodes the envelope with `binary_to_term(_, [:safe])`,
   # which refuses to *create* atoms — every atom in the encoded term must
   # already exist in the runtime atom table or the decode raises `badarg` and a
-  # valid signature is misreported as `:corrupt`. `Verify` matches `:signature`
-  # directly, but nothing here references `:envelope_version`; only `Sign` did.
-  # Because `verify_plugin/2` calls `load_signature/1` *before* it ever touches
-  # `Sign`, decoding succeeded or failed depending on whether `Sign` happened to
-  # be loaded earlier in the BEAM — a load-order-dependent intermittent
-  # "invalid signature" across builds. Naming the atoms in this module-level
-  # literal interns them at `Verify`-load (guaranteed before any decode), making
-  # the decode deterministic while keeping `:safe` (sig files are
-  # attacker-controlled). See decisions/2026-05-31-verify-safe-atom-intern.md.
+  # valid signature is misreported as `:corrupt`. Naming the atoms in this
+  # module-level literal interns them at `Verify`-load (guaranteed before any
+  # decode), making the decode deterministic while keeping `:safe` (sig files
+  # are attacker-controlled). See
+  # decisions/2026-05-31-verify-safe-atom-intern.md.
   @envelope_atoms [:signature, :envelope_version]
 
   @typedoc "Errors `load_signature/1` can return."
   @type sig_error :: :missing | :corrupt
+
+  @typedoc "A supported signature version; only the verify API authenticates it."
+  @type signature_version :: 1 | 2
+
+  @typedoc "The decoded version and raw Ed25519 signature."
+  @type versioned_signature :: {signature_version(), Crypto.signature()}
 
   @typedoc "Errors `load_pubkey/1` can return."
   @type pubkey_error :: :missing | :malformed
@@ -55,37 +59,77 @@ defmodule MobDev.Plugin.Verify do
   @doc """
   Loads the raw 64-byte signature from `priv/mob_plugin.sig`.
 
-  The file is the `Crypto.canonical_encode/1` of an envelope map
-  (`%{signature: <64-byte sig>, envelope_version: 1}`); this function
-  decodes the envelope and returns the inner signature binary.
+  This compatibility API validates the exact versioned envelope and then
+  discards the version. Call `load_signature_with_version/1` when the caller
+  needs the decoded version, or `verify_plugin_with_version/2` when it needs a
+  version that has also passed cryptographic verification.
   """
   @spec load_signature(Path.t()) :: {:ok, Crypto.signature()} | {:error, sig_error()}
   def load_signature(plugin_dir) do
+    case load_signature_with_version(plugin_dir) do
+      {:ok, {_version, signature}} -> {:ok, signature}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Loads and validates the exact two-key signature envelope.
+
+  Returns `{version, raw_signature}` only for supported integer versions 1 and
+  2 in the canonical uncompressed ETF map encoding. Missing, unknown,
+  non-integer, stripped, extra-key, compressed, oversized, and bare signature
+  forms fail closed as `:corrupt`.
+  """
+  @spec load_signature_with_version(Path.t()) ::
+          {:ok, versioned_signature()} | {:error, sig_error()}
+  def load_signature_with_version(plugin_dir) do
     path = Path.join(plugin_dir, @signature_file)
 
-    case File.read(path) do
+    case read_signature_envelope(path) do
       {:ok, bytes} -> decode_signature_envelope(bytes)
       {:error, :enoent} -> {:error, :missing}
       {:error, _} -> {:error, :corrupt}
     end
   end
 
-  defp decode_signature_envelope(bytes) do
-    {:ok, decode_envelope_term!(bytes)}
-  rescue
-    _ -> {:error, :corrupt}
+  defp read_signature_envelope(path) do
+    case File.open(path, [:read, :binary], fn io ->
+           IO.binread(io, @max_signature_envelope_bytes + 1)
+         end) do
+      {:ok, bytes}
+      when is_binary(bytes) and byte_size(bytes) <= @max_signature_envelope_bytes ->
+        {:ok, bytes}
+
+      {:ok, _oversized_or_unreadable} ->
+        {:error, :corrupt}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
-  defp decode_envelope_term!(bytes) do
+  defp decode_signature_envelope(<<131, 116, _::binary>> = bytes)
+       when byte_size(bytes) <= @max_signature_envelope_bytes do
     # Touch the literal so the envelope atoms are guaranteed interned before the
     # :safe decode runs (see @envelope_atoms above).
     _ = @envelope_atoms
 
-    case :erlang.binary_to_term(bytes, [:safe]) do
-      %{signature: sig} when is_binary(sig) and byte_size(sig) == 64 -> sig
-      _ -> raise "corrupt"
+    case :erlang.binary_to_term(bytes, [:safe, :used]) do
+      {%{signature: signature, envelope_version: version} = envelope, bytes_used}
+      when bytes_used == byte_size(bytes) and map_size(envelope) == 2 and
+             is_binary(signature) and byte_size(signature) == 64 and
+             version in @supported_signature_versions ->
+        {:ok, {version, signature}}
+
+      _ ->
+        {:error, :corrupt}
     end
+  rescue
+    ArgumentError -> {:error, :corrupt}
+    ErlangError -> {:error, :corrupt}
   end
+
+  defp decode_signature_envelope(_bytes), do: {:error, :corrupt}
 
   @doc false
   # Atoms the signed envelope can contain; exposed so the interning guarantee is
@@ -131,12 +175,31 @@ defmodule MobDev.Plugin.Verify do
   """
   @spec verify_plugin(Path.t(), map() | nil) :: :ok | {:error, verify_error()}
   def verify_plugin(plugin_dir, manifest) do
-    with {:ok, signature} <- need(load_signature(plugin_dir), :missing_signature),
+    case verify_plugin_with_version(plugin_dir, manifest) do
+      {:ok, _version} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Verifies a plugin and returns the signature version only after the signature
+  succeeds against that version's single payload and file-hash policy.
+
+  Version 1 reconstructs the frozen legacy payload, which excludes Objective-C
+  `.m` and `.mm` files from `native_dir`. Version 2 includes them. Verification
+  never falls back between policies, so changing an envelope version without
+  resigning fails cryptographically.
+  """
+  @spec verify_plugin_with_version(Path.t(), map() | nil) ::
+          {:ok, signature_version()} | {:error, verify_error()}
+  def verify_plugin_with_version(plugin_dir, manifest) do
+    with {:ok, {version, signature}} <-
+           need(load_signature_with_version(plugin_dir), :missing_signature),
          {:ok, pub} <- need(load_pubkey(plugin_dir), :missing_pubkey),
-         file_hashes = Sign.compute_file_hashes(plugin_dir, manifest),
-         payload = Sign.build_payload(manifest, file_hashes),
+         file_hashes = Sign.compute_file_hashes(plugin_dir, manifest, version),
+         payload = Sign.build_payload(manifest, file_hashes, version),
          :ok <- normalise_verify(Crypto.verify(payload, signature, pub)) do
-      :ok
+      {:ok, version}
     end
   end
 

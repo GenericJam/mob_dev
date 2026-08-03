@@ -3,6 +3,23 @@ defmodule MobDev.Plugin.VerifyTest do
 
   alias MobDev.Plugin.{Crypto, Manifest, Sign, Verify}
 
+  # Frozen with the v1 signer at 06762494 (before Objective-C entered the hash
+  # policy). This is deliberately not built through Sign helpers: successful
+  # verification pins the exact historical ETF payload and legacy extension
+  # policy independently of current code.
+  @legacy_v1_pub Base.decode64!("A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=")
+  @legacy_v1_envelope Base.decode64!(
+                        "g3QAAAACdxBlbnZlbG9wZV92ZXJzaW9uYQF3CXNpZ25hdHVyZW0AAABAoje4i24j7SClsYsQ25r/DuzSv+GRxFWaiPZJANA1ajoV/JREZ9TpXeeSqq1oXTETl+19wWPvIy9N96/61k7cDg=="
+                      )
+  @legacy_v1_manifest %{
+    name: :mob_legacy_fixture,
+    mob_version: "~> 0.6",
+    plugin_spec_version: 1,
+    nifs: [
+      %{module: :mob_legacy_fixture_nif, native_dir: "priv/native/ios", lang: :objc}
+    ]
+  }
+
   setup do
     dir =
       Path.join(System.tmp_dir!(), "mob_verify_test_#{System.unique_integer([:positive])}")
@@ -31,7 +48,9 @@ defmodule MobDev.Plugin.VerifyTest do
   end
 
   describe "load_signature/1" do
-    test "loads the raw 64-byte signature", %{dir: dir} do
+    test "keeps returning the raw 64-byte signature for callers that do not need the version", %{
+      dir: dir
+    } do
       assert {:ok, sig} = Verify.load_signature(dir)
       assert byte_size(sig) == 64
     end
@@ -63,9 +82,100 @@ defmodule MobDev.Plugin.VerifyTest do
     test "decodes an envelope whose term includes the :envelope_version key",
          %{dir: dir} do
       raw = File.read!(Sign.signature_path(dir))
-      assert %{signature: _, envelope_version: 1} = :erlang.binary_to_term(raw, [:safe])
+      assert %{signature: _, envelope_version: 2} = :erlang.binary_to_term(raw, [:safe])
       assert {:ok, sig} = Verify.load_signature(dir)
       assert byte_size(sig) == 64
+    end
+  end
+
+  describe "load_signature_with_version/1" do
+    test "returns the bounded version alongside the raw signature", %{dir: dir} do
+      assert {:ok, {2, sig}} = Verify.load_signature_with_version(dir)
+      assert byte_size(sig) == 64
+    end
+
+    test "rejects an envelope with the version stripped", %{dir: dir, manifest: manifest} do
+      %{signature: signature} = read_envelope!(dir)
+      write_envelope!(dir, %{signature: signature})
+
+      assert {:error, :corrupt} = Verify.load_signature_with_version(dir)
+      assert {:error, :invalid_signature} = Verify.verify_plugin_with_version(dir, manifest)
+    end
+
+    test "rejects unknown and non-integer versions", %{dir: dir, manifest: manifest} do
+      %{signature: signature} = read_envelope!(dir)
+
+      for version <- [0, 3, -1, "2", 2.0, nil] do
+        write_envelope!(dir, %{signature: signature, envelope_version: version})
+        assert {:error, :corrupt} = Verify.load_signature_with_version(dir)
+
+        assert {:error, :invalid_signature} =
+                 Verify.verify_plugin_with_version(dir, manifest)
+      end
+    end
+
+    test "rejects envelopes with extra keys", %{dir: dir, manifest: manifest} do
+      envelope = Map.put(read_envelope!(dir), :manifest, %{})
+      write_envelope!(dir, envelope)
+
+      assert {:error, :corrupt} = Verify.load_signature_with_version(dir)
+      assert {:error, :invalid_signature} = Verify.verify_plugin_with_version(dir, manifest)
+    end
+
+    test "rejects a bare 64-byte signature file", %{dir: dir, manifest: manifest} do
+      %{signature: signature} = read_envelope!(dir)
+      File.write!(Sign.signature_path(dir), signature)
+
+      assert {:error, :corrupt} = Verify.load_signature_with_version(dir)
+      assert {:error, :invalid_signature} = Verify.verify_plugin_with_version(dir, manifest)
+    end
+
+    test "rejects a compressed ETF encoding of an otherwise exact envelope", %{
+      dir: dir,
+      manifest: manifest
+    } do
+      envelope = %{read_envelope!(dir) | signature: :binary.copy(<<0>>, 64)}
+      compressed = :erlang.term_to_binary(envelope, [:deterministic, compressed: 9])
+      assert <<131, 80, _::binary>> = compressed
+      File.write!(Sign.signature_path(dir), compressed)
+
+      assert {:error, :corrupt} = Verify.load_signature_with_version(dir)
+      assert {:error, :invalid_signature} = Verify.verify_plugin_with_version(dir, manifest)
+    end
+
+    test "rejects an oversized envelope after reading only the fixed bound plus one byte", %{
+      dir: dir,
+      manifest: manifest
+    } do
+      oversized = File.read!(Sign.signature_path(dir)) <> :binary.copy(<<0>>, 300)
+      assert byte_size(oversized) > 256
+      File.write!(Sign.signature_path(dir), oversized)
+
+      assert {:error, :corrupt} = Verify.load_signature_with_version(dir)
+      assert {:error, :invalid_signature} = Verify.verify_plugin_with_version(dir, manifest)
+    end
+
+    test "rejects malformed bounded envelopes without crashing", %{
+      dir: dir,
+      manifest: manifest
+    } do
+      raw = File.read!(Sign.signature_path(dir))
+      %{signature: signature} = read_envelope!(dir)
+
+      malformed_envelopes = [
+        binary_part(raw, 0, byte_size(raw) - 1),
+        raw <> "trailing bytes",
+        Crypto.canonical_encode(%{signature: binary_part(signature, 0, 63), envelope_version: 2}),
+        Crypto.canonical_encode(%{signature: signature <> <<0>>, envelope_version: 2})
+      ]
+
+      for malformed <- malformed_envelopes do
+        File.write!(Sign.signature_path(dir), malformed)
+        assert {:error, :corrupt} = Verify.load_signature_with_version(dir)
+
+        assert {:error, :invalid_signature} =
+                 Verify.verify_plugin_with_version(dir, manifest)
+      end
     end
   end
 
@@ -94,6 +204,55 @@ defmodule MobDev.Plugin.VerifyTest do
   describe "verify_plugin/2" do
     test "accepts a freshly-signed plugin", %{dir: dir, manifest: manifest} do
       assert :ok = Verify.verify_plugin(dir, manifest)
+      assert {:ok, 2} = Verify.verify_plugin_with_version(dir, manifest)
+    end
+
+    test "accepts a frozen shipped v1 envelope against only the exact legacy payload", %{
+      dir: dir
+    } do
+      c_source = Path.join(dir, "priv/native/ios/demo.c")
+      objc_source = Path.join(dir, "priv/native/ios/demo.m")
+      File.mkdir_p!(Path.dirname(c_source))
+      File.write!(c_source, "legacy signed c source\n")
+      File.write!(objc_source, "legacy unsigned objective-c source\n")
+      File.write!(Path.join(dir, "priv/mob_plugin.pub"), Base.encode64(@legacy_v1_pub) <> "\n")
+      File.write!(Sign.signature_path(dir), @legacy_v1_envelope)
+
+      assert {:ok, 1} = Verify.verify_plugin_with_version(dir, @legacy_v1_manifest)
+      assert :ok = Verify.verify_plugin(dir, @legacy_v1_manifest)
+
+      File.write!(objc_source, "changed objective-c source outside the frozen v1 payload")
+      assert {:ok, 1} = Verify.verify_plugin_with_version(dir, @legacy_v1_manifest)
+
+      File.write!(c_source, "tampered legacy signed c source")
+
+      assert {:error, :invalid_signature} =
+               Verify.verify_plugin_with_version(dir, @legacy_v1_manifest)
+    end
+
+    test "rejects changing a valid v2 envelope to v1 without resigning", %{
+      dir: dir,
+      manifest: manifest
+    } do
+      envelope = %{read_envelope!(dir) | envelope_version: 1}
+      write_envelope!(dir, envelope)
+
+      assert {:error, :invalid_signature} = Verify.verify_plugin_with_version(dir, manifest)
+      assert {:error, :invalid_signature} = Verify.verify_plugin(dir, manifest)
+    end
+
+    test "rejects changing a valid v1 envelope to v2 without resigning", %{
+      dir: dir,
+      manifest: manifest,
+      priv: priv
+    } do
+      write_v1_signature!(dir, manifest, priv)
+      assert {:ok, 1} = Verify.verify_plugin_with_version(dir, manifest)
+
+      envelope = %{read_envelope!(dir) | envelope_version: 2}
+      write_envelope!(dir, envelope)
+
+      assert {:error, :invalid_signature} = Verify.verify_plugin_with_version(dir, manifest)
     end
 
     test "rejects when a referenced source file is tampered", %{dir: dir, manifest: manifest} do
@@ -126,5 +285,23 @@ defmodule MobDev.Plugin.VerifyTest do
       {:ok, loaded} = Manifest.load(dir)
       assert :ok = Verify.verify_plugin(dir, loaded)
     end
+  end
+
+  defp write_v1_signature!(dir, manifest, priv) do
+    file_hashes = Sign.compute_file_hashes(dir, manifest, 1)
+    payload = Sign.build_payload(manifest, file_hashes, 1)
+    signature = Crypto.sign(payload, priv)
+    write_envelope!(dir, %{signature: signature, envelope_version: 1})
+  end
+
+  defp read_envelope!(dir) do
+    dir
+    |> Sign.signature_path()
+    |> File.read!()
+    |> :erlang.binary_to_term([:safe])
+  end
+
+  defp write_envelope!(dir, envelope) do
+    File.write!(Sign.signature_path(dir), Crypto.canonical_encode(envelope))
   end
 end
