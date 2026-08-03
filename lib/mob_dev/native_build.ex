@@ -6432,30 +6432,76 @@ defmodule MobDev.NativeBuild do
   prefix of one), return the matching booted simulator's full UDID
   or nil.
 
-  When `device_id` is nil → first booted sim wins.
-  When `device_id` is a string → case-insensitive prefix match
-  against booted UDIDs. A full UDID matches itself; an 8-char
-  prefix matches the corresponding device. Public for testing —
-  JSON shape is the contract.
+  When `device_id` is nil, exactly one booted simulator must exist.
+  When `device_id` is a string, exactly one case-insensitive prefix
+  match must exist. Malformed inventories, duplicate entries, empty
+  identifiers, and ambiguous matches return nil. Public for testing —
+  the JSON shape and fail-closed uniqueness are the contract.
   """
   @spec resolve_booted_udid(map(), String.t() | nil) :: String.t() | nil
-  def resolve_booted_udid(by_runtime, device_id) do
-    booted_udids =
-      by_runtime
-      |> Map.values()
-      |> List.flatten()
-      |> Enum.filter(&match?(%{"state" => "Booted"}, &1))
-      |> Enum.map(& &1["udid"])
+  def resolve_booted_udid(by_runtime, device_id) when is_map(by_runtime) do
+    with true <- valid_optional_ios_target_id?(device_id),
+         {:ok, booted_udids} <- collect_booted_udids(Map.values(by_runtime), []) do
+      matches =
+        case device_id do
+          nil ->
+            booted_udids
 
-    case device_id do
-      nil ->
-        List.first(booted_udids)
+          id ->
+            needle = String.downcase(id)
 
-      id when is_binary(id) ->
-        needle = String.downcase(id)
-        Enum.find(booted_udids, fn udid -> String.starts_with?(String.downcase(udid), needle) end)
+            Enum.filter(booted_udids, fn udid ->
+              String.starts_with?(String.downcase(udid), needle)
+            end)
+        end
+
+      case matches do
+        [udid] -> udid
+        _none_or_ambiguous -> nil
+      end
+    else
+      _invalid_or_malformed -> nil
     end
   end
+
+  def resolve_booted_udid(_invalid_inventory, _device_id), do: nil
+
+  defp collect_booted_udids([], acc), do: {:ok, Enum.reverse(acc)}
+
+  defp collect_booted_udids([devices | remaining_runtimes], acc) do
+    with {:ok, next_acc} <- collect_booted_runtime_devices(devices, acc) do
+      collect_booted_udids(remaining_runtimes, next_acc)
+    end
+  end
+
+  defp collect_booted_udids(_improper_runtime_list, _acc), do: {:error, :malformed_inventory}
+
+  defp collect_booted_runtime_devices([], acc), do: {:ok, acc}
+
+  defp collect_booted_runtime_devices([%{"state" => "Booted", "udid" => udid} | devices], acc) do
+    if valid_ios_target_id?(udid) do
+      collect_booted_runtime_devices(devices, [udid | acc])
+    else
+      {:error, :malformed_booted_device}
+    end
+  end
+
+  defp collect_booted_runtime_devices([%{"state" => "Booted"} | _devices], _acc),
+    do: {:error, :malformed_booted_device}
+
+  defp collect_booted_runtime_devices([device | devices], acc) when is_map(device),
+    do: collect_booted_runtime_devices(devices, acc)
+
+  defp collect_booted_runtime_devices(_malformed_devices, _acc),
+    do: {:error, :malformed_inventory}
+
+  defp valid_optional_ios_target_id?(nil), do: true
+  defp valid_optional_ios_target_id?(id), do: valid_ios_target_id?(id)
+
+  defp valid_ios_target_id?(id) when is_binary(id),
+    do: byte_size(id) in 1..256 and String.valid?(id)
+
+  defp valid_ios_target_id?(_invalid), do: false
 
   defp sim_lookup_error_message(nil),
     do: "No booted simulator. Boot one in Simulator.app or pass `--device <UDID>`."

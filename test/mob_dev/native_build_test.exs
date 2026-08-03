@@ -1450,8 +1450,12 @@ defmodule MobDev.NativeBuildTest do
       }
     end
 
-    test "nil device_id → first booted sim" do
-      assert NativeBuild.resolve_booted_udid(by_runtime(), nil) ==
+    test "nil device_id requires exactly one booted simulator" do
+      assert NativeBuild.resolve_booted_udid(by_runtime(), nil) == nil
+
+      [first | _rest] = by_runtime()["com.apple.CoreSimulator.SimRuntime.iOS-26-4"]
+
+      assert NativeBuild.resolve_booted_udid(%{"iOS" => [first]}, nil) ==
                "8A4250E9-B675-49CA-B143-A6C6D89B22AB"
     end
 
@@ -1472,6 +1476,54 @@ defmodule MobDev.NativeBuildTest do
 
     test "no match → nil" do
       assert NativeBuild.resolve_booted_udid(by_runtime(), "12345678") == nil
+    end
+
+    test "ambiguous prefixes and duplicate entries fail closed" do
+      collision = %{
+        "iOS" => [
+          %{"udid" => "DEFD4BDC-1111-4CD2-93A1-62BE425E7A78", "state" => "Booted"},
+          %{"udid" => "DEFD4BDC-2222-4CD2-93A1-62BE425E7A78", "state" => "Booted"}
+        ]
+      }
+
+      assert NativeBuild.resolve_booted_udid(collision, "defd4bdc") == nil
+
+      duplicate = %{
+        "iOS" => [
+          %{"udid" => "DEFD4BDC-CA42-4CD2-93A1-62BE425E7A78", "state" => "Booted"},
+          %{"udid" => "DEFD4BDC-CA42-4CD2-93A1-62BE425E7A78", "state" => "Booted"}
+        ]
+      }
+
+      assert NativeBuild.resolve_booted_udid(duplicate, "defd4bdc") == nil
+    end
+
+    test "malformed inventories and identifiers fail closed" do
+      invalid_utf8 = <<255>>
+
+      malformed = [
+        nil,
+        %{"iOS" => :not_a_device_list},
+        %{"iOS" => [%{"state" => "Booted"}]},
+        %{"iOS" => [%{"udid" => nil, "state" => "Booted"}]},
+        %{"iOS" => [%{"udid" => "", "state" => "Booted"}]},
+        %{"iOS" => [%{"udid" => invalid_utf8, "state" => "Booted"}]},
+        %{"iOS" => [%{"udid" => "VALID", "state" => "Booted"} | :improper_tail]}
+      ]
+
+      Enum.each(malformed, fn inventory ->
+        assert NativeBuild.resolve_booted_udid(inventory, nil) == nil
+      end)
+
+      assert NativeBuild.resolve_booted_udid(
+               %{"iOS" => [%{"udid" => "VALID", "state" => "Booted"}]},
+               ""
+             ) == nil
+
+      assert NativeBuild.resolve_booted_udid(
+               %{"iOS" => [%{"udid" => "VALID", "state" => "Booted"}]},
+               invalid_utf8
+             ) == nil
     end
 
     test "empty booted list + nil device_id → nil" do
