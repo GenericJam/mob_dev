@@ -128,7 +128,8 @@ narrowing functions). Don't make them private:
 - `PythonAppleSupport.valid_dir?/1`
 - `NativeBuild.narrow_platforms_for_device/2`, `ios_toolchain_available?/0`, `read_sdk_dir/1`, `fallback_entitlements_plist/3`
 - `NativeBuild.pythonx_in_project?/1`, `python_apple_support_env/2`
-- `NativeBuild.build_all_with_outcome/1`, `resolve_android_update_targets/2`,
+- `NativeBuild.build_all_with_outcome/1`, `build_outcome/1`,
+  `resolve_android_update_targets/2`,
   `install_android_updates/3`, and `install_and_deliver_android/4` (update-only
   Android deploy safety seams; injected command/delivery functions are for
   hermetic command-history tests)

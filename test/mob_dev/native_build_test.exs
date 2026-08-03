@@ -10,6 +10,32 @@ defmodule MobDev.NativeBuildTest do
 
   alias MobDev.NativeBuild
 
+  describe "build_outcome/1" do
+    test "an empty native target set fails closed" do
+      assert NativeBuild.build_outcome([]) == %{
+               ok?: false,
+               android_serials: []
+             }
+    end
+
+    test "one successful platform remains a valid partial multi-platform outcome" do
+      assert NativeBuild.build_outcome([{:ok, "iOS"}]) == %{
+               ok?: true,
+               android_serials: []
+             }
+    end
+
+    test "any attempted native platform failure fails the aggregate outcome" do
+      assert NativeBuild.build_outcome([
+               {:ok, "iOS"},
+               {:error, "Android", "target unavailable"}
+             ]) == %{
+               ok?: false,
+               android_serials: []
+             }
+    end
+  end
+
   describe "build_zig_supports_abi?/2" do
     test "true when the build.zig declares the ABI as a quoted string literal" do
       src = ~s|
