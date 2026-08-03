@@ -24,11 +24,18 @@ defmodule MobDev.Deployer do
   """
 
   alias MobDev.Discovery.{Android, IOS}
-  alias MobDev.{Device, HotPush, Tunnel}
+  alias MobDev.{AndroidDeployLock, Device, HotPush, Tunnel}
 
   @cookie :mob_secret
 
   @android_activity ".MainActivity"
+  @max_android_launch_output_bytes 4_096
+  @max_android_query_output_bytes 8_192
+  @max_adb_serial_bytes 128
+  @android_attempt_id_pattern "\\A[A-Za-z0-9_-]{16}\\z"
+  @max_android_payload_bytes 1_073_741_824
+  @android_abis ["arm64-v8a", "armeabi-v7a", "x86_64"]
+  @payload_registry_key {__MODULE__, :android_payload_registry}
 
   defp app_name, do: Mix.Project.config()[:app] |> to_string()
   defp bundle_id, do: MobDev.Config.bundle_id()
@@ -36,6 +43,917 @@ defmodule MobDev.Deployer do
   defp android_app_data, do: "/data/data/#{android_package()}/files"
   defp android_beams_dir, do: "#{android_app_data()}/otp/#{app_name()}"
   defp ios_bundle_id, do: bundle_id()
+
+  @doc false
+  @spec collect_android_beam_dirs() :: [String.t()]
+  def collect_android_beam_dirs, do: collect_beam_dirs()
+
+  @doc false
+  @spec prepare_android_payload(map(), keyword()) :: {:ok, map()} | {:error, String.t()}
+  def prepare_android_payload(context, opts \\ [])
+
+  def prepare_android_payload(context, opts) when is_map(context) and is_list(opts) do
+    beam_dirs = Keyword.get_lazy(opts, :beam_dirs, &collect_android_beam_dirs/0)
+    priv_dir = Keyword.get_lazy(opts, :priv_dir, &default_priv_dir/0)
+    tmp_root = Keyword.get(opts, :tmp_root, System.tmp_dir!())
+
+    with {:ok, identity} <- validate_android_payload_context(context),
+         {:ok, attempt_id} <- android_attempt_id(opts),
+         :ok <- validate_payload_prepare_opts(opts, beam_dirs, priv_dir, tmp_root),
+         :ok <- File.mkdir_p(tmp_root) do
+      root = Path.join(tmp_root, "mob_android_payload_#{attempt_id}")
+
+      case File.mkdir(root) do
+        :ok ->
+          prepare_android_payload_root(root, identity, attempt_id, beam_dirs, priv_dir, opts)
+
+        {:error, _reason} ->
+          {:error, "Could not reserve immutable Android payload staging"}
+      end
+    else
+      {:error, reason} when is_binary(reason) -> {:error, reason}
+      {:error, _reason} -> {:error, "Could not prepare immutable Android payload"}
+    end
+  rescue
+    _error -> {:error, "Could not prepare immutable Android payload"}
+  catch
+    _kind, _reason -> {:error, "Could not prepare immutable Android payload"}
+  end
+
+  def prepare_android_payload(_context, _opts),
+    do: {:error, "Android payload context is invalid"}
+
+  defp prepare_fast_android_payload(devices, package, opts) do
+    beam_dirs = Keyword.get(opts, :beam_dirs, collect_android_beam_dirs())
+    priv_dir = Keyword.get(opts, :priv_dir, default_priv_dir())
+    tmp_root = Keyword.get(opts, :tmp_root, System.tmp_dir!())
+    serials = Enum.map(devices, & &1.serial)
+    selected_by_serial = Map.new(devices, &{&1.serial, &1.abi})
+
+    identity = %{
+      package: package,
+      serials: serials,
+      selected_abis_by_serial: selected_by_serial,
+      selected_abis: selected_by_serial |> Map.values() |> Enum.uniq() |> Enum.sort()
+    }
+
+    with :ok <- validate_android_package(package),
+         :ok <- validate_payload_serials(serials),
+         :ok <- validate_selected_abis(identity.selected_abis),
+         true <- Enum.all?(selected_by_serial, fn {_serial, abi} -> abi in @android_abis end),
+         {:ok, attempt_id} <- android_attempt_id(opts),
+         :ok <-
+           validate_payload_prepare_opts(
+             Keyword.put(opts, :operation, :fast),
+             beam_dirs,
+             priv_dir,
+             tmp_root
+           ),
+         :ok <- File.mkdir_p(tmp_root) do
+      root = Path.join(tmp_root, "mob_android_fast_payload_#{attempt_id}")
+
+      case File.mkdir(root) do
+        :ok ->
+          prepare_fast_android_payload_root(root, identity, attempt_id, beam_dirs, priv_dir, opts)
+
+        {:error, _reason} ->
+          {:error, "Could not reserve immutable fast Android payload staging"}
+      end
+    else
+      {:error, reason} when is_binary(reason) -> {:error, reason}
+      _invalid -> {:error, "Fast Android payload identity is invalid"}
+    end
+  rescue
+    _error -> {:error, "Could not prepare immutable fast Android payload"}
+  catch
+    _kind, _reason -> {:error, "Could not prepare immutable fast Android payload"}
+  end
+
+  defp prepare_fast_android_payload_root(root, identity, attempt_id, beam_dirs, priv_dir, opts) do
+    try do
+      with {:ok, beam, beam_checks} <-
+             prepare_payload_beam(root, identity, attempt_id, beam_dirs, priv_dir, opts),
+           {:ok, exqlite} <- prepare_payload_exqlite(root, identity, attempt_id, opts),
+           {:ok, restart_by_serial} <- prepare_restart_map(identity, opts) do
+        plan = %{
+          version: 1,
+          operation: :fast,
+          package: identity.package,
+          attempt_id: attempt_id,
+          serials: identity.serials,
+          selected_abis: identity.selected_abis,
+          beam: beam,
+          exqlite: exqlite,
+          restart_by_serial: restart_by_serial
+        }
+
+        if validate_fast_android_payload_shape(plan) == :ok and
+             valid_payload_artifact_identities?(plan) and valid_payload_checks?(beam_checks) do
+          case register_android_payload(plan, root, beam_checks) do
+            :ok ->
+              {:ok, plan}
+
+            {:error, _reason} ->
+              cleanup_payload_root(root)
+              {:error, "Could not register fast Android payload"}
+          end
+        else
+          cleanup_payload_root(root)
+          {:error, "Prepared fast Android payload failed validation"}
+        end
+      else
+        {:error, reason} ->
+          cleanup_payload_root(root)
+          {:error, reason}
+      end
+    rescue
+      _error ->
+        cleanup_payload_root(root)
+        {:error, "Could not snapshot fast Android payload"}
+    catch
+      _kind, _reason ->
+        cleanup_payload_root(root)
+        {:error, "Could not snapshot fast Android payload"}
+    end
+  end
+
+  @doc false
+  @spec valid_android_payload?(term(), %{
+          required(:package) => String.t(),
+          required(:serials) => [String.t()]
+        }) ::
+          boolean()
+  def valid_android_payload?(plan, %{package: package, serials: serials}) do
+    validate_android_payload_shape(plan) == :ok and plan.package == package and
+      plan.serials == serials and registered_android_payload?(plan) and
+      valid_payload_artifact_identities?(plan)
+  end
+
+  def valid_android_payload?(_plan, _identity), do: false
+
+  defp valid_fast_android_payload?(plan, %{package: package, serials: serials}) do
+    validate_fast_android_payload_shape(plan) == :ok and plan.package == package and
+      plan.serials == serials and registered_android_payload?(plan) and
+      valid_payload_artifact_identities?(plan)
+  end
+
+  defp valid_fast_android_payload?(_plan, _identity), do: false
+
+  defp valid_deploy_payload?(%{operation: :fast} = plan, identity),
+    do: valid_fast_android_payload?(plan, identity)
+
+  defp valid_deploy_payload?(plan, identity), do: valid_android_payload?(plan, identity)
+
+  @doc false
+  @spec cleanup_android_payload(term()) :: :ok | {:error, String.t()}
+  def cleanup_android_payload(plan) do
+    with :ok <- validate_android_payload_shape(plan),
+         {:ok, entry} <- registered_android_payload(plan) do
+      cleanup_registered_android_payload(plan, entry)
+    else
+      _invalid -> {:error, "Android payload cleanup authority is invalid"}
+    end
+  rescue
+    _error -> {:error, "Could not clean Android payload staging"}
+  catch
+    _kind, _reason -> {:error, "Could not clean Android payload staging"}
+  end
+
+  defp cleanup_deploy_payload(%{operation: :fast} = plan) do
+    with :ok <- validate_fast_android_payload_shape(plan),
+         {:ok, entry} <- registered_android_payload(plan) do
+      cleanup_registered_android_payload(plan, entry)
+    else
+      _invalid -> {:error, "Fast Android payload cleanup authority is invalid"}
+    end
+  end
+
+  defp cleanup_deploy_payload(plan), do: cleanup_android_payload(plan)
+
+  defp prepare_android_payload_root(root, identity, attempt_id, beam_dirs, priv_dir, opts) do
+    try do
+      with {:ok, apk} <- snapshot_payload_apk(root, identity),
+           {:ok, beam, beam_checks} <-
+             prepare_payload_beam(root, identity, attempt_id, beam_dirs, priv_dir, opts),
+           {:ok, exqlite} <- prepare_payload_exqlite(root, identity, attempt_id, opts),
+           {:ok, restart_by_serial} <- prepare_restart_map(identity, opts) do
+        plan = %{
+          version: 1,
+          package: identity.package,
+          attempt_id: attempt_id,
+          serials: identity.serials,
+          selected_abis: identity.selected_abis,
+          selected_abis_by_serial: identity.selected_abis_by_serial,
+          apk: apk,
+          beam: beam,
+          exqlite: exqlite,
+          restart_by_serial: restart_by_serial
+        }
+
+        if validate_android_payload_shape(plan) == :ok and
+             valid_payload_artifact_identities?(plan) and valid_payload_checks?(beam_checks) do
+          case register_android_payload(plan, root, beam_checks) do
+            :ok ->
+              {:ok, plan}
+
+            {:error, _reason} ->
+              cleanup_payload_root(root)
+              {:error, "Could not register Android payload cleanup authority"}
+          end
+        else
+          cleanup_payload_root(root)
+          {:error, "Prepared Android payload failed structural validation"}
+        end
+      else
+        {:error, reason} ->
+          cleanup_payload_root(root)
+          {:error, reason}
+      end
+    rescue
+      _error ->
+        cleanup_payload_root(root)
+        {:error, "Could not snapshot immutable Android payload"}
+    catch
+      _kind, _reason ->
+        cleanup_payload_root(root)
+        {:error, "Could not snapshot immutable Android payload"}
+    end
+  end
+
+  defp validate_android_payload_context(
+         %{
+           apk: apk,
+           apk_sha256: apk_sha256,
+           apk_size: apk_size,
+           bundle_id: package,
+           serials: serials,
+           selected_abis: selected_abis,
+           selected_abis_by_serial: selected_by_serial
+         } = context
+       ) do
+    with true <- map_size(context) == 7,
+         :ok <- validate_android_package(package),
+         :ok <- validate_payload_serials(serials),
+         :ok <- validate_selected_abis(selected_abis),
+         true <-
+           is_map(selected_by_serial) and Map.keys(selected_by_serial) |> Enum.sort() == serials,
+         true <- Enum.all?(selected_by_serial, fn {_serial, abi} -> abi in selected_abis end),
+         true <- selected_abis == selected_by_serial |> Map.values() |> Enum.uniq() |> Enum.sort(),
+         true <- is_binary(apk) and File.regular?(apk),
+         true <- is_integer(apk_size) and apk_size in 1..@max_android_payload_bytes,
+         true <- valid_hex_sha256?(apk_sha256),
+         {:ok, %{size: ^apk_size}} <- File.stat(apk),
+         {:ok, ^apk_sha256} <- file_sha256_hex(apk) do
+      {:ok,
+       %{
+         apk: Path.expand(apk),
+         apk_sha256: apk_sha256,
+         apk_size: apk_size,
+         package: package,
+         serials: serials,
+         selected_abis: selected_abis,
+         selected_abis_by_serial: selected_by_serial
+       }}
+    else
+      _invalid -> {:error, "Android payload context identity is invalid"}
+    end
+  end
+
+  defp validate_android_payload_context(_context),
+    do: {:error, "Android payload context identity is invalid"}
+
+  defp validate_payload_prepare_opts(opts, beam_dirs, priv_dir, tmp_root) do
+    restart = Keyword.get(opts, :restart, true)
+    operation = Keyword.get(opts, :operation, :native)
+    beam_flags = Keyword.get(opts, :beam_flags)
+
+    cond do
+      not is_list(beam_dirs) or beam_dirs == [] or not Enum.all?(beam_dirs, &File.dir?/1) ->
+        {:error, "Android BEAM source set is invalid"}
+
+      not (is_nil(priv_dir) or (is_binary(priv_dir) and File.dir?(priv_dir))) ->
+        {:error, "Android priv source is invalid"}
+
+      not is_binary(tmp_root) or tmp_root == "" ->
+        {:error, "Android payload staging root is invalid"}
+
+      operation not in [:native, :fast] ->
+        {:error, "Android payload operation is invalid"}
+
+      operation == :native and restart != true ->
+        {:error, "Native Android payload requires checked restart"}
+
+      operation == :fast and restart not in [true, false] ->
+        {:error, "Fast Android restart mode is invalid"}
+
+      not (is_nil(beam_flags) or
+               (is_binary(beam_flags) and byte_size(beam_flags) <= 4_096 and
+                  String.valid?(beam_flags))) ->
+        {:error, "Android BEAM flags are invalid"}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp snapshot_payload_apk(root, identity) do
+    path = Path.join(root, "payload.apk")
+
+    with :ok <- File.cp(identity.apk, path),
+         :ok <- File.chmod(path, 0o400),
+         {:ok, %{type: :regular, size: size}} <- File.stat(path),
+         true <- size == identity.apk_size,
+         {:ok, sha256} <- file_sha256_hex(path),
+         true <- sha256 == identity.apk_sha256 do
+      {:ok, %{path: path, size: size, sha256: sha256}}
+    else
+      _failure -> {:error, "Could not snapshot exact Android APK"}
+    end
+  end
+
+  defp prepare_payload_beam(root, identity, attempt_id, beam_dirs, priv_dir, opts) do
+    stage = Path.join(root, "beam_stage")
+    archive_path = Path.join(root, "beams.tar")
+    local_runner = Keyword.get(opts, :local_runner, &run_local_command/3)
+    file_writer = Keyword.get(opts, :file_writer, &File.write/2)
+    beam_flags = Keyword.get(opts, :beam_flags)
+    app_root = "/data/data/#{identity.package}/files"
+
+    try do
+      with :ok <- File.mkdir(stage),
+           {:ok, sentinel} <- beam_sentinel(beam_dirs),
+           :ok <- stage_android_beam_dirs(beam_dirs, stage, local_runner),
+           {:ok, flag_checks} <- stage_android_beam_flags(stage, beam_flags, file_writer),
+           {:ok, priv_checks} <- stage_android_priv(stage, priv_dir, local_runner),
+           :ok <-
+             checked_local_command(local_runner, "create immutable BEAM archive", "tar", [
+               "cf",
+               archive_path,
+               "-C",
+               stage,
+               "."
+             ]),
+           {:ok, archive} <- payload_archive_identity(archive_path),
+           {:ok, dist_snapshot} <- payload_dist_snapshot(beam_dirs) do
+        {:ok,
+         %{
+           archive: archive,
+           stage_device: "/data/local/tmp/mob_beams_#{attempt_id}.tar",
+           app_stage: "#{app_root}/.mob_beams_stage_#{attempt_id}",
+           app_backup: "#{app_root}/.mob_beams_backup_#{attempt_id}",
+           activation_lock: "#{app_root}/.mob_beams_activation_lock",
+           dist_snapshot: dist_snapshot,
+           runtime_version: System.version(),
+           beam_flags: beam_flags
+         }, [{:file, sentinel} | flag_checks ++ priv_checks]}
+      else
+        {:error, reason} -> {:error, reason}
+        _failure -> {:error, "Could not prepare immutable BEAM payload"}
+      end
+    after
+      File.rm_rf(stage)
+    end
+  end
+
+  defp prepare_payload_exqlite(root, identity, attempt_id, opts) do
+    {vsn, ebin} = payload_exqlite_source(opts)
+
+    case {vsn, ebin} do
+      {nil, nil} ->
+        {:ok, nil}
+
+      {vsn, ebin} when is_binary(vsn) and is_binary(ebin) ->
+        prepare_payload_exqlite_present(root, identity, attempt_id, vsn, ebin, opts)
+
+      _incomplete ->
+        {:error, "Configured exqlite state is incomplete"}
+    end
+  end
+
+  defp prepare_payload_exqlite_present(root, identity, attempt_id, vsn, ebin, opts) do
+    stage = Path.join(root, "exqlite_stage")
+    archive_path = Path.join(root, "exqlite.tar")
+    local_runner = Keyword.get(opts, :local_runner, &run_local_command/3)
+    lib_root = "/data/data/#{identity.package}/files/otp/lib"
+
+    try do
+      with :ok <- validate_exqlite_version(vsn),
+           {:ok, sentinel} <- validate_exqlite_source(ebin, vsn),
+           :ok <- File.mkdir(stage),
+           :ok <- prepare_exqlite_local_stage(stage),
+           :ok <-
+             checked_local_command(local_runner, "stage immutable exqlite ebin", "cp", [
+               "-r",
+               "#{ebin}/.",
+               Path.join(stage, "ebin")
+             ]),
+           :ok <-
+             checked_local_command(local_runner, "create immutable exqlite archive", "tar", [
+               "cf",
+               archive_path,
+               "-C",
+               stage,
+               "."
+             ]),
+           {:ok, archive} <- payload_archive_identity(archive_path) do
+        {:ok,
+         %{
+           archive: archive,
+           stage_device: "/data/local/tmp/mob_exqlite_#{attempt_id}.tar",
+           app_stage: "#{lib_root}/.mob_exqlite_stage_#{attempt_id}",
+           app_backup: "#{lib_root}/.mob_exqlite_backup_#{attempt_id}",
+           activation_lock: "#{lib_root}/.mob_exqlite_activation_lock",
+           app_version: vsn,
+           beam_sentinel: sentinel,
+           nif: %{
+             source: :installed_apk,
+             filename: "libsqlite3_nif.so",
+             selected_abis: identity.selected_abis,
+             required_apk_entries:
+               Map.new(identity.selected_abis, &{&1, "lib/#{&1}/libsqlite3_nif.so"})
+           }
+         }}
+      else
+        {:error, reason} -> {:error, reason}
+        _failure -> {:error, "Could not prepare immutable exqlite payload"}
+      end
+    after
+      File.rm_rf(stage)
+    end
+  end
+
+  defp payload_exqlite_source(opts) do
+    case Keyword.get(opts, :exqlite_source, :auto) do
+      :auto -> {exqlite_version(), Path.wildcard("_build/dev/lib/exqlite/ebin") |> List.first()}
+      nil -> {nil, nil}
+      {vsn, ebin} -> {vsn, ebin}
+      _invalid -> {:invalid, :invalid}
+    end
+  end
+
+  defp prepare_restart_map(identity, opts) do
+    restart = Keyword.get(opts, :restart, true)
+    dist_override = Keyword.get(opts, :dist_port)
+    suffix_override = Keyword.get(opts, :node_suffix)
+    activity = Keyword.get(opts, :activity, @android_activity)
+    resolver = Keyword.get(opts, :node_suffix_resolver, &Android.device_node_suffix/1)
+
+    with :ok <- validate_android_activity(activity),
+         true <- is_function(resolver, 1) do
+      identity.serials
+      |> Enum.reduce_while({:ok, %{}}, fn serial, {:ok, result} ->
+        dist_port = dist_override || Tunnel.serial_base_port(serial)
+
+        suffix =
+          if is_binary(suffix_override),
+            do: suffix_override,
+            else: safe_suffix_call(resolver, serial)
+
+        with :ok <- validate_android_dist_port(dist_port),
+             :ok <- validate_android_node_suffix(suffix) do
+          record = %{
+            package: identity.package,
+            activity: activity,
+            restart?: restart,
+            mode: if(restart, do: :checked_restart, else: :no_restart),
+            dist_port: dist_port,
+            node_suffix: suffix
+          }
+
+          {:cont, {:ok, Map.put(result, serial, record)}}
+        else
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
+    else
+      _invalid -> {:error, "Android restart identity is invalid"}
+    end
+  end
+
+  defp safe_suffix_call(resolver, serial) do
+    try do
+      resolver.(serial)
+    rescue
+      _error -> nil
+    catch
+      _kind, _reason -> nil
+    end
+  end
+
+  defp payload_dist_snapshot(beam_dirs) do
+    beam_dirs
+    |> Enum.flat_map(&Path.wildcard(Path.join(&1, "*.beam")))
+    |> Enum.sort()
+    |> HotPush.prepare()
+  end
+
+  defp payload_archive_identity(path) do
+    with :ok <- File.chmod(path, 0o400),
+         {:ok, %{type: :regular, size: size}} <- File.stat(path),
+         true <- size in 1..@max_android_payload_bytes,
+         {:ok, sha256} <- file_sha256_hex(path) do
+      {:ok, %{path: path, size: size, sha256: sha256}}
+    else
+      _failure -> {:error, "Immutable Android archive identity is invalid"}
+    end
+  end
+
+  defp file_sha256_hex(path) do
+    case File.open(path, [:read, :binary], fn io -> hash_file(io, :crypto.hash_init(:sha256)) end) do
+      {:ok, digest} when is_binary(digest) -> {:ok, Base.encode16(digest, case: :lower)}
+      _failure -> {:error, :hash_failed}
+    end
+  end
+
+  defp hash_file(io, context) do
+    case IO.binread(io, 1_048_576) do
+      :eof -> :crypto.hash_final(context)
+      bytes when is_binary(bytes) -> hash_file(io, :crypto.hash_update(context, bytes))
+      {:error, _reason} -> {:error, :read_failed}
+    end
+  end
+
+  defp default_priv_dir do
+    path = Path.join(File.cwd!(), "priv")
+    if File.dir?(path), do: path, else: nil
+  end
+
+  defp validate_payload_serials(serials) when is_list(serials) and serials != [] do
+    valid = Enum.all?(serials, &(validate_adb_serial(&1) == :ok))
+    folded = Enum.map(serials, &String.downcase/1)
+
+    if valid and serials == Enum.sort(serials) and Enum.uniq(serials) == serials and
+         Enum.uniq(folded) == folded and length(serials) <= 32,
+       do: :ok,
+       else: {:error, "Android target identity is invalid"}
+  end
+
+  defp validate_payload_serials(_serials), do: {:error, "Android target identity is invalid"}
+
+  defp validate_selected_abis(abis) when is_list(abis) do
+    if abis != [] and abis == Enum.sort(abis) and Enum.uniq(abis) == abis and
+         Enum.all?(abis, &(&1 in @android_abis)),
+       do: :ok,
+       else: {:error, "Android ABI identity is invalid"}
+  end
+
+  defp validate_selected_abis(_abis), do: {:error, "Android ABI identity is invalid"}
+
+  defp valid_hex_sha256?(value) when is_binary(value) do
+    byte_size(value) == 64 and Regex.match?(Regex.compile!("\\A[0-9a-f]{64}\\z"), value)
+  end
+
+  defp valid_hex_sha256?(_value), do: false
+
+  defp validate_android_payload_shape(
+         %{
+           version: 1,
+           package: package,
+           attempt_id: attempt_id,
+           serials: serials,
+           selected_abis: selected_abis,
+           selected_abis_by_serial: selected_by_serial,
+           apk: apk,
+           beam: beam,
+           exqlite: exqlite,
+           restart_by_serial: restart_by_serial
+         } = plan
+       ) do
+    with true <- map_size(plan) == 10,
+         :ok <- validate_android_package(package),
+         {:ok, ^attempt_id} <- android_attempt_id(attempt_id: attempt_id),
+         :ok <- validate_payload_serials(serials),
+         :ok <- validate_selected_abis(selected_abis),
+         true <- is_map(selected_by_serial) and Enum.sort(Map.keys(selected_by_serial)) == serials,
+         true <- Enum.all?(selected_by_serial, fn {_serial, abi} -> abi in selected_abis end),
+         true <- selected_abis == selected_by_serial |> Map.values() |> Enum.uniq() |> Enum.sort(),
+         {:ok, root} <- validate_payload_apk_shape(apk, attempt_id),
+         :ok <- validate_payload_beam_shape(beam, root, package, attempt_id),
+         :ok <- validate_payload_exqlite_shape(exqlite, root, package, attempt_id, selected_abis),
+         :ok <- validate_restart_map_shape(restart_by_serial, package, serials) do
+      :ok
+    else
+      _invalid -> {:error, :invalid_android_payload}
+    end
+  end
+
+  defp validate_android_payload_shape(_plan), do: {:error, :invalid_android_payload}
+
+  defp validate_fast_android_payload_shape(
+         %{
+           version: 1,
+           operation: :fast,
+           package: package,
+           attempt_id: attempt_id,
+           serials: serials,
+           selected_abis: selected_abis,
+           beam: beam,
+           exqlite: exqlite,
+           restart_by_serial: restart_by_serial
+         } = plan
+       ) do
+    root =
+      case beam do
+        %{archive: %{path: path}} when is_binary(path) -> Path.dirname(path)
+        _invalid -> nil
+      end
+
+    with true <- map_size(plan) == 9,
+         :ok <- validate_android_package(package),
+         {:ok, ^attempt_id} <- android_attempt_id(attempt_id: attempt_id),
+         :ok <- validate_payload_serials(serials),
+         :ok <- validate_selected_abis(selected_abis),
+         true <- is_binary(root),
+         true <- Path.basename(root) == "mob_android_fast_payload_#{attempt_id}",
+         :ok <- validate_payload_beam_shape(beam, root, package, attempt_id),
+         :ok <- validate_payload_exqlite_shape(exqlite, root, package, attempt_id, selected_abis),
+         :ok <- validate_restart_map_shape(restart_by_serial, package, serials) do
+      :ok
+    else
+      _invalid -> {:error, :invalid_fast_android_payload}
+    end
+  end
+
+  defp validate_fast_android_payload_shape(_plan),
+    do: {:error, :invalid_fast_android_payload}
+
+  defp validate_payload_apk_shape(%{path: path, size: size, sha256: sha256} = apk, attempt_id) do
+    root = if is_binary(path), do: Path.dirname(path), else: nil
+
+    if map_size(apk) == 3 and is_binary(root) and
+         Path.basename(root) == "mob_android_payload_#{attempt_id}" and
+         path == Path.join(root, "payload.apk") and is_integer(size) and
+         size in 1..@max_android_payload_bytes and valid_hex_sha256?(sha256) do
+      {:ok, root}
+    else
+      {:error, :invalid_apk}
+    end
+  end
+
+  defp validate_payload_apk_shape(_apk, _attempt_id), do: {:error, :invalid_apk}
+
+  defp validate_payload_beam_shape(beam, root, package, attempt_id) when is_map(beam) do
+    app_root = "/data/data/#{package}/files"
+
+    with %{
+           archive: archive,
+           stage_device: "/data/local/tmp/mob_beams_" <> stage_tail,
+           app_stage: app_stage,
+           app_backup: app_backup,
+           activation_lock: activation_lock,
+           dist_snapshot: snapshot,
+           runtime_version: runtime_version,
+           beam_flags: beam_flags
+         } <- beam,
+         true <- map_size(beam) == 8,
+         true <- stage_tail == "#{attempt_id}.tar",
+         :ok <- validate_archive_shape(archive, Path.join(root, "beams.tar")),
+         true <- app_stage == "#{app_root}/.mob_beams_stage_#{attempt_id}",
+         true <- app_backup == "#{app_root}/.mob_beams_backup_#{attempt_id}",
+         true <- activation_lock == "#{app_root}/.mob_beams_activation_lock",
+         :ok <- HotPush.validate_prepared_snapshot(snapshot),
+         true <- runtime_version == System.version(),
+         true <-
+           is_nil(beam_flags) or
+             (is_binary(beam_flags) and byte_size(beam_flags) <= 4_096 and
+                String.valid?(beam_flags)) do
+      :ok
+    else
+      _invalid -> {:error, :invalid_beam_payload}
+    end
+  end
+
+  defp validate_payload_beam_shape(_beam, _root, _package, _attempt_id),
+    do: {:error, :invalid_beam_payload}
+
+  defp validate_payload_exqlite_shape(nil, _root, _package, _attempt_id, _abis), do: :ok
+
+  defp validate_payload_exqlite_shape(exqlite, root, package, attempt_id, abis)
+       when is_map(exqlite) do
+    lib_root = "/data/data/#{package}/files/otp/lib"
+
+    with %{
+           archive: archive,
+           stage_device: "/data/local/tmp/mob_exqlite_" <> stage_tail,
+           app_stage: app_stage,
+           app_backup: app_backup,
+           activation_lock: activation_lock,
+           app_version: app_version,
+           beam_sentinel: sentinel,
+           nif: nif
+         } <- exqlite,
+         true <- map_size(exqlite) == 8,
+         true <- stage_tail == "#{attempt_id}.tar",
+         :ok <- validate_archive_shape(archive, Path.join(root, "exqlite.tar")),
+         :ok <- validate_exqlite_version(app_version),
+         true <- app_stage == "#{lib_root}/.mob_exqlite_stage_#{attempt_id}",
+         true <- app_backup == "#{lib_root}/.mob_exqlite_backup_#{attempt_id}",
+         true <- activation_lock == "#{lib_root}/.mob_exqlite_activation_lock",
+         {:ok, ^sentinel} <- validate_beam_sentinel(sentinel),
+         :ok <- validate_nif_plan_shape(nif, abis) do
+      :ok
+    else
+      _invalid -> {:error, :invalid_exqlite_payload}
+    end
+  end
+
+  defp validate_payload_exqlite_shape(_value, _root, _package, _attempt_id, _abis),
+    do: {:error, :invalid_exqlite_payload}
+
+  defp validate_nif_plan_shape(
+         %{
+           source: :installed_apk,
+           filename: "libsqlite3_nif.so",
+           selected_abis: abis,
+           required_apk_entries: entries
+         } = nif,
+         abis
+       ) do
+    expected = Map.new(abis, &{&1, "lib/#{&1}/libsqlite3_nif.so"})
+
+    if map_size(nif) == 4 and entries == expected,
+      do: :ok,
+      else: {:error, :invalid_nif_plan}
+  end
+
+  defp validate_nif_plan_shape(_nif, _abis), do: {:error, :invalid_nif_plan}
+
+  defp validate_archive_shape(%{path: path, size: size, sha256: sha256} = archive, expected) do
+    if map_size(archive) == 3 and path == expected and is_integer(size) and
+         size in 1..@max_android_payload_bytes and valid_hex_sha256?(sha256),
+       do: :ok,
+       else: {:error, :invalid_archive}
+  end
+
+  defp validate_archive_shape(_archive, _expected), do: {:error, :invalid_archive}
+
+  defp valid_payload_checks?(checks) when is_list(checks) and checks != [] do
+    length(checks) <= 64 and Enum.uniq(checks) == checks and
+      Enum.all?(checks, fn
+        {kind, path} when kind in [:file, :dir] -> safe_android_relative_path?(path)
+        _invalid -> false
+      end)
+  end
+
+  defp valid_payload_checks?(_checks), do: false
+
+  defp validate_restart_map_shape(restart_by_serial, package, serials)
+       when is_map(restart_by_serial) do
+    if Enum.sort(Map.keys(restart_by_serial)) == serials and
+         Enum.all?(restart_by_serial, fn {_serial, record} ->
+           valid_restart_record?(record, package)
+         end),
+       do: :ok,
+       else: {:error, :invalid_restart_map}
+  end
+
+  defp validate_restart_map_shape(_restart_by_serial, _package, _serials),
+    do: {:error, :invalid_restart_map}
+
+  defp valid_restart_record?(record, package) when is_map(record) do
+    with %{
+           package: ^package,
+           activity: activity,
+           restart?: restart,
+           mode: mode,
+           dist_port: port,
+           node_suffix: suffix
+         } <- record,
+         true <- map_size(record) == 6,
+         true <- restart in [true, false],
+         true <- mode == if(restart, do: :checked_restart, else: :no_restart),
+         :ok <- validate_android_activity(activity),
+         :ok <- validate_android_dist_port(port),
+         :ok <- validate_android_node_suffix(suffix) do
+      true
+    else
+      _invalid -> false
+    end
+  end
+
+  defp valid_restart_record?(_record, _package), do: false
+
+  defp register_android_payload(plan, root, beam_checks) do
+    paths = payload_artifact_paths(plan)
+
+    if plan_root(plan) == root and Enum.all?(paths, &(Path.dirname(&1) == root)) and
+         valid_payload_checks?(beam_checks) do
+      registry = Process.get(@payload_registry_key, %{})
+
+      entry = %{
+        root: root,
+        paths: paths,
+        beam_checks: beam_checks,
+        cleaned?: false
+      }
+
+      Process.put(@payload_registry_key, Map.put(registry, payload_registry_id(plan), entry))
+      :ok
+    else
+      {:error, :invalid_payload_registry_entry}
+    end
+  end
+
+  defp registered_android_payload?(plan) do
+    match?({:ok, %{cleaned?: false}}, registered_android_payload(plan))
+  end
+
+  defp registered_android_payload(plan) do
+    case Process.get(@payload_registry_key, %{}) |> Map.fetch(payload_registry_id(plan)) do
+      {:ok, %{root: root, paths: paths} = entry}
+      when is_binary(root) and is_list(paths) ->
+        if root == plan_root(plan) and paths == payload_artifact_paths(plan) do
+          {:ok, entry}
+        else
+          {:error, :payload_registry_mismatch}
+        end
+
+      _missing ->
+        {:error, :payload_not_registered}
+    end
+  end
+
+  defp payload_registry_id(plan) do
+    :crypto.hash(:sha256, :erlang.term_to_binary(plan))
+  end
+
+  defp cleanup_registered_android_payload(_plan, %{cleaned?: true}), do: :ok
+
+  defp cleanup_registered_android_payload(plan, %{root: root, paths: paths}) do
+    with :ok <- remove_registered_payload_files(paths),
+         :ok <- remove_registered_payload_root(root) do
+      registry = Process.get(@payload_registry_key, %{})
+      id = payload_registry_id(plan)
+      Process.put(@payload_registry_key, put_in(registry, [id, :cleaned?], true))
+      :ok
+    end
+  end
+
+  defp remove_registered_payload_files(paths) do
+    Enum.reduce_while(paths, :ok, fn path, :ok ->
+      case File.rm(path) do
+        :ok -> {:cont, :ok}
+        {:error, :enoent} -> {:cont, :ok}
+        {:error, _reason} -> {:halt, {:error, "Could not remove Android payload artifact"}}
+      end
+    end)
+  end
+
+  defp remove_registered_payload_root(root) do
+    case File.rmdir(root) do
+      :ok -> :ok
+      {:error, :enoent} -> :ok
+      {:error, _reason} -> {:error, "Could not remove empty Android payload staging"}
+    end
+  end
+
+  defp valid_payload_artifact_identities?(plan) do
+    identities =
+      if(Map.has_key?(plan, :apk), do: [plan.apk], else: []) ++
+        [plan.beam.archive] ++ if(plan.exqlite, do: [plan.exqlite.archive], else: [])
+
+    paths = Enum.map(identities, & &1.path)
+
+    Enum.uniq(paths) == paths and Enum.all?(identities, &valid_payload_artifact_identity?/1)
+  end
+
+  defp valid_payload_artifact_identity?(%{path: path, size: size, sha256: sha256} = identity)
+       when map_size(identity) == 3 do
+    with true <- is_binary(path) and Path.type(path) == :absolute,
+         true <- is_integer(size) and size in 1..@max_android_payload_bytes,
+         true <- valid_hex_sha256?(sha256),
+         {:ok, %{type: :regular}} <- File.lstat(path),
+         {:ok, %{type: :regular, size: ^size, mode: mode}} <- File.stat(path),
+         true <- Bitwise.band(mode, 0o222) == 0,
+         {:ok, ^sha256} <- file_sha256_hex(path) do
+      true
+    else
+      _invalid -> false
+    end
+  end
+
+  defp valid_payload_artifact_identity?(_identity), do: false
+
+  defp payload_artifact_paths(plan) do
+    if(Map.has_key?(plan, :apk), do: [plan.apk.path], else: []) ++
+      [plan.beam.archive.path] ++
+      if(is_map(plan.exqlite), do: [plan.exqlite.archive.path], else: [])
+  end
+
+  defp plan_root(plan) do
+    if Map.has_key?(plan, :apk),
+      do: Path.dirname(plan.apk.path),
+      else: Path.dirname(plan.beam.archive.path)
+  end
+
+  defp cleanup_payload_root(root) do
+    for name <- ["payload.apk", "beams.tar", "exqlite.tar"] do
+      File.rm(Path.join(root, name))
+    end
+
+    File.rm_rf(root)
+    :ok
+  end
 
   defp ios_beams_dir do
     # The simulator's OTP_ROOT is resolved by `MobDev.Paths.sim_runtime_dir/1`.
@@ -50,6 +968,637 @@ defmodule MobDev.Deployer do
     if File.dir?(runtime_dir), do: runtime_path, else: cache_path
   end
 
+  @doc false
+  @spec deploy_all_with_lease(keyword()) ::
+          {{[Device.t()], [Device.t()], [Device.t()]}, map() | nil}
+  def deploy_all_with_lease(opts) when is_list(opts) do
+    case {Keyword.get(opts, :android_deploy_lock), Keyword.get(opts, :android_payload_plan)} do
+      {%{} = lease, %{} = plan} ->
+        deploy_native_android_with_lease(opts, lease, plan)
+
+      {nil, nil} ->
+        deploy_fast_or_non_android_with_lease(opts)
+
+      _incomplete_authority ->
+        devices = canonical_android_devices_for_failure(opts)
+        reason = "Android deploy authority is incomplete; refusing device mutation"
+        {{[], Enum.map(devices, &failed_android_device(&1, reason)), []}, nil}
+    end
+  end
+
+  def deploy_all_with_lease(_opts), do: {{[], [], []}, nil}
+
+  defp deploy_fast_or_non_android_with_lease(opts) do
+    platforms = Keyword.get(opts, :platforms, [:android, :ios])
+
+    if :android in platforms do
+      deploy_fast_android_with_lease(opts, platforms)
+    else
+      {deploy_all_unleased(opts), nil}
+    end
+  end
+
+  defp deploy_fast_android_with_lease(opts, platforms) do
+    android_lister = Keyword.get(opts, :android_lister, &Android.list_devices/0)
+    device_id = Keyword.get(opts, :device)
+    canonical_serials = Keyword.get(opts, :canonical_android_serials)
+
+    devices =
+      android_lister.()
+      |> select_android_devices!(device_id, canonical_serials)
+      |> Enum.sort_by(& &1.serial)
+
+    if devices == [] do
+      remaining = Keyword.put(opts, :platforms, platforms -- [:android])
+      {deploy_all_unleased(remaining), nil}
+    else
+      package = bundle_id()
+      package_runner = Keyword.get(opts, :android_package_runner, &run_android_lock_command/1)
+
+      case preflight_fast_android_targets(devices, package, package_runner) do
+        {:ok, [], skipped} ->
+          ios_result =
+            opts
+            |> Keyword.put(:platforms, platforms -- [:android])
+            |> deploy_all_unleased()
+
+          {merge_device_results({[], [], skipped}, ios_result), nil}
+
+        {:ok, installed, skipped} ->
+          IO.puts("  Pushing authoritative BEAM payload to #{length(installed)} device(s)...")
+
+          {result, lease} = run_fast_android_operation(installed, opts, platforms)
+          {merge_device_results(result, {[], [], skipped}), lease}
+
+        {:error, reason} ->
+          {{[], Enum.map(devices, &failed_android_device(&1, reason)), []}, nil}
+      end
+    end
+  end
+
+  defp preflight_fast_android_targets(devices, package, runner) do
+    Enum.reduce_while(devices, {:ok, [], []}, fn device, {:ok, installed, skipped} ->
+      result = runner.(["-s", device.serial, "shell", "pm", "list", "packages", package])
+
+      case classify_android_package_probe(result, package) do
+        :installed ->
+          {:cont, {:ok, [device | installed], skipped}}
+
+        :absent ->
+          reason = "#{package} is not installed; Android target was not mutated"
+          skipped_device = %{device | status: :skipped, error: reason}
+          {:cont, {:ok, installed, [skipped_device | skipped]}}
+
+        {:error, _reason} ->
+          {:halt, {:error, "Android package preflight was ambiguous"}}
+      end
+    end)
+    |> case do
+      {:ok, installed, skipped} -> {:ok, Enum.reverse(installed), Enum.reverse(skipped)}
+      {:error, _reason} = error -> error
+    end
+  rescue
+    _error -> {:error, "Android package preflight was ambiguous"}
+  catch
+    _kind, _reason -> {:error, "Android package preflight was ambiguous"}
+  end
+
+  defp run_fast_android_operation(devices, opts, platforms) do
+    package = bundle_id()
+    serials = Enum.map(devices, & &1.serial)
+    lock_runner = Keyword.get(opts, :android_lock_runner, &run_android_lock_command/1)
+    prepare = Keyword.get(opts, :fast_android_payload_preparer, &prepare_fast_android_payload/3)
+
+    with {:ok, plan} <-
+           prepare.(devices, package,
+             operation: :fast,
+             restart: Keyword.get(opts, :restart, true),
+             beam_flags: Keyword.get(opts, :beam_flags),
+             dist_port: Keyword.get(opts, :dist_port),
+             node_suffix: Keyword.get(opts, :node_suffix),
+             beam_dirs: Keyword.get(opts, :beam_dirs, collect_android_beam_dirs()),
+             priv_dir: Keyword.get(opts, :priv_dir, default_priv_dir()),
+             exqlite_source: Keyword.get(opts, :exqlite_source, :auto),
+             tmp_root: Keyword.get(opts, :tmp_root, System.tmp_dir!()),
+             node_suffix_resolver:
+               Keyword.get(opts, :node_suffix_resolver, &Android.device_node_suffix/1)
+           ) do
+      try do
+        identity = %{package: package, serials: serials}
+
+        with true <- valid_fast_android_payload?(plan, identity),
+             {:ok, lease} <- AndroidDeployLock.acquire(package, serials, lock_runner) do
+          result = deploy_fast_android_targets(devices, opts, lease, plan, identity, lock_runner)
+
+          finalize_fast_android_operation(result, opts, platforms, lock_runner)
+        else
+          false ->
+            reason = "Fast Android payload is invalid or changed"
+            {{[], Enum.map(devices, &failed_android_device(&1, reason)), []}, nil}
+
+          {:error, %{lease: retained} = failure} ->
+            reason = AndroidDeployLock.message(failure)
+            {{[], Enum.map(devices, &failed_android_device(&1, reason)), []}, retained}
+        end
+      after
+        cleanup_deploy_payload(plan)
+      end
+    else
+      {:error, reason} ->
+        {{[], Enum.map(devices, &failed_android_device(&1, reason)), []}, nil}
+
+      _invalid ->
+        reason = "Could not prepare authoritative fast Android payload"
+        {{[], Enum.map(devices, &failed_android_device(&1, reason)), []}, nil}
+    end
+  end
+
+  defp deploy_fast_android_targets(devices, opts, lease, plan, identity, lock_runner) do
+    case connected_fast_android_nodes(devices, opts) do
+      {:ok, nodes, hot_push_devices} ->
+        deploy_fast_android_via_dist(
+          devices,
+          nodes,
+          hot_push_devices,
+          opts,
+          lease,
+          plan,
+          identity,
+          lock_runner
+        )
+
+      :filesystem ->
+        deploy_native_android_targets(devices, opts, lease, plan, identity, lock_runner)
+    end
+  end
+
+  defp connected_fast_android_nodes(devices, opts) do
+    if Keyword.get(opts, :force_fs, false) do
+      :filesystem
+    else
+      connected = Keyword.get(opts, :connected_nodes, [Node.self() | Node.list()])
+
+      if is_list(connected) and Enum.all?(connected, &is_atom/1) do
+        nodes = Enum.map(devices, &Device.node_name/1)
+
+        if nodes != [] and Enum.uniq(nodes) == nodes and Enum.all?(nodes, &(&1 in connected)) do
+          hot_push_devices =
+            Enum.zip_with(devices, nodes, fn device, node -> %{device | node: node} end)
+
+          {:ok, nodes, hot_push_devices}
+        else
+          :filesystem
+        end
+      else
+        :filesystem
+      end
+    end
+  end
+
+  defp deploy_fast_android_via_dist(
+         devices,
+         nodes,
+         hot_push_devices,
+         opts,
+         lease,
+         plan,
+         identity,
+         lock_runner
+       ) do
+    rpc = Keyword.get(opts, :hot_push_rpc, &hot_push_load_rpc/4)
+    post_push = Keyword.get(opts, :hot_push_post_push, &hot_push_repaint/1)
+
+    with :ok <- payload_deploy_barrier(plan, identity, lease, lock_runner),
+         {pushed, []} when pushed == length(plan.beam.dist_snapshot) <-
+           HotPush.push_prepared_fenced(nodes, plan.beam.dist_snapshot,
+             package: identity.package,
+             android_devices: hot_push_devices,
+             android_deploy_lock: lease,
+             expected_lock_phase: lease.phase,
+             lock_runner: lock_runner,
+             rpc: rpc,
+             post_push: post_push
+           ),
+         :ok <- payload_deploy_barrier(plan, identity, lease, lock_runner),
+         {:ok, committed} <-
+           AndroidDeployLock.transition(lease, :acquired, :fast_committed, lock_runner) do
+      {{devices, [], []}, committed}
+    else
+      {0, failures} when is_list(failures) ->
+        failed_fast_dist_result(devices, lease, lock_runner, "Android hot push failed closed")
+
+      {partial_count, failures} when is_integer(partial_count) and is_list(failures) ->
+        failed_fast_dist_result(
+          devices,
+          lease,
+          lock_runner,
+          "Android hot push result was ambiguous"
+        )
+
+      {:error, %{lease: retained}} ->
+        reason = "Android hot push commit became ambiguous; deploy lease retained"
+        {{[], Enum.map(devices, &failed_android_device(&1, reason)), []}, retained}
+
+      {:error, _reason} ->
+        failed_fast_dist_result(
+          devices,
+          lease,
+          lock_runner,
+          "Android hot push authority changed"
+        )
+
+      _invalid ->
+        failed_fast_dist_result(
+          devices,
+          lease,
+          lock_runner,
+          "Android hot push returned an invalid result"
+        )
+    end
+  end
+
+  defp failed_fast_dist_result(devices, lease, lock_runner, reason) do
+    retained = retained_lease_after_failure(lease, lock_runner)
+    {{[], Enum.map(devices, &failed_android_device(&1, reason)), []}, retained}
+  end
+
+  defp hot_push_load_rpc(node, module, filename, binary) do
+    :rpc.call(node, :code, :load_binary, [module, filename, binary])
+  end
+
+  defp hot_push_repaint(node) do
+    case :rpc.call(node, :erlang, :send, [:mob_screen, :__mob_hot_reload__]) do
+      {:badrpc, _reason} -> {:error, :repaint_failed}
+      _sent_message -> :ok
+    end
+  rescue
+    _error -> {:error, :repaint_failed}
+  catch
+    _kind, _reason -> {:error, :repaint_failed}
+  end
+
+  defp finalize_fast_android_operation(
+         {{deployed, [], []}, %{phase: :fast_committed} = committed},
+         opts,
+         platforms,
+         lock_runner
+       ) do
+    case AndroidDeployLock.release(committed, lock_runner) do
+      :ok ->
+        ios_result =
+          if :ios in platforms do
+            opts
+            |> Keyword.put(:platforms, [:ios])
+            |> deploy_all_unleased()
+          else
+            {[], [], []}
+          end
+
+        {merge_device_results({deployed, [], []}, ios_result), nil}
+
+      {:error, %{lease: retained}} ->
+        reason = "Fast Android deploy committed but lease release is ambiguous"
+        failures = Enum.map(deployed, &failed_android_device(&1, reason))
+        {{[], failures, []}, retained}
+    end
+  end
+
+  defp finalize_fast_android_operation({result, retained}, _opts, _platforms, _lock_runner),
+    do: {result, retained}
+
+  defp merge_device_results({deployed_a, failed_a, skipped_a}, {deployed_b, failed_b, skipped_b}) do
+    {deployed_a ++ deployed_b, failed_a ++ failed_b, skipped_a ++ skipped_b}
+  end
+
+  defp deploy_native_android_with_lease(opts, lease, plan) do
+    package = bundle_id()
+    serials = Keyword.get(opts, :canonical_android_serials, [])
+    lock_runner = Keyword.get(opts, :android_lock_runner, &run_android_lock_command/1)
+    android_lister = Keyword.get(opts, :android_lister, &Android.list_devices/0)
+
+    devices =
+      android_lister.()
+      |> select_android_devices!(nil, serials)
+
+    identity = %{package: package, serials: serials}
+
+    cond do
+      not AndroidDeployLock.valid?(lease, :native_ready) or lease.bundle_id != package or
+          lease.serials != serials ->
+        reason = "Native Android deploy lease identity is invalid"
+        {{[], Enum.map(devices, &failed_android_device(&1, reason)), []}, nil}
+
+      not valid_android_payload?(plan, identity) ->
+        reason = "Authoritative Android payload is invalid or changed"
+        retained = %{lease | state: :retained_failure}
+        {{[], Enum.map(devices, &failed_android_device(&1, reason)), []}, retained}
+
+      true ->
+        deploy_native_android_targets(devices, opts, lease, plan, identity, lock_runner)
+    end
+  rescue
+    _error ->
+      devices = canonical_android_devices_for_failure(opts)
+      reason = "Native Android final deploy failed before commit"
+      retained = if is_map(lease), do: Map.put(lease, :state, :retained_ambiguous), else: nil
+      {{[], Enum.map(devices, &failed_android_device(&1, reason)), []}, retained}
+  catch
+    _kind, _reason ->
+      devices = canonical_android_devices_for_failure(opts)
+      reason = "Native Android final deploy failed before commit"
+      retained = if is_map(lease), do: Map.put(lease, :state, :retained_ambiguous), else: nil
+      {{[], Enum.map(devices, &failed_android_device(&1, reason)), []}, retained}
+  end
+
+  defp deploy_native_android_targets(devices, opts, lease, plan, identity, lock_runner) do
+    commit_phase = if lease.phase == :native_ready, do: :final_committed, else: :fast_committed
+
+    case deploy_native_android_targets_ordered(
+           devices,
+           opts,
+           lease,
+           plan,
+           identity,
+           lock_runner,
+           []
+         ) do
+      {:ok, deployed} ->
+        with :ok <- payload_deploy_barrier(plan, identity, lease, lock_runner),
+             {:ok, committed} <-
+               AndroidDeployLock.transition(
+                 lease,
+                 lease.phase,
+                 commit_phase,
+                 lock_runner
+               ) do
+          {{Enum.reverse(deployed), [], []}, committed}
+        else
+          {:error, %{lease: retained}} ->
+            reason = "Android final commit became ambiguous; deploy lease retained"
+            failures = Enum.map(Enum.reverse(deployed), &failed_android_device(&1, reason))
+            {{[], failures, []}, retained}
+
+          {:error, _reason} ->
+            reason = "Android payload changed before final commit; deploy lease retained"
+            retained = %{lease | state: :retained_failure}
+            failures = Enum.map(Enum.reverse(deployed), &failed_android_device(&1, reason))
+            {{[], failures, []}, retained}
+        end
+
+      {:error, deployed, failed, remaining, retained} ->
+        reason = failed.error || "Native Android final deploy failed"
+
+        indeterminate =
+          deployed
+          |> Enum.reverse()
+          |> Enum.map(
+            &failed_android_device(
+              &1,
+              "Device mutation is indeterminate because the exact set did not commit"
+            )
+          )
+
+        halted = Enum.map(remaining, &failed_android_device(&1, "Operation halted: #{reason}"))
+        {{[], indeterminate ++ [failed | halted], []}, retained}
+    end
+  end
+
+  defp deploy_native_android_targets_ordered(
+         [],
+         _opts,
+         _lease,
+         _plan,
+         _identity,
+         _lock_runner,
+         deployed
+       ),
+       do: {:ok, deployed}
+
+  defp deploy_native_android_targets_ordered(
+         [device | remaining],
+         opts,
+         lease,
+         plan,
+         identity,
+         lock_runner,
+         deployed
+       ) do
+    result =
+      with :ok <- payload_deploy_barrier(plan, identity, lease, lock_runner) do
+        case Keyword.get(opts, :device_deployer) do
+          deployer when is_function(deployer, 1) -> deployer.(device)
+          nil -> deploy_android_payload_plan(device, plan, identity, lease, lock_runner, opts)
+          _invalid -> {:error, "Android device deployer is invalid"}
+        end
+      end
+
+    case result do
+      {:ok, %Device{} = deployed_device} ->
+        deploy_native_android_targets_ordered(
+          remaining,
+          opts,
+          lease,
+          plan,
+          identity,
+          lock_runner,
+          [deployed_device | deployed]
+        )
+
+      {:skipped, reason} ->
+        retained = retained_lease_after_failure(lease, lock_runner)
+        failed = failed_android_device(device, bounded_deploy_reason(reason))
+        {:error, deployed, failed, remaining, retained}
+
+      {:error, reason} ->
+        retained = retained_lease_after_failure(lease, lock_runner)
+        failed = failed_android_device(device, bounded_deploy_reason(reason))
+        {:error, deployed, failed, remaining, retained}
+
+      _invalid ->
+        retained = retained_lease_after_failure(lease, lock_runner)
+        failed = failed_android_device(device, "Android device deploy returned an invalid result")
+        {:error, deployed, failed, remaining, retained}
+    end
+  end
+
+  defp deploy_android_payload_plan(device, plan, identity, lease, lock_runner, opts) do
+    serial = device.serial
+    package = identity.package
+    runner = Keyword.get(opts, :android_runner, &run_adb/1)
+
+    fenced_runner = fn args ->
+      case payload_deploy_barrier(plan, identity, lease, lock_runner) do
+        :ok -> runner.(args)
+        {:error, _reason} -> {:error, "Android payload or deploy lease changed"}
+      end
+    end
+
+    restart = Map.fetch!(plan.restart_by_serial, serial)
+    app_data = "/data/data/#{package}/files"
+    beams_dir = "#{app_data}/otp/#{app_name()}"
+
+    with :installed <-
+           probe_installed_android_package(serial, package, plan, identity, lease, lock_runner),
+         :ok <- ensure_erts_on_device(serial, package, fenced_runner),
+         :ok <-
+           verify_elixir_runtime_version_android(
+             serial,
+             package,
+             app_data,
+             plan.beam.runtime_version,
+             fenced_runner
+           ),
+         {:ok, %{beam_checks: beam_checks}} <- registered_android_payload(plan),
+         :ok <-
+           push_staged_beams(
+             fenced_runner,
+             serial,
+             package,
+             beams_dir,
+             plan.beam.archive.path,
+             plan.beam.stage_device,
+             plan.beam.app_stage,
+             plan.beam.app_backup,
+             plan.beam.activation_lock,
+             beam_checks
+           ),
+         :ok <- deploy_payload_exqlite(serial, package, plan.exqlite, fenced_runner),
+         :ok <-
+           if(restart.restart?,
+             do:
+               restart_android(
+                 serial,
+                 [
+                   package: restart.package,
+                   activity: restart.activity,
+                   dist_port: restart.dist_port,
+                   node_suffix: restart.node_suffix,
+                   sleeper: Keyword.get(opts, :sleeper, &:timer.sleep/1),
+                   operation_authority: {plan, identity, lease, lock_runner}
+                 ],
+                 fenced_runner
+               ),
+             else: :ok
+           ) do
+      {:ok, device}
+    else
+      :absent -> {:error, "Native Android target became unavailable after install"}
+      {:error, reason} -> {:error, bounded_deploy_reason(reason)}
+      _invalid -> {:error, "Android payload deployment failed closed"}
+    end
+  end
+
+  defp deploy_payload_exqlite(_serial, _package, nil, _runner), do: :ok
+
+  defp deploy_payload_exqlite(serial, package, exqlite, runner) do
+    live_dir = "/data/data/#{package}/files/otp/lib/exqlite-#{exqlite.app_version}"
+
+    with {:ok, nif_target} <- resolve_exqlite_nif_target(serial, package, runner, []),
+         :ok <-
+           push_staged_exqlite(
+             runner,
+             serial,
+             package,
+             exqlite.archive.path,
+             exqlite.stage_device,
+             live_dir,
+             exqlite.app_stage,
+             exqlite.app_backup,
+             exqlite.activation_lock,
+             nif_target,
+             exqlite.beam_sentinel
+           ) do
+      :ok
+    end
+  end
+
+  defp probe_installed_android_package(serial, package, plan, identity, lease, lock_runner) do
+    with :ok <- payload_deploy_barrier(plan, identity, lease, lock_runner) do
+      lock_runner.(["-s", serial, "shell", "pm", "list", "packages", package])
+      |> classify_android_package_probe(package)
+    end
+  end
+
+  defp payload_deploy_barrier(plan, identity, lease, lock_runner) do
+    with true <- valid_deploy_payload?(plan, identity),
+         :ok <- verify_android_lease_set(lease, lock_runner) do
+      :ok
+    else
+      false -> {:error, :payload_changed}
+      {:error, _failure} = error -> error
+    end
+  end
+
+  defp validate_android_operation_authority(
+         {plan, %{package: package, serials: serials} = identity, lease, lock_runner},
+         serial,
+         package
+       )
+       when is_list(serials) and is_function(lock_runner, 1) do
+    if serial in serials and is_map(lease) and lease.serials == serials do
+      case payload_deploy_barrier(plan, identity, lease, lock_runner) do
+        :ok -> :ok
+        {:error, _reason} -> {:error, "Android operation authority is not current"}
+      end
+    else
+      {:error, "Android operation authority does not cover this target"}
+    end
+  end
+
+  defp validate_android_operation_authority(_authority, _serial, _package),
+    do: {:error, "Android mutation requires an operation-wide deploy lease"}
+
+  defp fenced_android_operation_runner(authority, serial, package, runner) do
+    fn args ->
+      case validate_android_operation_authority(authority, serial, package) do
+        :ok -> runner.(args)
+        {:error, _reason} -> {:error, "Android operation authority changed"}
+      end
+    end
+  end
+
+  defp verify_android_lease_set(lease, lock_runner) do
+    Enum.reduce_while(lease.serials, :ok, fn serial, :ok ->
+      case AndroidDeployLock.verify_owner(lease, serial, lock_runner) do
+        :ok -> {:cont, :ok}
+        {:error, failure} -> {:halt, {:error, failure}}
+      end
+    end)
+  end
+
+  defp retained_lease_after_failure(lease, lock_runner) do
+    case verify_android_lease_set(lease, lock_runner) do
+      :ok -> %{lease | state: :retained_failure}
+      {:error, %{lease: retained}} -> retained
+      {:error, _failure} -> %{lease | state: :retained_ambiguous}
+    end
+  end
+
+  defp canonical_android_devices_for_failure(opts) do
+    opts
+    |> Keyword.get(:canonical_android_serials, [])
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&%Device{platform: :android, serial: &1})
+  end
+
+  defp failed_android_device(%Device{} = device, reason) do
+    %{device | status: :error, error: bounded_deploy_reason(reason)}
+  end
+
+  defp bounded_deploy_reason(reason) when is_binary(reason) do
+    if String.valid?(reason), do: String.slice(reason, 0, 512), else: "Android deploy failed"
+  end
+
+  defp bounded_deploy_reason(_reason), do: "Android deploy failed"
+
+  defp run_android_lock_command(args) do
+    System.cmd("adb", args, stderr_to_stdout: true)
+  rescue
+    _error -> {"", 1}
+  catch
+    _kind, _reason -> {"", 1}
+  end
+
   @doc """
   Discovers devices, pushes BEAMs, and optionally restarts apps.
   Returns `{deployed, failed, skipped}` lists of `%Device{}`.
@@ -59,6 +1608,11 @@ defmodule MobDev.Deployer do
   """
   @spec deploy_all(keyword()) :: {[Device.t()], [Device.t()], [Device.t()]}
   def deploy_all(opts \\ []) do
+    {result, _lease} = deploy_all_with_lease(opts)
+    result
+  end
+
+  defp deploy_all_unleased(opts) do
     restart = Keyword.get(opts, :restart, true)
     platforms = Keyword.get(opts, :platforms, [:android, :ios])
     force_fs = Keyword.get(opts, :force_fs, false)
@@ -130,7 +1684,8 @@ defmodule MobDev.Deployer do
                         restart: restart,
                         dist_port: dist_port,
                         node_suffix: node_suffix_override,
-                        beam_flags: beam_flags
+                        beam_flags: beam_flags,
+                        android_deploy_lock: Keyword.get(opts, :android_deploy_lock)
                       )
 
                     :ios ->
@@ -205,8 +1760,38 @@ defmodule MobDev.Deployer do
   """
   @spec android_package_installed?(String.t(), String.t()) :: boolean()
   def android_package_installed?(pm_output, package_name) when is_binary(pm_output) do
-    String.contains?(pm_output, "package:#{package_name}")
+    if byte_size(pm_output) <= @max_android_query_output_bytes and String.valid?(pm_output) do
+      marker = "package:#{package_name}"
+
+      pm_output
+      |> String.split("\n")
+      |> Enum.any?(&(String.trim(&1) == marker))
+    else
+      false
+    end
   end
+
+  @doc false
+  @spec classify_android_package_probe(term(), String.t()) ::
+          :installed | :absent | {:error, String.t()}
+  def classify_android_package_probe({output, 0}, package_name) when is_binary(output) do
+    cond do
+      byte_size(output) > @max_android_query_output_bytes or not String.valid?(output) ->
+        {:error, "verify installed Android app failed: invalid adb output"}
+
+      android_package_installed?(output, package_name) ->
+        :installed
+
+      true ->
+        :absent
+    end
+  end
+
+  def classify_android_package_probe({_output, status}, _package_name) when is_integer(status),
+    do: {:error, "verify installed Android app failed"}
+
+  def classify_android_package_probe(_result, _package_name),
+    do: {:error, "verify installed Android app failed: invalid command result"}
 
   # ── Device filtering ─────────────────────────────────────────────────────────
 
@@ -309,48 +1894,17 @@ defmodule MobDev.Deployer do
 
   # ── Android ─────────────────────────────────────────────────────────────────
 
-  defp deploy_android(%Device{serial: serial} = device, beam_dirs, opts) do
-    restart = Keyword.get(opts, :restart, true)
-    dist_port = Keyword.get(opts, :dist_port, 9100)
-    node_suffix = Keyword.get(opts, :node_suffix)
-    beam_flags = Keyword.get(opts, :beam_flags, nil)
-    pkg = android_package()
+  defp deploy_android(%Device{} = device, beam_dirs, opts) do
+    deploy_android_device(device, beam_dirs, opts)
+  end
 
-    {pm_out, _} =
-      System.cmd("adb", ["-s", serial, "shell", "pm", "list", "packages", pkg],
-        stderr_to_stdout: true
-      )
-
-    if not android_package_installed?(pm_out, pkg) do
-      # NOT a failure — this device isn't a deploy target for this app.
-      # Returning `:skipped` lets the top-level report distinguish
-      # "device didn't have the app installed" (a normal multi-device
-      # situation when only one platform was built) from real push
-      # failures.
-      {:skipped,
-       "#{pkg} not installed on #{device.name || serial} (ABI mismatch or app not built for this platform)"}
-    else
-      case ensure_erts_on_device(serial, pkg) do
-        :ok ->
-          case push_beams_android(serial, beam_dirs) do
-            :ok ->
-              sync_elixir_stdlib_android(serial)
-              write_beam_flags_android(serial, beam_flags)
-              setup_exqlite_android(serial)
-              setup_app_priv_android(serial)
-
-              if restart,
-                do: restart_android(serial, dist_port: dist_port, node_suffix: node_suffix)
-
-              {:ok, device}
-
-            {:error, reason} ->
-              {:error, reason}
-          end
-
-        {:error, reason} ->
-          {:error, reason}
-      end
+  @doc false
+  @spec deploy_android_device(Device.t(), [String.t()], keyword(), keyword()) ::
+          {:ok | :skipped | :error, Device.t() | String.t()}
+  def deploy_android_device(%Device{serial: serial}, _beam_dirs, _opts, _deps \\ []) do
+    with :ok <- validate_adb_serial(serial) do
+      {:error,
+       "Direct Android device mutation is disabled; use deploy_all/1 for a fenced transaction"}
     end
   end
 
@@ -361,411 +1915,509 @@ defmodule MobDev.Deployer do
   #
   # Returns :ok if ERTS is present, {:error, message} with a helpful hint
   # if missing.
-  defp ensure_erts_on_device(serial, pkg) do
-    # The wildcard must be expanded *inside* the run-as sandbox — `run-as`
-    # itself does not invoke a shell, and the outer adb-shell shell can't
-    # see /data/data/<pkg>/, so a literal "erts-*" gets passed to ls if we
-    # don't wrap with `sh -c` here.
-    cmd =
-      "run-as #{pkg} sh -c 'ls /data/data/#{pkg}/files/otp/erts-*/bin/erl_child_setup' 2>&1"
+  @doc false
+  @spec ensure_erts_on_device(String.t(), String.t(), ([String.t()] -> tuple())) ::
+          :ok | {:error, String.t()}
+  def ensure_erts_on_device(serial, pkg, runner \\ &run_adb/1) do
+    with :ok <- validate_adb_serial(serial),
+         :ok <- validate_android_package(pkg) do
+      # The wildcard must be expanded *inside* the run-as sandbox — `run-as`
+      # itself does not invoke a shell, and the outer adb-shell shell can't
+      # see /data/data/<pkg>/, so expand the wildcard in an app-context shell.
+      # `test -r` deliberately has no output contract: exit status is the
+      # authoritative readability check.
+      cmd =
+        "run-as #{pkg} sh -c 'test -r /data/data/#{pkg}/files/otp/erts-*/bin/erl_child_setup'"
 
-    case run_adb(["-s", serial, "shell", cmd]) do
-      {:ok, out} ->
-        if String.contains?(out, "No such file") or String.contains?(out, "not found") do
-          {:error, erts_missing_message(serial, pkg)}
-        else
+      case runner.(["-s", serial, "shell", cmd]) do
+        {:ok, _out} ->
           :ok
-        end
 
-      _ ->
-        # adb shell failed entirely — let the deploy proceed and fail later
-        # if needed; this check is best-effort.
-        :ok
+        {:error, _reason} ->
+          {:error,
+           "Could not verify OTP runtime on #{bounded_device_label(serial)}; adb probe failed"}
+
+        _other ->
+          {:error,
+           "Could not verify OTP runtime on #{bounded_device_label(serial)}: invalid adb result"}
+      end
     end
-  end
-
-  defp erts_missing_message(serial, pkg) do
-    """
-    OTP runtime missing on device #{serial}.
-
-    The app is installed, but /data/data/#{pkg}/files/otp/erts-*/bin/ is
-    empty. Without ERTS the BEAM can't start (you'll see "symlink
-    erl_child_setup failed: No such file or directory" in logcat).
-
-    This usually means the device wasn't connected during a previous
-    `mix mob.deploy --native`. Provision it now:
-
-      mix mob.deploy --native --device #{serial}
-
-    That rebuilds the APK and pushes the right OTP for this device's ABI.
-    Subsequent `mix mob.deploy` runs (without --native) will work normally.
-    """
   end
 
   # If the Elixir stdlib on the device was installed by a different Elixir version
-  # than the host (e.g. after `asdf` upgrade), regex literals and other stdlib
-  # internals will be incompatible. Detect the mismatch and push updated BEAMs.
-  defp sync_elixir_stdlib_android(serial) do
-    host_vsn = System.version()
-    pkg = android_package()
-    app_data = android_app_data()
-    elixir_app = "#{app_data}/otp/lib/elixir/ebin/elixir.app"
+  # than the host (e.g. after an Elixir upgrade), regex literals and other stdlib
+  # internals will be incompatible. An online three-directory replacement cannot
+  # be made atomic with the app BEAM swap, so fail closed and require the native
+  # deployment path to replace the complete OTP runtime.
+  @doc false
+  @spec verify_elixir_runtime_version_android(
+          String.t(),
+          String.t(),
+          String.t(),
+          String.t(),
+          ([String.t()] -> tuple())
+        ) :: :ok | {:error, String.t()}
+  def verify_elixir_runtime_version_android(serial, pkg, app_data, host_vsn, runner) do
+    with :ok <- validate_adb_serial(serial),
+         :ok <- validate_android_package(pkg),
+         :ok <- validate_android_app_data(app_data, pkg),
+         true <- is_binary(host_vsn) do
+      elixir_app = "#{app_data}/otp/lib/elixir/ebin/elixir.app"
 
-    device_vsn =
-      case run_adb(["-s", serial, "shell", "run-as #{pkg} cat #{elixir_app}"]) do
-        {:ok, content} -> MobDev.AppFile.vsn_from_content(content)
-        _ -> nil
-      end
-
-    if device_vsn != host_vsn do
-      Mix.shell().info([
-        :yellow,
-        "* Elixir version mismatch (device: #{device_vsn || "unknown"}, host: #{host_vsn}) — syncing stdlib...",
-        :reset
-      ])
-
-      elixir_lib = :code.lib_dir(:elixir) |> to_string() |> Path.dirname()
-
-      rooted? =
-        case run_adb(["-s", serial, "root"]) do
-          {:ok, out} when is_binary(out) ->
-            if out =~ "restarting" or out =~ "already running as root" do
-              :timer.sleep(600)
-              true
-            else
-              false
-            end
-
-          _ ->
-            false
-        end
-
-      if rooted? do
-        Enum.each([:elixir, :logger, :eex], fn app ->
-          src = Path.join(elixir_lib, "#{app}/ebin")
-          dst = "#{app_data}/otp/lib/#{app}/ebin"
-
-          if File.dir?(src) do
-            run_adb(["-s", serial, "shell", "mkdir -p #{dst}"])
-            run_adb(["-s", serial, "push", "#{src}/.", "#{dst}/"])
+      case runner.(["-s", serial, "shell", "run-as #{pkg} cat #{elixir_app}"]) do
+        {:ok, content}
+        when is_binary(content) and byte_size(content) <= @max_android_query_output_bytes ->
+          if String.valid?(content) and MobDev.AppFile.vsn_from_content(content) == host_vsn do
+            :ok
+          else
+            {:error, "Elixir runtime version mismatch; rerun mix mob.deploy --native"}
           end
-        end)
-      else
-        sync_elixir_stdlib_android_runas(serial, pkg, app_data, elixir_lib)
-      end
 
-      Mix.shell().info([:green, "* Elixir stdlib synced to #{host_vsn}", :reset])
-    end
-  end
+        {:error, _reason} ->
+          {:error, "Could not verify Elixir runtime version; rerun mix mob.deploy --native"}
 
-  # Non-rooted path: stage elixir/logger/eex ebin into a tar on /data/local/tmp,
-  # then extract into the app sandbox via `run-as`. Files created by run-as are
-  # owned by the app user so they can be overwritten on the next sync.
-  defp sync_elixir_stdlib_android_runas(serial, pkg, app_data, elixir_lib) do
-    stage_local = Path.join(System.tmp_dir!(), "mob_elixir_#{serial}.tar")
-    stage_device = "/data/local/tmp/mob_elixir.tar"
-
-    try do
-      tmp = Path.join(System.tmp_dir!(), "mob_elixir_stage_#{serial}")
-      File.rm_rf!(tmp)
-
-      for app <- [:elixir, :logger, :eex] do
-        src = Path.join(elixir_lib, "#{app}/ebin")
-
-        if File.dir?(src) do
-          dst = Path.join(tmp, "#{app}/ebin")
-          File.mkdir_p!(dst)
-          System.cmd("cp", ["-r", "#{src}/.", dst], stderr_to_stdout: true)
-        end
-      end
-
-      System.cmd("tar", ["cf", stage_local, "-C", tmp, "."],
-        env: [{"COPYFILE_DISABLE", "1"}],
-        stderr_to_stdout: true
-      )
-
-      run_adb(["-s", serial, "push", stage_local, stage_device])
-
-      # Extract relative to otp/lib/ so elixir/ebin, logger/ebin, eex/ebin land correctly.
-      cmd =
-        "run-as #{pkg} tar xf #{stage_device} -C #{app_data}/otp/lib 2>/dev/null; true"
-
-      run_adb(["-s", serial, "shell", cmd])
-      run_adb(["-s", serial, "shell", "rm -f #{stage_device}"])
-    after
-      File.rm(stage_local)
-      File.rm_rf(Path.join(System.tmp_dir!(), "mob_elixir_stage_#{serial}"))
-    end
-  end
-
-  defp write_beam_flags_android(_serial, nil), do: :ok
-
-  defp write_beam_flags_android(serial, flags) do
-    beams_dir = android_beams_dir()
-    tmp = Path.join(System.tmp_dir!(), "mob_beam_flags_#{serial}")
-    File.write!(tmp, flags)
-
-    case System.cmd(
-           "adb",
-           ["-s", serial, "shell", "run-as", android_package(), "test", "-d", beams_dir],
-           stderr_to_stdout: true
-         ) do
-      {_, 0} ->
-        System.cmd("adb", ["-s", serial, "push", tmp, "#{beams_dir}/mob_beam_flags"],
-          stderr_to_stdout: true
-        )
-
-      _ ->
-        :ok
-    end
-
-    File.rm(tmp)
-    :ok
-  end
-
-  # Ensure exqlite lives in $OTP_ROOT/lib/exqlite-VERSION/{ebin,priv} so that
-  # the OTP boot-time lib scan registers a correct lib_dir for the application.
-  # Without this, code:lib_dir(:exqlite) returns {:error, :bad_name} and exqlite's
-  # NIF on_load callback (which calls :code.priv_dir(:exqlite)) fails.
-  # mob_beam.c creates the sqlite3_nif.so symlink in priv/ at runtime (it knows
-  # the APK-hash-dependent nativeLibraryDir; we don't at deploy time).
-  defp setup_exqlite_android(serial) do
-    with vsn when is_binary(vsn) <- exqlite_version(),
-         exqlite_ebin when exqlite_ebin != nil <-
-           Path.wildcard("_build/dev/lib/exqlite/ebin") |> List.first() do
-      app_data = android_app_data()
-      exqlite_lib = "#{app_data}/otp/lib/exqlite-#{vsn}"
-
-      rooted? =
-        case run_adb(["-s", serial, "root"]) do
-          {:ok, out} -> out =~ "restarting" or out =~ "already running as root"
-          _ -> false
-        end
-
-      if rooted? do
-        pkg = android_package()
-        :timer.sleep(600)
-        run_adb(["-s", serial, "shell", "mkdir -p #{exqlite_lib}/ebin #{exqlite_lib}/priv"])
-        run_adb(["-s", serial, "push", "#{Path.expand(exqlite_ebin)}/.", "#{exqlite_lib}/ebin/"])
-        # Read label from cache/ (has full s0:cXXX,cYYY MCS categories on Android 15),
-        # not files/ which carries a bare s0 label.
-        run_adb([
-          "-s",
-          serial,
-          "shell",
-          "chcon -hR $(stat -c %C /data/data/#{pkg}/cache) #{app_data}/otp/lib/exqlite-#{vsn}"
-        ])
-
-        create_exqlite_nif_symlink(serial, exqlite_lib, :rooted)
-      else
-        push_exqlite_runas(serial, exqlite_ebin, exqlite_lib)
+        _other ->
+          {:error, "Could not verify Elixir runtime version: invalid adb result"}
       end
     else
-      # exqlite not present or version unknown — skip silently
-      _ -> :ok
+      false -> {:error, "Invalid host Elixir version; refusing Android deploy"}
+      {:error, _reason} = error -> error
     end
   end
 
-  # Push the app's priv/ directory to {beams_dir}/priv/ on the device so that
-  # migration .exs files are available at runtime.
-  #
-  # WHY THIS IS NECESSARY
-  #
-  # Ecto.Migrator locates migration files via :code.priv_dir(app), which looks
-  # up the app's OTP lib directory ($OTP_ROOT/lib/APP-VERSION/ebin/). Mob apps
-  # are deployed as flat .beam files in a -pa directory — there is no versioned
-  # lib structure — so :code.priv_dir/1 returns {error, bad_name}. When that
-  # happens Ecto.Migrator.run silently finds zero migrations and logs "Migrations
-  # already up" without creating any tables.
-  #
-  # The fix has two parts:
-  #   1. This function pushes priv/ to {beams_dir}/priv/ on the device.
-  #   2. mob_beam.c sets MOB_BEAMS_DIR=beams_dir before erl_start so app code
-  #      can call Ecto.Migrator.run(repo, beams_dir <> "/priv/repo/migrations", ...)
-  #      with an explicit path instead of relying on :code.priv_dir/1.
-  #
-  # PERMISSION TRAP: chmod -R 755 is not optional.
-  #
-  # `mkdir -p` executed via `adb root` shell creates directories owned by
-  # system:system with mode drwxrwx--x (owner=rwx, group=rwx, other=--x).
-  # The BEAM process runs as the app user (u0_a0), which is "other" relative to
-  # system:system, so it gets only --x (traverse, no read). Path.wildcard calls
-  # opendir(3) on the directory, which requires read permission (r bit). Without
-  # it, wildcard returns [] even though the .exs file is right there — and Ecto
-  # again logs "Migrations already up". chmod -R 755 gives world-readable
-  # directories (r-x for other) while keeping files at their pushed permissions.
-  defp setup_app_priv_android(serial) do
-    local_priv = Path.join(File.cwd!(), "priv")
+  @doc false
+  @spec setup_exqlite_android_runas(String.t(), String.t(), String.t(), keyword()) ::
+          :ok | {:error, String.t()}
+  def setup_exqlite_android_runas(serial, exqlite_ebin, vsn, opts \\ []) do
+    package = Keyword.get(opts, :package, android_package())
+    app_data = Keyword.get(opts, :app_data, android_app_data())
+    runner = Keyword.get(opts, :runner, &run_adb/1)
+    local_runner = Keyword.get(opts, :local_runner, &run_local_command/3)
+    tmp_root = Keyword.get(opts, :tmp_root, System.tmp_dir!())
 
-    if File.dir?(local_priv) do
-      device_priv = "#{android_beams_dir()}/priv"
+    with :ok <- validate_adb_serial(serial),
+         :ok <- validate_android_package(package),
+         :ok <- validate_android_app_data(app_data, package),
+         :ok <-
+           validate_android_operation_authority(
+             Keyword.get(opts, :operation_authority),
+             serial,
+             package
+           ),
+         :ok <- validate_exqlite_version(vsn),
+         {:ok, beam_sentinel} <- validate_exqlite_source(exqlite_ebin, vsn),
+         {:ok, attempt_id} <- android_attempt_id(opts) do
+      runner =
+        fenced_android_operation_runner(
+          Keyword.fetch!(opts, :operation_authority),
+          serial,
+          package,
+          runner
+        )
 
-      rooted? =
-        case run_adb(["-s", serial, "root"]) do
-          {:ok, out} -> out =~ "restarting" or out =~ "already running as root"
-          _ -> false
+      stage_local = Path.join(tmp_root, "mob_exqlite_#{attempt_id}.tar")
+      stage_device = "/data/local/tmp/mob_exqlite_#{attempt_id}.tar"
+      tmp = Path.join(tmp_root, "mob_exqlite_stage_#{attempt_id}")
+      lib_parent = "#{app_data}/otp/lib"
+      live_dir = "#{lib_parent}/exqlite-#{vsn}"
+      app_stage = "#{lib_parent}/.mob_exqlite_stage_#{attempt_id}"
+      app_backup = "#{lib_parent}/.mob_exqlite_backup_#{attempt_id}"
+      activation_lock = "#{lib_parent}/.mob_exqlite_activation_lock"
+
+      local_result =
+        try do
+          File.rm_rf!(tmp)
+
+          with :ok <- prepare_exqlite_local_stage(tmp),
+               :ok <-
+                 checked_local_command(local_runner, "stage exqlite ebin", "cp", [
+                   "-r",
+                   "#{exqlite_ebin}/.",
+                   Path.join(tmp, "ebin")
+                 ]),
+               :ok <-
+                 checked_local_command(
+                   local_runner,
+                   "create exqlite archive",
+                   "tar",
+                   ["cf", stage_local, "-C", tmp, "."],
+                   env: [{"COPYFILE_DISABLE", "1"}]
+                 ) do
+            :ok
+          end
+        after
+          File.rm_rf(tmp)
         end
 
-      if rooted? do
-        :timer.sleep(600)
-        run_adb(["-s", serial, "shell", "mkdir -p #{device_priv}"])
-        run_adb(["-s", serial, "push", "#{Path.expand(local_priv)}/.", "#{device_priv}/"])
-        # Make directories world-readable. mkdir as root creates them system:system
-        # drwxrwx--x; the app process (other) gets only --x → Path.wildcard returns
-        # [] → migrations silently skipped. See comment above for the full story.
-        run_adb(["-s", serial, "shell", "chmod -R 755 #{device_priv}"])
-        # Fix SELinux MCS categories so the app can actually open the files.
-        # Read label from cache/ (full s0:cXXX,cYYY) not files/ (bare s0 on Android 15).
-        run_adb([
-          "-s",
-          serial,
-          "shell",
-          "chcon -hR $(stat -c %C /data/data/#{android_package()}/cache) #{android_beams_dir()}"
-        ])
-      else
-        push_priv_android_runas(serial, local_priv, device_priv)
+      try do
+        case local_result do
+          :ok ->
+            with {:ok, nif_target} <- resolve_exqlite_nif_target(serial, package, runner, opts) do
+              push_staged_exqlite(
+                runner,
+                serial,
+                package,
+                stage_local,
+                stage_device,
+                live_dir,
+                app_stage,
+                app_backup,
+                activation_lock,
+                nif_target,
+                beam_sentinel
+              )
+            end
+
+          {:error, _reason} = error ->
+            error
+        end
+      after
+        File.rm(stage_local)
       end
-    end
-
-    :ok
-  end
-
-  # Non-rooted path: stage priv/ into a tar on /data/local/tmp (world-writable),
-  # then extract into the app sandbox via `run-as`. Files created by run-as are
-  # owned by the app user (u0_a0) so no chmod is needed — the app can read its
-  # own files without any extra permission fixup.
-  defp push_priv_android_runas(serial, local_priv, device_priv) do
-    stage_local = Path.join(System.tmp_dir!(), "mob_priv_#{serial}.tar")
-    stage_device = "/data/local/tmp/mob_priv.tar"
-
-    try do
-      # Tar with priv/ as the top-level entry; extract relative to beams_dir so
-      # the result lands at {beams_dir}/priv/repo/migrations/... etc.
-      case System.cmd(
-             "tar",
-             ["cf", stage_local, "-C", Path.dirname(local_priv), Path.basename(local_priv)],
-             env: [{"COPYFILE_DISABLE", "1"}],
-             stderr_to_stdout: true
-           ) do
-        {_, 0} -> :ok
-        {out, _} -> throw({:error, "tar create failed: #{out}"})
-      end
-
-      case run_adb(["-s", serial, "push", stage_local, stage_device]) do
-        {:ok, _} -> :ok
-        {:error, r} -> throw({:error, "adb push failed: #{r}"})
-      end
-
-      run_adb(["-s", serial, "shell", "run-as #{android_package()} mkdir -p #{device_priv}"])
-
-      cmd =
-        "run-as #{android_package()} tar xf #{stage_device} -C #{android_beams_dir()} 2>/dev/null; true"
-
-      case run_adb(["-s", serial, "shell", cmd]) do
-        {:ok, _} -> :ok
-        {:error, r} -> throw({:error, "run-as tar failed: #{r}"})
-      end
-
-      run_adb(["-s", serial, "shell", "rm -f #{stage_device}"])
-    catch
-      {:error, reason} ->
-        IO.puts("    (warning: priv push failed: #{reason})")
-    after
-      File.rm(stage_local)
     end
   end
 
-  defp push_exqlite_runas(serial, exqlite_ebin, exqlite_lib) do
-    stage_local = Path.join(System.tmp_dir!(), "mob_exqlite_#{serial}.tar")
-    stage_device = "/data/local/tmp/mob_exqlite.tar"
-    tmp = Path.join(System.tmp_dir!(), "mob_exqlite_stage_#{serial}")
-
-    try do
-      File.rm_rf!(tmp)
-      File.mkdir_p!(Path.join(tmp, "ebin"))
-      File.mkdir_p!(Path.join(tmp, "priv"))
-
-      System.cmd("cp", ["-r", "#{exqlite_ebin}/.", Path.join(tmp, "ebin")],
-        stderr_to_stdout: true
-      )
-
-      # Tar with ebin/ and priv/ as top-level entries; extract to exqlite_lib/.
-      case System.cmd("tar", ["cf", stage_local, "-C", tmp, "."],
-             env: [{"COPYFILE_DISABLE", "1"}],
-             stderr_to_stdout: true
-           ) do
-        {_, 0} -> :ok
-        {out, _} -> throw({:error, "tar create failed: #{out}"})
-      end
-
-      case run_adb(["-s", serial, "push", stage_local, stage_device]) do
-        {:ok, _} -> :ok
-        {:error, r} -> throw({:error, "adb push failed: #{r}"})
-      end
-
-      cmd =
-        "run-as #{android_package()} mkdir -p #{exqlite_lib}/ebin #{exqlite_lib}/priv && " <>
-          "run-as #{android_package()} tar xf #{stage_device} -C #{exqlite_lib}/ 2>/dev/null; true"
-
-      case run_adb(["-s", serial, "shell", cmd]) do
-        {:ok, _} -> :ok
-        {:error, r} -> throw({:error, "run-as tar failed: #{r}"})
-      end
-
-      run_adb(["-s", serial, "shell", "rm -f #{stage_device}"])
-      create_exqlite_nif_symlink(serial, exqlite_lib, :runas)
+  defp prepare_exqlite_local_stage(tmp) do
+    with :ok <- File.mkdir_p(Path.join(tmp, "ebin")),
+         :ok <- File.mkdir_p(Path.join(tmp, "priv")) do
       :ok
-    catch
-      {:error, reason} ->
-        IO.puts("    (warning: exqlite lib setup failed: #{reason})")
-        :ok
-    after
-      File.rm(stage_local)
-      File.rm_rf(tmp)
+    else
+      {:error, _reason} -> {:error, "prepare local exqlite stage failed"}
     end
   end
 
-  # Create sqlite3_nif.so symlink in the exqlite priv dir pointing at the APK's
-  # native lib. Uses `pm path` to locate the APK (its parent dir contains lib/arm64/).
-  # On non-rooted devices we use `run-as` since the priv dir is in the app sandbox.
-  defp create_exqlite_nif_symlink(serial, exqlite_lib, mode) do
-    case run_adb(["-s", serial, "shell", "pm path #{android_package()}"]) do
-      {:ok, path_out} ->
-        # pm path can return multiple lines (split APKs: base + config.*); they
-        # all live under the same install dir, so take the first.
-        apk_path =
-          path_out
-          |> String.split("\n", trim: true)
-          |> List.first("")
-          |> String.trim()
-          |> String.replace_prefix("package:", "")
+  defp validate_exqlite_source(exqlite_ebin, expected_vsn) when is_binary(exqlite_ebin) do
+    beam_sentinels =
+      exqlite_ebin
+      |> Path.join("*.beam")
+      |> Path.wildcard()
+      |> Enum.filter(&File.regular?/1)
+      |> Enum.map(&Path.basename/1)
+      |> Enum.sort()
 
-        apk_dir = Path.dirname(apk_path)
+    app_file = Path.join(exqlite_ebin, "exqlite.app")
 
-        case resolve_sqlite_nif_target(serial, apk_dir) do
-          nil ->
-            IO.puts(
-              "    (warning: libsqlite3_nif.so not found under #{apk_dir}/lib — " <>
-                "exqlite NIF symlink skipped)"
+    with true <- File.dir?(exqlite_ebin),
+         {:ok, app_content} <- File.read(app_file),
+         true <- byte_size(app_content) <= @max_android_query_output_bytes,
+         true <- String.valid?(app_content),
+         ^expected_vsn <- MobDev.AppFile.vsn_from_content(app_content),
+         [beam_sentinel | _] <- beam_sentinels,
+         {:ok, safe_sentinel} <- validate_beam_sentinel(beam_sentinel) do
+      {:ok, safe_sentinel}
+    else
+      _ -> {:error, "Configured exqlite ebin is incomplete; refusing Android deploy"}
+    end
+  end
+
+  defp validate_exqlite_source(_exqlite_ebin, _expected_vsn),
+    do: {:error, "Configured exqlite ebin is invalid; refusing Android deploy"}
+
+  defp validate_exqlite_version(vsn) when is_binary(vsn) do
+    if byte_size(vsn) in 1..128 and String.valid?(vsn) and
+         Regex.match?(Regex.compile!("\\A[A-Za-z0-9._-]+\\z"), vsn),
+       do: :ok,
+       else: {:error, "Invalid exqlite version; refusing Android deploy"}
+  end
+
+  defp validate_exqlite_version(_vsn),
+    do: {:error, "Invalid exqlite version; refusing Android deploy"}
+
+  defp resolve_exqlite_nif_target(serial, package, runner, opts) do
+    case Keyword.fetch(opts, :nif_target) do
+      {:ok, target} ->
+        validate_nif_target(target)
+
+      :error ->
+        with {:ok, path_output} <-
+               checked_android_query(runner, "locate Android package", [
+                 "-s",
+                 serial,
+                 "shell",
+                 "pm path #{package}"
+               ]),
+             {:ok, apk_dir} <- android_apk_dir(path_output),
+             {:ok, nif_output} <-
+               checked_android_query(runner, "locate exqlite NIF", [
+                 "-s",
+                 serial,
+                 "shell",
+                 "ls #{apk_dir}/lib/*/libsqlite3_nif.so 2>/dev/null"
+               ]),
+             {:ok, target} <- exact_exqlite_nif_target(nif_output),
+             {:ok, safe_target} <- validate_nif_target(target) do
+          {:ok, safe_target}
+        else
+          {:error, _reason} = error -> error
+        end
+    end
+  end
+
+  defp android_apk_dir(path_output) when is_binary(path_output) do
+    if byte_size(path_output) <= @max_android_query_output_bytes and String.valid?(path_output) do
+      directories =
+        path_output
+        |> String.split("\n", trim: true)
+        |> Enum.map(&String.trim/1)
+        |> Enum.reduce_while([], fn
+          "package:" <> path, directories ->
+            if safe_android_device_path?(path) do
+              {:cont, [Path.dirname(path) | directories]}
+            else
+              {:halt, :invalid}
+            end
+
+          _unexpected_line, _directories ->
+            {:halt, :invalid}
+        end)
+
+      case directories do
+        directories when is_list(directories) ->
+          case Enum.uniq(directories) do
+            [directory] ->
+              {:ok, directory}
+
+            _none_or_ambiguous ->
+              {:error, "Ambiguous Android package path; refusing exqlite setup"}
+          end
+
+        :invalid ->
+          {:error, "Invalid Android package path; refusing exqlite setup"}
+      end
+    else
+      {:error, "Invalid Android package path; refusing exqlite setup"}
+    end
+  end
+
+  defp validate_nif_target(target) when is_binary(target) do
+    if safe_android_device_path?(target) and String.ends_with?(target, "/libsqlite3_nif.so") do
+      {:ok, target}
+    else
+      {:error, "Invalid exqlite NIF path; refusing Android deploy"}
+    end
+  end
+
+  defp validate_nif_target(_target),
+    do: {:error, "Invalid exqlite NIF path; refusing Android deploy"}
+
+  defp exact_exqlite_nif_target(output) when is_binary(output) do
+    targets = normalized_exqlite_nif_targets(String.split(output, "\n", trim: true))
+
+    case targets do
+      [target] -> {:ok, target}
+      [] -> {:error, "Could not locate exqlite NIF; refusing Android deploy"}
+      _multiple -> {:error, "Ambiguous exqlite NIF targets; refusing Android deploy"}
+    end
+  end
+
+  defp normalized_exqlite_nif_targets(lines) when is_list(lines) do
+    lines
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.filter(&String.ends_with?(&1, "/libsqlite3_nif.so"))
+    |> Enum.uniq()
+  end
+
+  defp normalized_exqlite_nif_targets(_lines), do: []
+
+  defp safe_android_device_path?(path) do
+    is_binary(path) and byte_size(path) <= 1_024 and String.valid?(path) and
+      Regex.match?(Regex.compile!("\\A/[A-Za-z0-9._/+=~:-]+\\z"), path) and
+      not Enum.member?(Path.split(path), "..")
+  end
+
+  defp push_staged_exqlite(
+         runner,
+         serial,
+         package,
+         stage_local,
+         stage_device,
+         live_dir,
+         app_stage,
+         app_backup,
+         activation_lock,
+         nif_target,
+         beam_sentinel
+       ) do
+    push_result =
+      checked_android_command(runner, "push exqlite archive", [
+        "-s",
+        serial,
+        "push",
+        stage_local,
+        stage_device
+      ])
+
+    case push_result do
+      :ok ->
+        deploy_result =
+          with :ok <-
+                 checked_android_command(runner, "prepare exqlite staging directory", [
+                   "-s",
+                   serial,
+                   "shell",
+                   "run-as #{package} sh -c 'test ! -e #{app_backup} && rm -rf #{app_stage} && mkdir -p #{app_stage}'"
+                 ]),
+               :ok <-
+                 checked_android_command(runner, "extract exqlite archive", [
+                   "-s",
+                   serial,
+                   "shell",
+                   "run-as #{package} tar xof #{stage_device} -C #{app_stage}/"
+                 ]),
+               :ok <-
+                 checked_android_command(runner, "link staged exqlite NIF", [
+                   "-s",
+                   serial,
+                   "shell",
+                   "run-as #{package} ln -sf #{nif_target} #{app_stage}/priv/sqlite3_nif.so"
+                 ]),
+               :ok <-
+                 verify_staged_exqlite(runner, serial, package, app_stage, beam_sentinel),
+               :ok <-
+                 checked_android_command(runner, "activate exqlite runtime", [
+                   "-s",
+                   serial,
+                   "shell",
+                   exqlite_activation_command(
+                     package,
+                     live_dir,
+                     app_stage,
+                     app_backup,
+                     activation_lock,
+                     beam_sentinel
+                   )
+                 ]),
+               :ok <-
+                 verify_active_exqlite(
+                   runner,
+                   serial,
+                   package,
+                   live_dir,
+                   beam_sentinel
+                 ),
+               :ok <-
+                 checked_android_command(runner, "release exqlite activation lock", [
+                   "-s",
+                   serial,
+                   "shell",
+                   android_activation_lock_release_command(package, activation_lock)
+                 ]),
+               :ok <-
+                 checked_android_command(runner, "clean exqlite activation backup", [
+                   "-s",
+                   serial,
+                   "shell",
+                   android_activation_backup_cleanup_command(package, app_backup)
+                 ]) do
+            :ok
+          end
+
+        case deploy_result do
+          :ok ->
+            merge_deploy_and_cleanup_results(
+              :ok,
+              cleanup_android_exqlite_stage(
+                runner,
+                serial,
+                package,
+                stage_device,
+                app_stage
+              )
             )
 
-          nif_target ->
-            nif_link = "#{exqlite_lib}/priv/sqlite3_nif.so"
-
-            cmd =
-              case mode do
-                :runas -> "run-as #{android_package()} ln -sf #{nif_target} #{nif_link}"
-                :rooted -> "ln -sf #{nif_target} #{nif_link}"
-              end
-
-            case run_adb(["-s", serial, "shell", cmd]) do
-              {:ok, _} -> :ok
-              {:error, e} -> IO.puts("    (warning: exqlite NIF symlink failed: #{e})")
-            end
+          {:error, _reason} = error ->
+            error
         end
 
-      _ ->
-        IO.puts("    (warning: pm path failed — exqlite NIF symlink skipped)")
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp verify_staged_exqlite(runner, serial, package, app_stage, beam_sentinel) do
+    checked_android_command(runner, "verify staged exqlite runtime", [
+      "-s",
+      serial,
+      "shell",
+      "run-as #{package} sh -c 'test -r #{app_stage}/ebin/exqlite.app && test -r #{app_stage}/ebin/#{beam_sentinel} && test -L #{app_stage}/priv/sqlite3_nif.so && test -r #{app_stage}/priv/sqlite3_nif.so'"
+    ])
+  end
+
+  defp verify_active_exqlite(runner, serial, package, live_dir, beam_sentinel) do
+    checked_android_command(runner, "verify active exqlite runtime", [
+      "-s",
+      serial,
+      "shell",
+      "run-as #{package} sh -c 'test -r #{live_dir}/ebin/exqlite.app && test -r #{live_dir}/ebin/#{beam_sentinel} && test -L #{live_dir}/priv/sqlite3_nif.so && test -r #{live_dir}/priv/sqlite3_nif.so'"
+    ])
+  end
+
+  defp exqlite_activation_command(
+         package,
+         live_dir,
+         app_stage,
+         app_backup,
+         activation_lock,
+         beam_sentinel
+       ) do
+    checks =
+      "test -r #{live_dir}/ebin/exqlite.app && " <>
+        "test -r #{live_dir}/ebin/#{beam_sentinel} && " <>
+        "test -L #{live_dir}/priv/sqlite3_nif.so && test -r #{live_dir}/priv/sqlite3_nif.so"
+
+    "run-as #{package} sh -c 'set -e; mkdir #{activation_lock}; had_live=0; " <>
+      "if [ -e #{live_dir} ]; then mv #{live_dir} #{app_backup}; had_live=1; fi; " <>
+      "if mv #{app_stage} #{live_dir} && #{checks}; then :; " <>
+      "else rm -rf #{live_dir}; if [ \"$had_live\" -eq 1 ]; then " <>
+      "mv #{app_backup} #{live_dir}; fi; exit 1; fi'"
+  end
+
+  defp cleanup_android_exqlite_stage(
+         runner,
+         serial,
+         package,
+         stage_device,
+         app_stage
+       ) do
+    cleanup_results = [
+      checked_android_command(runner, "clean app-private exqlite staging directory", [
+        "-s",
+        serial,
+        "shell",
+        "run-as #{package} rm -rf #{app_stage}"
+      ]),
+      cleanup_remote_exqlite_archive(runner, serial, stage_device)
+    ]
+
+    Enum.find(cleanup_results, :ok, &match?({:error, _reason}, &1))
+  end
+
+  defp cleanup_remote_exqlite_archive(runner, serial, stage_device) do
+    checked_android_command(runner, "clean remote exqlite archive", [
+      "-s",
+      serial,
+      "shell",
+      "rm -f #{stage_device}"
+    ])
+  end
+
+  defp checked_android_query(runner, operation, args) do
+    case runner.(args) do
+      {:ok, output}
+      when is_binary(output) and byte_size(output) <= @max_android_query_output_bytes ->
+        if String.valid?(output),
+          do: {:ok, output},
+          else: {:error, "#{operation} failed: invalid adb output"}
+
+      {:ok, _output} ->
+        {:error, "#{operation} failed: invalid adb output"}
+
+      {:error, _reason} ->
+        {:error, "#{operation} failed"}
+
+      _other ->
+        {:error, "#{operation} failed: invalid adb result"}
     end
   end
 
@@ -778,150 +2430,638 @@ defmodule MobDev.Deployer do
   @doc false
   @spec __sqlite_nif_target__([String.t()]) :: String.t() | nil
   def __sqlite_nif_target__(ls_lines) do
-    ls_lines
-    |> Enum.map(&String.trim/1)
-    |> Enum.find(&String.ends_with?(&1, "/libsqlite3_nif.so"))
-  end
-
-  defp resolve_sqlite_nif_target(serial, apk_dir) do
-    case run_adb(["-s", serial, "shell", "ls #{apk_dir}/lib/*/libsqlite3_nif.so 2>/dev/null"]) do
-      {:ok, out} -> __sqlite_nif_target__(String.split(out, "\n", trim: true))
-      _ -> nil
+    case normalized_exqlite_nif_targets(ls_lines) do
+      [target] -> target
+      _none_or_ambiguous -> nil
     end
   end
 
   defp exqlite_version, do: MobDev.AppFile.dep_version(:exqlite)
 
-  defp push_beams_android(serial, beam_dirs) do
-    # Try adb root first (works on emulators and eng builds).
-    # Check the output text — non-rooted devices return exit 0 with
-    # "cannot run as root in production builds".
-    rooted? =
-      case run_adb(["-s", serial, "root"]) do
-        {:ok, out} -> out =~ "restarting" or out =~ "already running as root"
-        _ -> false
+  @doc false
+  @spec push_beams_android_runas(String.t(), [String.t()], keyword()) ::
+          :ok | {:error, String.t()}
+  def push_beams_android_runas(serial, beam_dirs, opts \\ []) do
+    package = Keyword.get(opts, :package, android_package())
+    beams_dir = Keyword.get(opts, :beams_dir, android_beams_dir())
+    runner = Keyword.get(opts, :runner, &run_adb/1)
+    local_runner = Keyword.get(opts, :local_runner, &run_local_command/3)
+    file_writer = Keyword.get(opts, :file_writer, &File.write/2)
+    tmp_root = Keyword.get(opts, :tmp_root, System.tmp_dir!())
+    beam_flags = Keyword.get(opts, :beam_flags)
+    priv_dir = Keyword.get(opts, :priv_dir)
+
+    with :ok <- validate_adb_serial(serial),
+         :ok <- validate_android_package(package),
+         :ok <- validate_android_beams_dir(beams_dir, package),
+         :ok <-
+           validate_android_operation_authority(
+             Keyword.get(opts, :operation_authority),
+             serial,
+             package
+           ),
+         {:ok, attempt_id} <- android_attempt_id(opts) do
+      runner =
+        fenced_android_operation_runner(
+          Keyword.fetch!(opts, :operation_authority),
+          serial,
+          package,
+          runner
+        )
+
+      stage_local = Path.join(tmp_root, "mob_beams_#{attempt_id}.tar")
+      stage_device = "/data/local/tmp/mob_beams_#{attempt_id}.tar"
+      tmp = Path.join(tmp_root, "mob_beam_stage_#{attempt_id}")
+      app_stage = "#{Path.dirname(beams_dir)}/.mob_beams_stage_#{attempt_id}"
+      app_backup = "#{Path.dirname(beams_dir)}/.mob_beams_backup_#{attempt_id}"
+      activation_lock = "#{Path.dirname(beams_dir)}/.mob_beams_activation_lock"
+
+      local_result =
+        try do
+          File.rm_rf!(tmp)
+          File.mkdir_p!(tmp)
+
+          with {:ok, sentinel} <- beam_sentinel(beam_dirs),
+               :ok <- stage_android_beam_dirs(beam_dirs, tmp, local_runner),
+               {:ok, flag_checks} <- stage_android_beam_flags(tmp, beam_flags, file_writer),
+               {:ok, priv_checks} <- stage_android_priv(tmp, priv_dir, local_runner),
+               :ok <-
+                 checked_local_command(
+                   local_runner,
+                   "create BEAM archive",
+                   "tar",
+                   ["cf", stage_local, "-C", tmp, "."],
+                   env: [{"COPYFILE_DISABLE", "1"}]
+                 ) do
+            {:ok, [{:file, sentinel} | flag_checks ++ priv_checks]}
+          end
+        after
+          File.rm_rf(tmp)
+        end
+
+      try do
+        case local_result do
+          {:ok, verification_checks} ->
+            push_staged_beams(
+              runner,
+              serial,
+              package,
+              beams_dir,
+              stage_local,
+              stage_device,
+              app_stage,
+              app_backup,
+              activation_lock,
+              verification_checks
+            )
+
+          {:error, _reason} = error ->
+            error
+        end
+      after
+        File.rm(stage_local)
+      end
+    end
+  end
+
+  defp push_staged_beams(
+         runner,
+         serial,
+         package,
+         beams_dir,
+         stage_local,
+         stage_device,
+         app_stage,
+         app_backup,
+         activation_lock,
+         verification_checks
+       ) do
+    push_result =
+      checked_android_command(runner, "push BEAM archive", [
+        "-s",
+        serial,
+        "push",
+        stage_local,
+        stage_device
+      ])
+
+    case push_result do
+      :ok ->
+        deploy_result =
+          with :ok <-
+                 checked_android_command(runner, "prepare BEAM directory", [
+                   "-s",
+                   serial,
+                   "shell",
+                   "run-as #{package} sh -c 'test ! -e #{app_backup} && rm -rf #{app_stage} && mkdir -p #{app_stage}'"
+                 ]),
+               :ok <-
+                 checked_android_command(runner, "extract BEAM archive", [
+                   "-s",
+                   serial,
+                   "shell",
+                   "run-as #{package} tar xof #{stage_device} -C #{app_stage}/"
+                 ]),
+               :ok <-
+                 verify_android_payload(
+                   serial,
+                   package,
+                   app_stage,
+                   verification_checks,
+                   runner
+                 ),
+               :ok <-
+                 checked_android_command(runner, "activate deployed BEAMs", [
+                   "-s",
+                   serial,
+                   "shell",
+                   beam_activation_command(
+                     package,
+                     beams_dir,
+                     app_stage,
+                     app_backup,
+                     activation_lock,
+                     verification_checks
+                   )
+                 ]),
+               :ok <-
+                 verify_android_payload(
+                   serial,
+                   package,
+                   beams_dir,
+                   verification_checks,
+                   runner
+                 ),
+               :ok <-
+                 checked_android_command(runner, "release BEAM activation lock", [
+                   "-s",
+                   serial,
+                   "shell",
+                   android_activation_lock_release_command(package, activation_lock)
+                 ]),
+               :ok <-
+                 checked_android_command(runner, "clean BEAM activation backup", [
+                   "-s",
+                   serial,
+                   "shell",
+                   android_activation_backup_cleanup_command(package, app_backup)
+                 ]) do
+            :ok
+          end
+
+        case deploy_result do
+          :ok ->
+            merge_deploy_and_cleanup_results(
+              :ok,
+              cleanup_android_beam_stage(runner, serial, package, stage_device, app_stage)
+            )
+
+          {:error, _reason} = error ->
+            error
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  @doc false
+  @spec restart_android(String.t(), keyword(), ([String.t()] -> tuple())) ::
+          :ok | {:error, String.t()}
+  def restart_android(serial, opts, runner \\ &run_adb/1) do
+    with :ok <- validate_adb_serial(serial) do
+      dist_port = Keyword.get(opts, :dist_port, 9100)
+      node_suffix = Keyword.get(opts, :node_suffix) || Android.device_node_suffix(serial)
+      package = Keyword.get(opts, :package, android_package())
+      activity = Keyword.get(opts, :activity, @android_activity)
+      sleeper = Keyword.get(opts, :sleeper, &:timer.sleep/1)
+
+      with :ok <- validate_android_package(package),
+           :ok <- validate_android_activity(activity),
+           :ok <- validate_android_node_suffix(node_suffix),
+           :ok <- validate_android_dist_port(dist_port),
+           :ok <-
+             validate_android_operation_authority(
+               Keyword.get(opts, :operation_authority),
+               serial,
+               package
+             ) do
+        runner =
+          fenced_android_operation_runner(
+            Keyword.fetch!(opts, :operation_authority),
+            serial,
+            package,
+            runner
+          )
+
+        restart_stopped_android(
+          serial,
+          package,
+          activity,
+          dist_port,
+          node_suffix,
+          sleeper,
+          runner
+        )
+      end
+    end
+  end
+
+  defp restart_stopped_android(
+         serial,
+         package,
+         activity,
+         dist_port,
+         node_suffix,
+         sleeper,
+         runner
+       ) do
+    with :ok <-
+           checked_android_command(runner, "force-stop Android app", [
+             "-s",
+             serial,
+             "shell",
+             "am",
+             "force-stop",
+             package
+           ]) do
+      sleeper.(300)
+
+      checked_android_launch(runner, [
+        "-s",
+        serial,
+        "shell",
+        "am",
+        "start",
+        "-W",
+        "-n",
+        "#{package}/#{activity}",
+        "--ei",
+        "mob_dist_port",
+        to_string(dist_port),
+        "--es",
+        "mob_node_suffix",
+        node_suffix
+      ])
+    end
+  end
+
+  defp beam_sentinel(beam_dirs) do
+    sentinels =
+      beam_dirs
+      |> Enum.flat_map(&Path.wildcard(Path.join(&1, "*.beam")))
+      |> Enum.filter(&File.regular?/1)
+      |> Enum.sort()
+
+    case sentinels do
+      [sentinel | _] -> validate_beam_sentinel(Path.basename(sentinel))
+      [] -> {:error, "No local BEAM sentinel found; refusing Android deploy"}
+    end
+  end
+
+  defp validate_beam_sentinel(sentinel)
+       when is_binary(sentinel) and byte_size(sentinel) <= 255 do
+    if String.valid?(sentinel) and
+         Regex.match?(Regex.compile!("\\A[A-Za-z0-9_.-]+\\.beam\\z"), sentinel) do
+      {:ok, sentinel}
+    else
+      {:error, "Unsafe local BEAM sentinel name; refusing Android deploy"}
+    end
+  end
+
+  defp validate_beam_sentinel(_sentinel),
+    do: {:error, "Unsafe local BEAM sentinel name; refusing Android deploy"}
+
+  defp stage_android_beam_dirs(beam_dirs, tmp, local_runner) do
+    Enum.reduce_while(beam_dirs, :ok, fn dir, :ok ->
+      case checked_local_command(
+             local_runner,
+             "stage BEAM files",
+             "cp",
+             ["-r", "#{dir}/.", tmp]
+           ) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp stage_android_beam_flags(_tmp, nil, _file_writer), do: {:ok, []}
+
+  defp stage_android_beam_flags(tmp, flags, file_writer) when is_binary(flags) do
+    if byte_size(flags) <= 4_096 and String.valid?(flags) do
+      case file_writer.(Path.join(tmp, "mob_beam_flags"), flags) do
+        :ok -> {:ok, [{:file, "mob_beam_flags"}]}
+        {:error, _reason} -> {:error, "stage Android BEAM flags failed"}
+      end
+    else
+      {:error, "stage Android BEAM flags failed: invalid flags"}
+    end
+  end
+
+  defp stage_android_beam_flags(_tmp, _flags, _file_writer),
+    do: {:error, "stage Android BEAM flags failed: invalid flags"}
+
+  defp stage_android_priv(_tmp, nil, _local_runner), do: {:ok, []}
+
+  defp stage_android_priv(tmp, priv_dir, local_runner) when is_binary(priv_dir) do
+    with true <- File.dir?(priv_dir),
+         {:ok, verification_check} <- android_priv_verification_check(priv_dir),
+         :ok <- File.mkdir_p(Path.join(tmp, "priv")),
+         :ok <-
+           checked_local_command(local_runner, "stage Android priv files", "cp", [
+             "-r",
+             "#{priv_dir}/.",
+             Path.join(tmp, "priv")
+           ]) do
+      {:ok, [verification_check]}
+    else
+      false -> {:error, "stage Android priv files failed: directory missing"}
+      {:error, reason} = error when is_binary(reason) -> error
+      {:error, _reason} -> {:error, "stage Android priv files failed"}
+    end
+  end
+
+  defp stage_android_priv(_tmp, _priv_dir, _local_runner),
+    do: {:error, "stage Android priv files failed: invalid directory"}
+
+  defp android_priv_verification_check(priv_dir) do
+    safe_file =
+      priv_dir
+      |> Path.join("**/*")
+      |> Path.wildcard()
+      |> Enum.filter(&File.regular?/1)
+      |> Enum.map(&Path.relative_to(&1, priv_dir))
+      |> Enum.sort()
+      |> Enum.find(&safe_android_relative_path?/1)
+
+    case {safe_file, File.ls(priv_dir)} do
+      {safe_file, _listing} when is_binary(safe_file) ->
+        {:ok, {:file, Path.join("priv", safe_file)}}
+
+      {nil, {:ok, []}} ->
+        {:ok, {:dir, "priv"}}
+
+      {nil, {:ok, _entries}} ->
+        {:error, "No safe Android priv sentinel found; refusing deploy"}
+
+      {nil, {:error, _reason}} ->
+        {:error, "Could not inspect Android priv directory; refusing deploy"}
+    end
+  end
+
+  defp safe_android_relative_path?(path) when is_binary(path) do
+    byte_size(path) <= 1_024 and String.valid?(path) and not String.starts_with?(path, "/") and
+      not Enum.member?(Path.split(path), "..") and
+      Regex.match?(Regex.compile!("\\A[A-Za-z0-9_./-]+\\z"), path)
+  end
+
+  defp verify_android_payload(serial, package, beams_dir, checks, runner) do
+    shell_checks = android_payload_checks(beams_dir, checks)
+
+    checked_android_command(runner, "verify deployed BEAM", [
+      "-s",
+      serial,
+      "shell",
+      "run-as #{package} sh -c '#{shell_checks}'"
+    ])
+  end
+
+  defp beam_activation_command(
+         package,
+         beams_dir,
+         app_stage,
+         app_backup,
+         activation_lock,
+         checks
+       ) do
+    shell_checks = android_payload_checks(beams_dir, checks)
+
+    "run-as #{package} sh -c 'set -e; mkdir #{activation_lock}; had_live=0; " <>
+      "if [ -e #{beams_dir} ]; then mv #{beams_dir} #{app_backup}; had_live=1; fi; " <>
+      "if mv #{app_stage} #{beams_dir} && #{shell_checks}; then " <>
+      ":; else rm -rf #{beams_dir}; " <>
+      "if [ \"$had_live\" -eq 1 ]; then mv #{app_backup} #{beams_dir}; fi; exit 1; fi'"
+  end
+
+  defp android_activation_lock_release_command(package, activation_lock),
+    do: "run-as #{package} rmdir #{activation_lock}"
+
+  defp android_activation_backup_cleanup_command(package, app_backup),
+    do: "run-as #{package} rm -rf #{app_backup}"
+
+  defp android_payload_checks(base_dir, checks) do
+    Enum.map_join(checks, " && ", fn
+      {:file, relative_path} -> "test -r #{Path.join(base_dir, relative_path)}"
+      {:dir, relative_path} -> "test -d #{Path.join(base_dir, relative_path)}"
+    end)
+  end
+
+  defp cleanup_android_beam_stage(
+         runner,
+         serial,
+         package,
+         stage_device,
+         app_stage
+       ) do
+    cleanup_results = [
+      checked_android_command(runner, "clean app-private BEAM staging directory", [
+        "-s",
+        serial,
+        "shell",
+        "run-as #{package} rm -rf #{app_stage}"
+      ]),
+      cleanup_remote_beam_archive(runner, serial, stage_device)
+    ]
+
+    Enum.find(cleanup_results, :ok, &match?({:error, _reason}, &1))
+  end
+
+  defp cleanup_remote_beam_archive(runner, serial, stage_device) do
+    checked_android_command(runner, "clean remote BEAM archive", [
+      "-s",
+      serial,
+      "shell",
+      "rm -f #{stage_device}"
+    ])
+  end
+
+  defp merge_deploy_and_cleanup_results(:ok, :ok), do: :ok
+
+  defp merge_deploy_and_cleanup_results(:ok, {:error, _reason} = cleanup_error),
+    do: cleanup_error
+
+  defp checked_android_command(runner, operation, args) do
+    case runner.(args) do
+      {:ok, output}
+      when is_binary(output) and byte_size(output) <= @max_android_query_output_bytes ->
+        if String.valid?(output),
+          do: :ok,
+          else: {:error, "#{operation} failed: invalid adb output"}
+
+      {:ok, _output} ->
+        {:error, "#{operation} failed: invalid adb output"}
+
+      {:error, reason} ->
+        {:error, android_command_error(operation, reason)}
+
+      _other ->
+        {:error, "#{operation} failed: invalid adb result"}
+    end
+  end
+
+  defp checked_android_launch(runner, args) do
+    case runner.(args) do
+      {:ok, output}
+      when is_binary(output) and byte_size(output) <= @max_android_launch_output_bytes ->
+        if String.valid?(output) do
+          lines = output |> String.split("\n") |> Enum.map(&String.trim/1)
+          status_lines = Enum.filter(lines, &String.starts_with?(&1, "Status:"))
+
+          if status_lines == ["Status: ok"] and
+               not Enum.any?(lines, &String.starts_with?(&1, "Error")) do
+            :ok
+          else
+            {:error, "launch Android app failed: adb returned no success status"}
+          end
+        else
+          {:error, "launch Android app failed: invalid adb output"}
+        end
+
+      {:ok, _output} ->
+        {:error, "launch Android app failed: invalid adb output"}
+
+      {:error, _reason} ->
+        {:error, "launch Android app failed"}
+
+      _other ->
+        {:error, "launch Android app failed: invalid adb result"}
+    end
+  end
+
+  defp checked_local_command(local_runner, operation, executable, args, opts \\ []) do
+    case local_runner.(executable, args, Keyword.put_new(opts, :stderr_to_stdout, true)) do
+      {output, 0}
+      when is_binary(output) and byte_size(output) <= @max_android_query_output_bytes ->
+        if String.valid?(output),
+          do: :ok,
+          else: {:error, "#{operation} failed: invalid command output"}
+
+      {_output, 0} ->
+        {:error, "#{operation} failed: invalid command output"}
+
+      {output, _status} ->
+        {:error, android_command_error(operation, output)}
+
+      _other ->
+        {:error, "#{operation} failed: invalid command result"}
+    end
+  end
+
+  defp run_local_command(executable, args, opts) do
+    System.cmd(executable, args, Keyword.put_new(opts, :stderr_to_stdout, true))
+  end
+
+  defp android_command_error(operation, _output), do: "#{operation} failed"
+
+  defp android_attempt_id(opts) do
+    attempt_id =
+      case Keyword.get(opts, :attempt_id) do
+        nil -> :crypto.strong_rand_bytes(12) |> Base.url_encode64(padding: false)
+        attempt_id -> attempt_id
       end
 
-    if rooted? do
-      :timer.sleep(600)
-      run_adb(["-s", serial, "shell", "mkdir -p #{android_beams_dir()}"])
+    if is_binary(attempt_id) and String.valid?(attempt_id) and
+         Regex.match?(Regex.compile!(@android_attempt_id_pattern), attempt_id) do
+      {:ok, attempt_id}
+    else
+      {:error, "Invalid Android deploy attempt id; refusing BEAM delivery"}
+    end
+  end
 
-      result =
-        Enum.reduce_while(beam_dirs, :ok, fn dir, _ ->
-          case run_adb(["-s", serial, "push", "#{Path.expand(dir)}/.", "#{android_beams_dir()}/"]) do
-            {:ok, _} -> {:cont, :ok}
-            {:error, reason} -> {:halt, {:error, "push failed: #{reason}"}}
-          end
+  defp validate_adb_serial(serial) when is_binary(serial) do
+    valid? =
+      byte_size(serial) in 1..@max_adb_serial_bytes and not String.starts_with?(serial, "-") and
+        serial
+        |> :binary.bin_to_list()
+        |> Enum.all?(fn byte ->
+          byte in ?0..?9 or byte in ?A..?Z or byte in ?a..?z or byte in ~c".:-_"
         end)
 
-      # Fix SELinux MCS categories on pushed files. adb push (as root) labels
-      # files with root's categories; restorecon only fixes the type, not MCS.
-      # Read label from cache/ (full s0:cXXX,cYYY) not files/ (bare s0 on Android 15).
-      run_adb([
-        "-s",
-        serial,
-        "shell",
-        "chcon -hR $(stat -c %C /data/data/#{android_package()}/cache) #{android_app_data()}/otp"
-      ])
-
-      result
-    else
-      # Fall back to run-as tar (non-rooted physical devices).
-      push_beams_android_runas(serial, beam_dirs)
-    end
-  end
-
-  defp push_beams_android_runas(serial, beam_dirs) do
-    stage_local = System.tmp_dir!() |> Path.join("mob_beams_#{serial}.tar")
-    stage_device = "/data/local/tmp/mob_beams.tar"
-
-    try do
-      tmp = Path.join(System.tmp_dir!(), "mob_beam_stage_#{serial}")
-      File.rm_rf!(tmp)
-      File.mkdir_p!(tmp)
-
-      Enum.each(beam_dirs, fn dir ->
-        System.cmd("cp", ["-r", "#{dir}/.", tmp], stderr_to_stdout: true)
-      end)
-
-      # Archive from inside tmp so there is no top-level wrapper directory.
-      # BusyBox/Toybox tar (Android ≤11) does not support --strip-components, so
-      # we avoid needing it by using `tar cf ... -C tmp .`.
-      # COPYFILE_DISABLE=1 prevents macOS from adding ._<file> AppleDouble
-      # sidecars into the archive.
-      case System.cmd("tar", ["cf", stage_local, "-C", tmp, "."],
-             env: [{"COPYFILE_DISABLE", "1"}],
-             stderr_to_stdout: true
-           ) do
-        {_, 0} -> :ok
-        {out, _} -> throw({:error, "tar create failed: #{out}"})
-      end
-
-      case run_adb(["-s", serial, "push", stage_local, stage_device]) do
-        {:ok, _} -> :ok
-        {:error, r} -> throw({:error, "adb push failed: #{r}"})
-      end
-
-      run_adb([
-        "-s",
-        serial,
-        "shell",
-        "run-as #{android_package()} mkdir -p #{android_beams_dir()}"
-      ])
-
-      # Redirect stderr and always exit 0: Android's Toybox tar cannot chown to
-      # macOS UID 501 and exits 1, but the files are extracted correctly.
-      cmd =
-        "run-as #{android_package()} tar xf #{stage_device} -C #{android_beams_dir()}/ 2>/dev/null; true"
-
-      case run_adb(["-s", serial, "shell", cmd]) do
-        {:ok, _} -> :ok
-        {:error, r} -> throw({:error, "run-as tar failed: #{r}"})
-      end
-
-      run_adb(["-s", serial, "shell", "rm -f #{stage_device}"])
+    if valid? do
       :ok
-    catch
-      {:error, reason} -> {:error, reason}
-    after
-      File.rm(stage_local)
+    else
+      {:error, "Invalid adb serial; refusing BEAM delivery"}
     end
   end
 
-  defp restart_android(serial, opts) do
-    dist_port = Keyword.get(opts, :dist_port, 9100)
-    node_suffix = Keyword.get(opts, :node_suffix) || Android.device_node_suffix(serial)
-    run_adb(["-s", serial, "shell", "am", "force-stop", android_package()])
-    # Heal SELinux MCS category mismatch before start — APK reinstall changes
-    # the app's category but leaves OTP files with stale labels.
-    # Read label from cache/ (full s0:cXXX,cYYY) not files/ (bare s0 on Android 15).
-    run_adb([
-      "-s",
-      serial,
-      "shell",
-      "chcon -hR $(stat -c %C /data/data/#{android_package()}/cache) #{android_app_data()}/otp"
-    ])
+  defp validate_adb_serial(_serial),
+    do: {:error, "Invalid adb serial; refusing BEAM delivery"}
 
-    :timer.sleep(300)
-
-    run_adb([
-      "-s",
-      serial,
-      "shell",
-      "am",
-      "start",
-      "-n",
-      "#{android_package()}/#{@android_activity}",
-      "--ei",
-      "mob_dist_port",
-      to_string(dist_port),
-      "--es",
-      "mob_node_suffix",
-      node_suffix
-    ])
-
-    :ok
+  defp validate_android_package(package) when is_binary(package) do
+    if byte_size(package) <= 255 and String.valid?(package) and
+         Regex.match?(
+           Regex.compile!("\\A[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z0-9_]+)+\\z"),
+           package
+         ) do
+      :ok
+    else
+      {:error, "Invalid Android package; refusing deploy"}
+    end
   end
+
+  defp validate_android_package(_package),
+    do: {:error, "Invalid Android package; refusing deploy"}
+
+  defp validate_android_app_data(app_data, package) do
+    if app_data == "/data/data/#{package}/files" do
+      :ok
+    else
+      {:error, "Invalid Android app-data path; refusing deploy"}
+    end
+  end
+
+  defp validate_android_beams_dir(beams_dir, package) when is_binary(beams_dir) do
+    app_data = "/data/data/#{package}/files"
+
+    if safe_android_device_path?(beams_dir) and
+         String.starts_with?(beams_dir, "#{app_data}/otp/") do
+      :ok
+    else
+      {:error, "Invalid Android BEAM path; refusing deploy"}
+    end
+  end
+
+  defp validate_android_beams_dir(_beams_dir, _package),
+    do: {:error, "Invalid Android BEAM path; refusing deploy"}
+
+  defp validate_android_activity(activity) when is_binary(activity) do
+    if byte_size(activity) in 1..255 and String.valid?(activity) and
+         Regex.match?(Regex.compile!("\\A\\.?[A-Za-z][A-Za-z0-9_.]*\\z"), activity),
+       do: :ok,
+       else: {:error, "Invalid Android activity; refusing launch"}
+  end
+
+  defp validate_android_activity(_activity),
+    do: {:error, "Invalid Android activity; refusing launch"}
+
+  defp validate_android_node_suffix(node_suffix) when is_binary(node_suffix) do
+    if byte_size(node_suffix) in 1..128 and String.valid?(node_suffix) and
+         Regex.match?(Regex.compile!("\\A[A-Za-z0-9_]+\\z"), node_suffix),
+       do: :ok,
+       else: {:error, "Invalid Android node suffix; refusing launch"}
+  end
+
+  defp validate_android_node_suffix(_node_suffix),
+    do: {:error, "Invalid Android node suffix; refusing launch"}
+
+  defp validate_android_dist_port(port) when is_integer(port) and port in 1..65_535, do: :ok
+
+  defp validate_android_dist_port(_port),
+    do: {:error, "Invalid Android distribution port; refusing launch"}
+
+  defp bounded_device_label(serial) when is_binary(serial),
+    do: String.slice(serial, 0, 128)
 
   # ── iOS ─────────────────────────────────────────────────────────────────────
 
@@ -1432,8 +3572,8 @@ defmodule MobDev.Deployer do
 
   defp run_adb(args) do
     case System.cmd("adb", args, stderr_to_stdout: true) do
-      {output, 0} -> {:ok, String.trim(output)}
-      {output, _} -> {:error, String.trim(output)}
+      {output, 0} -> {:ok, output}
+      {output, _} -> {:error, output}
     end
   end
 
