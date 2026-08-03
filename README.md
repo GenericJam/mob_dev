@@ -25,6 +25,7 @@ end
 | `mix mob.install` | First-run setup: download OTP runtime, generate icons, write `mob.exs` |
 | `mix mob.deploy` | Compile and push BEAMs to all connected devices |
 | `mix mob.deploy --native` | Also build and install the native APK/iOS app |
+| `mix mob.deploy_lock --device ID` | Inspect one exact Android deploy lease; optionally clean only a verified committed tombstone |
 | `mix mob.deploy --slim` | Same, but with the App Store strip pass applied (slow, lets you verify a slim build before TestFlight — see [`guides/slim_release.md`](guides/slim_release.md)) |
 | `mix mob.release` | Build a signed `.ipa` / `.aab` for App Store / TestFlight / Play Store (slim by default) |
 | `mix mob.release --security-gate` | Same, but runs `mix mob.security_scan` first and aborts on any critical/high/medium finding ([details](guides/security_scan.md)) |
@@ -92,6 +93,22 @@ Pushing 14 BEAM file(s) to 2 device(s)...
 If dist is not reachable (first deploy, app not running), it falls back to `adb push` + restart. Mixed deploys work — one device can hot-push while another restarts.
 
 **Requirements:** The app must call `Mob.Dist.ensure_started/1` at startup, and the cookie must match the one in `mob.exs` (default `:mob_secret`).
+
+### Android deploy lease recovery
+
+Android mutation transactions use an exact-target, phase-bound device lease.
+Recovery is intentionally bounded: inspect one exact serial, never blindly
+retry or delete an active lease, and clean only a verified committed
+record-only tombstone.
+
+```sh
+mix mob.deploy_lock --device <exact-adb-serial>
+mix mob.deploy_lock --device <exact-adb-serial> --cleanup-committed
+```
+
+The first command is read-only. The second refuses every state except one exact,
+record-only tombstone that already carries a committed phase, and proves the
+device returned to a clear state after the single cleanup attempt.
 
 ## `mix mob.enable <feature>`
 
