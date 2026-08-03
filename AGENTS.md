@@ -158,7 +158,7 @@ narrowing functions). Don't make them private:
   `setup_exqlite_android_runas/4`, `push_beams_android_runas/3`, and
   `restart_android/3` (exact-target and per-mutation fencing seams; ordinary
   `--device` matching remains user-friendly)
-- `Mix.Tasks.Mob.Deploy.resolve_target_platforms!/3`, `execute_native_deploy!/6`,
+- `Mix.Tasks.Mob.Deploy.run/2`, `resolve_target_platforms!/4`, `execute_native_deploy!/6`,
   `deploy_after_native_build!/3`, `deploy_after_native_build!/4`,
   `deploy_after_native_build!/5`, `deploy_after_native_build!/6`,
   `ensure_deploy_succeeded!/1`, and `report_deploy_result!/2` (typed

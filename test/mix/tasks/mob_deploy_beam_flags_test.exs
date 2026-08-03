@@ -73,44 +73,59 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
     }
   end
 
+  defp android_device(serial, type \\ :physical) do
+    %MobDev.Device{
+      platform: :android,
+      serial: serial,
+      type: type,
+      status: :discovered,
+      error: nil
+    }
+  end
+
   defp no_device_match_pattern do
     Regex.compile!("No device matched.*mix mob\\.devices", "s")
   end
 
-  describe "resolve_target_platforms!/3" do
-    test "rejects a CoreDevice-shaped identifier before any continuation can mutate" do
-      parent = self()
+  describe "resolve_target_platforms!/4" do
+    test "rejects a CoreDevice-shaped identifier with the default platform list" do
       hardware_udid = "00008110-001E1C3A34F8401E"
       core_device_id = "11111111-2222-3333-4444-555555555555"
       target = physical_ios_device(hardware_udid)
 
       error =
         assert_raise Mix.Error, fn ->
-          Deploy.resolve_target_platforms!([:ios], core_device_id, fn -> [target] end)
-          send(parent, :builder_called)
-          send(parent, :deployer_called)
-          send(parent, :install_called)
+          Deploy.resolve_target_platforms!(
+            [:android, :ios],
+            core_device_id,
+            fn -> [android_device("emulator-5554", :emulator)] end,
+            fn -> [target] end
+          )
         end
 
       assert error.message ==
                ~s(No device matched "#{core_device_id}". Run `mix mob.devices` to see available device IDs.)
-
-      refute_received :builder_called
-      refute_received :deployer_called
-      refute_received :install_called
     end
 
-    test "rejects an ordinary nonmatching identifier" do
-      target = physical_ios_device("00008110-001E1C3A34F8401E")
+    test "rejects an arbitrary unknown identifier with the default platform list" do
+      android = android_device("ZY22CRLMWK")
+      ios = physical_ios_device("00008110-001E1C3A34F8401E")
 
       assert_raise Mix.Error, no_device_match_pattern(), fn ->
-        Deploy.resolve_target_platforms!([:ios], "not-a-device", fn -> [target] end)
+        Deploy.resolve_target_platforms!(
+          [:android, :ios],
+          "not-a-device",
+          fn -> [android] end,
+          fn -> [ios] end
+        )
       end
     end
 
     test "rejects an explicit selection when discovery is empty" do
       assert_raise Mix.Error, no_device_match_pattern(), fn ->
-        Deploy.resolve_target_platforms!([:ios], "not-a-device", fn -> [] end)
+        Deploy.resolve_target_platforms!([:android, :ios], "not-a-device", fn -> [] end, fn ->
+          []
+        end)
       end
     end
 
@@ -122,8 +137,9 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
 
       assert_raise Mix.Error, no_device_match_pattern(), fn ->
         Deploy.resolve_target_platforms!(
-          [:ios],
+          [:android, :ios],
           "11111111-2222-3333-4444-555555555555",
+          fn -> [] end,
           fn -> devices end
         )
       end
@@ -137,17 +153,119 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
         physical_ios_device("00008120-001A2B3C4D5E6F78")
       ]
 
-      assert Deploy.resolve_target_platforms!([:ios], hardware_udid, fn -> devices end) ==
+      assert Deploy.resolve_target_platforms!(
+               [:android, :ios],
+               hardware_udid,
+               fn -> [] end,
+               fn -> devices end
+             ) ==
                [:ios]
     end
 
-    test "rejects a hardware UDID that contradicts the explicit platform" do
+    test "accepts documented Android device identifiers" do
+      for {id, device} <- [
+            {"ZY22CRLMWK", android_device("ZY22CRLMWK")},
+            {"emulator-5554", android_device("emulator-5554", :emulator)},
+            {"10.0.0.17:5555", android_device("10.0.0.17:5555")}
+          ] do
+        assert Deploy.resolve_target_platforms!(
+                 [:android, :ios],
+                 id,
+                 fn -> [device] end,
+                 fn -> [] end
+               ) == [:android]
+      end
+    end
+
+    test "rejects identifiers that contradict an explicit platform" do
       hardware_udid = "00008110-001E1C3A34F8401E"
-      target = physical_ios_device(hardware_udid)
+      ios = physical_ios_device(hardware_udid)
+      android = android_device("ZY22CRLMWK")
 
       assert_raise Mix.Error, no_device_match_pattern(), fn ->
-        Deploy.resolve_target_platforms!([:android], hardware_udid, fn -> [target] end)
+        Deploy.resolve_target_platforms!(
+          [:android],
+          hardware_udid,
+          fn -> [android] end,
+          fn -> [ios] end
+        )
       end
+
+      assert_raise Mix.Error, no_device_match_pattern(), fn ->
+        Deploy.resolve_target_platforms!(
+          [:ios],
+          android.serial,
+          fn -> [android] end,
+          fn -> [ios] end
+        )
+      end
+    end
+
+    test "fails closed when the same identifier appears in both inventories" do
+      id = "shared-id"
+
+      assert_raise Mix.Error, no_device_match_pattern(), fn ->
+        Deploy.resolve_target_platforms!(
+          [:android, :ios],
+          id,
+          fn -> [android_device(id)] end,
+          fn -> [physical_ios_device(id)] end
+        )
+      end
+    end
+  end
+
+  describe "run/2 explicit device preflight" do
+    test "does not enter orchestration for unmatched IDs or a platform mismatch" do
+      parent = self()
+      android = android_device("emulator-5554", :emulator)
+      ios = physical_ios_device("00008110-001E1C3A34F8401E")
+
+      cases = [
+        {["--android", "--ios"], "11111111-2222-3333-4444-555555555555"},
+        {["--android", "--ios"], "not-a-device"},
+        {["--android"], ios.serial}
+      ]
+
+      for {platform_args, id} <- cases do
+        ref = make_ref()
+
+        callbacks = [
+          android_lister: fn -> [android] end,
+          ios_lister: fn -> [ios] end,
+          orchestrator: fn _opts, _platforms, _device_id ->
+            send(parent, {ref, :orchestration_called})
+          end
+        ]
+
+        assert_raise Mix.Error, no_device_match_pattern(), fn ->
+          Deploy.run(platform_args ++ ["--native", "--device", id], callbacks)
+        end
+
+        # The production orchestrator owns flag/config writes, compatibility,
+        # dependency fetching, compilation, native build/install, and deploy.
+        refute_received {^ref, :orchestration_called}
+      end
+    end
+
+    test "enters the injected orchestrator after an authoritative match" do
+      parent = self()
+      id = "emulator-5554"
+
+      callbacks = [
+        android_lister: fn -> [android_device(id, :emulator)] end,
+        ios_lister: fn -> [] end,
+        orchestrator: fn opts, platforms, device_id ->
+          send(parent, {:orchestration_called, opts, platforms, device_id})
+          :orchestrated
+        end
+      ]
+
+      assert Deploy.run(["--android", "--ios", "--native", "--device", id], callbacks) ==
+               :orchestrated
+
+      assert_received {:orchestration_called, opts, [:android], ^id}
+      assert opts[:native]
     end
   end
 
