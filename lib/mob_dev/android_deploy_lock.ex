@@ -459,7 +459,7 @@ defmodule MobDev.AndroidDeployLock do
       "test \"$entries\" -eq 1; test -f #{tombstone}/record; " <>
       "size=$(wc -c < #{tombstone}/record); test \"$size\" -eq #{expected_size}; " <>
       "value=$(cat #{tombstone}/record); test \"$value\" = \"#{expected}\"; " <>
-      "rm -rf #{tombstone}'"
+      "rm #{tombstone}/record; rmdir #{tombstone}'"
   end
 
   defp status_command(bundle_id) do
@@ -518,7 +518,7 @@ defmodule MobDev.AndroidDeployLock do
       "test \"$entries\" -eq 1; test -f #{tombstone}/record; " <>
       "size=$(wc -c < #{tombstone}/record); test \"$size\" -eq #{expected_size}; " <>
       "value=$(cat #{tombstone}/record); test \"$value\" = \"#{record}\"; " <>
-      "rm -rf #{tombstone}'"
+      "rm #{tombstone}/record; rmdir #{tombstone}'"
   end
 
   defp lock_paths(bundle_id) do

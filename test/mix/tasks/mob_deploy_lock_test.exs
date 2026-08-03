@@ -70,9 +70,11 @@ defmodule Mix.Tasks.Mob.DeployLockTest do
     assert Enum.all?(history, &(Enum.take(&1, 2) == ["-s", @serial]))
 
     cleanup = Enum.at(history, 2) |> List.last()
-    assert cleanup =~ ".mob_native_deploy_releasing_#{@owner}"
+    tombstone = "/data/data/#{@bundle}/files/.mob_native_deploy_releasing_#{@owner}"
+    assert cleanup =~ tombstone
     assert cleanup =~ ~s(test "$value" = "#{record}")
-    assert cleanup =~ "rm -rf"
+    assert cleanup =~ "rm #{tombstone}/record; rmdir #{tombstone}"
+    refute cleanup =~ "rm -rf"
   end
 
   test "a lost cleanup reply remains ambiguous and is never retried" do
