@@ -590,7 +590,8 @@ defmodule MobDev.DeployerTest do
 
       assert is_integer(transition_index)
       assert adb_command_contains?(lease_commands, ".mob_native_deploy_releasing_")
-      assert adb_command_contains?(lease_commands, "rm -rf")
+      assert adb_command_contains?(lease_commands, "/record; rmdir ")
+      refute adb_command_contains?(lease_commands, "rm -rf")
     end
 
     test "one disconnected target forces an exact-set filesystem transaction", %{tmp_dir: dir} do
