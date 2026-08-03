@@ -802,6 +802,29 @@ defmodule Mix.Tasks.Mob.Deploy do
 
   def deploy_after_native_build!(
         true,
+        %{
+          ok?: false,
+          android_device_disposition: :partial_update,
+          android_serials: android_serials,
+          android_deploy_lock: android_deploy_lock,
+          android_payload_plan: nil
+        } = native_outcome,
+        deploy_opts,
+        _deployer,
+        _finalizer,
+        _payload_cleanup
+      )
+      when map_size(native_outcome) == 5 and is_list(android_serials) and
+             is_map(android_deploy_lock) do
+    if valid_partial_android_update?(android_serials, android_deploy_lock, deploy_opts) do
+      raise_native_partial_update!()
+    else
+      raise_native_build_failed!()
+    end
+  end
+
+  def deploy_after_native_build!(
+        true,
         native_outcome,
         _deploy_opts,
         _deployer,
@@ -838,6 +861,37 @@ defmodule Mix.Tasks.Mob.Deploy do
 
     Mix.raise("Native build failed")
   end
+
+  defp raise_native_partial_update! do
+    IO.puts(
+      "\n#{IO.ANSI.red()}Android native deploy partially applied: APK update completed before runtime delivery failed.#{IO.ANSI.reset()}"
+    )
+
+    IO.puts(
+      "#{IO.ANSI.yellow()}The exact deploy lease remains retained. Inspect it with `mix mob.deploy_lock --device <exact-serial>` and reconcile the reviewed APK/runtime pair before another native deploy. Do not retry blindly, uninstall, or clear app data.#{IO.ANSI.reset()}"
+    )
+
+    Mix.raise("Android native deploy partially applied")
+  end
+
+  defp valid_partial_android_update?(
+         android_serials,
+         %{phase: :acquired, state: state, serials: lock_serials} = lock,
+         deploy_opts
+       )
+       when state in [:retained_failure, :retained_ambiguous] and is_list(lock_serials) do
+    valid_opts? = proper_list?(deploy_opts) and Keyword.keyword?(deploy_opts)
+    platforms = if valid_opts?, do: Keyword.get(deploy_opts, :platforms, [:android, :ios])
+
+    valid_opts? and proper_list?(platforms) and valid_native_platforms?(platforms) and
+      :android in platforms and android_serials != [] and
+      android_serials == Enum.sort(android_serials) and
+      Enum.uniq(android_serials) == android_serials and lock_serials == android_serials and
+      lock.bundle_id == MobDev.Config.bundle_id() and
+      MobDev.AndroidDeployLock.valid?(%{lock | state: :held_success}, :acquired)
+  end
+
+  defp valid_partial_android_update?(_android_serials, _lock, _deploy_opts), do: false
 
   defp fetch_native_dependencies! do
     IO.puts("Fetching dependencies...")

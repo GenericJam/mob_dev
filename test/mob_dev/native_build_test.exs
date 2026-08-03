@@ -139,6 +139,23 @@ defmodule MobDev.NativeBuildTest do
                  {:error, "Android", "duplicate result"}
                ])
     end
+
+    test "reports an explicit partial update with the exact retained target set" do
+      retained =
+        ["serial-a", "serial-b"]
+        |> native_ready_lease()
+        |> Map.merge(%{phase: :acquired, state: :retained_ambiguous})
+
+      assert NativeBuild.build_outcome([
+               {:error, "Android", "runtime delivery failed", retained, :partial_update}
+             ]) == %{
+               ok?: false,
+               android_device_disposition: :partial_update,
+               android_serials: ["serial-a", "serial-b"],
+               android_deploy_lock: retained,
+               android_payload_plan: nil
+             }
+    end
   end
 
   describe "ios_phase_decision/3" do
@@ -2966,7 +2983,7 @@ defmodule MobDev.NativeBuildTest do
         cleanup_authoritative_android_plan(plan)
       end
 
-      assert {:error, reason, %{state: :retained_failure, phase: :acquired}} =
+      assert {:error, {:partial_update, reason}, %{state: :retained_failure, phase: :acquired}} =
                run_authoritative_android(
                  fixture,
                  dir,
@@ -3013,7 +3030,7 @@ defmodule MobDev.NativeBuildTest do
         cleanup_authoritative_android_plan(plan)
       end
 
-      assert {:error, reason,
+      assert {:error, {:partial_update, reason},
               %{state: :retained_ambiguous, phase: :acquired, serials: ["serial-a", "serial-b"]}} =
                run_authoritative_android(
                  fixture,
@@ -3058,7 +3075,7 @@ defmodule MobDev.NativeBuildTest do
       preinstall = fn input -> {:ok, authoritative_android_payload_plan!(dir, input)} end
       cleanup = fn plan -> cleanup_authoritative_android_plan(plan) end
 
-      assert {:error, reason,
+      assert {:error, {:partial_update, reason},
               %{state: :retained_ambiguous, phase: :acquired, serials: ["serial-a", "serial-b"]}} =
                run_authoritative_android(
                  fixture,
@@ -3084,6 +3101,97 @@ defmodule MobDev.NativeBuildTest do
              end)
     end
 
+    test "a deterministic OTP failure after APK success reports a retained partial update", %{
+      tmp_dir: dir
+    } do
+      fixture = authoritative_android_fixture!(dir, ["serial-a", "serial-b"])
+      owner_state = start_supervised!({Agent, fn -> true end})
+      probe_runner = authoritative_android_probe_runner(self(), fixture, owner_state)
+
+      otp_runner = fn executable, args, opts ->
+        send(self(), {:native_otp, executable, args})
+
+        case {executable, args} do
+          {local, _args} when local in ["cp", "tar"] -> System.cmd(local, args, opts)
+          {"adb", ["-s", "serial-a", "push" | _rest]} -> {"injected push failure", 1}
+          {"adb", _args} -> {"", 0}
+        end
+      end
+
+      preinstall = fn input -> {:ok, authoritative_android_payload_plan!(dir, input)} end
+      cleanup = fn plan -> cleanup_authoritative_android_plan(plan) end
+
+      assert {:error, {:partial_update, reason},
+              %{state: :retained_failure, phase: :acquired, serials: ["serial-a", "serial-b"]}} =
+               run_authoritative_android(
+                 fixture,
+                 dir,
+                 probe_runner,
+                 otp_runner,
+                 preinstall,
+                 cleanup
+               )
+
+      assert reason =~ "push OTP archive failed"
+      probe_commands = drain_native_commands(:native_probe)
+      otp_commands = drain_native_commands(:native_otp)
+      assert Enum.count(probe_commands, &native_install_command?/1) == 1
+
+      assert Enum.count(otp_commands, fn
+               {"adb", ["-s", "serial-a", "push" | _args]} -> true
+               _command -> false
+             end) == 1
+
+      refute Enum.any?(otp_commands, fn
+               {"adb", ["-s", "serial-a", "shell" | _args]} -> true
+               _command -> false
+             end)
+
+      refute Enum.any?(probe_commands, fn
+               {"adb", ["-s", "serial-b", "install" | _args]} -> true
+               _command -> false
+             end)
+    end
+
+    test "native-ready commit failure after APK and OTP success remains an explicit partial update",
+         %{tmp_dir: dir} do
+      fixture = authoritative_android_fixture!(dir, ["serial-a"])
+      owner_state = start_supervised!({Agent, fn -> true end})
+      base_runner = authoritative_android_probe_runner(self(), fixture, owner_state)
+
+      probe_runner = fn executable, args ->
+        case {executable, args} do
+          {"adb", ["-s", "serial-a", "shell", command]} ->
+            if String.contains?(command, "native_ready") do
+              send(self(), {:native_probe, executable, args})
+              {"", 1}
+            else
+              base_runner.(executable, args)
+            end
+
+          _command ->
+            base_runner.(executable, args)
+        end
+      end
+
+      preinstall = fn input -> {:ok, authoritative_android_payload_plan!(dir, input)} end
+      cleanup = fn plan -> cleanup_authoritative_android_plan(plan) end
+
+      assert {:error, {:partial_update, reason},
+              %{state: :retained_ambiguous, phase: :acquired, serials: ["serial-a"]}} =
+               run_authoritative_android(
+                 fixture,
+                 dir,
+                 probe_runner,
+                 authoritative_android_otp_runner(self()),
+                 preinstall,
+                 cleanup
+               )
+
+      assert reason =~ "native-ready commit failed"
+      assert Enum.count(drain_native_commands(:native_probe), &native_install_command?/1) == 1
+    end
+
     test "runner exceptions after acquire preserve the exact ambiguous lease and stop later targets",
          %{tmp_dir: dir} do
       fixture = authoritative_android_fixture!(dir, ["serial-a", "serial-b"])
@@ -3103,7 +3211,9 @@ defmodule MobDev.NativeBuildTest do
         {:error, :injected_cleanup_failure}
       end
 
-      assert {:error, "Android device transaction became ambiguous; deploy lease retained",
+      assert {:error,
+              {:partial_update,
+               "Android device transaction became ambiguous after APK update; deploy lease retained"},
               %{
                 owner: "ownerproof000001",
                 state: :retained_ambiguous,
@@ -3122,6 +3232,8 @@ defmodule MobDev.NativeBuildTest do
       assert_received {:payload_cleanup, "planbeam00000001"}
       refute_received {:payload_cleanup, "planbeam00000001"}
       probe_commands = drain_native_commands(:native_probe)
+
+      assert Enum.count(probe_commands, &native_install_command?/1) == 1
 
       refute Enum.any?(probe_commands, fn
                {"adb", ["-s", "serial-b", "install" | _args]} -> true
