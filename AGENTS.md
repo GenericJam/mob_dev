@@ -141,8 +141,16 @@ narrowing functions). Don't make them private:
   snapshot and lease-fenced RPC seams; raw Android pushes intentionally reject)
 - `Mix.Tasks.Mob.DeployLock.inspect_or_cleanup/4` (hermetic task decision seam;
   production still requires an explicit exact `--device`)
-- `Deployer.select_canonical_android_devices/2` (native final-pass exact-target
-  selection; ordinary `--device` matching remains user-friendly)
+- `Deployer.collect_android_beam_dirs/0`, `prepare_android_payload/2`,
+  `valid_android_payload?/2`, `cleanup_android_payload/1`, and
+  `deploy_all_with_lease/1` (immutable final-pass payload and shared-lease
+  integration seams)
+- `Deployer.select_canonical_android_devices/2`,
+  `classify_android_package_probe/2`, `deploy_android_device/4`,
+  `ensure_erts_on_device/3`, `verify_elixir_runtime_version_android/5`,
+  `setup_exqlite_android_runas/4`, `push_beams_android_runas/3`, and
+  `restart_android/3` (exact-target and per-mutation fencing seams; ordinary
+  `--device` matching remains user-friendly)
 - `NativeBuild.__prune_plugin_artifacts__/2` (the plugin-removal prune; ledger-tracked per merge concern)
 - `Enable.inject_pythonx_dep/1`, `inject_pythonx_uv_init_gate/2`, `python_paths_module_template/1`
 - `Emulators.parse_simctl_json/1`, `find_emulator_binary/1`
@@ -194,10 +202,14 @@ blindly retrying. `mix mob.deploy_lock --device <exact-serial>` is read-only;
 `--cleanup-committed` may remove only one exact record-only tombstone already
 in a committed phase and must prove the final clear state.
 
-**TODO:** apply the full physical-device selection pattern to the fast
-`mix mob.deploy` BEAM fan-out (today's broad deploy can push BEAMs to a personal
-phone). When that fan-out exists
-or grows, factor `select_devices/3` plus the flag plumbing into a
+Fast Android BEAM deploys use an exact-set shared lease. Distribution is used
+only when every frozen target is already connected; otherwise the entire set
+uses the fenced filesystem/restart path rather than splitting authority.
+
+**TODO:** apply the full physical-device *selection* pattern to the fast
+`mix mob.deploy` BEAM fan-out. Its mutations are now exact-set fenced, but the
+broad selector can still include a personal phone. When that fan-out grows,
+factor `select_devices/3` plus the flag plumbing into a
 shared `MobDev.TaskTargets` (or similar) module so the rules don't
 drift between tasks.
 

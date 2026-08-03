@@ -90,7 +90,11 @@ Pushing 14 BEAM file(s) to 2 device(s)...
   iPhone 15 Pro   →  pushing... ✓ (dist, no restart)
 ```
 
-If dist is not reachable (first deploy, app not running), it falls back to `adb push` + restart. Mixed deploys work — one device can hot-push while another restarts.
+If every frozen Android target is already reachable over distribution, the
+whole exact set hot-pushes. Otherwise the whole Android set uses the fenced
+`adb push` + restart path; Mob never splits one Android transaction across two
+authorities. A mixed iOS/Android command handles each platform in its own
+ordered, committed phase.
 
 **Requirements:** The app must call `Mob.Dist.ensure_started/1` at startup, and the cookie must match the one in `mob.exs` (default `:mob_secret`).
 
