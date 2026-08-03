@@ -223,6 +223,30 @@ defmodule MobDev.Plugin.RuntimeManifestTest do
       {evaluated, _} = Code.eval_string(RuntimeManifest.render(manifest))
       assert evaluated == manifest
     end
+
+    test "sorts map keys recursively for deterministic committed output" do
+      manifest = %{
+        screens: [%{plugin: :p, module: P.Home, default_route: "/p"}],
+        lifecycle: [],
+        settings: [],
+        notification_handlers: [],
+        nifs: [],
+        composites: [],
+        styles: [],
+        default_style: nil
+      }
+
+      rendered = RuntimeManifest.render(manifest)
+
+      top_level =
+        Regex.scan(Regex.compile!("(?m)^  ([a-z_]+):"), rendered, capture: :all_but_first)
+
+      nested =
+        Regex.scan(Regex.compile!("(?m)^      ([a-z_]+):"), rendered, capture: :all_but_first)
+
+      assert top_level == Enum.sort(top_level)
+      assert nested == Enum.sort(nested)
+    end
   end
 
   describe "write/1" do
@@ -242,6 +266,25 @@ defmodule MobDev.Plugin.RuntimeManifestTest do
       assert File.exists?(path)
       {evaluated, _} = Code.eval_file(path)
       assert evaluated.screens == []
+    end
+
+    test "does not rewrite an unchanged manifest" do
+      root = Path.join(System.tmp_dir!(), "mob_rtm_#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf!(root) end)
+
+      manifest = %{
+        screens: [],
+        lifecycle: [],
+        settings: [],
+        notification_handlers: []
+      }
+
+      path = RuntimeManifest.write(root, manifest)
+      File.touch!(path, 1)
+      mtime = File.stat!(path).mtime
+
+      assert RuntimeManifest.write(root, manifest) == path
+      assert File.stat!(path).mtime == mtime
     end
   end
 
