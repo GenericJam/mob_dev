@@ -23,9 +23,9 @@ defmodule MobDev.Plugin.Sign do
   @manifest_file "priv/mob_plugin.exs"
 
   # File extensions to include when a manifest entry points at a
-  # `:native_dir` (NIF C/C++/Zig sources + headers). The set is fixed
-  # because the build pipeline only ever compiles these extensions.
-  @nif_extensions [".c", ".h", ".cpp", ".zig"]
+  # `:native_dir` (NIF C/C++/Objective-C/Objective-C++/Zig sources + headers).
+  # The set is fixed because the build pipeline only compiles these extensions.
+  @nif_extensions [".c", ".h", ".cpp", ".m", ".mm", ".zig"]
 
   @typedoc "Relative path inside the plugin directory."
   @type rel_path :: String.t()
@@ -47,9 +47,9 @@ defmodule MobDev.Plugin.Sign do
     single paths each.
   - `manifest.android.res_files` — the resource files copied verbatim
     into the app `res/` tree (list of paths).
-  - `manifest.nifs[].native_dir` — recursive over `.c`, `.h`, `.cpp`,
-    `.zig` files inside. This is the only case where a directory is
-    expanded.
+  - `manifest.nifs[].native_dir` — recursive over `.c`, `.h`, `.cpp`, `.m`,
+    `.mm`, and `.zig` files inside. This is the only case where a directory
+    is expanded.
 
   Other manifest fields are either name-only (component atoms,
   `swift_struct`) or pure data (plist keys, permission strings,
