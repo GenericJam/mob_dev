@@ -6489,8 +6489,17 @@ defmodule MobDev.NativeBuild do
   defp collect_booted_runtime_devices([%{"state" => "Booted"} | _devices], _acc),
     do: {:error, :malformed_booted_device}
 
-  defp collect_booted_runtime_devices([device | devices], acc) when is_map(device),
-    do: collect_booted_runtime_devices(devices, acc)
+  defp collect_booted_runtime_devices(
+         [%{"state" => state, "udid" => udid} | devices],
+         acc
+       )
+       when state in ["Shutdown", "Shutting Down", "Creating"] do
+    if valid_ios_target_id?(udid) do
+      collect_booted_runtime_devices(devices, acc)
+    else
+      {:error, :malformed_non_booted_device}
+    end
+  end
 
   defp collect_booted_runtime_devices(_malformed_devices, _acc),
     do: {:error, :malformed_inventory}

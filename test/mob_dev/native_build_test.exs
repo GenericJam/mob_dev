@@ -1504,7 +1504,10 @@ defmodule MobDev.NativeBuildTest do
       malformed = [
         nil,
         %{"iOS" => :not_a_device_list},
+        %{"iOS" => [%{}]},
+        %{"iOS" => [%{"state" => "Unknown", "udid" => "VALID"}]},
         %{"iOS" => [%{"state" => "Booted"}]},
+        %{"iOS" => [%{"state" => "Shutdown"}]},
         %{"iOS" => [%{"udid" => nil, "state" => "Booted"}]},
         %{"iOS" => [%{"udid" => "", "state" => "Booted"}]},
         %{"iOS" => [%{"udid" => invalid_utf8, "state" => "Booted"}]},
