@@ -208,7 +208,8 @@ defmodule MobDev.HotPushTest do
       assert final.fixed == nil
       assert final.tombstone == nil
       assert Enum.any?(final.commands, &String.contains?(&1, "|fast_committed"))
-      assert Enum.any?(final.commands, &String.contains?(&1, "rm -rf"))
+      assert Enum.any?(final.commands, &exact_tombstone_cleanup?/1)
+      refute Enum.any?(final.commands, &String.contains?(&1, "rm -rf"))
     end
 
     test "known lock block and unknown Android mapping perform zero RPC or mutation", %{
@@ -722,8 +723,10 @@ defmodule MobDev.HotPushTest do
               String.contains?(command, ".mob_native_deploy_releasing_") ->
             {{"", 0}, %{lock | fixed: nil, tombstone: lock.fixed}}
 
-          String.contains?(command, "rm -rf") ->
-            {{"", 0}, %{lock | tombstone: nil}}
+          exact_tombstone_cleanup?(command) ->
+            result = if is_binary(lock.tombstone), do: {"", 0}, else: {"", 1}
+            next_lock = if result == {"", 0}, do: %{lock | tombstone: nil}, else: lock
+            {result, next_lock}
 
           tombstone_record_proof?(command) ->
             {{lock.tombstone || "", if(is_binary(lock.tombstone), do: 0, else: 1)}, lock}
@@ -761,5 +764,16 @@ defmodule MobDev.HotPushTest do
       ~r/cat \/data\/data\/[^ ]+\/files\/\.mob_native_deploy_releasing_[A-Za-z0-9_-]+\/record'\z/,
       command
     ) and not String.contains?(command, "value=$(cat")
+  end
+
+  defp exact_tombstone_cleanup?(command) do
+    case Regex.run(
+           ~r/; rm (\/data\/data\/[^ ;]+\/files\/\.mob_native_deploy_releasing_[A-Za-z0-9_-]+)\/record; rmdir (\/data\/data\/[^ ;']+\/files\/\.mob_native_deploy_releasing_[A-Za-z0-9_-]+)'\z/,
+           command,
+           capture: :all_but_first
+         ) do
+      [record_directory, removed_directory] -> record_directory == removed_directory
+      _no_exact_cleanup -> false
+    end
   end
 end
