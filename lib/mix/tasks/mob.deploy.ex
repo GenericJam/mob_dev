@@ -301,25 +301,25 @@ defmodule Mix.Tasks.Mob.Deploy do
     android_devices = android_lister.()
     ios_devices = ios_lister.()
 
-    matched_platform =
-      case {inventory_matches?(android_devices, :android, device_id),
-            inventory_matches?(ios_devices, :ios, device_id)} do
-        {true, false} -> :android
-        {false, true} -> :ios
-        _unmatched_or_ambiguous -> :unmatched
-      end
+    matches =
+      matching_inventory_devices(android_devices, :android, device_id) ++
+        matching_inventory_devices(ios_devices, :ios, device_id)
 
-    if matched_platform in platforms do
-      [matched_platform]
-    else
-      Mix.raise(
-        ~s(No device matched "#{device_id}". Run `mix mob.devices` to see available device IDs.)
-      )
+    case matches do
+      [%Device{platform: matched_platform}] ->
+        if matched_platform in platforms do
+          [matched_platform]
+        else
+          raise_no_device_match!(device_id)
+        end
+
+      _unmatched_or_ambiguous ->
+        raise_no_device_match!(device_id)
     end
   end
 
-  defp inventory_matches?(devices, platform, device_id) when is_list(devices) do
-    Enum.any?(devices, fn
+  defp matching_inventory_devices(devices, platform, device_id) when is_list(devices) do
+    Enum.filter(devices, fn
       %Device{platform: ^platform, serial: serial} = device when is_binary(serial) ->
         Device.match_id?(device, device_id)
 
@@ -328,8 +328,14 @@ defmodule Mix.Tasks.Mob.Deploy do
     end)
   end
 
-  defp inventory_matches?(_invalid_inventory, _platform, _device_id) do
-    false
+  defp matching_inventory_devices(_invalid_inventory, _platform, _device_id) do
+    []
+  end
+
+  defp raise_no_device_match!(device_id) do
+    Mix.raise(
+      ~s(No device matched "#{device_id}". Run `mix mob.devices` to see available device IDs.)
+    )
   end
 
   @doc false

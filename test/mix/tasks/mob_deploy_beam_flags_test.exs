@@ -213,26 +213,69 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
         )
       end
     end
+
+    test "fails closed on case-insensitive Android serial collisions" do
+      id = "r5cw3089hvb"
+
+      devices = [
+        android_device("R5CW3089HVB"),
+        android_device("r5cw3089hvb")
+      ]
+
+      assert_raise Mix.Error, no_device_match_pattern(), fn ->
+        Deploy.resolve_target_platforms!(
+          [:android, :ios],
+          id,
+          fn -> devices end,
+          fn -> [] end
+        )
+      end
+    end
+
+    test "fails closed on iOS simulator display-ID collisions" do
+      id = "12345678"
+
+      devices = [
+        ios_simulator("12345678-ABCD-1234-ABCD-1234567890AB"),
+        ios_simulator("12345678-EF01-5678-EF01-1234567890AB")
+      ]
+
+      assert_raise Mix.Error, no_device_match_pattern(), fn ->
+        Deploy.resolve_target_platforms!(
+          [:android, :ios],
+          id,
+          fn -> [] end,
+          fn -> devices end
+        )
+      end
+    end
   end
 
   describe "run/2 explicit device preflight" do
-    test "does not enter orchestration for unmatched IDs or a platform mismatch" do
+    test "does not enter orchestration for unmatched, mismatched, or ambiguous IDs" do
       parent = self()
       android = android_device("emulator-5554", :emulator)
       ios = physical_ios_device("00008110-001E1C3A34F8401E")
 
       cases = [
-        {["--android", "--ios"], "11111111-2222-3333-4444-555555555555"},
-        {["--android", "--ios"], "not-a-device"},
-        {["--android"], ios.serial}
+        {["--android", "--ios"], "11111111-2222-3333-4444-555555555555", [android], [ios]},
+        {["--android", "--ios"], "not-a-device", [android], [ios]},
+        {["--android"], ios.serial, [android], [ios]},
+        {["--android", "--ios"], "r5cw3089hvb",
+         [android_device("R5CW3089HVB"), android_device("r5cw3089hvb")], []},
+        {["--android", "--ios"], "12345678", [],
+         [
+           ios_simulator("12345678-ABCD-1234-ABCD-1234567890AB"),
+           ios_simulator("12345678-EF01-5678-EF01-1234567890AB")
+         ]}
       ]
 
-      for {platform_args, id} <- cases do
+      for {platform_args, id, android_devices, ios_devices} <- cases do
         ref = make_ref()
 
         callbacks = [
-          android_lister: fn -> [android] end,
-          ios_lister: fn -> [ios] end,
+          android_lister: fn -> android_devices end,
+          ios_lister: fn -> ios_devices end,
           orchestrator: fn _opts, _platforms, _device_id ->
             send(parent, {ref, :orchestration_called})
           end
