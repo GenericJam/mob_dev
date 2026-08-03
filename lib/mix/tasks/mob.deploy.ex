@@ -157,18 +157,40 @@ defmodule Mix.Tasks.Mob.Deploy do
   ]
 
   @impl Mix.Task
-  def run(args) do
+  def run(args), do: run(args, [])
+
+  @doc false
+  @spec run([String.t()], keyword()) :: term()
+  def run(args, callbacks) do
     {opts, _, _} = OptionParser.parse(args, switches: @switches)
 
-    restart = Keyword.get(opts, :restart, true)
-    native = Keyword.get(opts, :native, false)
     device_id = opts[:device]
     platforms = resolve_platforms(opts)
+
     # Narrow once at the task level so build_all and deploy_all both see the
     # same platform list. Without this, the deployer iterates over the
     # irrelevant platform and `filter_by_device_id` emits a misleading
     # "No device matched" warning even when the targeted platform succeeded.
-    platforms = MobDev.NativeBuild.narrow_platforms_for_device(platforms, device_id)
+    android_lister =
+      Keyword.get(callbacks, :android_lister, &MobDev.Discovery.Android.list_devices/0)
+
+    ios_lister = Keyword.get(callbacks, :ios_lister, &MobDev.Discovery.IOS.list_devices/0)
+
+    platforms =
+      resolve_target_platforms!(
+        platforms,
+        device_id,
+        android_lister,
+        ios_lister
+      )
+
+    orchestrator = Keyword.get(callbacks, :orchestrator, &orchestrate_deploy/3)
+    orchestrator.(opts, platforms, device_id)
+  end
+
+  defp orchestrate_deploy(opts, platforms, device_id) do
+    restart = Keyword.get(opts, :restart, true)
+    native = Keyword.get(opts, :native, false)
     beam_flags = resolve_beam_flags(opts)
 
     if native and not restart and :android in platforms do
@@ -262,6 +284,75 @@ defmodule Mix.Tasks.Mob.Deploy do
 
       report_deploy_result!(deploy_result, restart: restart)
     end)
+  end
+
+  @doc false
+  @spec resolve_target_platforms!(
+          [:android | :ios],
+          String.t() | nil,
+          (-> [Device.t()]),
+          (-> [Device.t()])
+        ) :: [:android | :ios]
+  def resolve_target_platforms!(platforms, nil, _android_lister, _ios_lister), do: platforms
+
+  def resolve_target_platforms!(platforms, device_id, android_lister, ios_lister)
+      when is_binary(device_id) and is_function(android_lister, 0) and
+             is_function(ios_lister, 0) do
+    android_devices = android_lister.()
+    ios_devices = ios_lister.()
+
+    matches =
+      matching_inventory_devices(android_devices, :android, device_id) ++
+        matching_inventory_devices(ios_devices, :ios, device_id)
+
+    case matches do
+      [%Device{platform: matched_platform}] ->
+        if matched_platform in platforms do
+          [matched_platform]
+        else
+          raise_no_device_match!(device_id)
+        end
+
+      _unmatched_or_ambiguous ->
+        raise_no_device_match!(device_id)
+    end
+  end
+
+  defp matching_inventory_devices(devices, platform, device_id) when is_list(devices) do
+    Enum.filter(devices, fn
+      %Device{platform: ^platform, serial: serial} = device when is_binary(serial) ->
+        device_matches_selector?(device, device_id)
+
+      _invalid_or_other_platform ->
+        false
+    end)
+  end
+
+  defp matching_inventory_devices(_invalid_inventory, _platform, _device_id) do
+    []
+  end
+
+  defp device_matches_selector?(%Device{platform: :android, serial: serial} = device, device_id) do
+    Device.match_id?(device, device_id) or
+      serial == "#{device_id}:5555" or
+      android_serial_host(serial) == device_id
+  end
+
+  defp device_matches_selector?(%Device{} = device, device_id) do
+    Device.match_id?(device, device_id)
+  end
+
+  defp android_serial_host(serial) do
+    case String.split(serial, ":", parts: 2) do
+      [host, _port] -> host
+      _serial_without_port -> serial
+    end
+  end
+
+  defp raise_no_device_match!(device_id) do
+    Mix.raise(
+      ~s(No device matched "#{device_id}". Run `mix mob.devices` to see available device IDs.)
+    )
   end
 
   @doc false
