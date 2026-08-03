@@ -53,6 +53,26 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
 
   defp successful_finalizer(_lock), do: :ok
 
+  defp physical_ios_device(serial) do
+    %MobDev.Device{
+      platform: :ios,
+      serial: serial,
+      type: :physical,
+      status: :discovered,
+      error: nil
+    }
+  end
+
+  defp ios_simulator(serial) do
+    %MobDev.Device{
+      platform: :ios,
+      serial: serial,
+      type: :simulator,
+      status: :booted,
+      error: nil
+    }
+  end
+
   # ── combine_beam_flags/2 ──────────────────────────────────────────────────────
 
   describe "combine_beam_flags/2" do
@@ -260,6 +280,7 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
       {:ok, events} = Agent.start_link(fn -> [] end)
       serial = "serial-a"
       ios_id = "00000000-0000000000000000"
+      ios_target = physical_ios_device(ios_id)
 
       record = fn event -> Agent.update(events, &(&1 ++ [event])) end
 
@@ -285,7 +306,7 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
             )
 
           [:ios] ->
-            {[%MobDev.Device{platform: :ios, serial: ios_id}], [], []}
+            {[ios_target], [], []}
         end
       end
 
@@ -309,7 +330,11 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
                    android_preinstall: fn _context -> :unused end,
                    android_preinstall_cleanup: fn _plan -> :unused end
                  ],
-                 [restart: true, force_fs: true],
+                 [
+                   restart: true,
+                   force_fs: true,
+                   ios_lister: fn -> [ios_target] end
+                 ],
                  builder: builder,
                  deployer: deployer,
                  finalizer: finalizer,
@@ -593,6 +618,7 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
     test "an explicitly not-attempted Android phase permits the independent iOS lane" do
       {:ok, events} = Agent.start_link(fn -> [] end)
       ios_id = "ios-device"
+      ios_target = physical_ios_device(ios_id)
 
       builder = fn opts ->
         Agent.update(events, &(&1 ++ [{:build, opts[:platforms]}]))
@@ -614,7 +640,8 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
 
       deployer = fn opts ->
         Agent.update(events, &(&1 ++ [{:deploy, opts[:platforms]}]))
-        {[%MobDev.Device{platform: :ios, serial: ios_id}], [], []}
+
+        {[ios_target], [], []}
       end
 
       assert {[%MobDev.Device{platform: :ios, serial: ^ios_id}], [], []} =
@@ -623,7 +650,7 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
                  nil,
                  ios_id,
                  [],
-                 [restart: true],
+                 [restart: true, ios_lister: fn -> [ios_target] end],
                  builder: builder,
                  deployer: deployer,
                  finalizer: fn _lock -> flunk("no Android authority exists to release") end,
@@ -879,6 +906,75 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
                )
 
       refute_received :finalizer_called
+    end
+
+    test "improper Android result buckets become accounted failures without release or iOS" do
+      parent = self()
+      serial = "serial-a"
+
+      deployed = %MobDev.Device{
+        platform: :android,
+        serial: serial,
+        status: :connected,
+        error: nil
+      }
+
+      failed = %{deployed | status: :error, error: "reported target error"}
+      skipped = %{deployed | status: :skipped, error: "reported target skip"}
+
+      improper_results = [
+        {:deployed, {[deployed | :malformed_tail], [], []}},
+        {:failed, {[], [failed | :malformed_tail], []}},
+        {:skipped, {[], [], [skipped | :malformed_tail]}}
+      ]
+
+      Enum.each(improper_results, fn {bucket, result} ->
+        Enum.each([:plain, :wrapped], fn shape ->
+          attempt = make_ref()
+
+          deployer = fn opts ->
+            case opts[:platforms] do
+              [:android] ->
+                send(parent, {attempt, :android_deployed, bucket, shape})
+
+                if shape == :wrapped,
+                  do: {result, committed_lock([serial])},
+                  else: result
+
+              [:ios] ->
+                send(parent, {attempt, :ios_deployed})
+                {[], [], []}
+            end
+          end
+
+          finalizer = fn lock ->
+            send(parent, {attempt, :released, lock})
+            :ok
+          end
+
+          cleanup = fn plan ->
+            send(parent, {attempt, :cleaned, plan})
+            :ok
+          end
+
+          assert {[], [%MobDev.Device{serial: ^serial, status: :error}], []} =
+                   Deploy.deploy_after_native_build!(
+                     true,
+                     native_outcome([serial]),
+                     [platforms: [:android, :ios], restart: true, ios_device: "ios-device"],
+                     deployer,
+                     finalizer,
+                     cleanup
+                   )
+
+          assert_receive {^attempt, :android_deployed, ^bucket, ^shape}
+          refute_receive {^attempt, :released, _lock}
+          refute_receive {^attempt, :ios_deployed}
+          assert_receive {^attempt, :cleaned, cleaned_plan}
+          assert cleaned_plan == payload_plan([serial])
+          refute_receive {^attempt, :cleaned, _plan}
+        end)
+      end)
     end
 
     test "an error-status device in the deployed bucket cannot release or start iOS" do
@@ -1504,6 +1600,8 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
     test "the remaining iOS pass receives no Android lease metadata" do
       parent = self()
       serial = "serial-a"
+      ios_id = "ios-device"
+      ios_target = physical_ios_device(ios_id)
 
       deployer = fn opts ->
         send(parent, {:deployer_called, opts})
@@ -1518,17 +1616,19 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
             )
 
           [:ios] ->
-            {[], [], []}
+            {[ios_target], [], []}
         end
       end
 
-      assert {[%MobDev.Device{serial: ^serial}], [], []} =
+      assert {deployed, [], []} =
                Deploy.deploy_after_native_build!(
                  true,
                  native_outcome([serial]),
                  [
                    platforms: [:android, :ios],
                    restart: true,
+                   ios_device: ios_id,
+                   ios_lister: fn -> [ios_target] end,
                    canonical_android_serials: ["stale"],
                    android_deploy_lock: %{stale: true}
                  ],
@@ -1536,6 +1636,11 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
                  &successful_finalizer/1,
                  fn _plan -> :ok end
                )
+
+      assert Enum.map(deployed, &{&1.platform, &1.serial}) == [
+               {:android, serial},
+               {:ios, ios_id}
+             ]
 
       assert_receive {:deployer_called, android_opts}
       assert android_opts[:platforms] == [:android]
@@ -1548,6 +1653,334 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
       refute Keyword.has_key?(ios_opts, :canonical_android_serials)
       refute Keyword.has_key?(ios_opts, :android_deploy_lock)
       refute Keyword.has_key?(ios_opts, :android_payload_plan)
+    end
+
+    test "authoritative production iOS deployed identities remain green" do
+      devices = [
+        physical_ios_device("physical-ios-device"),
+        ios_simulator("78354490-EF38-44D7-A437-DD941C20524D")
+      ]
+
+      Enum.each(devices, fn device ->
+        requested_id =
+          if device.type == :simulator, do: MobDev.Device.display_id(device), else: device.serial
+
+        deployer = fn _opts -> {[device], [], []} end
+
+        assert {[^device], [], []} =
+                 Deploy.deploy_after_native_build!(
+                   true,
+                   native_outcome([]),
+                   [
+                     platforms: [:ios],
+                     restart: true,
+                     ios_device: requested_id,
+                     ios_lister: fn -> [device] end
+                   ],
+                   deployer
+                 )
+      end)
+    end
+
+    test "the supported nil iOS auto-target stays green only for one authoritative device" do
+      device = ios_simulator("78354490-EF38-44D7-A437-DD941C20524D")
+
+      assert {[^device], [], []} =
+               Deploy.deploy_after_native_build!(
+                 true,
+                 native_outcome([]),
+                 [
+                   platforms: [:ios],
+                   restart: true,
+                   ios_device: nil,
+                   ios_lister: fn -> [device] end
+                 ],
+                 fn _opts -> {[device], [], []} end
+               )
+    end
+
+    test "invalid iOS discovery fails before deployer or device mutation callbacks" do
+      parent = self()
+      device = physical_ios_device("ios-device")
+
+      invalid_listers = [
+        {:empty, fn -> [] end},
+        {:malformed_member, fn -> [:not_a_device] end},
+        {:improper, fn -> [device | :malformed_tail] end},
+        {:raised, fn -> raise "discovery failed" end},
+        {:thrown, fn -> throw(:discovery_failed) end},
+        {:not_callable, :not_a_lister}
+      ]
+
+      Enum.each(invalid_listers, fn {scenario, ios_lister} ->
+        attempt = make_ref()
+
+        device_deployer = fn target ->
+          send(parent, {attempt, :device_mutated, target})
+          {:ok, target}
+        end
+
+        deployer = fn opts ->
+          send(parent, {attempt, :deployer_called, opts})
+          opts[:device_deployer].(device)
+          {[device], [], []}
+        end
+
+        assert_raise Mix.Error, "Native build failed", fn ->
+          ExUnit.CaptureIO.capture_io(fn ->
+            Deploy.deploy_after_native_build!(
+              true,
+              native_outcome([]),
+              [
+                platforms: [:ios],
+                restart: true,
+                ios_device: nil,
+                ios_lister: ios_lister,
+                device_deployer: device_deployer
+              ],
+              deployer
+            )
+          end)
+        end
+
+        refute_receive {^attempt, :deployer_called, _opts},
+                       0,
+                       "deployer ran for #{scenario} discovery"
+
+        refute_receive {^attempt, :device_mutated, _target},
+                       0,
+                       "device callback ran for #{scenario} discovery"
+      end)
+    end
+
+    test "an explicit iOS prefix collision fails before deployer or device mutation" do
+      parent = self()
+      first = ios_simulator("78354490-EF38-44D7-A437-DD941C20524D")
+      second = ios_simulator("78354490-AAAA-BBBB-CCCC-DDDDEEEEFFFF")
+
+      device_deployer = fn target ->
+        send(parent, {:device_mutated, target})
+        {:ok, target}
+      end
+
+      deployer = fn opts ->
+        send(parent, {:deployer_called, opts})
+        opts[:device_deployer].(first)
+        {[first], [], []}
+      end
+
+      assert_raise Mix.Error, "Native build failed", fn ->
+        ExUnit.CaptureIO.capture_io(fn ->
+          Deploy.deploy_after_native_build!(
+            true,
+            native_outcome([]),
+            [
+              platforms: [:ios],
+              restart: true,
+              ios_device: "78354490",
+              ios_lister: fn -> [first, second] end,
+              device_deployer: device_deployer
+            ],
+            deployer
+          )
+        end)
+      end
+
+      refute_received {:deployer_called, _opts}
+      refute_received {:device_mutated, _target}
+    end
+
+    test "explicit iOS selection freezes the exact target before the deploy callback" do
+      parent = self()
+      selected = ios_simulator("78354490-EF38-44D7-A437-DD941C20524D")
+      unrelated = ios_simulator("AAAAAAAA-BBBB-CCCC-DDDD-EEEEFFFFFFFF")
+      selected_serial = selected.serial
+
+      ios_lister = fn ->
+        send(parent, :original_ios_lister_called)
+        [selected, unrelated]
+      end
+
+      device_deployer = fn target ->
+        send(parent, {:device_mutated, target})
+        {:ok, target}
+      end
+
+      deployer = fn opts ->
+        frozen_devices = opts[:ios_lister].()
+        send(parent, {:frozen_ios_opts, opts[:ios_device], frozen_devices})
+
+        deployed =
+          Enum.map(frozen_devices, fn target ->
+            assert {:ok, ^target} = opts[:device_deployer].(target)
+            target
+          end)
+
+        {deployed, [], []}
+      end
+
+      assert {[selected], [], []} =
+               Deploy.deploy_after_native_build!(
+                 true,
+                 native_outcome([]),
+                 [
+                   platforms: [:ios],
+                   restart: true,
+                   ios_device: MobDev.Device.display_id(selected),
+                   ios_lister: ios_lister,
+                   device_deployer: device_deployer
+                 ],
+                 deployer
+               )
+
+      assert_received :original_ios_lister_called
+      refute_received :original_ios_lister_called
+      assert_received {:frozen_ios_opts, ^selected_serial, [^selected]}
+      assert_received {:device_mutated, ^selected}
+      refute_received {:device_mutated, _other}
+    end
+
+    test "non-authoritative iOS deployed identities make the native command non-green" do
+      selected = physical_ios_device("ios-device")
+
+      invalid_devices = [
+        %{type: :physical, status: nil, error: nil},
+        %{type: :physical, status: :unauthorized, error: nil},
+        %{type: :physical, status: :arbitrary_success, error: nil},
+        %{type: :physical, status: :error, error: "reported target error"},
+        %{type: :physical, status: :skipped, error: "reported target skip"},
+        %{type: :physical, status: :discovered, error: "stale success error"},
+        %{type: :simulator, status: :booted, error: "stale success error"},
+        %{type: :physical, status: :connected, error: nil},
+        %{type: :physical, status: :tunneled, error: nil},
+        %{type: :physical, status: :booted, error: nil},
+        %{type: :simulator, status: :discovered, error: nil},
+        %{type: nil, status: :discovered, error: nil}
+      ]
+
+      Enum.each(invalid_devices, fn invalid ->
+        device =
+          struct!(MobDev.Device,
+            platform: :ios,
+            serial: "ios-device",
+            type: invalid.type,
+            status: invalid.status,
+            error: invalid.error
+          )
+
+        deployer = fn _opts -> {[device], [], []} end
+
+        assert_raise Mix.Error, "Native build failed", fn ->
+          ExUnit.CaptureIO.capture_io(fn ->
+            Deploy.deploy_after_native_build!(
+              true,
+              native_outcome([]),
+              [
+                platforms: [:ios],
+                restart: true,
+                ios_device: "ios-device",
+                ios_lister: fn -> [selected] end
+              ],
+              deployer
+            )
+          end)
+        end
+      end)
+    end
+
+    test "incomplete or ambiguous iOS accounting makes the native command non-green" do
+      requested = physical_ios_device("ios-device")
+
+      other = %{requested | serial: "other-ios-device"}
+
+      wrong_platform = %{
+        requested
+        | platform: :android,
+          type: :physical,
+          status: :discovered
+      }
+
+      skipped = %{requested | status: :skipped, error: "target disappeared"}
+
+      invalid_results = [
+        {[], [], []},
+        {[], [], [skipped]},
+        {[wrong_platform], [], []},
+        {[other], [], []},
+        {[requested, requested], [], []},
+        {[requested, other], [], []}
+      ]
+
+      Enum.each(invalid_results, fn result ->
+        assert_raise Mix.Error, "Native build failed", fn ->
+          ExUnit.CaptureIO.capture_io(fn ->
+            Deploy.deploy_after_native_build!(
+              true,
+              native_outcome([]),
+              [
+                platforms: [:ios],
+                restart: true,
+                ios_device: requested.serial,
+                ios_lister: fn -> [requested] end
+              ],
+              fn _opts -> result end
+            )
+          end)
+        end
+      end)
+
+      assert_raise Mix.Error, "Native build failed", fn ->
+        ExUnit.CaptureIO.capture_io(fn ->
+          Deploy.deploy_after_native_build!(
+            true,
+            native_outcome([]),
+            [
+              platforms: [:ios],
+              restart: true,
+              ios_device: nil,
+              ios_lister: fn -> [requested] end
+            ],
+            fn _opts -> {[requested, other], [], []} end
+          )
+        end)
+      end
+    end
+
+    test "improper iOS result buckets raise a controlled native failure" do
+      device = physical_ios_device("ios-device")
+
+      failed = %{device | status: :error, error: "reported target error"}
+      skipped = %{device | status: :skipped, error: "reported target skip"}
+
+      improper_results = [
+        {[device | :malformed_tail], [], []},
+        {[], [failed | :malformed_tail], []},
+        {[], [], [skipped | :malformed_tail]}
+      ]
+
+      Enum.each(improper_results, fn result ->
+        Enum.each([:plain, :wrapped], fn shape ->
+          deployer = fn _opts ->
+            if shape == :wrapped, do: {result, %{opaque: :lease}}, else: result
+          end
+
+          assert_raise Mix.Error, "Native build failed", fn ->
+            ExUnit.CaptureIO.capture_io(fn ->
+              Deploy.deploy_after_native_build!(
+                true,
+                native_outcome([]),
+                [
+                  platforms: [:ios],
+                  restart: true,
+                  ios_device: device.serial,
+                  ios_lister: fn -> [device] end
+                ],
+                deployer
+              )
+            end)
+          end
+        end)
+      end)
     end
 
     test "native Android with no successful update target fails before the final pass" do
@@ -1575,16 +2008,22 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
     test "a successful iOS build still deploys when unavailable Android was skipped" do
       parent = self()
 
+      ios_device = physical_ios_device("ios-device")
+
       deployer = fn opts ->
         send(parent, {:deployer_called, opts})
-        {[], [], []}
+        {[ios_device], [], []}
       end
 
-      assert {[], [], []} =
+      assert {[^ios_device], [], []} =
                Deploy.deploy_after_native_build!(
                  true,
                  native_outcome([]),
-                 [platforms: [:android, :ios], device: nil],
+                 [
+                   platforms: [:android, :ios],
+                   device: nil,
+                   ios_lister: fn -> [ios_device] end
+                 ],
                  deployer
                )
 

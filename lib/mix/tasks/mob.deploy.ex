@@ -825,7 +825,20 @@ defmodule Mix.Tasks.Mob.Deploy do
               |> Keyword.delete(:android_deploy_lock)
               |> Keyword.delete(:android_payload_plan)
 
-            [remaining_opts |> deployer.() |> normalize_remaining_deployer_result()]
+            case freeze_remaining_ios_target(remaining_opts, remaining_platforms) do
+              {:ok, frozen_opts, selected} ->
+                [
+                  frozen_opts
+                  |> deployer.()
+                  |> normalize_remaining_deployer_result(
+                    remaining_platforms,
+                    selected.serial
+                  )
+                ]
+
+              {:error, _reason} ->
+                raise_native_build_failed!()
+            end
           end
 
         merge_deploy_results(android_results ++ remaining_results)
@@ -941,7 +954,7 @@ defmodule Mix.Tasks.Mob.Deploy do
        when is_list(deployed) and is_list(failed) and is_list(skipped) do
     if valid_device_buckets?([deployed, failed, skipped]),
       do: {{deployed, failed, skipped}, lease},
-      else: {{[], [], []}, nil}
+      else: {{[], [], []}, lease}
   end
 
   defp normalize_native_deployer_result({deployed, failed, skipped})
@@ -953,24 +966,125 @@ defmodule Mix.Tasks.Mob.Deploy do
 
   defp normalize_native_deployer_result(_invalid), do: {{[], [], []}, nil}
 
-  defp normalize_remaining_deployer_result({{deployed, failed, skipped}, _lease})
+  defp normalize_remaining_deployer_result(
+         {{deployed, failed, skipped}, _lease},
+         platforms,
+         ios_device_id
+       )
        when is_list(deployed) and is_list(failed) and is_list(skipped) do
-    if valid_device_buckets?([deployed, failed, skipped]),
-      do: {deployed, failed, skipped},
-      else: raise_native_build_failed!()
+    normalize_remaining_device_buckets(
+      deployed,
+      failed,
+      skipped,
+      platforms,
+      ios_device_id
+    )
   end
 
-  defp normalize_remaining_deployer_result({deployed, failed, skipped})
+  defp normalize_remaining_deployer_result(
+         {deployed, failed, skipped},
+         platforms,
+         ios_device_id
+       )
        when is_list(deployed) and is_list(failed) and is_list(skipped) do
-    if valid_device_buckets?([deployed, failed, skipped]),
-      do: {deployed, failed, skipped},
-      else: raise_native_build_failed!()
+    normalize_remaining_device_buckets(
+      deployed,
+      failed,
+      skipped,
+      platforms,
+      ios_device_id
+    )
   end
 
-  defp normalize_remaining_deployer_result(_invalid), do: raise_native_build_failed!()
+  defp normalize_remaining_deployer_result(_invalid, _platforms, _ios_device_id),
+    do: raise_native_build_failed!()
+
+  defp freeze_remaining_ios_target(opts, [:ios]) when is_list(opts) do
+    lister = Keyword.get(opts, :ios_lister, &MobDev.Discovery.IOS.list_devices/0)
+    requested_id = Keyword.get(opts, :ios_device)
+
+    if is_function(lister, 0) do
+      try do
+        devices = lister.()
+
+        with true <- proper_list?(devices),
+             true <- Enum.all?(devices, &authoritative_ios_discovery_device?/1),
+             {:ok, selected} <- select_unique_ios_target(devices, requested_id) do
+          frozen_opts =
+            opts
+            |> Keyword.put(:ios_device, selected.serial)
+            |> Keyword.put(:ios_lister, fn -> [selected] end)
+
+          {:ok, frozen_opts, selected}
+        else
+          _invalid_or_ambiguous -> {:error, :invalid_ios_target_selection}
+        end
+      rescue
+        _error -> {:error, :ios_target_discovery_failed}
+      catch
+        _kind, _reason -> {:error, :ios_target_discovery_failed}
+      end
+    else
+      {:error, :invalid_ios_lister}
+    end
+  end
+
+  defp freeze_remaining_ios_target(_opts, _platforms),
+    do: {:error, :invalid_ios_target_platforms}
+
+  defp select_unique_ios_target([device], nil), do: {:ok, device}
+
+  defp select_unique_ios_target(devices, requested_id) when is_binary(requested_id) do
+    case Enum.filter(devices, &Device.match_id?(&1, requested_id)) do
+      [device] -> {:ok, device}
+      _none_or_ambiguous -> {:error, :ios_target_not_unique}
+    end
+  end
+
+  defp select_unique_ios_target(_devices, _requested_id),
+    do: {:error, :invalid_ios_target_id}
+
+  defp authoritative_ios_discovery_device?(%Device{serial: serial} = device)
+       when is_binary(serial) do
+    byte_size(serial) in 1..256 and String.valid?(serial) and
+      authoritative_native_ios_success?(device)
+  end
+
+  defp authoritative_ios_discovery_device?(_device), do: false
+
+  defp normalize_remaining_device_buckets(
+         deployed,
+         failed,
+         skipped,
+         platforms,
+         ios_device_id
+       ) do
+    result = {deployed, failed, skipped}
+
+    if valid_device_buckets?([deployed, failed, skipped]) and
+         authoritative_remaining_result?(result, platforms, ios_device_id) do
+      result
+    else
+      raise_native_build_failed!()
+    end
+  end
+
+  defp authoritative_remaining_result?({_deployed, [_failure | _], _skipped}, [:ios], _id),
+    do: true
+
+  defp authoritative_remaining_result?({[device], [], []}, [:ios], ios_device_id)
+       when is_binary(ios_device_id) do
+    authoritative_native_ios_success?(device) and Device.match_id?(device, ios_device_id)
+  end
+
+  defp authoritative_remaining_result?({[device], [], []}, [:ios], nil),
+    do: authoritative_native_ios_success?(device)
+
+  defp authoritative_remaining_result?(_result, _platforms, _ios_device_id), do: false
 
   defp valid_device_buckets?([deployed, failed, skipped]) do
-    valid_device_bucket?(deployed, :deployed) and
+    proper_list?(deployed) and proper_list?(failed) and proper_list?(skipped) and
+      valid_device_bucket?(deployed, :deployed) and
       valid_device_bucket?(failed, :failed) and
       valid_device_bucket?(skipped, :skipped)
   end
@@ -979,15 +1093,39 @@ defmodule Mix.Tasks.Mob.Deploy do
 
   defp valid_device_bucket?(bucket, expected_bucket) do
     Enum.all?(bucket, fn
-      %Device{platform: platform, serial: serial, status: status}
+      %Device{platform: platform, serial: serial} = device
       when platform in [:android, :ios] and is_binary(serial) ->
         byte_size(serial) in 1..256 and String.valid?(serial) and
-          valid_bucket_status?(expected_bucket, status)
+          valid_bucket_device?(expected_bucket, device)
 
       _invalid ->
         false
     end)
   end
+
+  defp valid_bucket_device?(:deployed, %Device{platform: :ios} = device),
+    do: authoritative_native_ios_success?(device)
+
+  defp valid_bucket_device?(expected_bucket, %Device{status: status}),
+    do: valid_bucket_status?(expected_bucket, status)
+
+  defp authoritative_native_ios_success?(%Device{
+         platform: :ios,
+         type: :physical,
+         status: :discovered,
+         error: nil
+       }),
+       do: true
+
+  defp authoritative_native_ios_success?(%Device{
+         platform: :ios,
+         type: :simulator,
+         status: :booted,
+         error: nil
+       }),
+       do: true
+
+  defp authoritative_native_ios_success?(_device), do: false
 
   defp valid_bucket_status?(:deployed, status), do: status not in [:error, :skipped]
   defp valid_bucket_status?(:failed, :error), do: true
