@@ -4,6 +4,7 @@ defmodule Mix.Tasks.Mob.Deploy do
   alias MobDev.Device
 
   @shortdoc "Build and deploy to all connected mob devices"
+  @native_android_success_statuses [:discovered, :connected, :tunneled]
 
   @moduledoc """
   Compiles the project then pushes BEAM files to all connected
@@ -1031,7 +1032,15 @@ defmodule Mix.Tasks.Mob.Deploy do
       Enum.map(serials, fn serial ->
         case Map.get(grouped, {:android, serial}, []) do
           [{:deployed, device}] ->
-            {:deployed, device}
+            if authoritative_native_android_success?(device, serial) do
+              {:deployed, device}
+            else
+              {:failed,
+               native_target_failure(
+                 device,
+                 "Native Android target did not report authoritative deployment success"
+               )}
+            end
 
           [{:failed, device}] ->
             {:failed, device}
@@ -1081,6 +1090,20 @@ defmodule Mix.Tasks.Mob.Deploy do
       []
     }
   end
+
+  defp authoritative_native_android_success?(
+         %Device{
+           platform: :android,
+           serial: serial,
+           status: status,
+           error: nil
+         },
+         serial
+       )
+       when status in @native_android_success_statuses,
+       do: true
+
+  defp authoritative_native_android_success?(_device, _serial), do: false
 
   defp native_target_failure(%Device{} = device, reason) do
     %{device | status: :error, error: reason}

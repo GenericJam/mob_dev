@@ -278,7 +278,9 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
         case opts[:platforms] do
           [:android] ->
             committed_result(
-              {[%MobDev.Device{platform: :android, serial: serial}], [], []},
+              {[
+                 %MobDev.Device{platform: :android, serial: serial, status: :connected}
+               ], [], []},
               [serial]
             )
 
@@ -395,7 +397,9 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
           record.({:deploy, opts[:platforms]})
 
           committed_result(
-            {[%MobDev.Device{platform: :android, serial: serial}], [], []},
+            {[
+               %MobDev.Device{platform: :android, serial: serial, status: :connected}
+             ], [], []},
             [serial]
           )
         end
@@ -446,7 +450,9 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
 
       deployer = fn _opts ->
         committed_result(
-          {[%MobDev.Device{platform: :android, serial: serial}], [], []},
+          {[
+             %MobDev.Device{platform: :android, serial: serial, status: :connected}
+           ], [], []},
           [serial]
         )
       end
@@ -682,7 +688,7 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
         deployed =
           discovered_after_build
           |> Enum.filter(&(&1 in opts[:canonical_android_serials]))
-          |> Enum.map(&%MobDev.Device{serial: &1, platform: :android})
+          |> Enum.map(&%MobDev.Device{serial: &1, platform: :android, status: :connected})
 
         committed_result({deployed, [], []}, ["serial-a", "serial-b"])
       end
@@ -736,7 +742,7 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
 
         devices =
           Enum.map(opts[:canonical_android_serials], fn serial ->
-            %MobDev.Device{platform: :android, serial: serial}
+            %MobDev.Device{platform: :android, serial: serial, status: :connected}
           end)
 
         committed_result({devices, [], []}, serials)
@@ -774,7 +780,8 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
           {[
              %MobDev.Device{
                serial: hd(serials),
-               platform: :android
+               platform: :android,
+               status: :connected
              }
            ], [], []},
           serials
@@ -803,6 +810,7 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
       skipped = %MobDev.Device{
         serial: "serial-a",
         platform: :android,
+        status: :skipped,
         error: "app absent"
       }
 
@@ -823,10 +831,10 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
     end
 
     test "canonical native Android rejects duplicate, wrong-platform, and extra results" do
-      canonical = %MobDev.Device{serial: "serial-a", platform: :android}
+      canonical = %MobDev.Device{serial: "serial-a", platform: :android, status: :connected}
       duplicate = %{canonical | name: "duplicate"}
-      wrong_platform = %MobDev.Device{serial: "serial-a", platform: :ios}
-      extra = %MobDev.Device{serial: "serial-b", platform: :android}
+      wrong_platform = %MobDev.Device{serial: "serial-a", platform: :ios, status: :connected}
+      extra = %MobDev.Device{serial: "serial-b", platform: :android, status: :connected}
 
       for result <- [
             {[canonical, duplicate], [], []},
@@ -917,6 +925,121 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
       refute_received :ios_deployed
     end
 
+    test "authoritative Android deployed statuses release the exact held lease" do
+      parent = self()
+      serial = "serial-a"
+
+      for status <- [:discovered, :connected, :tunneled] do
+        attempt = make_ref()
+
+        deployer = fn _opts ->
+          committed_result(
+            {[
+               %MobDev.Device{
+                 serial: serial,
+                 platform: :android,
+                 status: status,
+                 error: nil
+               }
+             ], [], []},
+            [serial]
+          )
+        end
+
+        finalizer = fn lock ->
+          send(parent, {attempt, :released, lock})
+          :ok
+        end
+
+        cleanup = fn plan ->
+          send(parent, {attempt, :cleaned, plan})
+          :ok
+        end
+
+        assert {[%MobDev.Device{serial: ^serial, status: ^status, error: nil}], [], []} =
+                 Deploy.deploy_after_native_build!(
+                   true,
+                   native_outcome([serial]),
+                   [platforms: [:android], restart: true],
+                   deployer,
+                   finalizer,
+                   cleanup
+                 )
+
+        assert_receive {^attempt, :released, released_lock}
+        assert released_lock == committed_lock([serial])
+        assert_receive {^attempt, :cleaned, cleaned_plan}
+        assert cleaned_plan == payload_plan([serial])
+        refute_receive {^attempt, _, _}
+      end
+    end
+
+    test "malformed Android deployed statuses fail closed before release or iOS" do
+      parent = self()
+      serial = "serial-a"
+
+      invalid_results = [
+        %{status: nil, error: nil},
+        %{status: :unauthorized, error: nil},
+        %{status: :arbitrary_success, error: nil},
+        %{status: :error, error: "reported target error"},
+        %{status: :skipped, error: "reported target skip"},
+        %{status: :connected, error: "stale error on a success status"}
+      ]
+
+      Enum.each(invalid_results, fn invalid ->
+        attempt = make_ref()
+
+        deployer = fn opts ->
+          case opts[:platforms] do
+            [:android] ->
+              committed_result(
+                {[
+                   %MobDev.Device{
+                     serial: serial,
+                     platform: :android,
+                     status: invalid.status,
+                     error: invalid.error
+                   }
+                 ], [], []},
+                [serial]
+              )
+
+            [:ios] ->
+              send(parent, {attempt, :ios_deployed})
+              {[], [], []}
+          end
+        end
+
+        finalizer = fn lock ->
+          send(parent, {attempt, :released, lock})
+          :ok
+        end
+
+        cleanup = fn plan ->
+          send(parent, {attempt, :cleaned, plan})
+          :ok
+        end
+
+        assert {[], [%MobDev.Device{serial: ^serial, status: :error} = failed], []} =
+                 Deploy.deploy_after_native_build!(
+                   true,
+                   native_outcome([serial]),
+                   [platforms: [:android, :ios], restart: true],
+                   deployer,
+                   finalizer,
+                   cleanup
+                 )
+
+        assert failed.error =~ "Native Android target"
+        refute_receive {^attempt, :released, _lock}
+        refute_receive {^attempt, :ios_deployed}
+        assert_receive {^attempt, :cleaned, cleaned_plan}
+        assert cleaned_plan == payload_plan([serial])
+        refute_receive {^attempt, :cleaned, _plan}
+      end)
+    end
+
     test "a partial Android set failure reports no target deployed before commit" do
       parent = self()
       serials = ["serial-a", "serial-b"]
@@ -925,7 +1048,13 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
         case opts[:platforms] do
           [:android] ->
             {
-              {[%MobDev.Device{serial: "serial-a", platform: :android}],
+              {[
+                 %MobDev.Device{
+                   serial: "serial-a",
+                   platform: :android,
+                   status: :connected
+                 }
+               ],
                [
                  %MobDev.Device{
                    serial: "serial-b",
@@ -1029,7 +1158,9 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
         send(parent, {:deployer_called, opts})
 
         committed_result(
-          {[%MobDev.Device{serial: serial, platform: :android}], [], []},
+          {[
+             %MobDev.Device{serial: serial, platform: :android, status: :connected}
+           ], [], []},
           [serial]
         )
       end
@@ -1070,7 +1201,9 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
 
       deployer = fn _opts ->
         {
-          {[%MobDev.Device{serial: serial, platform: :android}], [], []},
+          {[
+             %MobDev.Device{serial: serial, platform: :android, status: :connected}
+           ], [], []},
           native_lock([serial])
         }
       end
@@ -1110,7 +1243,9 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
             send(parent, :android_deployed)
 
             committed_result(
-              {[%MobDev.Device{serial: serial, platform: :android}], [], []},
+              {[
+                 %MobDev.Device{serial: serial, platform: :android, status: :connected}
+               ], [], []},
               [serial]
             )
 
@@ -1376,7 +1511,9 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
         case opts[:platforms] do
           [:android] ->
             committed_result(
-              {[%MobDev.Device{serial: serial, platform: :android}], [], []},
+              {[
+                 %MobDev.Device{serial: serial, platform: :android, status: :connected}
+               ], [], []},
               [serial]
             )
 
