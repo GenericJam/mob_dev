@@ -123,7 +123,9 @@ A few helpers are public specifically to enable testing (the parsing and
 narrowing functions). Don't make them private:
 
 - `Discovery.Android.parse_devices_output/1`
-- `Discovery.IOS.parse_simctl_json/1`, `parse_simctl_text/1`, `parse_runtime_version/1`
+- `Discovery.IOS.parse_simctl_json/1`, `parse_simctl_text/1`, `parse_runtime_version/1`,
+  `build_simctl_launch_args/2`, `restart_app_physical/3`, and
+  `build_devicectl_launch_args/2`
 - `OtpDownloader.valid_otp_dir?/2`, `ios_device_extras_present?/1`
 - `PythonAppleSupport.valid_dir?/1`
 - `NativeBuild.narrow_platforms_for_device/2`, `ios_toolchain_available?/0`, `read_sdk_dir/1`, `fallback_entitlements_plist/3`
@@ -143,8 +145,10 @@ narrowing functions). Don't make them private:
   production still requires an explicit exact `--device`)
 - `Deployer.collect_android_beam_dirs/0`, `prepare_android_payload/2`,
   `valid_android_payload?/2`, `cleanup_android_payload/1`, and
-  `deploy_all_with_lease/1` (immutable final-pass payload and shared-lease
-  integration seams)
+  `deploy_all_with_lease/1`, `execute_ios_restart/1`, and
+  `interpret_ios_restart_result/1`, `restart_ios_simulator/4`, and
+  `restart_ios_physical/4` (immutable final-pass payload, shared-lease
+  integration, and authoritative iOS restart seams)
 - `Deployer.select_canonical_android_devices/2`,
   `classify_android_package_probe/2`, `deploy_android_device/4`,
   `ensure_erts_on_device/3`, `verify_elixir_runtime_version_android/5`,

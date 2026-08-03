@@ -540,72 +540,41 @@ defmodule MobDev.Discovery.IOS do
   end
 
   @doc """
-  Restarts the app on a physical iOS device via xcrun devicectl.
-  Kills any other user-installed app first (they all share EPMD port 4369 and
-  only one can run at a time), then launches the target app fresh.
+  Restarts only the target app on a physical iOS device via xcrun devicectl.
+  `--terminate-existing` atomically replaces an existing instance of that exact
+  bundle without terminating unrelated user applications.
   """
   @spec restart_app_physical(String.t(), String.t()) :: {String.t(), non_neg_integer()}
   def restart_app_physical(udid, bundle_id) do
-    kill_other_user_apps_physical(udid, bundle_id)
+    restart_app_physical(udid, bundle_id, &System.cmd/3)
+  end
 
-    # --terminate-existing kills any remaining instance of *this* app atomically.
-    System.cmd(
+  @doc false
+  @spec restart_app_physical(String.t(), String.t(), function()) ::
+          {String.t(), non_neg_integer()}
+  def restart_app_physical(udid, bundle_id, runner)
+      when is_binary(udid) and is_binary(bundle_id) and is_function(runner, 3) do
+    runner.(
       "xcrun",
-      [
-        "devicectl",
-        "device",
-        "process",
-        "launch",
-        "--device",
-        udid,
-        "--terminate-existing",
-        bundle_id
-      ],
+      build_devicectl_launch_args(udid, bundle_id),
       stderr_to_stdout: true
     )
   end
 
-  # Kill any user-installed app that is not `except_bundle`.
-  # User apps run from /private/var/containers/Bundle/Application/.
-  # All physical-device Mob apps share in-process EPMD on port 4369, so only
-  # one can run at a time. We kill the others before launching to avoid the
-  # EADDRINUSE crash that would otherwise prevent BEAM from starting.
-  defp kill_other_user_apps_physical(udid, except_bundle) do
-    {out, 0} =
-      System.cmd("xcrun", ["devicectl", "device", "info", "processes", "--device", udid],
-        stderr_to_stdout: true
-      )
-
-    out
-    |> String.split("\n")
-    |> Enum.flat_map(fn line ->
-      case Regex.run(Regex.compile!("^\\s*(\\d+)\\s+(.+Bundle/Application/.+\\.app/.+)$"), line) do
-        [_, pid_str, _path] -> [String.to_integer(pid_str)]
-        _ -> []
-      end
-    end)
-    |> Enum.each(fn pid ->
-      System.cmd(
-        "xcrun",
-        [
-          "devicectl",
-          "device",
-          "process",
-          "terminate",
-          "--device",
-          udid,
-          "--pid",
-          to_string(pid),
-          "--kill"
-        ],
-        stderr_to_stdout: true
-      )
-    end)
-
-    _ = except_bundle
-    :ok
-  rescue
-    _ -> :ok
+  @doc false
+  @spec build_devicectl_launch_args(String.t(), String.t()) :: [String.t()]
+  def build_devicectl_launch_args(udid, bundle_id)
+      when is_binary(udid) and is_binary(bundle_id) do
+    [
+      "devicectl",
+      "device",
+      "process",
+      "launch",
+      "--device",
+      udid,
+      "--terminate-existing",
+      bundle_id
+    ]
   end
 
   @doc """

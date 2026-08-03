@@ -4,6 +4,54 @@ defmodule MobDev.DeployerTest do
   alias MobDev.Deployer
 
   describe "authoritative iOS restart results" do
+    test "simulator and physical restart paths require authoritative callback success" do
+      parent = self()
+
+      simulator_launcher = fn udid, bundle, opts ->
+        send(parent, {:simulator_restart, udid, bundle, opts})
+        {"launched", 0}
+      end
+
+      assert Deployer.restart_ios_simulator(true, "SIM-UDID", "com.example.app",
+               dist_port: 9120,
+               node_suffix: "sim-a",
+               ios_launcher: simulator_launcher
+             ) == :ok
+
+      assert_received {:simulator_restart, "SIM-UDID", "com.example.app", simulator_opts}
+      assert simulator_opts[:dist_port] == 9120
+      assert simulator_opts[:node_suffix] == "sim-a"
+
+      assert Deployer.restart_ios_simulator(true, "SIM-UDID", "com.example.app",
+               ios_launcher: fn _udid, _bundle, _opts -> {"private output", 9} end
+             ) == {:error, "iOS app restart failed with exit status 9"}
+
+      physical_restarter = fn udid, bundle ->
+        send(parent, {:physical_restart, udid, bundle})
+        {"launched", 0}
+      end
+
+      assert Deployer.restart_ios_physical(true, "PHONE-UDID", "com.example.app",
+               ios_physical_restarter: physical_restarter
+             ) == :ok
+
+      assert_received {:physical_restart, "PHONE-UDID", "com.example.app"}
+
+      assert Deployer.restart_ios_physical(true, "PHONE-UDID", "com.example.app",
+               ios_physical_restarter: fn _udid, _bundle -> :malformed end
+             ) == {:error, "iOS app restart returned a malformed result"}
+    end
+
+    test "restart false skips both platform callbacks" do
+      assert Deployer.restart_ios_simulator(false, "SIM-UDID", "com.example.app",
+               ios_launcher: fn _udid, _bundle, _opts -> flunk("simulator callback ran") end
+             ) == :ok
+
+      assert Deployer.restart_ios_physical(false, "PHONE-UDID", "com.example.app",
+               ios_physical_restarter: fn _udid, _bundle -> flunk("physical callback ran") end
+             ) == :ok
+    end
+
     test "accepts only a well-formed zero exit status" do
       assert Deployer.execute_ios_restart(fn -> {"launched", 0} end) == :ok
 
