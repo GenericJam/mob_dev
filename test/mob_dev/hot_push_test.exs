@@ -443,7 +443,7 @@ defmodule MobDev.HotPushTest do
       refute Enum.any?(final.commands, &String.contains?(&1, "record_next_"))
     end
 
-    test "exact lease target equality rejects subset, superset, and mixed-node requests before RPC",
+    test "exact lease target equality rejects empty, subset, superset, iOS-only, and mixed requests before RPC",
          %{tmp_root: root} do
       {path, _binary} = write_loaded_beam(root, MobDev.Device)
       assert {:ok, snapshot} = HotPush.prepare([path])
@@ -452,6 +452,11 @@ defmodule MobDev.HotPushTest do
       ios_node = :"ios-test@127.0.0.1"
 
       cases = [
+        {
+          [],
+          [],
+          existing_lease(["serial-a"], :native_ready)
+        },
         {
           [node_a],
           [%{platform: :android, node: node_a, serial: "serial-a"}],
@@ -463,6 +468,11 @@ defmodule MobDev.HotPushTest do
             %{platform: :android, node: node_a, serial: "serial-a"},
             %{platform: :android, node: node_b, serial: "serial-b"}
           ],
+          existing_lease(["serial-a"], :native_ready)
+        },
+        {
+          [ios_node],
+          [],
           existing_lease(["serial-a"], :native_ready)
         },
         {

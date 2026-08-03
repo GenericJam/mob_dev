@@ -352,33 +352,30 @@ defmodule MobDev.HotPush do
          {:ok, serials} <- android_serials_for_nodes(nodes, opts) do
       {android_nodes, other_nodes} = Enum.split_with(nodes, &android_node?/1)
 
-      case serials do
-        [] ->
+      case {Keyword.get(opts, :android_deploy_lock), serials} do
+        {lease, serials} when not is_nil(lease) ->
+          push_with_existing_android_lease(
+            android_nodes,
+            other_nodes,
+            snapshot,
+            serials,
+            lease,
+            post_push,
+            opts
+          )
+
+        {nil, []} ->
           push_without_android(nodes, snapshot, post_push, opts)
 
-        serials ->
-          case Keyword.get(opts, :android_deploy_lock) do
-            nil ->
-              push_with_acquired_android_lease(
-                android_nodes,
-                other_nodes,
-                snapshot,
-                serials,
-                post_push,
-                opts
-              )
-
-            lease ->
-              push_with_existing_android_lease(
-                android_nodes,
-                other_nodes,
-                snapshot,
-                serials,
-                lease,
-                post_push,
-                opts
-              )
-          end
+        {nil, serials} ->
+          push_with_acquired_android_lease(
+            android_nodes,
+            other_nodes,
+            snapshot,
+            serials,
+            post_push,
+            opts
+          )
       end
     else
       {:error, :android_target_ambiguous} -> {0, [{:android_deploy_lock, :target_ambiguous}]}
