@@ -133,6 +133,11 @@ narrowing functions). Don't make them private:
   `install_android_updates/3`, and `install_and_deliver_android/4` (update-only
   Android deploy safety seams; injected command/delivery functions are for
   hermetic command-history tests)
+- `AndroidDeployLock.valid?/2`, `acquire/4`, `verify_owner/3`, `transition/4`,
+  `release/2`, `status/3`, and `cleanup_committed_tombstone/3` (the shared,
+  exact-target Android mutation lease and its bounded recovery surface)
+- `Mix.Tasks.Mob.DeployLock.inspect_or_cleanup/4` (hermetic task decision seam;
+  production still requires an explicit exact `--device`)
 - `Deployer.select_canonical_android_devices/2` (native final-pass exact-target
   selection; ordinary `--device` matching remains user-friendly)
 - `NativeBuild.__prune_plugin_artifacts__/2` (the plugin-removal prune; ledger-tracked per merge concern)
@@ -180,6 +185,11 @@ may receive their matching OTP payload first. OTP delivery is attempted and
 aggregated per successful serial, and a fully successful native build carries
 that exact canonical Android serial allowlist into the final BEAM deploy so a
 later discovery snapshot cannot widen the set.
+
+Never recover by clearing app data, uninstalling, deleting an active lock, or
+blindly retrying. `mix mob.deploy_lock --device <exact-serial>` is read-only;
+`--cleanup-committed` may remove only one exact record-only tombstone already
+in a committed phase and must prove the final clear state.
 
 **TODO:** apply the full physical-device selection pattern to the fast
 `mix mob.deploy` BEAM fan-out (today's broad deploy can push BEAMs to a personal
