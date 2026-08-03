@@ -3,6 +3,44 @@ defmodule MobDev.DeployerTest do
 
   alias MobDev.Deployer
 
+  describe "authoritative iOS restart results" do
+    test "accepts only a well-formed zero exit status" do
+      assert Deployer.execute_ios_restart(fn -> {"launched", 0} end) == :ok
+
+      assert Deployer.execute_ios_restart(fn -> {"private command output", 7} end) ==
+               {:error, "iOS app restart failed with exit status 7"}
+
+      assert Deployer.execute_ios_restart(fn -> :ok end) ==
+               {:error, "iOS app restart returned a malformed result"}
+    end
+
+    test "normalizes raised, thrown, exited, and invalid callbacks without leaking output" do
+      assert Deployer.execute_ios_restart(fn -> raise "private device output" end) ==
+               {:error, "iOS app restart failed before an authoritative result"}
+
+      assert Deployer.execute_ios_restart(fn -> throw(:private_device_output) end) ==
+               {:error, "iOS app restart failed before an authoritative result"}
+
+      assert Deployer.execute_ios_restart(fn -> exit(:private_device_output) end) ==
+               {:error, "iOS app restart failed before an authoritative result"}
+
+      assert Deployer.execute_ios_restart(:invalid) ==
+               {:error, "iOS app restart callback is invalid"}
+    end
+
+    test "invokes the restart callback exactly once" do
+      parent = self()
+
+      assert Deployer.execute_ios_restart(fn ->
+               send(parent, :restart_called)
+               {"launched", 0}
+             end) == :ok
+
+      assert_received :restart_called
+      refute_received :restart_called
+    end
+  end
+
   # ── generate_crypto_shim/0 ────────────────────────────────────────────────
 
   describe "generate_crypto_shim/0" do

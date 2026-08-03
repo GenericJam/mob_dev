@@ -488,10 +488,17 @@ defmodule MobDev.Discovery.IOS do
     runtime_dir = MobDev.Paths.sim_runtime_dir()
     env = build_simctl_env(opts, runtime_dir)
 
-    System.cmd("xcrun", ["simctl", "launch", udid, bundle_id],
+    System.cmd("xcrun", build_simctl_launch_args(udid, bundle_id),
       stderr_to_stdout: true,
       env: env
     )
+  end
+
+  @doc false
+  @spec build_simctl_launch_args(String.t(), String.t()) :: [String.t()]
+  def build_simctl_launch_args(udid, bundle_id)
+      when is_binary(udid) and is_binary(bundle_id) do
+    ["simctl", "launch", "--terminate-running-process", udid, bundle_id]
   end
 
   @doc """

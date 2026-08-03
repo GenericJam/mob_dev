@@ -194,4 +194,16 @@ defmodule MobDev.Discovery.IOSTest do
       assert {"SIMCTL_CHILD_MOB_NODE_SUFFIX", "alt"} in env
     end
   end
+
+  describe "build_simctl_launch_args/2" do
+    test "launch atomically terminates an existing simulator process" do
+      assert IOS.build_simctl_launch_args("SIM-UDID", "com.example.app") == [
+               "simctl",
+               "launch",
+               "--terminate-running-process",
+               "SIM-UDID",
+               "com.example.app"
+             ]
+    end
+  end
 end

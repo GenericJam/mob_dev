@@ -3161,13 +3161,21 @@ defmodule MobDev.Deployer do
       end
 
       if restart do
-        IOS.terminate_app(udid, ios_bundle_id())
-        :timer.sleep(300)
         # node_suffix nil → IOS.launch_app omits SIMCTL_CHILD_MOB_NODE_SUFFIX
         # → mob_beam.m auto-derives from SIMULATOR_UDID. Pass explicit when
         # `mix mob.deploy --node-suffix ...` was used.
         node_suffix = Keyword.get(opts, :node_suffix)
-        IOS.launch_app(udid, ios_bundle_id(), dist_port: dist_port, node_suffix: node_suffix)
+        launcher = Keyword.get(opts, :ios_launcher, &IOS.launch_app/3)
+
+        case execute_ios_restart(fn ->
+               launcher.(udid, ios_bundle_id(),
+                 dist_port: dist_port,
+                 node_suffix: node_suffix
+               )
+             end) do
+          :ok -> :ok
+          {:error, reason} -> throw({:error, reason})
+        end
       end
 
       {:ok, device}
@@ -3287,7 +3295,14 @@ defmodule MobDev.Deployer do
           throw({:error, reason})
       end
 
-      if restart, do: IOS.restart_app_physical(udid, bundle)
+      if restart do
+        restarter = Keyword.get(opts, :ios_physical_restarter, &IOS.restart_app_physical/2)
+
+        case execute_ios_restart(fn -> restarter.(udid, bundle) end) do
+          :ok -> :ok
+          {:error, reason} -> throw({:error, reason})
+        end
+      end
 
       {:ok, device}
     catch
@@ -3296,6 +3311,30 @@ defmodule MobDev.Deployer do
       File.rm_rf!(staging_parent)
     end
   end
+
+  @doc false
+  @spec execute_ios_restart((-> term())) :: :ok | {:error, String.t()}
+  def execute_ios_restart(restart) when is_function(restart, 0) do
+    try do
+      interpret_ios_restart_result(restart.())
+    catch
+      _kind, _reason -> {:error, "iOS app restart failed before an authoritative result"}
+    end
+  end
+
+  def execute_ios_restart(_invalid),
+    do: {:error, "iOS app restart callback is invalid"}
+
+  @doc false
+  @spec interpret_ios_restart_result(term()) :: :ok | {:error, String.t()}
+  def interpret_ios_restart_result({output, 0}) when is_binary(output), do: :ok
+
+  def interpret_ios_restart_result({_output, status}) when is_integer(status) do
+    {:error, "iOS app restart failed with exit status #{status}"}
+  end
+
+  def interpret_ios_restart_result(_malformed),
+    do: {:error, "iOS app restart returned a malformed result"}
 
   # ── iOS WiFi UDID resolution ──────────────────────────────────────────────────
 
