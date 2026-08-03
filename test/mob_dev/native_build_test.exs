@@ -14,14 +14,20 @@ defmodule MobDev.NativeBuildTest do
     test "an empty native target set fails closed" do
       assert NativeBuild.build_outcome([]) == %{
                ok?: false,
-               android_serials: []
+               android_device_disposition: :not_attempted,
+               android_serials: [],
+               android_deploy_lock: nil,
+               android_payload_plan: nil
              }
     end
 
     test "one successful platform remains a valid partial multi-platform outcome" do
       assert NativeBuild.build_outcome([{:ok, "iOS"}]) == %{
                ok?: true,
-               android_serials: []
+               android_device_disposition: :not_attempted,
+               android_serials: [],
+               android_deploy_lock: nil,
+               android_payload_plan: nil
              }
     end
 
@@ -31,8 +37,145 @@ defmodule MobDev.NativeBuildTest do
                {:error, "Android", "target unavailable"}
              ]) == %{
                ok?: false,
-               android_serials: []
+               android_device_disposition: :failed,
+               android_serials: [],
+               android_deploy_lock: nil,
+               android_payload_plan: nil
              }
+    end
+
+    test "an artifact-only Android success exposes no targets, lease, or payload plan" do
+      assert NativeBuild.build_outcome([
+               {:ok, "Android", %{serials: [], deploy_lock: nil, payload_plan: nil}}
+             ]) == %{
+               ok?: true,
+               android_device_disposition: :artifact_only,
+               android_serials: [],
+               android_deploy_lock: nil,
+               android_payload_plan: nil
+             }
+    end
+
+    test "an aggregate failure hides the Android payload plan but retains the lease" do
+      lease = %{state: :native_ready}
+      plan = %{version: 1}
+
+      assert NativeBuild.build_outcome([
+               {:ok, "Android", %{serials: ["serial-a"], deploy_lock: lease, payload_plan: plan}},
+               {:error, "iOS", "build failed"}
+             ]) == %{
+               ok?: false,
+               android_device_disposition: :failed,
+               android_serials: ["serial-a"],
+               android_deploy_lock: lease,
+               android_payload_plan: nil
+             }
+    end
+
+    test "a later-platform failure and cleanup failure still return the exact Android lease" do
+      lease = %{
+        bundle_id: "com.example.casein",
+        owner: "ownerproof000001",
+        serials: ["serial-a"],
+        target_digest: String.duplicate("a", 64),
+        phase: :native_ready,
+        state: :held_success
+      }
+
+      plan = %{attempt_id: "planbeam00000001"}
+
+      results = [
+        {:ok, "Android", %{serials: ["serial-a"], deploy_lock: lease, payload_plan: plan}},
+        {:error, "iOS", "injected later-platform failure"}
+      ]
+
+      cleanup = fn ^plan ->
+        send(self(), :aggregate_cleanup_attempted)
+        {:error, :injected_cleanup_failure}
+      end
+
+      assert NativeBuild.build_outcome(results, android_preinstall_cleanup: cleanup) == %{
+               ok?: false,
+               android_device_disposition: :failed,
+               android_serials: ["serial-a"],
+               android_deploy_lock: lease,
+               android_payload_plan: nil
+             }
+
+      assert_received :aggregate_cleanup_attempted
+    end
+
+    test "reports retained and ambiguous Android authority with a bounded disposition" do
+      held = native_ready_lease(["serial-a"])
+      retained = %{held | state: :retained_ambiguous}
+
+      assert %{
+               android_device_disposition: :held,
+               android_deploy_lock: ^held
+             } =
+               NativeBuild.build_outcome([
+                 {:ok, "Android",
+                  %{
+                    serials: ["serial-a"],
+                    deploy_lock: held,
+                    payload_plan: %{version: 1}
+                  }}
+               ])
+
+      assert %{
+               android_device_disposition: :retained,
+               android_deploy_lock: ^retained
+             } =
+               NativeBuild.build_outcome([
+                 {:error, "Android", "typed failure", retained}
+               ])
+
+      assert %{
+               android_device_disposition: :retained,
+               android_deploy_lock: ^held
+             } =
+               NativeBuild.build_outcome([
+                 {:ok, "Android", %{serials: ["serial-a"], deploy_lock: held}},
+                 {:error, "Android", "duplicate result"}
+               ])
+    end
+  end
+
+  describe "ios_phase_decision/3" do
+    test "defers iOS for one exact held Android device phase" do
+      serials = ["serial-a", "serial-b"]
+      lock = native_ready_lease(serials)
+
+      results = [
+        {:ok, "Android", %{serials: serials, deploy_lock: lock, payload_plan: %{version: 1}}}
+      ]
+
+      assert NativeBuild.ios_phase_decision(results, [:android, :ios], true) == :defer
+    end
+
+    test "suppresses iOS after an Android device-phase error or invalid held result" do
+      lock = native_ready_lease(["serial-a"])
+
+      for results <- [
+            [{:error, "Android", "update failed"}],
+            [{:error, "Android", "update ambiguous", %{lock | state: :retained_ambiguous}}],
+            [{:ok, "Android", %{serials: ["serial-b"], deploy_lock: lock}}],
+            [
+              {:ok, "Android", %{serials: ["serial-a"], deploy_lock: lock}},
+              {:error, "Android", "duplicate result"}
+            ]
+          ] do
+        assert NativeBuild.ios_phase_decision(results, [:android, :ios], true) == :suppress
+      end
+    end
+
+    test "preserves iOS for artifact-only work and when Android had no device-phase result" do
+      android_error = [{:error, "Android", "artifact build failed"}]
+
+      assert NativeBuild.ios_phase_decision(android_error, [:android, :ios], false) == :run
+      assert NativeBuild.ios_phase_decision([], [:android, :ios], true) == :run
+      assert NativeBuild.ios_phase_decision([{:ok, "iOS"}], [:android, :ios], true) == :run
+      assert NativeBuild.ios_phase_decision([], [:android], true) == :skip
     end
   end
 
@@ -2126,7 +2269,6 @@ defmodule MobDev.NativeBuildTest do
 
     test "explicit resolution rejects a case-variant discovery collision before mutation" do
       parent = self()
-      apk = "/tmp/app-debug.apk"
 
       runner = fn
         "adb", ["devices"] = args ->
@@ -2139,36 +2281,24 @@ defmodule MobDev.NativeBuildTest do
           {"Success\n", 0}
       end
 
-      deliver = fn serial ->
-        send(parent, {:delivered, serial})
-        :ok
-      end
+      assert {:error, :ambiguous_target} =
+               NativeBuild.resolve_android_update_targets("CaseTarget", runner)
 
-      result =
-        with {:ok, serials} <-
-               NativeBuild.resolve_android_update_targets("CaseTarget", runner) do
-          NativeBuild.install_and_deliver_android(apk, serials, runner, deliver)
-        end
-
-      assert result == {:error, :ambiguous_target}
       assert_received {:command, "adb", ["devices"]}
       refute_received {:command, _, _}
-      refute_received {:delivered, _}
     end
 
-    test "explicit resolution ignores unrelated non-ready rows without interacting with them" do
+    test "legacy install and delivery seams require the authoritative transaction" do
       parent = self()
       apk = "/tmp/app-debug.apk"
 
       runner = fn
         "adb", ["devices"] = args ->
           send(parent, {:command, "adb", args})
+          {"List of devices attached\nCaseTarget\tdevice\n", 0}
 
-          {"List of devices attached\nCaseTarget\tdevice\nblocked\tunauthorized\nstale\toffline\n",
-           0}
-
-        "adb", ["-s", "CaseTarget", "install", "-r", ^apk] = args ->
-          send(parent, {:command, "adb", args})
+        command, args ->
+          send(parent, {:command, command, args})
           {"Success\n", 0}
       end
 
@@ -2180,19 +2310,19 @@ defmodule MobDev.NativeBuildTest do
       assert {:ok, ["CaseTarget"]} =
                NativeBuild.resolve_android_update_targets("CaseTarget", runner)
 
-      assert :ok =
-               NativeBuild.install_and_deliver_android(
+      assert {:error, :authoritative_transaction_required} =
+               apply(NativeBuild, :install_android_updates, [apk, ["CaseTarget"], runner])
+
+      assert {:error, message} =
+               apply(NativeBuild, :install_and_deliver_android, [
                  apk,
                  ["CaseTarget"],
                  runner,
                  deliver
-               )
+               ])
 
+      assert message =~ "authoritative payload transaction"
       assert_received {:command, "adb", ["devices"]}
-
-      assert_received {:command, "adb", ["-s", "CaseTarget", "install", "-r", ^apk]}
-
-      assert_received {:delivered, "CaseTarget"}
       refute_received {:command, _, _}
       refute_received {:delivered, _}
     end
@@ -2247,248 +2377,42 @@ defmodule MobDev.NativeBuildTest do
       end)
     end
 
-    test "runs exactly one explicit adb install -r per valid target" do
+    test "legacy seams still reject invalid target sets without invoking callbacks" do
       parent = self()
-      apk = "/tmp/app-debug.apk"
 
       runner = fn command, args ->
         send(parent, {:command, command, args})
-        {"Success\n", 0}
-      end
-
-      output =
-        ExUnit.CaptureIO.capture_io(fn ->
-          assert {:ok, %{succeeded: ["serial-a", "serial-b"], failed: []}} =
-                   NativeBuild.install_android_updates(
-                     apk,
-                     ["serial-a", "serial-b"],
-                     runner
-                   )
-        end)
-
-      assert output =~ "preserving app data"
-      assert_received {:command, "adb", ["-s", "serial-a", "install", "-r", ^apk]}
-      assert_received {:command, "adb", ["-s", "serial-b", "install", "-r", ^apk]}
-      refute_received {:command, _, _}
-    end
-
-    test "duplicate canonical installer inputs fail before install or delivery" do
-      parent = self()
-      apk = "/tmp/app-debug.apk"
-
-      runner = fn command, args ->
-        send(parent, {:command, command, args})
-        {"Success\n", 0}
+        {"unexpected", 0}
       end
 
       deliver = fn serial ->
         send(parent, {:delivered, serial})
         :ok
       end
-
-      assert {:error, :duplicate_target} =
-               NativeBuild.install_android_updates(
-                 apk,
-                 ["CaseTarget", "CaseTarget"],
-                 runner
-               )
-
-      assert {:error, _message} =
-               NativeBuild.install_and_deliver_android(
-                 apk,
-                 ["CaseTarget", "CaseTarget"],
-                 runner,
-                 deliver
-               )
-
-      refute_received {:command, _, _}
-      refute_received {:delivered, _}
-    end
-
-    test "case-fold duplicate canonical installer inputs fail before install or delivery" do
-      parent = self()
-      apk = "/tmp/app-debug.apk"
-
-      runner = fn command, args ->
-        send(parent, {:command, command, args})
-        {"Success\n", 0}
-      end
-
-      deliver = fn serial ->
-        send(parent, {:delivered, serial})
-        :ok
-      end
-
-      assert {:error, :ambiguous_target} =
-               NativeBuild.install_android_updates(
-                 apk,
-                 ["CaseTarget", "casetarget"],
-                 runner
-               )
-
-      assert {:error, _message} =
-               NativeBuild.install_and_deliver_android(
-                 apk,
-                 ["CaseTarget", "casetarget"],
-                 runner,
-                 deliver
-               )
-
-      refute_received {:command, _, _}
-      refute_received {:delivered, _}
-    end
-
-    test "never retries signature mismatch, downgrade, or suspicious exit-zero" do
-      parent = self()
-      apk = "/tmp/app-debug.apk"
-
-      results = [
-        {"signature", "Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE]", 1, :signature_mismatch},
-        {"downgrade", "Failure [INSTALL_FAILED_VERSION_DOWNGRADE]", 1, :version_downgrade},
-        {"suspicious", "not a verified success", 0, :suspicious_success}
-      ]
-
-      Enum.each(results, fn {serial, output, exit_code, reason} ->
-        runner = fn command, args ->
-          send(parent, {:command, command, args})
-          {output, exit_code}
-        end
-
-        ExUnit.CaptureIO.capture_io(fn ->
-          assert {:error, %{succeeded: [], failed: [%{serial: ^serial, reason: ^reason}]}} =
-                   NativeBuild.install_android_updates(apk, [serial], runner)
-        end)
-
-        assert_received {:command, "adb", ["-s", ^serial, "install", "-r", ^apk]}
-        refute_received {:command, _, _}
-      end)
-    end
-
-    test "partial failure delivers OTP only to updated serials and returns aggregate failure" do
-      parent = self()
-      apk = "/tmp/app-debug.apk"
-
-      runner = fn "adb", ["-s", serial, "install", "-r", ^apk] = args ->
-        send(parent, {:command, "adb", args})
-
-        case serial do
-          "updated" -> {"Success\n", 0}
-          "full" -> {"Failure [INSTALL_FAILED_INSUFFICIENT_STORAGE] raw-private-detail", 1}
-          "offline" -> {"error: device offline raw-private-detail", 1}
-        end
-      end
-
-      deliver = fn serial ->
-        send(parent, {:delivered, serial})
-        :ok
-      end
-
-      captured =
-        ExUnit.CaptureIO.capture_io(fn ->
-          assert {:error, message} =
-                   NativeBuild.install_and_deliver_android(
-                     apk,
-                     ["updated", "full", "offline"],
-                     runner,
-                     deliver
-                   )
-
-          assert message =~ "requested Android device(s)"
-          assert message =~ "full=out of storage"
-          assert message =~ "offline=offline"
-          refute message =~ "raw-private-detail"
-        end)
-
-      assert captured =~ "app data preserved"
-      refute captured =~ "raw-private-detail"
-      assert_received {:delivered, "updated"}
-      assert_received {:command, "adb", ["-s", "updated", "install", "-r", ^apk]}
-      assert_received {:command, "adb", ["-s", "full", "install", "-r", ^apk]}
-      assert_received {:command, "adb", ["-s", "offline", "install", "-r", ^apk]}
-      refute_received {:command, _, _}
-    end
-
-    test "continues OTP delivery and reports install plus delivery failures together" do
-      parent = self()
-      apk = "/tmp/app-debug.apk"
-
-      runner = fn "adb", ["-s", serial, "install", "-r", ^apk] = args ->
-        send(parent, {:command, "adb", args})
-
-        case serial do
-          "otp-fails" -> {"Success\n", 0}
-          "otp-succeeds" -> {"Success\n", 0}
-          "downgrade" -> {"Failure [INSTALL_FAILED_VERSION_DOWNGRADE]", 1}
-        end
-      end
-
-      deliver = fn serial ->
-        send(parent, {:delivery_attempted, serial})
-
-        case serial do
-          "otp-fails" -> {:error, "raw-private-delivery-detail"}
-          "otp-succeeds" -> :ok
-        end
-      end
-
-      captured =
-        ExUnit.CaptureIO.capture_io(fn ->
-          assert {:error, message} =
-                   NativeBuild.install_and_deliver_android(
-                     apk,
-                     ["otp-fails", "downgrade", "otp-succeeds"],
-                     runner,
-                     deliver
-                   )
-
-          assert message =~ "downgrade=a version downgrade"
-          assert message =~ "OTP delivery failed on updated Android device(s): otp-fails"
-          refute message =~ "raw-private-delivery-detail"
-        end)
-
-      refute captured =~ "raw-private-delivery-detail"
-      assert_received {:delivery_attempted, "otp-fails"}
-      assert_received {:delivery_attempted, "otp-succeeds"}
-      refute_received {:delivery_attempted, "downgrade"}
-      assert_received {:command, "adb", ["-s", "otp-fails", "install", "-r", ^apk]}
-      assert_received {:command, "adb", ["-s", "downgrade", "install", "-r", ^apk]}
-      assert_received {:command, "adb", ["-s", "otp-succeeds", "install", "-r", ^apk]}
-      refute_received {:command, _, _}
-    end
-
-    test "all failed targets receive no OTP delivery and invalid/no target runs no adb command" do
-      parent = self()
-
-      runner = fn command, args ->
-        send(parent, {:command, command, args})
-        {"Failure [INSTALL_FAILED_VERSION_DOWNGRADE]", 1}
-      end
-
-      deliver = fn serial ->
-        send(parent, {:delivered, serial})
-        :ok
-      end
-
-      ExUnit.CaptureIO.capture_io(fn ->
-        assert {:error, _message} =
-                 NativeBuild.install_and_deliver_android(
-                   "/tmp/app.apk",
-                   ["failed"],
-                   runner,
-                   deliver
-                 )
-      end)
-
-      assert_received {:command, "adb", ["-s", "failed", "install", "-r", "/tmp/app.apk"]}
-      refute_received {:delivered, _}
-
-      assert {:error, :no_explicit_targets} =
-               NativeBuild.install_android_updates("/tmp/app.apk", [], runner)
 
       assert {:error, :invalid_target} =
-               NativeBuild.install_android_updates("/tmp/app.apk", ["--all"], runner)
+               NativeBuild.resolve_android_update_targets("--all", runner)
+
+      assert {:error, :no_explicit_targets} =
+               apply(NativeBuild, :install_android_updates, ["/tmp/app.apk", [], runner])
+
+      assert {:error, :invalid_target} =
+               apply(NativeBuild, :install_android_updates, [
+                 "/tmp/app.apk",
+                 ["--all"],
+                 runner
+               ])
+
+      assert {:error, _message} =
+               apply(NativeBuild, :install_and_deliver_android, [
+                 "/tmp/app.apk",
+                 ["CaseTarget", "casetarget"],
+                 runner,
+                 deliver
+               ])
 
       refute_received {:command, _, _}
+      refute_received {:delivered, _}
     end
   end
 
@@ -2621,5 +2545,640 @@ defmodule MobDev.NativeBuildTest do
 
       assert File.exists?(logo)
     end
+  end
+
+  describe "install_and_deliver_android_runtime/8 authoritative transaction" do
+    @describetag :tmp_dir
+
+    test "requires authoritative callbacks before any device command", %{tmp_dir: dir} do
+      fixture = authoritative_android_fixture!(dir, ["serial-a"])
+
+      runner = fn executable, args ->
+        send(self(), {:native_probe, executable, args})
+        {"unexpected", 0}
+      end
+
+      assert {:error, reason} =
+               NativeBuild.install_and_deliver_android_runtime(
+                 fixture.apk,
+                 fixture.serials,
+                 fixture.package,
+                 fixture.elixir_lib,
+                 fixture.otp_arm64,
+                 fixture.otp_arm32,
+                 fixture.otp_x86_64,
+                 probe_runner: runner,
+                 tmp_root: dir
+               )
+
+      assert reason =~ "authoritative payload plan"
+      refute_received {:native_probe, _, _}
+    end
+
+    test "installs the immutable plan APK and returns a native_ready set-wide lease", %{
+      tmp_dir: dir
+    } do
+      fixture = authoritative_android_fixture!(dir, ["serial-a"])
+      owner_state = start_supervised!({Agent, fn -> true end})
+      probe_runner = authoritative_android_probe_runner(self(), fixture, owner_state)
+      otp_runner = authoritative_android_otp_runner(self())
+
+      preinstall = fn input -> {:ok, authoritative_android_payload_plan!(dir, input)} end
+      cleanup = fn plan -> cleanup_authoritative_android_plan(plan) end
+
+      assert {:ok,
+              %{
+                deploy_lock: %{phase: :native_ready, state: :held_success} = lease,
+                payload_plan: plan
+              }} =
+               run_authoritative_android(
+                 fixture,
+                 dir,
+                 probe_runner,
+                 otp_runner,
+                 preinstall,
+                 cleanup
+               )
+
+      assert lease.owner == "ownerproof000001"
+      assert lease.serials == ["serial-a"]
+
+      commands = drain_native_commands(:native_probe)
+
+      assert Enum.any?(commands, fn
+               {"adb", ["-s", "serial-a", "install", "-r", installed_apk]} ->
+                 installed_apk == plan.apk.path and installed_apk != fixture.apk
+
+               _command ->
+                 false
+             end)
+
+      assert File.regular?(plan.apk.path)
+      assert cleanup_authoritative_android_plan(plan) == :ok
+    end
+
+    test "accepts only the bounded binary beam-flags payload contract", %{tmp_dir: dir} do
+      fixture = authoritative_android_fixture!(dir, ["serial-a"])
+      owner_state = start_supervised!({Agent, fn -> true end})
+      probe_runner = authoritative_android_probe_runner(self(), fixture, owner_state)
+      otp_runner = authoritative_android_otp_runner(self())
+
+      preinstall = fn input ->
+        plan = authoritative_android_payload_plan!(dir, input)
+        {:ok, put_in(plan.beam.beam_flags, "+S 2:2 -A 4")}
+      end
+
+      cleanup = fn plan -> cleanup_authoritative_android_plan(plan) end
+
+      assert {:ok, %{deploy_lock: %{phase: :native_ready}, payload_plan: plan}} =
+               run_authoritative_android(
+                 fixture,
+                 dir,
+                 probe_runner,
+                 otp_runner,
+                 preinstall,
+                 cleanup
+               )
+
+      assert plan.beam.beam_flags == "+S 2:2 -A 4"
+      assert cleanup_authoritative_android_plan(plan) == :ok
+
+      for invalid_flags <- [["+S", "2:2"], String.duplicate("x", 4_097), <<0xFF>>] do
+        invalid_preinstall = fn input ->
+          invalid_plan = authoritative_android_payload_plan!(dir, input)
+          {:ok, put_in(invalid_plan.beam.beam_flags, invalid_flags)}
+        end
+
+        assert {:error, "Could not clean authoritative Android payload"} =
+                 run_authoritative_android(
+                   fixture,
+                   dir,
+                   probe_runner,
+                   otp_runner,
+                   invalid_preinstall,
+                   fn _plan -> {:error, :injected_cleanup_failure} end
+                 )
+      end
+
+      commands = drain_native_commands(:native_probe)
+      assert Enum.count(commands, &native_install_command?/1) == 1
+      assert Enum.count(commands, &native_lock_mutation_command?/1) > 0
+
+      Enum.each(Path.wildcard(Path.join(dir, "authoritative-plan-*.apk")), &File.rm!/1)
+      Enum.each(Path.wildcard(Path.join(dir, "authoritative-beams-*.tar")), &File.rm!/1)
+    end
+
+    test "rejects no-restart plans, invokes cleanup once, and performs zero lease or install mutation",
+         %{tmp_dir: dir} do
+      fixture = authoritative_android_fixture!(dir, ["serial-a"])
+      owner_state = start_supervised!({Agent, fn -> true end})
+      probe_runner = authoritative_android_probe_runner(self(), fixture, owner_state)
+      otp_runner = authoritative_android_otp_runner(self())
+
+      preinstall = fn input ->
+        plan = authoritative_android_payload_plan!(dir, input)
+
+        restart = %{
+          Map.fetch!(plan.restart_by_serial, "serial-a")
+          | restart?: false,
+            mode: :no_restart
+        }
+
+        {:ok, put_in(plan.restart_by_serial["serial-a"], restart)}
+      end
+
+      cleanup = fn plan ->
+        send(self(), {:payload_cleanup, plan.attempt_id})
+        {:error, :injected_cleanup_failure}
+      end
+
+      assert {:error, "Could not clean authoritative Android payload"} =
+               run_authoritative_android(
+                 fixture,
+                 dir,
+                 probe_runner,
+                 otp_runner,
+                 preinstall,
+                 cleanup
+               )
+
+      assert_received {:payload_cleanup, "planbeam00000001"}
+
+      commands = drain_native_commands(:native_probe)
+      refute Enum.any?(commands, &native_install_command?/1)
+      refute Enum.any?(commands, &native_lock_mutation_command?/1)
+
+      [leaked_apk] = Path.wildcard(Path.join(dir, "authoritative-plan-*.apk"))
+      File.rm!(leaked_apk)
+      Enum.each(Path.wildcard(Path.join(dir, "authoritative-beams-*.tar")), &File.rm!/1)
+    end
+
+    test "freezes OTP archives and refuses every second-target mutation after archive drift", %{
+      tmp_dir: dir
+    } do
+      fixture = authoritative_android_fixture!(dir, ["serial-a", "serial-b"])
+      owner_state = start_supervised!({Agent, fn -> true end})
+      archive_state = start_supervised!({Agent, fn -> nil end}, id: :otp_archive_state)
+      probe_runner = authoritative_android_probe_runner(self(), fixture, owner_state)
+
+      otp_runner =
+        authoritative_android_otp_runner(self(), fn
+          ["-s", "serial-a", "push", archive, _remote] ->
+            Agent.update(archive_state, fn _old -> archive end)
+
+          ["-s", "serial-a", "shell", "rm -f " <> _remote] ->
+            archive = Agent.get(archive_state, & &1)
+            File.chmod!(archive, 0o600)
+            File.write!(archive, "mutated between canonical targets")
+
+          _args ->
+            :ok
+        end)
+
+      preinstall = fn input -> {:ok, authoritative_android_payload_plan!(dir, input)} end
+
+      cleanup = fn plan ->
+        send(self(), {:payload_cleanup, plan.attempt_id})
+        cleanup_authoritative_android_plan(plan)
+      end
+
+      assert {:error, reason, %{state: :retained_failure, phase: :acquired}} =
+               run_authoritative_android(
+                 fixture,
+                 dir,
+                 probe_runner,
+                 otp_runner,
+                 preinstall,
+                 cleanup
+               )
+
+      assert reason =~ "OTP archive changed"
+      assert_received {:payload_cleanup, "planbeam00000001"}
+      probe_commands = drain_native_commands(:native_probe)
+      otp_commands = drain_native_commands(:native_otp)
+
+      refute Enum.any?(probe_commands, fn
+               {"adb", ["-s", "serial-b", "install" | _args]} -> true
+               _command -> false
+             end)
+
+      refute Enum.any?(otp_commands, fn
+               {"adb", ["-s", "serial-b" | _args]} -> true
+               _command -> false
+             end)
+    end
+
+    test "set-wide owner loss after target A prevents every target B mutation", %{tmp_dir: dir} do
+      fixture = authoritative_android_fixture!(dir, ["serial-a", "serial-b"])
+      owner_state = start_supervised!({Agent, fn -> true end})
+      probe_runner = authoritative_android_probe_runner(self(), fixture, owner_state)
+
+      otp_runner =
+        authoritative_android_otp_runner(self(), fn
+          ["-s", "serial-a", "shell", "rm -f " <> _remote] ->
+            Agent.update(owner_state, fn _valid -> false end)
+
+          _args ->
+            :ok
+        end)
+
+      preinstall = fn input -> {:ok, authoritative_android_payload_plan!(dir, input)} end
+
+      cleanup = fn plan ->
+        cleanup_authoritative_android_plan(plan)
+      end
+
+      assert {:error, reason,
+              %{state: :retained_ambiguous, phase: :acquired, serials: ["serial-a", "serial-b"]}} =
+               run_authoritative_android(
+                 fixture,
+                 dir,
+                 probe_runner,
+                 otp_runner,
+                 preinstall,
+                 cleanup
+               )
+
+      assert reason =~ "lease set could not be verified"
+      probe_commands = drain_native_commands(:native_probe)
+      otp_commands = drain_native_commands(:native_otp)
+
+      refute Enum.any?(probe_commands, fn
+               {"adb", ["-s", "serial-b", "install" | _args]} -> true
+               _command -> false
+             end)
+
+      refute Enum.any?(otp_commands, fn
+               {"adb", ["-s", "serial-b" | _args]} -> true
+               _command -> false
+             end)
+    end
+
+    test "non-authoritative install success retains an ambiguous lease and stops later targets",
+         %{tmp_dir: dir} do
+      fixture = authoritative_android_fixture!(dir, ["serial-a", "serial-b"])
+      owner_state = start_supervised!({Agent, fn -> true end})
+      base_runner = authoritative_android_probe_runner(self(), fixture, owner_state)
+
+      probe_runner = fn
+        "adb", ["-s", "serial-a", "install", "-r", _apk] = args ->
+          send(self(), {:native_probe, "adb", args})
+          {"Success\nuntrusted trailing output\n", 0}
+
+        executable, args ->
+          base_runner.(executable, args)
+      end
+
+      otp_runner = authoritative_android_otp_runner(self())
+      preinstall = fn input -> {:ok, authoritative_android_payload_plan!(dir, input)} end
+      cleanup = fn plan -> cleanup_authoritative_android_plan(plan) end
+
+      assert {:error, reason,
+              %{state: :retained_ambiguous, phase: :acquired, serials: ["serial-a", "serial-b"]}} =
+               run_authoritative_android(
+                 fixture,
+                 dir,
+                 probe_runner,
+                 otp_runner,
+                 preinstall,
+                 cleanup
+               )
+
+      assert reason =~ "not authoritative"
+      probe_commands = drain_native_commands(:native_probe)
+      assert Enum.count(probe_commands, &native_install_command?/1) == 1
+
+      refute Enum.any?(probe_commands, fn
+               {"adb", ["-s", "serial-b", "install" | _args]} -> true
+               _command -> false
+             end)
+
+      refute Enum.any?(drain_native_commands(:native_otp), fn
+               {"adb", _args} -> true
+               _local_command -> false
+             end)
+    end
+
+    test "runner exceptions after acquire preserve the exact ambiguous lease and stop later targets",
+         %{tmp_dir: dir} do
+      fixture = authoritative_android_fixture!(dir, ["serial-a", "serial-b"])
+      owner_state = start_supervised!({Agent, fn -> true end})
+      probe_runner = authoritative_android_probe_runner(self(), fixture, owner_state)
+
+      otp_runner =
+        authoritative_android_otp_runner(self(), fn
+          ["-s", "serial-a", "push" | _args] -> throw(:transport_lost_after_write)
+          _args -> :ok
+        end)
+
+      preinstall = fn input -> {:ok, authoritative_android_payload_plan!(dir, input)} end
+
+      cleanup = fn plan ->
+        send(self(), {:payload_cleanup, plan.attempt_id})
+        {:error, :injected_cleanup_failure}
+      end
+
+      assert {:error, "Could not clean authoritative Android payload",
+              %{
+                owner: "ownerproof000001",
+                state: :retained_ambiguous,
+                phase: :acquired,
+                serials: ["serial-a", "serial-b"]
+              }} =
+               run_authoritative_android(
+                 fixture,
+                 dir,
+                 probe_runner,
+                 otp_runner,
+                 preinstall,
+                 cleanup
+               )
+
+      assert_received {:payload_cleanup, "planbeam00000001"}
+      probe_commands = drain_native_commands(:native_probe)
+
+      refute Enum.any?(probe_commands, fn
+               {"adb", ["-s", "serial-b", "install" | _args]} -> true
+               _command -> false
+             end)
+
+      Enum.each(Path.wildcard(Path.join(dir, "authoritative-plan-*.apk")), &File.rm!/1)
+      Enum.each(Path.wildcard(Path.join(dir, "authoritative-beams-*.tar")), &File.rm!/1)
+    end
+  end
+
+  defp authoritative_android_fixture!(dir, serials) do
+    package = "com.example.casein"
+    elixir_lib = Path.join(dir, "authoritative-elixir")
+
+    for app <- ["elixir", "logger", "eex"] do
+      ebin = Path.join([elixir_lib, app, "ebin"])
+      File.mkdir_p!(ebin)
+      File.write!(Path.join(ebin, "#{app}.beam"), "#{app}-runtime")
+    end
+
+    File.write!(Path.join([elixir_lib, "elixir", "ebin", "Elixir.Kernel.beam"]), "kernel")
+
+    otp_by_abi =
+      Map.new(["arm64-v8a", "armeabi-v7a", "x86_64"], fn abi ->
+        otp_dir = Path.join(dir, "authoritative-otp-#{abi}")
+        erts_bin = Path.join(otp_dir, "erts-17.0/bin")
+        File.mkdir_p!(erts_bin)
+
+        for helper <- ["erl_child_setup", "inet_gethost", "epmd"] do
+          File.write!(Path.join(erts_bin, helper), "#{abi}:#{helper}")
+        end
+
+        {abi, otp_dir}
+      end)
+
+    apk = Path.join(dir, "authoritative-input.apk")
+
+    apk_entries =
+      for {abi, otp_dir} <- otp_by_abi,
+          {helper, packaged} <- [
+            {"erl_child_setup", "liberl_child_setup.so"},
+            {"inet_gethost", "libinet_gethost.so"},
+            {"epmd", "libepmd.so"}
+          ] do
+        source = Path.join([otp_dir, "erts-17.0", "bin", helper])
+        {String.to_charlist("lib/#{abi}/#{packaged}"), File.read!(source)}
+      end
+
+    {:ok, _apk} = :zip.create(String.to_charlist(apk), apk_entries)
+
+    %{
+      apk: apk,
+      package: package,
+      serials: serials,
+      elixir_lib: elixir_lib,
+      otp_arm64: Map.fetch!(otp_by_abi, "arm64-v8a"),
+      otp_arm32: Map.fetch!(otp_by_abi, "armeabi-v7a"),
+      otp_x86_64: Map.fetch!(otp_by_abi, "x86_64")
+    }
+  end
+
+  defp authoritative_android_payload_plan!(dir, input) do
+    unique = System.unique_integer([:positive, :monotonic])
+    apk = Path.join(dir, "authoritative-plan-#{unique}.apk")
+    beam_archive = Path.join(dir, "authoritative-beams-#{unique}.tar")
+    File.cp!(input.apk, apk)
+    File.write!(beam_archive, "exact prepared BEAM archive")
+    File.chmod!(apk, 0o400)
+    File.chmod!(beam_archive, 0o400)
+
+    {MobDev.NativeBuild, beam_binary, _beam_path} = :code.get_object_code(MobDev.NativeBuild)
+
+    beam_path = "Elixir.MobDev.NativeBuild.beam"
+    attempt_id = "planbeam00000001"
+    app_data = "/data/data/#{input.bundle_id}/files"
+
+    restart_by_serial =
+      input.serials
+      |> Enum.with_index(9_100)
+      |> Map.new(fn {serial, dist_port} ->
+        suffix = String.replace(serial, ~r/[^A-Za-z0-9_]/, "_")
+
+        {serial,
+         %{
+           package: input.bundle_id,
+           activity: ".MainActivity",
+           restart?: true,
+           mode: :checked_restart,
+           dist_port: dist_port,
+           node_suffix: suffix
+         }}
+      end)
+
+    %{
+      version: 1,
+      package: input.bundle_id,
+      attempt_id: attempt_id,
+      serials: input.serials,
+      selected_abis: input.selected_abis,
+      selected_abis_by_serial: input.selected_abis_by_serial,
+      apk: authoritative_android_file_identity!(apk),
+      beam: %{
+        archive: authoritative_android_file_identity!(beam_archive),
+        stage_device: "/data/local/tmp/mob_beams_#{attempt_id}.tar",
+        app_stage: "#{app_data}/.mob_beams_stage_#{attempt_id}",
+        app_backup: "#{app_data}/.mob_beams_backup_#{attempt_id}",
+        activation_lock: "#{app_data}/.mob_beams_activation_lock",
+        dist_snapshot: [
+          %{
+            module: MobDev.NativeBuild,
+            path: beam_path,
+            binary: beam_binary,
+            sha256: :crypto.hash(:sha256, beam_binary)
+          }
+        ],
+        runtime_version: System.version(),
+        beam_flags: nil
+      },
+      exqlite: nil,
+      restart_by_serial: restart_by_serial
+    }
+  end
+
+  defp authoritative_android_file_identity!(path) do
+    bytes = File.read!(path)
+
+    %{
+      path: path,
+      size: byte_size(bytes),
+      sha256: Base.encode16(:crypto.hash(:sha256, bytes), case: :lower)
+    }
+  end
+
+  defp cleanup_authoritative_android_plan(plan) do
+    File.rm(plan.apk.path)
+    File.rm(plan.beam.archive.path)
+
+    if is_map(plan.exqlite) do
+      File.rm(plan.exqlite.archive.path)
+    end
+
+    :ok
+  end
+
+  defp run_authoritative_android(
+         fixture,
+         dir,
+         probe_runner,
+         otp_runner,
+         preinstall,
+         cleanup
+       ) do
+    NativeBuild.install_and_deliver_android_runtime(
+      fixture.apk,
+      fixture.serials,
+      fixture.package,
+      fixture.elixir_lib,
+      fixture.otp_arm64,
+      fixture.otp_arm32,
+      fixture.otp_x86_64,
+      probe_runner: probe_runner,
+      manifest_runner: fn "apkanalyzer", ["manifest", "application-id", _apk] ->
+        {fixture.package <> "\n", 0}
+      end,
+      otp_runner: otp_runner,
+      android_preinstall: preinstall,
+      android_preinstall_cleanup: cleanup,
+      tmp_root: dir,
+      attempt_id: "nativeotp0000001",
+      lock_owner: "ownerproof000001"
+    )
+  end
+
+  defp authoritative_android_probe_runner(owner, fixture, owner_state) do
+    serials = Enum.sort(fixture.serials)
+    digest = :crypto.hash(:sha256, Enum.join(serials, <<0>>)) |> Base.encode16(case: :lower)
+    record = "1|ownerproof000001|#{digest}|acquired"
+
+    fn "adb", args ->
+      send(owner, {:native_probe, "adb", args})
+
+      case args do
+        ["-s", _serial, "shell", "pm", "list", "packages", package]
+        when package == fixture.package ->
+          {"package:#{fixture.package}\n", 0}
+
+        ["-s", _serial, "shell", "getprop", "ro.product.cpu.abi"] ->
+          {"arm64-v8a\n", 0}
+
+        ["-s", _serial, "install", "-r", _apk] ->
+          {"Success\n", 0}
+
+        ["-s", _serial, "root"] ->
+          {"adbd cannot run as root in production builds", 1}
+
+        ["-s", _serial, "shell", command] ->
+          if String.contains?(command, "size=$(wc -c") and
+               not String.contains?(command, "value=$(cat") do
+            if Agent.get(owner_state, & &1), do: {record, 0}, else: {"replaced", 0}
+          else
+            {"", 0}
+          end
+      end
+    end
+  end
+
+  defp authoritative_android_otp_runner(owner, hook \\ fn _args -> :ok end) do
+    fn executable, args, opts ->
+      send(owner, {:native_otp, executable, args})
+
+      cond do
+        executable in ["cp", "tar"] ->
+          System.cmd(executable, args, opts)
+
+        executable == "adb" ->
+          hook.(args)
+          {"", 0}
+      end
+    end
+  end
+
+  defp drain_native_commands(tag, commands \\ []) do
+    receive do
+      {^tag, executable, args} -> drain_native_commands(tag, [{executable, args} | commands])
+    after
+      0 -> Enum.reverse(commands)
+    end
+  end
+
+  defp native_install_command?({"adb", ["-s", _serial, "install", "-r", _apk]}), do: true
+  defp native_install_command?(_command), do: false
+
+  defp native_lock_mutation_command?({"adb", ["-s", _serial, "shell", command]}) do
+    String.contains?(command, ".mob_native_deploy_lock") and
+      (String.contains?(command, "mkdir ") or String.contains?(command, "printf %s"))
+  end
+
+  defp native_lock_mutation_command?(_command), do: false
+
+  describe "deprecated push_otp_runas/6" do
+    test "fails before invoking an injected command runner" do
+      runner = fn executable, args, _opts ->
+        send(self(), {:command, executable, args})
+        {"unexpected", 0}
+      end
+
+      assert %{
+               ok?: true,
+               android_device_disposition: :artifact_only,
+               android_deploy_lock: nil,
+               android_payload_plan: nil
+             } = NativeBuild.build_outcome([{:ok, "Android"}])
+
+      assert {:error, reason} =
+               apply(NativeBuild, :push_otp_runas, [
+                 "serial-a",
+                 "com.example.casein",
+                 "/data/data/com.example.casein/files",
+                 "/tmp/otp",
+                 "/tmp/elixir",
+                 [runner: runner]
+               ])
+
+      assert reason =~ "authoritative payload transaction"
+      refute_received {:command, _, _}
+    end
+  end
+
+  defp native_ready_lease(serials) do
+    serials = Enum.sort(serials)
+
+    %{
+      bundle_id: "com.example.casein",
+      owner: "ownerproof000001",
+      serials: serials,
+      target_digest:
+        serials
+        |> Enum.join(<<0>>)
+        |> then(&:crypto.hash(:sha256, &1))
+        |> Base.encode16(case: :lower),
+      phase: :native_ready,
+      state: :held_success
+    }
   end
 end
