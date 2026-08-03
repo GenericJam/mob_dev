@@ -130,11 +130,14 @@ narrowing functions). Don't make them private:
 - `PythonAppleSupport.valid_dir?/1`
 - `NativeBuild.narrow_platforms_for_device/2`, `ios_toolchain_available?/0`, `read_sdk_dir/1`, `fallback_entitlements_plist/3`
 - `NativeBuild.pythonx_in_project?/1`, `python_apple_support_env/2`
-- `NativeBuild.build_all_with_outcome/1`, `build_outcome/1`,
-  `resolve_android_update_targets/2`,
-  `install_android_updates/3`, and `install_and_deliver_android/4` (update-only
-  Android deploy safety seams; injected command/delivery functions are for
-  hermetic command-history tests)
+- `NativeBuild.build_all_with_outcome/1`, `build_outcome/1`, `build_outcome/2`,
+  `ios_phase_decision/3`, `resolve_android_update_targets/2`,
+  `install_android_updates/3`, `install_and_deliver_android/4`, and
+  `install_and_deliver_android_runtime/8`, `release_android_deploy_lock/2`,
+  `interpret_adb_update/2`, `android_otp_dir_from_abi_probe/4`,
+  `android_package_listed?/2`, `deliver_android_otp_release/7`, and
+  `push_otp_runas/6` (typed sequencing and update-only Android safety seams;
+  the deprecated direct mutators intentionally fail closed)
 - `AndroidDeployLock.valid?/2`, `acquire/4`, `verify_owner/3`, `transition/4`,
   `release/2`, `status/3`, and `cleanup_committed_tombstone/3` (the shared,
   exact-target Android mutation lease and its bounded recovery surface)
@@ -155,6 +158,11 @@ narrowing functions). Don't make them private:
   `setup_exqlite_android_runas/4`, `push_beams_android_runas/3`, and
   `restart_android/3` (exact-target and per-mutation fencing seams; ordinary
   `--device` matching remains user-friendly)
+- `Mix.Tasks.Mob.Deploy.execute_native_deploy!/6`,
+  `deploy_after_native_build!/3`, `deploy_after_native_build!/4`,
+  `deploy_after_native_build!/5`, `deploy_after_native_build!/6`,
+  `ensure_deploy_succeeded!/1`, and `report_deploy_result!/2` (typed
+  orchestration/result seams)
 - `NativeBuild.__prune_plugin_artifacts__/2` (the plugin-removal prune; ledger-tracked per merge concern)
 - `Enable.inject_pythonx_dep/1`, `inject_pythonx_uv_init_gate/2`, `python_paths_module_template/1`
 - `Emulators.parse_simctl_json/1`, `find_emulator_binary/1`
@@ -195,11 +203,20 @@ Android **native** deploys resolve a non-empty connected serial set (narrowed
 by `--device <id>` when supplied) and run only the data-preserving
 `adb -s <serial> install -r <apk>` update path. They never force-stop first,
 uninstall, or fall back to a clean install. A failed update must prevent the
-final `MobDev.Deployer` pass, though successful devices in a multi-target plan
-may receive their matching OTP payload first. OTP delivery is attempted and
-aggregated per successful serial, and a fully successful native build carries
-that exact canonical Android serial allowlist into the final BEAM deploy so a
-later discovery snapshot cannot widen the set.
+final `MobDev.Deployer` pass. Before the first device mutation, freeze and hash
+the APK, OTP archives, BEAM/priv payload, optional exqlite payload, restart
+arguments, and exact canonical serial set. One phase-bound
+`AndroidDeployLock` covers that complete set across native install/OTP work and
+the final BEAM/restart pass. Prove the entire set immediately before every
+mutation, halt later targets on the first failure, and retain the exact lease
+on any ambiguous reply. Only a fully successful final pass may advance to a
+committed phase and release it. Build-only APIs must remain artifact-only and
+must never acquire a device lease or install an APK.
+
+For a mixed native Android+iOS deploy, complete, commit, release, and clean the
+entire Android transaction before beginning the iOS build or install. An exact
+typed `:not_attempted` Android disposition may proceed to iOS; any malformed,
+failed, retained, or ambiguous Android outcome suppresses iOS and fails closed.
 
 Never recover by clearing app data, uninstalling, deleting an active lock, or
 blindly retrying. `mix mob.deploy_lock --device <exact-serial>` is read-only;

@@ -98,12 +98,33 @@ ordered, committed phase.
 
 **Requirements:** The app must call `Mob.Dist.ensure_started/1` at startup, and the cookie must match the one in `mob.exs` (default `:mob_secret`).
 
-### Android deploy lease recovery
+### Android native updates preserve app data
 
-Android mutation transactions use an exact-target, phase-bound device lease.
-Recovery is intentionally bounded: inspect one exact serial, never blindly
-retry or delete an active lease, and clean only a verified committed
-record-only tombstone.
+`mix mob.deploy --native --android` is deliberately update-only. Every selected
+device must already contain the configured package, and Mob uses only the
+serial-scoped equivalent of `adb install -r`. It never clears app data,
+uninstalls the package, or turns a rejected update into a fresh install.
+
+Before the first device write, Mob snapshots and verifies the exact APK, OTP,
+BEAM, `priv`, and optional exqlite payloads. A phase-bound lease covers the
+sorted canonical device set so a concurrent deploy or hot push cannot change a
+subset mid-transaction. The lease advances only after the native payload and
+then the final authoritative BEAM/restart pass have each completed on every
+target. Replayed, widened, stale, or wrong-phase work fails closed.
+
+For a mixed Android+iOS native command, Android is deliberately serialized
+first: it must commit, release its exact-set lease, and clean its immutable
+staging before iOS build/install begins. A typed result that proves Android was
+not attempted may continue to iOS; every failed, retained, malformed, or
+ambiguous Android result suppresses iOS. Fast Android BEAM deploys are also
+exact-set transactions.
+
+If transport authority becomes ambiguous after a write, Mob intentionally
+retains the device-side lease or release tombstone and stops later targets. Do
+not recover by uninstalling the app or deleting its data. Inspect the bounded
+lease status, resolve the interrupted operation, and remove only a verified
+committed release tombstone; an active or malformed lease requires manual
+diagnosis.
 
 ```sh
 mix mob.deploy_lock --device <exact-adb-serial>
