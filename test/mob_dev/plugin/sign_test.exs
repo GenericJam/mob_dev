@@ -93,9 +93,11 @@ defmodule MobDev.Plugin.SignTest do
       assert Sign.compute_file_hashes(dir, m1) == Sign.compute_file_hashes(dir, m2)
     end
 
-    test "recursively hashes .c/.h/.cpp/.zig files inside nifs.native_dir", %{dir: dir} do
+    test "recursively hashes native sources and headers inside nifs.native_dir", %{dir: dir} do
       write_file(dir, "priv/native/n.c", "c source")
       write_file(dir, "priv/native/nested/n.h", "header")
+      write_file(dir, "priv/native/nested/n.m", "objective-c source")
+      write_file(dir, "priv/native/nested/n.mm", "objective-c++ source")
       write_file(dir, "priv/native/skip.txt", "should be skipped")
       write_file(dir, "priv/native/build.zig", "zig source")
 
@@ -109,6 +111,8 @@ defmodule MobDev.Plugin.SignTest do
       paths = manifest |> (&Sign.compute_file_hashes(dir, &1)).() |> Enum.map(&elem(&1, 0))
       assert "priv/native/n.c" in paths
       assert "priv/native/nested/n.h" in paths
+      assert "priv/native/nested/n.m" in paths
+      assert "priv/native/nested/n.mm" in paths
       assert "priv/native/build.zig" in paths
       refute "priv/native/skip.txt" in paths
     end
@@ -159,6 +163,38 @@ defmodule MobDev.Plugin.SignTest do
     test "errors when no manifest is present", %{dir: dir} do
       {priv, _pub} = Crypto.generate_keypair()
       assert {:error, _} = Sign.sign_plugin(dir, priv)
+    end
+
+    for extension <- [".m", ".mm"] do
+      @extension extension
+
+      test "rejects tampering a signed Objective-C source with extension #{extension}", %{
+        dir: dir
+      } do
+        extension = @extension
+        plugin_dir = Path.join(dir, String.trim_leading(extension, "."))
+        source = "priv/native/ios/mob_demo_nif#{extension}"
+        write_file(plugin_dir, source, "native source")
+
+        manifest = %{
+          name: :mob_demo,
+          mob_version: "~> 0.6",
+          plugin_spec_version: 1,
+          nifs: [%{module: :mob_demo_nif, native_dir: "priv/native/ios", lang: :objc}]
+        }
+
+        write_manifest(plugin_dir, manifest)
+        {priv, pub} = Crypto.generate_keypair()
+        File.write!(Path.join(plugin_dir, "priv/mob_plugin.pub"), Base.encode64(pub) <> "\n")
+
+        assert :ok = Sign.sign_plugin(plugin_dir, priv)
+        assert {:ok, loaded_manifest} = Manifest.load(plugin_dir)
+        assert :ok = Verify.verify_plugin(plugin_dir, loaded_manifest)
+
+        File.write!(Path.join(plugin_dir, source), "tampered native source")
+
+        assert {:error, :invalid_signature} = Verify.verify_plugin(plugin_dir, loaded_manifest)
+      end
     end
   end
 end
