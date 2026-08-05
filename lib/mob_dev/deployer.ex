@@ -31,6 +31,10 @@ defmodule MobDev.Deployer do
   @android_activity ".MainActivity"
   @max_android_launch_output_bytes 4_096
   @max_android_query_output_bytes 8_192
+  # `elixir.app` is structured application metadata, not a general adb query.
+  # Current reviewed releases exceed 8 KiB; keep a separate bounded read so
+  # they do not weaken the smaller limit used by package/path probes.
+  @max_android_elixir_app_bytes 65_536
   @max_adb_serial_bytes 128
   @android_attempt_id_pattern "\\A[A-Za-z0-9_-]{16}\\z"
   @max_android_payload_bytes 1_073_741_824
@@ -1995,12 +1999,15 @@ defmodule MobDev.Deployer do
 
       case runner.(["-s", serial, "shell", "run-as #{pkg} cat #{elixir_app}"]) do
         {:ok, content}
-        when is_binary(content) and byte_size(content) <= @max_android_query_output_bytes ->
+        when is_binary(content) and byte_size(content) <= @max_android_elixir_app_bytes ->
           if String.valid?(content) and MobDev.AppFile.vsn_from_content(content) == host_vsn do
             :ok
           else
             {:error, "Elixir runtime version mismatch; rerun mix mob.deploy --native"}
           end
+
+        {:ok, content} when is_binary(content) ->
+          {:error, "Could not verify Elixir runtime version: output_too_large"}
 
         {:error, _reason} ->
           {:error, "Could not verify Elixir runtime version; rerun mix mob.deploy --native"}
