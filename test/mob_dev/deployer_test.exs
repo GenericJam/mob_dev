@@ -1425,6 +1425,43 @@ defmodule MobDev.DeployerTest do
 
       refute_received {:adb_command, _}
     end
+
+    test "uses a dedicated bounded metadata cap without exposing content" do
+      app_data = "/data/data/com.example.casein/files"
+      valid = ~s({application,elixir,[{vsn,"1.20.0"}]}. )
+
+      verify = fn content ->
+        Deployer.verify_elixir_runtime_version_android(
+          "serial-a",
+          "com.example.casein",
+          app_data,
+          "1.20.0",
+          fn _args -> {:ok, content} end
+        )
+      end
+
+      # The artifact that exposed the old shared 8 KiB query limit is valid
+      # structured metadata and remains comfortably below the dedicated cap.
+      current_artifact = valid <> String.duplicate(" ", 8_319 - byte_size(valid))
+      assert byte_size(current_artifact) == 8_319
+      assert :ok = verify.(current_artifact)
+
+      at_limit = valid <> String.duplicate(" ", 65_536 - byte_size(valid))
+      assert byte_size(at_limit) == 65_536
+      assert :ok = verify.(at_limit)
+
+      over_limit = at_limit <> "x"
+      assert byte_size(over_limit) == 65_537
+
+      assert {:error, "Could not verify Elixir runtime version: output_too_large"} =
+               verify.(over_limit)
+
+      sensitive = at_limit <> "TOP_SECRET_METADATA"
+
+      assert {:error, reason} = verify.(sensitive)
+      assert reason == "Could not verify Elixir runtime version: output_too_large"
+      refute reason =~ "TOP_SECRET_METADATA"
+    end
   end
 
   describe "setup_exqlite_android_runas/4" do
