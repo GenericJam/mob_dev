@@ -2691,6 +2691,60 @@ defmodule MobDev.NativeBuildTest do
       assert cleanup_authoritative_android_plan(plan) == :ok
     end
 
+    test "recovery proof uses the native two-arity adb runner and refuses before mutation", %{
+      tmp_dir: dir
+    } do
+      fixture = authoritative_android_fixture!(dir, ["serial-a"])
+      owner_state = start_supervised!({Agent, fn -> true end})
+      base_runner = authoritative_android_probe_runner(self(), fixture, owner_state)
+
+      probe_runner = fn
+        "adb", ["devices", "-l"] = args ->
+          send(self(), {:native_probe, "adb", args})
+          {"List of devices attached\n", 0}
+
+        executable, args ->
+          base_runner.(executable, args)
+      end
+
+      preinstall = fn input -> {:ok, authoritative_android_payload_plan!(dir, input)} end
+
+      cleanup = fn plan ->
+        send(self(), {:recovery_payload_cleanup, plan.attempt_id})
+        cleanup_authoritative_android_plan(plan)
+      end
+
+      assert {:error, "Android native-ready recovery proof was refused"} =
+               run_authoritative_android(
+                 fixture,
+                 dir,
+                 probe_runner,
+                 authoritative_android_otp_runner(self()),
+                 preinstall,
+                 cleanup,
+                 resume_native_ready: true,
+                 android_recovery_opts: [
+                   payload_validator: fn _plan -> :ok end,
+                   host_lock_held?: fn -> true end,
+                   apk_signature_verified?: fn _path -> true end
+                 ]
+               )
+
+      assert_received {:native_probe, "adb", ["devices", "-l"]}
+      assert_received {:recovery_payload_cleanup, _attempt_id}
+
+      refute Enum.any?(drain_native_commands(:native_probe), fn
+               {"adb", ["-s", _serial, "install", "-r", _apk]} ->
+                 true
+
+               {"adb", ["-s", _serial, "shell", command]} ->
+                 String.contains?(command, "record_next_")
+
+               _command ->
+                 false
+             end)
+    end
+
     test "canonicalizes one unsorted target set before planning and every mutation", %{
       tmp_dir: dir
     } do
@@ -3385,8 +3439,24 @@ defmodule MobDev.NativeBuildTest do
          probe_runner,
          otp_runner,
          preinstall,
-         cleanup
+         cleanup,
+         extra_opts \\ []
        ) do
+    opts =
+      [
+        probe_runner: probe_runner,
+        manifest_runner: fn "apkanalyzer", ["manifest", "application-id", _apk] ->
+          {fixture.package <> "\n", 0}
+        end,
+        otp_runner: otp_runner,
+        android_preinstall: preinstall,
+        android_preinstall_cleanup: cleanup,
+        tmp_root: dir,
+        attempt_id: "nativeotp0000001",
+        lock_owner: "ownerproof000001"
+      ]
+      |> Keyword.merge(extra_opts)
+
     NativeBuild.install_and_deliver_android_runtime(
       fixture.apk,
       fixture.serials,
@@ -3395,16 +3465,7 @@ defmodule MobDev.NativeBuildTest do
       fixture.otp_arm64,
       fixture.otp_arm32,
       fixture.otp_x86_64,
-      probe_runner: probe_runner,
-      manifest_runner: fn "apkanalyzer", ["manifest", "application-id", _apk] ->
-        {fixture.package <> "\n", 0}
-      end,
-      otp_runner: otp_runner,
-      android_preinstall: preinstall,
-      android_preinstall_cleanup: cleanup,
-      tmp_root: dir,
-      attempt_id: "nativeotp0000001",
-      lock_owner: "ownerproof000001"
+      opts
     )
   end
 
