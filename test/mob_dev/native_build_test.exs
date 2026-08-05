@@ -2714,7 +2714,8 @@ defmodule MobDev.NativeBuildTest do
         cleanup_authoritative_android_plan(plan)
       end
 
-      assert {:error, "Android native-ready recovery proof was refused"} =
+      assert {:error,
+              "Android native-ready recovery proof was refused (transport_identity_mismatch)"} =
                run_authoritative_android(
                  fixture,
                  dir,

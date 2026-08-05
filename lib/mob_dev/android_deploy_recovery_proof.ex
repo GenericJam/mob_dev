@@ -7,11 +7,35 @@ defmodule MobDev.AndroidDeployRecoveryProof do
   @record_pattern ~r/\A1\|[A-Za-z0-9_-]{16}\|[0-9a-f]{64}\|native_ready\z/
   @lock_owner_file "owner.term"
   @lock_version 1
+  @refusal_codes [
+    :payload_identity_invalid,
+    :payload_invalid,
+    :host_lock_unavailable,
+    :transport_identity_mismatch,
+    :lease_record_invalid,
+    :apk_signature_invalid,
+    :apk_identity_mismatch,
+    :runtime_provenance_mismatch,
+    :staging_not_clear,
+    :recovery_transition_refused
+  ]
+
+  @type refusal_code ::
+          :payload_identity_invalid
+          | :payload_invalid
+          | :host_lock_unavailable
+          | :transport_identity_mismatch
+          | :lease_record_invalid
+          | :apk_signature_invalid
+          | :apk_identity_mismatch
+          | :runtime_provenance_mismatch
+          | :staging_not_clear
+          | :recovery_transition_refused
 
   @doc false
   @spec resume(map(), ([String.t()] -> {binary(), integer()}), keyword()) ::
           {:ok, map()}
-          | {:error, :recovery_proof_refused}
+          | {:error, {:recovery_proof_refused, refusal_code()}}
           | {:error, :recovery_cas_ambiguous, map()}
   def resume(payload_plan, runner, opts \\ [])
 
@@ -21,18 +45,21 @@ defmodule MobDev.AndroidDeployRecoveryProof do
     signature? = Keyword.get(opts, :apk_signature_verified?, &apk_signature_verified?/1)
     minimum_age = Keyword.get(opts, :minimum_age_seconds, 900)
     runtime_provenance = Keyword.get(opts, :runtime_provenance)
-    host_lock_proven? = host_lock?.() == true
 
-    with {:ok, identity} <- payload_identity(payload_plan),
-         true <- validator.(payload_plan) == :ok,
-         true <- host_lock_proven?,
-         {:ok, transport} <- exact_usb_transport(identity.serial, runner),
-         {:ok, record, age} <- lease_record(identity, runner),
-         true <- signature?.(identity.apk_path) == true,
-         :ok <- installed_apk_matches(identity, runner),
+    with {:ok, identity} <- tagged(payload_identity(payload_plan), :payload_identity_invalid),
+         :ok <- callback_ok(validator, payload_plan, :payload_invalid),
+         :ok <- callback_true0(host_lock?, :host_lock_unavailable),
+         {:ok, transport} <-
+           tagged(exact_usb_transport(identity.serial, runner), :transport_identity_mismatch),
+         {:ok, record, age} <- tagged(lease_record(identity, runner), :lease_record_invalid),
+         :ok <- callback_true(signature?, identity.apk_path, :apk_signature_invalid),
+         :ok <- tagged(installed_apk_matches(identity, runner), :apk_identity_mismatch),
          {:ok, runtime_provenance_proven?} <-
-           runtime_provenance_matches(identity, runtime_provenance, runner),
-         true <- staging_clear?(identity, runner) do
+           tagged(
+             runtime_provenance_matches(identity, runtime_provenance, runner),
+             :runtime_provenance_mismatch
+           ),
+         :ok <- proven(staging_clear?(identity, runner), :staging_not_clear) do
       proof = %{
         version: 1,
         bundle_id: identity.bundle_id,
@@ -43,7 +70,7 @@ defmodule MobDev.AndroidDeployRecoveryProof do
         lease_age_seconds: age,
         transport: transport,
         adb_tcp_disabled?: true,
-        host_deployer_absent?: host_lock_proven?,
+        host_deployer_absent?: true,
         exact_topology?: true,
         package_identity_matches?: true,
         apk_signature_verified?: true,
@@ -57,13 +84,57 @@ defmodule MobDev.AndroidDeployRecoveryProof do
         [minimum_age_seconds: minimum_age]
         |> maybe_put_owner(opts)
 
-      AndroidDeployRecovery.resume(proof, runner, recovery_opts)
+      case AndroidDeployRecovery.resume(proof, runner, recovery_opts) do
+        {:error, :recovery_proof_refused} -> refusal(:recovery_transition_refused)
+        result -> result
+      end
     else
-      _invalid_or_unproven -> {:error, :recovery_proof_refused}
+      {:error, {:recovery_proof_refused, code}} when code in @refusal_codes -> refusal(code)
     end
   end
 
-  def resume(_payload_plan, _runner, _opts), do: {:error, :recovery_proof_refused}
+  def resume(_payload_plan, _runner, _opts), do: refusal(:payload_identity_invalid)
+
+  defp tagged({:ok, _value} = result, _code), do: result
+  defp tagged({:ok, _first, _second} = result, _code), do: result
+  defp tagged(:ok, _code), do: :ok
+  defp tagged(_unproven, code), do: refusal(code)
+
+  defp proven(true, _code), do: :ok
+  defp proven(_unproven, code), do: refusal(code)
+
+  defp callback_ok(callback, value, code) do
+    try do
+      proven(callback.(value) == :ok, code)
+    rescue
+      _error -> refusal(code)
+    catch
+      _kind, _reason -> refusal(code)
+    end
+  end
+
+  defp callback_true(callback, value, code) do
+    try do
+      proven(callback.(value) == true, code)
+    rescue
+      _error -> refusal(code)
+    catch
+      _kind, _reason -> refusal(code)
+    end
+  end
+
+  defp callback_true0(callback, code) do
+    try do
+      proven(callback.() == true, code)
+    rescue
+      _error -> refusal(code)
+    catch
+      _kind, _reason -> refusal(code)
+    end
+  end
+
+  defp refusal(code) when code in @refusal_codes,
+    do: {:error, {:recovery_proof_refused, code}}
 
   @doc false
   @spec with_host_lock(binary(), (-> term())) ::

@@ -1,5 +1,9 @@
 defmodule MobDev.AndroidDeployRecoveryProofTest do
-  use ExUnit.Case, async: true
+  # These tests intentionally contend on the production global filesystem lock.
+  use ExUnit.Case, async: false
+
+  import ExUnit.CaptureIO
+  import ExUnit.CaptureLog
 
   alias MobDev.AndroidDeployRecoveryProof
 
@@ -45,7 +49,7 @@ defmodule MobDev.AndroidDeployRecoveryProofTest do
   test "refuses any failed proof before CAS" do
     apk = tmp_apk!()
 
-    assert {:error, :recovery_proof_refused} =
+    assert {:error, {:recovery_proof_refused, :host_lock_unavailable}} =
              AndroidDeployRecoveryProof.resume(payload(apk), runner(self()),
                owner: @new_owner,
                payload_validator: fn _plan -> :ok end,
@@ -65,7 +69,7 @@ defmodule MobDev.AndroidDeployRecoveryProofTest do
           put_in(payload(apk).serials, ["serial-a\nother-device"]),
           put_in(payload(apk).apk.sha256, String.duplicate("A", 64))
         ] do
-      assert {:error, :recovery_proof_refused} =
+      assert {:error, {:recovery_proof_refused, :payload_identity_invalid}} =
                AndroidDeployRecoveryProof.resume(invalid_payload, runner(self()),
                  payload_validator: fn _plan -> :ok end,
                  host_lock_held?: fn -> true end,
@@ -84,7 +88,7 @@ defmodule MobDev.AndroidDeployRecoveryProofTest do
       args -> send(self(), {:command, args}) && {"", 0}
     end
 
-    assert {:error, :recovery_proof_refused} =
+    assert {:error, {:recovery_proof_refused, :transport_identity_mismatch}} =
              AndroidDeployRecoveryProof.resume(payload(apk), runner,
                owner: @new_owner,
                payload_validator: fn _plan -> :ok end,
@@ -110,7 +114,7 @@ defmodule MobDev.AndroidDeployRecoveryProofTest do
       end
     end
 
-    assert {:error, :recovery_proof_refused} =
+    assert {:error, {:recovery_proof_refused, :apk_identity_mismatch}} =
              AndroidDeployRecoveryProof.resume(payload(apk), runner,
                owner: @new_owner,
                runtime_provenance: runtime_provenance(),
@@ -144,7 +148,7 @@ defmodule MobDev.AndroidDeployRecoveryProofTest do
         end
       end
 
-      assert {:error, :recovery_proof_refused} =
+      assert {:error, {:recovery_proof_refused, :runtime_provenance_mismatch}} =
                AndroidDeployRecoveryProof.resume(payload(apk), runner,
                  owner: @new_owner,
                  runtime_provenance: provenance,
@@ -156,6 +160,53 @@ defmodule MobDev.AndroidDeployRecoveryProofTest do
       commands = drain_commands([])
       refute Enum.any?(commands, &cas?/1)
     end
+  end
+
+  test "refusal diagnostics are fixed enums and never reflect payload, callback, or runner values" do
+    secret = "secret-canary-#{System.unique_integer([:positive])}"
+    apk = tmp_apk!()
+    default_runner = runner(self())
+
+    cases = [
+      {put_in(payload(apk).package, secret), default_runner, [], :payload_identity_invalid},
+      {payload(apk), default_runner, [payload_validator: fn _ -> raise secret end],
+       :payload_invalid},
+      {payload(apk), default_runner, [host_lock_held?: fn -> raise secret end],
+       :host_lock_unavailable},
+      {payload(apk), default_runner,
+       [apk_signature_verified?: fn _ -> throw({:secret, secret}) end], :apk_signature_invalid},
+      {payload(apk), fn _args -> {secret, 1} end, [], :transport_identity_mismatch}
+    ]
+
+    Enum.each(cases, fn {candidate, recovery_runner, overrides, expected_code} ->
+      opts =
+        [
+          owner: @new_owner,
+          runtime_provenance: runtime_provenance(),
+          payload_validator: fn _ -> :ok end,
+          host_lock_held?: fn -> true end,
+          apk_signature_verified?: fn _ -> true end
+        ]
+        |> Keyword.merge(overrides)
+
+      logs =
+        capture_log(fn ->
+          io =
+            capture_io(fn ->
+              refusal = AndroidDeployRecoveryProof.resume(candidate, recovery_runner, opts)
+              send(self(), {:refusal, refusal})
+            end)
+
+          send(self(), {:captured_io, io})
+        end)
+
+      assert_receive {:refusal, refusal = {:error, {:recovery_proof_refused, ^expected_code}}}
+
+      assert_receive {:captured_io, io}
+      refute inspect(refusal) =~ secret
+      refute io =~ secret
+      refute logs =~ secret
+    end)
   end
 
   test "operation-wide host lock is exclusive and remains held for the callback" do

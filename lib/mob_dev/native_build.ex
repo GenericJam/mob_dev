@@ -1797,9 +1797,17 @@ defmodule MobDev.NativeBuild do
           cleanup_android_payload(cleanup, payload_plan)
           {:error, "Android native-ready recovery became ambiguous", retained_lease}
 
+        {:error, {:recovery_proof_refused, code}} ->
+          cleanup_android_payload(cleanup, payload_plan)
+
+          {:error,
+           "Android native-ready recovery proof was refused (#{recovery_refusal_label(code)})"}
+
         {:error, _refused} ->
           cleanup_android_payload(cleanup, payload_plan)
-          {:error, "Android native-ready recovery proof was refused"}
+
+          {:error,
+           "Android native-ready recovery proof was refused (recovery_transition_refused)"}
       end
     else
       _unproven_runtime ->
@@ -1807,6 +1815,23 @@ defmodule MobDev.NativeBuild do
         {:error, "Android native-ready recovery runtime provenance was refused"}
     end
   end
+
+  defp recovery_refusal_label(code)
+       when code in [
+              :payload_identity_invalid,
+              :payload_invalid,
+              :host_lock_unavailable,
+              :transport_identity_mismatch,
+              :lease_record_invalid,
+              :apk_signature_invalid,
+              :apk_identity_mismatch,
+              :runtime_provenance_mismatch,
+              :staging_not_clear,
+              :recovery_transition_refused
+            ],
+       do: Atom.to_string(code)
+
+  defp recovery_refusal_label(_unknown), do: "recovery_transition_refused"
 
   defp android_recovery_runtime_provenance([serial], selections, elixir_lib) do
     with %{otp_dir: otp_dir} <- Map.get(selections, serial),
