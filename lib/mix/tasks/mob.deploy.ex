@@ -1,7 +1,7 @@
 defmodule Mix.Tasks.Mob.Deploy do
   use Mix.Task
 
-  alias MobDev.Device
+  alias MobDev.{AndroidDeployRecoveryProof, Device}
 
   @shortdoc "Build and deploy to all connected mob devices"
   @native_android_success_statuses [:discovered, :connected, :tunneled]
@@ -33,6 +33,8 @@ defmodule Mix.Tasks.Mob.Deploy do
   ## Options
 
     * `--native`              — build native binaries before pushing BEAMs
+    * `--resume-native-ready` — recover one stale, fully proven Android native-ready
+                                lease and continue its exact payload to final commit
     * `--no-restart`          — push BEAMs but don't restart the app (fast deploy
                                 only; native Android requires a checked restart)
     * `--device <id>`         — target a specific device; use `mix mob.devices` to find IDs
@@ -153,7 +155,8 @@ defmodule Mix.Tasks.Mob.Deploy do
     # On by default for both dev and release. Pass `--no-slim` to keep the
     # full OTP runtime in the bundle — useful if you need debug info on
     # device, or to isolate a strip-induced regression during diagnosis.
-    slim: :boolean
+    slim: :boolean,
+    resume_native_ready: :boolean
   ]
 
   @impl Mix.Task
@@ -162,10 +165,13 @@ defmodule Mix.Tasks.Mob.Deploy do
   @doc false
   @spec run([String.t()], keyword()) :: term()
   def run(args, callbacks) do
+    validate_literal_recovery_request!(args)
     {opts, _, _} = OptionParser.parse(args, switches: @switches)
+    opts = normalize_negative_switches(opts, args)
 
     device_id = opts[:device]
     platforms = resolve_platforms(opts)
+    validate_recovery_request!(opts, platforms, device_id)
 
     # Narrow once at the task level so build_all and deploy_all both see the
     # same platform list. Without this, the deployer iterates over the
@@ -188,9 +194,34 @@ defmodule Mix.Tasks.Mob.Deploy do
     orchestrator.(opts, platforms, device_id)
   end
 
+  # Elixir 1.19's permissive `switches:` parser does not consistently retain
+  # boolean negations. Recovery safety cannot depend on the host toolchain's
+  # OptionParser minor-version behavior.
+  defp normalize_negative_switches(opts, args) do
+    if "--no-restart" in args, do: Keyword.put(opts, :restart, false), else: opts
+  end
+
+  defp validate_literal_recovery_request!(args) do
+    if "--resume-native-ready" in args and
+         ("--native" not in args or "--android" not in args or "--ios" in args or
+            "--no-restart" in args or not literal_device_selector?(args)) do
+      Mix.raise(
+        "--resume-native-ready requires --native --android --device <exact-id> and restart"
+      )
+    end
+  end
+
+  defp literal_device_selector?(["--device", value | _rest]),
+    do: is_binary(value) and value != "" and not String.starts_with?(value, "-")
+
+  defp literal_device_selector?(["--device=" <> value | _rest]), do: value != ""
+  defp literal_device_selector?([_arg | rest]), do: literal_device_selector?(rest)
+  defp literal_device_selector?([]), do: false
+
   defp orchestrate_deploy(opts, platforms, device_id) do
     restart = Keyword.get(opts, :restart, true)
     native = Keyword.get(opts, :native, false)
+    resume_native_ready = Keyword.get(opts, :resume_native_ready, false)
     beam_flags = resolve_beam_flags(opts)
 
     if native and not restart and :android in platforms do
@@ -232,58 +263,94 @@ defmodule Mix.Tasks.Mob.Deploy do
       fetch_native_dependencies!()
     end
 
-    with_zigler_staging(native, fn ->
-      IO.puts("\n#{IO.ANSI.cyan()}Deploying to devices...#{IO.ANSI.reset()}\n")
+    operation = fn ->
+      with_zigler_staging(native, fn ->
+        IO.puts("\n#{IO.ANSI.cyan()}Deploying to devices...#{IO.ANSI.reset()}\n")
 
-      # Default OFF for dev iteration: slim adds the strip pass + erl spawn
-      # for beam_lib:strip_release + xcrun strip, which costs seconds. Dev
-      # cycle wants those seconds back. Opt in with `--slim` when you want
-      # to size-test before mix mob.republish round-trips through TestFlight
-      # (and the inevitable extra TestFlight build that confuses testers).
-      slim = Keyword.get(opts, :slim, false)
+        # Default OFF for dev iteration: slim adds the strip pass + erl spawn
+        # for beam_lib:strip_release + xcrun strip, which costs seconds. Dev
+        # cycle wants those seconds back. Opt in with `--slim` when you want
+        # to size-test before mix mob.republish round-trips through TestFlight
+        # (and the inevitable extra TestFlight build that confuses testers).
+        slim = Keyword.get(opts, :slim, false)
 
-      deploy_opts =
-        [
-          restart: restart,
-          platforms: platforms,
-          force_fs: native,
-          device: device_id,
-          ios_device: effective_device_id,
-          beam_flags: beam_flags,
-          # nil → auto-allocation (per-device port + auto-derived suffix).
-          # Set → all targeted devices use these values verbatim.
-          dist_port: opts[:dist_port],
-          node_suffix: opts[:node_suffix]
-        ]
-
-      deploy_result =
-        if native do
-          native_opts = [
-            slim: slim,
-            android_preinstall: fn native_context ->
-              MobDev.Deployer.prepare_android_payload(native_context,
-                restart: restart,
-                beam_flags: beam_flags,
-                dist_port: opts[:dist_port],
-                node_suffix: opts[:node_suffix]
-              )
-            end,
-            android_preinstall_cleanup: &MobDev.Deployer.cleanup_android_payload/1
+        deploy_opts =
+          [
+            restart: restart,
+            platforms: platforms,
+            force_fs: native,
+            device: device_id,
+            ios_device: effective_device_id,
+            beam_flags: beam_flags,
+            # nil → auto-allocation (per-device port + auto-derived suffix).
+            # Set → all targeted devices use these values verbatim.
+            dist_port: opts[:dist_port],
+            node_suffix: opts[:node_suffix]
           ]
 
-          execute_native_deploy!(
-            platforms,
-            device_id,
-            effective_device_id,
-            native_opts,
-            deploy_opts
-          )
-        else
-          deploy_after_native_build!(false, nil, deploy_opts)
-        end
+        deploy_result =
+          if native do
+            native_opts = [
+              slim: slim,
+              resume_native_ready: resume_native_ready,
+              android_preinstall: fn native_context ->
+                MobDev.Deployer.prepare_android_payload(native_context,
+                  restart: restart,
+                  beam_flags: beam_flags,
+                  dist_port: opts[:dist_port],
+                  node_suffix: opts[:node_suffix]
+                )
+              end,
+              android_preinstall_cleanup: &MobDev.Deployer.cleanup_android_payload/1
+            ]
 
-      report_deploy_result!(deploy_result, restart: restart)
-    end)
+            execute_native_deploy!(
+              platforms,
+              device_id,
+              effective_device_id,
+              native_opts,
+              deploy_opts
+            )
+          else
+            deploy_after_native_build!(false, nil, deploy_opts)
+          end
+
+        report_deploy_result!(deploy_result, restart: restart)
+      end)
+    end
+
+    with_android_native_host_lock(native, platforms, operation)
+  end
+
+  @doc false
+  @spec with_android_native_host_lock(boolean(), [:android | :ios], (-> term())) :: term()
+  def with_android_native_host_lock(native, platforms, operation)
+      when is_boolean(native) and is_list(platforms) and is_function(operation, 0) do
+    if native and :android in platforms do
+      case AndroidDeployRecoveryProof.with_host_lock(MobDev.Config.bundle_id(), operation) do
+        {:error, :recovery_host_lock_unavailable} ->
+          Mix.raise("Android native deploy host lock is unavailable")
+
+        result ->
+          result
+      end
+    else
+      operation.()
+    end
+  end
+
+  @doc false
+  @spec validate_recovery_request!(keyword(), [:android | :ios], String.t() | nil) :: :ok
+  def validate_recovery_request!(opts, platforms, device_id) do
+    if Keyword.get(opts, :resume_native_ready, false) and
+         (Keyword.get(opts, :native, false) != true or platforms != [:android] or
+            not is_binary(device_id) or Keyword.get(opts, :restart, true) != true) do
+      Mix.raise(
+        "--resume-native-ready requires --native --android --device <exact-id> and restart"
+      )
+    end
+
+    :ok
   end
 
   @doc false

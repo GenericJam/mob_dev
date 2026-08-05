@@ -1,5 +1,5 @@
 defmodule MobDev.NativeBuild do
-  alias MobDev.{AndroidDeployLock, Release}
+  alias MobDev.{AndroidDeployLock, AndroidDeployRecoveryProof, Release}
 
   @max_android_update_targets 32
   @max_adb_serial_bytes 128
@@ -1742,25 +1742,143 @@ defmodule MobDev.NativeBuild do
                  selections,
                  apk_snapshot
                ) do
-          run_android_runtime_transaction(
-            apk_snapshot,
-            canonical_serials,
-            bundle_id,
-            app_data,
-            elixir_lib,
-            selections,
-            payload_plan,
-            cleanup,
-            runner,
-            otp_runner,
-            opts
-          )
+          case Keyword.get(opts, :resume_native_ready, false) do
+            true ->
+              resume_android_native_ready(
+                payload_plan,
+                selections,
+                elixir_lib,
+                cleanup,
+                runner,
+                opts
+              )
+
+            false ->
+              run_android_runtime_transaction(
+                apk_snapshot,
+                canonical_serials,
+                bundle_id,
+                app_data,
+                elixir_lib,
+                selections,
+                payload_plan,
+                cleanup,
+                runner,
+                otp_runner,
+                opts
+              )
+
+            _invalid ->
+              cleanup_android_payload(cleanup, payload_plan)
+              {:error, "Invalid Android native-ready recovery option"}
+          end
         end
       after
         File.rm(apk_snapshot.path)
       end
     end
   end
+
+  defp resume_android_native_ready(payload_plan, selections, elixir_lib, cleanup, runner, opts) do
+    adb_runner = fn args -> runner.("adb", args) end
+
+    with {:ok, runtime_provenance} <-
+           android_recovery_runtime_provenance(payload_plan.serials, selections, elixir_lib) do
+      recovery_opts =
+        opts
+        |> Keyword.get(:android_recovery_opts, [])
+        |> Keyword.put(:runtime_provenance, runtime_provenance)
+
+      case AndroidDeployRecoveryProof.resume(payload_plan, adb_runner, recovery_opts) do
+        {:ok, lease} ->
+          {:ok, %{deploy_lock: lease, payload_plan: payload_plan}}
+
+        {:error, :recovery_cas_ambiguous, retained_lease} ->
+          cleanup_android_payload(cleanup, payload_plan)
+          {:error, "Android native-ready recovery became ambiguous", retained_lease}
+
+        {:error, _refused} ->
+          cleanup_android_payload(cleanup, payload_plan)
+          {:error, "Android native-ready recovery proof was refused"}
+      end
+    else
+      _unproven_runtime ->
+        cleanup_android_payload(cleanup, payload_plan)
+        {:error, "Android native-ready recovery runtime provenance was refused"}
+    end
+  end
+
+  defp android_recovery_runtime_provenance([serial], selections, elixir_lib) do
+    with %{otp_dir: otp_dir} <- Map.get(selections, serial),
+         {:ok, sentinels} <- android_runtime_sentinels(otp_dir, elixir_lib),
+         {:ok, provenance} <- hash_android_runtime_sentinels(sentinels, otp_dir, elixir_lib) do
+      {:ok, provenance}
+    else
+      _invalid_or_missing -> {:error, :runtime_provenance_unavailable}
+    end
+  end
+
+  defp android_recovery_runtime_provenance(_serials, _selections, _elixir_lib),
+    do: {:error, :runtime_provenance_unavailable}
+
+  defp hash_android_runtime_sentinels(sentinels, otp_dir, elixir_lib) do
+    Enum.reduce_while(sentinels, {:ok, []}, fn sentinel, {:ok, acc} ->
+      with {:ok, local_path} <- runtime_sentinel_local_path(sentinel, otp_dir, elixir_lib),
+           true <- File.regular?(local_path),
+           {:ok, digest} <- file_sha256(local_path) do
+        entry = %{path: sentinel, sha256: Base.encode16(digest, case: :lower)}
+        {:cont, {:ok, [entry | acc]}}
+      else
+        _missing_or_changed -> {:halt, {:error, :runtime_provenance_unavailable}}
+      end
+    end)
+    |> case do
+      {:ok, entries} -> {:ok, Enum.reverse(entries)}
+      error -> error
+    end
+  end
+
+  defp runtime_sentinel_local_path("otp/erts-" <> _rest = sentinel, otp_dir, _elixir_lib),
+    do: {:ok, Path.join(otp_dir, String.replace_prefix(sentinel, "otp/", ""))}
+
+  defp runtime_sentinel_local_path("otp/lib/" <> rest, _otp_dir, elixir_lib),
+    do: {:ok, Path.join(elixir_lib, rest)}
+
+  defp runtime_sentinel_local_path(_sentinel, _otp_dir, _elixir_lib),
+    do: {:error, :runtime_provenance_unavailable}
+
+  @doc false
+  @spec validate_android_recovery_payload(map()) :: :ok | {:error, :invalid_recovery_payload}
+  def validate_android_recovery_payload(payload_plan) when is_map(payload_plan) do
+    with %{
+           version: 1,
+           package: package,
+           serials: serials,
+           selected_abis: selected_abis,
+           selected_abis_by_serial: selected_by_serial,
+           apk: %{path: apk_path, size: apk_size, sha256: apk_sha256}
+         } <- payload_plan,
+         input <- %{
+           bundle_id: package,
+           serials: serials,
+           selected_abis: selected_abis,
+           selected_abis_by_serial: selected_by_serial,
+           apk: apk_path,
+           apk_size: apk_size,
+           apk_sha256: apk_sha256
+         },
+         {:ok, ^payload_plan} <- validate_android_payload_plan(payload_plan, input),
+         :ok <- validate_android_local_file_identity(payload_plan.apk, @max_android_apk_bytes),
+         selections <- Map.new(selected_by_serial, fn {serial, abi} -> {serial, %{abi: abi}} end),
+         :ok <- validate_android_apk_runtime(apk_path, selections, payload_plan) do
+      :ok
+    else
+      _invalid_or_changed -> {:error, :invalid_recovery_payload}
+    end
+  end
+
+  def validate_android_recovery_payload(_payload_plan),
+    do: {:error, :invalid_recovery_payload}
 
   defp snapshot_android_apk(apk, opts) when is_binary(apk) do
     tmp_root = Keyword.get(opts, :tmp_root, System.tmp_dir!())

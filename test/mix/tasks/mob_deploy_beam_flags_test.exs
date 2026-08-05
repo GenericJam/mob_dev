@@ -271,6 +271,66 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
   end
 
   describe "run/2 explicit device preflight" do
+    test "rejects invalid native-ready recovery intent before discovery or orchestration" do
+      parent = self()
+
+      callbacks = [
+        android_lister: fn -> send(parent, :android_discovery_called) end,
+        ios_lister: fn -> send(parent, :ios_discovery_called) end,
+        orchestrator: fn _opts, _platforms, _device_id ->
+          send(parent, :orchestration_called)
+        end
+      ]
+
+      invalid_args = [
+        ["--resume-native-ready", "--android", "--device", "serial-a"],
+        ["--resume-native-ready", "--native", "--device", "serial-a"],
+        ["--resume-native-ready", "--native", "--android"],
+        [
+          "--resume-native-ready",
+          "--native",
+          "--android",
+          "--device",
+          "serial-a",
+          "--no-restart"
+        ]
+      ]
+
+      for args <- invalid_args do
+        assert_raise Mix.Error,
+                     "--resume-native-ready requires --native --android --device <exact-id> and restart",
+                     fn -> Deploy.run(args, callbacks) end
+      end
+
+      refute_received :android_discovery_called
+      refute_received :ios_discovery_called
+      refute_received :orchestration_called
+    end
+
+    test "passes only constrained recovery intent to orchestration after exact discovery" do
+      parent = self()
+      id = "serial-a"
+
+      callbacks = [
+        android_lister: fn -> [android_device(id)] end,
+        ios_lister: fn -> [] end,
+        orchestrator: fn opts, platforms, device_id ->
+          send(parent, {:recovery_orchestration, opts, platforms, device_id})
+          :orchestrated
+        end
+      ]
+
+      assert Deploy.run(
+               ["--resume-native-ready", "--native", "--android", "--device", id],
+               callbacks
+             ) == :orchestrated
+
+      assert_received {:recovery_orchestration, opts, [:android], ^id}
+      assert opts[:resume_native_ready]
+      assert opts[:native]
+      refute Keyword.has_key?(opts, :recovery_proof)
+    end
+
     test "does not enter orchestration for unmatched, mismatched, or ambiguous IDs" do
       parent = self()
       android = android_device("emulator-5554", :emulator)
@@ -358,6 +418,31 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
         assert_received {^ref, :orchestration_called, opts, [:android], ^id}
         assert opts[:native]
       end
+    end
+  end
+
+  describe "with_android_native_host_lock/3" do
+    test "ordinary native Android deploy excludes a concurrent recovery operation" do
+      bundle = MobDev.Config.bundle_id()
+
+      assert :ordinary_complete =
+               Deploy.with_android_native_host_lock(true, [:android], fn ->
+                 assert {:error, :recovery_host_lock_unavailable} =
+                          Task.async(fn ->
+                            MobDev.AndroidDeployRecoveryProof.with_host_lock(bundle, fn ->
+                              :unexpected_recovery
+                            end)
+                          end)
+                          |> Task.await()
+
+                 :ordinary_complete
+               end)
+    end
+
+    test "non-native and iOS-only operations do not claim the Android host lock" do
+      operation = fn -> :unlocked end
+      assert Deploy.with_android_native_host_lock(false, [:android], operation) == :unlocked
+      assert Deploy.with_android_native_host_lock(true, [:ios], operation) == :unlocked
     end
   end
 
