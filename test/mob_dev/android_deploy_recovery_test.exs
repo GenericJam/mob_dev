@@ -69,7 +69,8 @@ defmodule MobDev.AndroidDeployRecoveryTest do
                )
     end
 
-    assert {:error, :recovery_cas_ambiguous} =
+    assert {:error, :recovery_cas_ambiguous,
+            %{owner: @new_owner, phase: :native_ready, state: :retained_ambiguous}} =
              AndroidDeployRecovery.resume(proof(), fn _args -> {"changed", 1} end,
                owner: @new_owner
              )
@@ -86,7 +87,8 @@ defmodule MobDev.AndroidDeployRecoveryTest do
     assert {:error, :recovery_proof_refused} =
              AndroidDeployRecovery.resume(proof(), runner(self()), owner: @old_owner)
 
-    assert {:error, :recovery_cas_ambiguous} =
+    assert {:error, :recovery_cas_ambiguous,
+            %{owner: @new_owner, phase: :native_ready, state: :retained_ambiguous}} =
              AndroidDeployRecovery.resume(
                proof(),
                fn
@@ -94,7 +96,9 @@ defmodule MobDev.AndroidDeployRecoveryTest do
                    if String.contains?(command, "record_next_"),
                      do: {"", 0},
                      else: {"changed", 0}
-               end, owner: @new_owner)
+               end,
+               owner: @new_owner
+             )
   end
 
   defp proof do

@@ -13,14 +13,18 @@ defmodule MobDev.AndroidDeployRecovery do
           required(:serials) => [String.t()],
           required(:target_digest) => String.t(),
           required(:phase) => :native_ready,
-          required(:state) => :held_success
+          required(:state) => :held_success | :retained_ambiguous
         }
 
   @doc false
   @spec resume(map(), runner()) ::
-          {:ok, lease()} | {:error, :recovery_proof_refused | :recovery_cas_ambiguous}
+          {:ok, lease()}
+          | {:error, :recovery_proof_refused}
+          | {:error, :recovery_cas_ambiguous, lease()}
   @spec resume(map(), runner(), keyword()) ::
-          {:ok, lease()} | {:error, :recovery_proof_refused | :recovery_cas_ambiguous}
+          {:ok, lease()}
+          | {:error, :recovery_proof_refused}
+          | {:error, :recovery_cas_ambiguous, lease()}
   def resume(proof, runner, opts \\ [])
 
   def resume(proof, runner, opts) when is_map(proof) and is_function(runner, 1) do
@@ -29,21 +33,17 @@ defmodule MobDev.AndroidDeployRecovery do
 
     with {:ok, old_owner} <- validate_proof(proof, owner, minimum_age),
          next_record = "1|#{owner}|#{proof.target_digest}|native_ready",
+         lease = recovered_lease(proof, owner),
          {"", 0} <-
            invoke(runner, proof.serial, cas_command(proof, old_owner, owner, next_record)),
          {^next_record, 0} <- invoke(runner, proof.serial, proof_command(proof.bundle_id)) do
-      {:ok,
-       %{
-         bundle_id: proof.bundle_id,
-         owner: owner,
-         serials: [proof.serial],
-         target_digest: proof.target_digest,
-         phase: :native_ready,
-         state: :held_success
-       }}
+      {:ok, lease}
     else
-      {:error, :recovery_proof_refused} = error -> error
-      _changed_or_ambiguous -> {:error, :recovery_cas_ambiguous}
+      {:error, :recovery_proof_refused} = error ->
+        error
+
+      _changed_or_ambiguous ->
+        {:error, :recovery_cas_ambiguous, recovered_lease(proof, owner, :retained_ambiguous)}
     end
   end
 
@@ -69,6 +69,17 @@ defmodule MobDev.AndroidDeployRecovery do
     else
       _invalid -> {:error, :recovery_proof_refused}
     end
+  end
+
+  defp recovered_lease(proof, owner, state \\ :held_success) do
+    %{
+      bundle_id: proof.bundle_id,
+      owner: owner,
+      serials: [proof.serial],
+      target_digest: proof.target_digest,
+      phase: :native_ready,
+      state: state
+    }
   end
 
   defp exact_keys?(proof) do
