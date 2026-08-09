@@ -35,7 +35,7 @@ defmodule MobDev.Deployer do
   defp android_package, do: bundle_id()
   defp android_app_data, do: "/data/data/#{android_package()}/files"
   defp android_beams_dir, do: "#{android_app_data()}/otp/#{app_name()}"
-  defp ios_bundle_id, do: bundle_id()
+  defp ios_bundle_id, do: MobDev.Config.ios_bundle_id()
 
   defp ios_beams_dir do
     # The simulator's OTP_ROOT is resolved by `MobDev.Paths.sim_runtime_dir/1`.
@@ -1176,9 +1176,12 @@ defmodule MobDev.Deployer do
               Then select your device in Xcode and press Run (⌘R).
 
               Alternatively, if you have another app with a different bundle ID already
-              installed on the device, update bundle_id in mob.exs to match it:
+              installed on the device, update the ID in mob.exs to match it:
 
-                  config :mob_dev, bundle_id: "com.yourcompany.yourapp"
+                  config :mob_dev, ios_bundle_id: "com.yourcompany.yourapp"
+
+              (`ios_bundle_id` overrides `bundle_id` on iOS only — use it when
+              Android's applicationId isn't a legal Apple bundle ID.)
               """
             else
               "devicectl copy failed: #{out}"

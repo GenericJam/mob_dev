@@ -54,6 +54,16 @@ mix test --exclude integration # skip the device-dependent ones
   prefers `Documents/otp/<app>` over its complete signed bundle. Replace that
   directory rather than incrementally merging it, require `<app>.beam` before
   transfer, and verify the received bootstrap bytes before restarting.
+- **iOS bundle ids resolve through one function per side, never `bundle_id/0`.**
+  Consumers (deploy, connect, provision, battery bench) use
+  `MobDev.Config.ios_bundle_id/0`; the build (sim bundle, device bundle,
+  codesign) uses `NativeBuild.ios_bundle_id/1` over the loaded cfg. Both are
+  `:ios_bundle_id || :bundle_id`. Reaching for plain `bundle_id/0` on an
+  iOS path is the bug that installed an app under one id and pushed BEAMs at
+  another ("App '…' is not installed on this device" right after a
+  successful install). Android keeps `bundle_id/0` — the two ids often
+  cannot be the same string (Apple forbids `_`). See
+  `decisions/2026-08-08-ios-bundle-id-single-source-and-deploy-exit-code.md`.
 - **`xcodebuild` errors get rewritten** to actionable hints by
   `diagnose_xcodebuild_failure/1` in `mob.provision`. Apple's verbatim text is
   preserved alongside our hint so the snippet stays google-able. Add new
@@ -152,8 +162,10 @@ narrowing functions). Don't make them private:
 - `Mix.Tasks.Mob.Doctor.__zig_install_fix__/0`
 - `Mix.Tasks.Mob.Doctor.__zig_check_result__/1`
 - `Enable.inject_pythonx_dep/1`, `inject_pythonx_uv_init_gate/2`, `python_paths_module_template/1`
+- `NativeBuild.ios_bundle_id/1` (the `:ios_bundle_id || :bundle_id` rule for the build side)
 - `Emulators.parse_simctl_json/1`, `find_emulator_binary/1`
 - `Provision.diagnose_xcodebuild_failure/1`
+- `Mix.Tasks.Mob.Deploy.failure_message/3` (which bucket makes a deploy exit non-zero)
 
 If you make any of these private, every downstream test breaks loudly — but
 you'll lose the ability to evolve the parsers safely.

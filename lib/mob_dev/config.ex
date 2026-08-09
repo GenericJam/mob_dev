@@ -29,6 +29,25 @@ defmodule MobDev.Config do
   end
 
   @doc """
+  Returns the iOS bundle ID: `mob.exs`'s `:ios_bundle_id` when set,
+  otherwise `bundle_id/0`.
+
+  iOS and Android often *cannot* share one identifier — Apple forbids
+  underscores in a bundle id (Android's `applicationId` allows them), and
+  a `com.example.*` id is frequently already claimed by another Apple team.
+  `:ios_bundle_id` is the per-platform escape hatch.
+
+  Every iOS-targeting caller must resolve through here. The native build
+  signs and installs with this value, so a caller that talks to the
+  installed app by `bundle_id/0` instead (terminate/launch/`devicectl
+  copy`) addresses an id that was never installed — the failure surfaces
+  as "App '...' is not installed on this device" *after* a successful
+  install.
+  """
+  @spec ios_bundle_id() :: String.t()
+  def ios_bundle_id, do: load_mob_config()[:ios_bundle_id] || bundle_id()
+
+  @doc """
   Default reverse-DNS prefix when no platform manifest is available.
   Honors `MOB_BUNDLE_PREFIX` so users with a corporate prefix can set
   it once. Mirrors `MobNew.ProjectGenerator.bundle_prefix/0` so the

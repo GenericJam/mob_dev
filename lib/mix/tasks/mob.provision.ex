@@ -282,7 +282,9 @@ defmodule Mix.Tasks.Mob.Provision do
   end
 
   defp check_bundle_id! do
-    bundle_id = MobDev.Config.bundle_id()
+    # Must match what NativeBuild signs the .app with, or the profile this
+    # task provisions won't cover the installed binary.
+    bundle_id = MobDev.Config.ios_bundle_id()
     IO.puts("  #{green()}✓#{reset()} Bundle ID — #{bundle_id}")
     bundle_id
   end

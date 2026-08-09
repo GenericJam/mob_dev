@@ -201,7 +201,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
     # device_id is what we pass to xcrun devicectl (install, launch, terminate).
     udid = device_id
 
-    pkg = MobDev.Config.bundle_id()
+    pkg = MobDev.Config.ios_bundle_id()
     cfg = MobDev.Config.load_mob_config()
 
     # Workspace discovery is only needed when building. Skip it with --no-build.
@@ -645,7 +645,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
 
   defp dry_run!(opts) do
     cfg = MobDev.Config.load_mob_config()
-    pkg = MobDev.Config.bundle_id()
+    pkg = MobDev.Config.ios_bundle_id()
 
     scheme =
       opts[:scheme] || cfg[:ios_scheme] ||

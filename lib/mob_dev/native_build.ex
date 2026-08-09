@@ -1669,7 +1669,7 @@ defmodule MobDev.NativeBuild do
            {:ok, sim_id} <- pick_ios_sim(device_id),
            binary_path = "ios/zig-out/#{display_name}",
            :ok <- check_path(binary_path, "iOS binary"),
-           {:ok, app_path} <- bundle_ios_app(binary_path, display_name),
+           {:ok, app_path} <- bundle_ios_app(binary_path, display_name, cfg),
            :ok <-
              copy_tflite_frameworks_ios(
                tflite_build,
@@ -4240,7 +4240,14 @@ defmodule MobDev.NativeBuild do
         "Pass a full UDID or a case-insensitive prefix that matches " <>
         "exactly one booted sim. Run `mix mob.devices` to see what's available."
 
-  defp bundle_ios_app(binary_path, display_name) do
+  # The sim bundle used to keep whatever CFBundleIdentifier ios/Info.plist
+  # happened to carry while the device bundle stamped `ios_bundle_id/1` — two
+  # builds of one project installing under different ids, so
+  # `xcrun simctl launch <udid> <configured-id>` failed and callers had to
+  # guess which id a given build had used.
+  defp bundle_ios_app(binary_path, display_name, cfg) do
+    bundle_id = ios_bundle_id(cfg)
+
     build_dir =
       Path.join(System.tmp_dir!(), "mob_ios_bundle_#{System.unique_integer([:positive])}")
 
@@ -4261,10 +4268,34 @@ defmodule MobDev.NativeBuild do
         File.cp!("ios/Info.plist", info_plist)
         apply_plugin_plist_keys!(info_plist)
         apply_fonts_to_ios_bundle!(info_plist, app_path)
+        plist_set!(info_plist, ":CFBundleIdentifier", bundle_id)
         if File.dir?("ios/Assets.xcassets/AppIcon.appiconset"), do: compile_ios_icons(app_path)
+        announce_bundle_id(bundle_id)
         {:ok, app_path}
     end
   end
+
+  # The installed bundle id is what every follow-up command needs (`xcrun
+  # simctl launch`, `xcrun devicectl`, `mix mob.connect`) and it appears
+  # nowhere else in the build output.
+  defp announce_bundle_id(bundle_id),
+    do: IO.puts("  Bundle identifier: #{IO.ANSI.cyan()}#{bundle_id}#{IO.ANSI.reset()}")
+
+  @doc """
+  The bundle id every iOS build path stamps and signs with: `mob.exs`'s
+  `:ios_bundle_id` when set, else `:bundle_id`.
+
+  Single source of truth for the sim bundle, the device bundle, and code
+  signing — those three disagreeing is how a project ends up installed
+  under one id and addressed by another. Mirrors
+  `MobDev.Config.ios_bundle_id/0`, which is what the deploy/connect side
+  resolves (`cfg[:bundle_id]` is already `Config.bundle_id/0` by the time
+  `load_config/0` is done with it).
+
+  Public for testing.
+  """
+  @spec ios_bundle_id(keyword()) :: String.t() | nil
+  def ios_bundle_id(cfg), do: cfg[:ios_bundle_id] || cfg[:bundle_id]
 
   defp compile_ios_icons(app_path) do
     actool_plist =
@@ -4432,7 +4463,7 @@ defmodule MobDev.NativeBuild do
   defp bundle_ios_device_app(binary_path, otp_root, cfg, build_dir) do
     app_name = ios_display_name()
     app_module = Mix.Project.config() |> Keyword.fetch!(:app) |> Atom.to_string()
-    bundle_id = cfg[:ios_bundle_id] || cfg[:bundle_id]
+    bundle_id = ios_bundle_id(cfg)
 
     if is_nil(bundle_id), do: throw_bundle_id_error()
 
@@ -4456,6 +4487,7 @@ defmodule MobDev.NativeBuild do
         plist_set!(info_plist, ":CFBundleIdentifier", bundle_id)
         plist_set!(info_plist, ":CFBundleExecutable", app_name)
         plist_set!(info_plist, ":CFBundleName", app_name)
+        announce_bundle_id(bundle_id)
 
         if File.dir?("ios/Assets.xcassets/AppIcon.appiconset"),
           do: compile_ios_device_icons(app_path)
@@ -5805,7 +5837,7 @@ defmodule MobDev.NativeBuild do
   defp codesign_ios_device_app(app_path, cfg, build_dir) do
     sign_identity = cfg[:ios_sign_identity]
     team_id = cfg[:ios_team_id]
-    bundle_id = cfg[:ios_bundle_id] || cfg[:bundle_id]
+    bundle_id = ios_bundle_id(cfg)
 
     IO.puts("  === Code signing")
     entitlements = resolve_or_generate_entitlements(app_path, build_dir, team_id, bundle_id)
