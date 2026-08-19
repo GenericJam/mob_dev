@@ -285,10 +285,15 @@ defmodule MobDev.Deployer do
 
     case run_adb(["-s", serial, "shell", cmd]) do
       {:ok, out} ->
-        if String.contains?(out, "No such file") or String.contains?(out, "not found") do
-          {:error, erts_missing_message(serial, pkg)}
-        else
-          :ok
+        cond do
+          String.contains?(out, "run-as:") ->
+            {:error, run_as_unavailable_message(serial, pkg, out)}
+
+          String.contains?(out, "No such file") or String.contains?(out, "not found") ->
+            {:error, erts_missing_message(serial, pkg)}
+
+          true ->
+            :ok
         end
 
       _ ->
@@ -296,6 +301,32 @@ defmodule MobDev.Deployer do
         # if needed; this check is best-effort.
         :ok
     end
+  end
+
+  # `run-as` fails silently downstream: every beams/priv/exqlite push shells
+  # out to `run-as #{pkg} tar xf ... 2>/dev/null; true`, where the trailing
+  # `; true` is there to swallow Toybox tar's benign chown-to-macOS-UID
+  # exit code — but it also swallows a genuine `run-as` failure (e.g. the
+  # APK was built as a release/non-debuggable variant, which is exactly the
+  # kind of build `mix mob.deploy --native` produces without an explicit
+  # debug flag). Catching it here, before any push is attempted, turns a
+  # "deploy reported success but nothing reached the device" silent no-op
+  # into a real, actionable `{:error, _}`.
+  defp run_as_unavailable_message(serial, pkg, out) do
+    """
+    `run-as` is not usable for #{pkg} on #{serial}:
+
+        #{String.trim(out)}
+
+    Incremental `mix mob.deploy` pushes BEAMs into the app's private storage
+    via `run-as`, which Android only allows for a debuggable build. Fix by
+    rebuilding as a debug variant and reinstalling once:
+
+      mix mob.deploy --native --device #{serial}
+
+    Subsequent `mix mob.deploy` runs (without --native) will work normally
+    once the installed build is debuggable.
+    """
   end
 
   defp erts_missing_message(serial, pkg) do

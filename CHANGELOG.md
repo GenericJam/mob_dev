@@ -8,6 +8,27 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.6.24] - 2026-08-19
+
+### Fixed
+- **`mix mob.deploy`'s ERTS preflight silently treated a non-debuggable
+  APK as healthy, so every subsequent `run-as`-based BEAM push failed
+  and got swallowed too.** `ensure_erts_on_device/2` only pattern-matched
+  the preflight `run-as ... ls ...` output for `"No such file"` /
+  `"not found"` (missing-ERTS signatures). A `run-as: package not
+  debuggable: <pkg>` response — the normal signal for an APK built as a
+  release/non-debug variant — matched neither, so the check returned
+  `:ok` and `deploy_android` proceeded straight into
+  `push_beams_android`/`push_priv_android`/`push_exqlite`, each of which
+  shells out to `run-as #{pkg} tar xf ... 2>/dev/null; true`. That
+  trailing `; true` exists to swallow Toybox tar's benign
+  chown-to-macOS-UID exit code, but it also swallowed the `run-as`
+  failure itself — so `mix mob.deploy` reported `✓` while nothing
+  reached the device. `ensure_erts_on_device/2` now detects any
+  `run-as:`-prefixed response and returns a clear, actionable error
+  (rebuild via `mix mob.deploy --native` to get a debuggable install)
+  before any push is attempted.
+
 ## [0.6.23] - 2026-07-12
 
 ### Fixed
