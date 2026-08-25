@@ -370,6 +370,26 @@ defmodule MobDev.Plugin.Merge do
     end
   end
 
+  @doc """
+  Plugin-declared default fonts, each tagged with `:plugin`, with `:file`
+  resolved to an absolute path. A plugin sets `Mob.Theme.fonts[:default]`
+  via `default_font: %{family:, file:}` in its manifest (`file` must
+  reference one of its own `assets.fonts` paths — validated in
+  `MobDev.Plugin.Manifest`). Checked for cross-plugin collision in
+  `conflict_surface/0` (two plugins suggesting a default font is a build
+  error, not a silent pick — see `default_font_declared/1` in `Validator`);
+  `RuntimeManifest` converts the survivor to an on-device font spec (see
+  `MOB_FONTS.md`) consumed at boot per the precedence ladder there.
+  """
+  @spec default_font([plugin()]) :: [%{plugin: atom(), family: String.t(), file: Path.t()}]
+  def default_font(plugins) do
+    for {dir, manifest} <- with_manifests(plugins),
+        %{family: family, file: rel} <- List.wrap(Map.get(manifest, :default_font)),
+        is_binary(family),
+        is_binary(rel),
+        do: %{plugin: manifest[:name], family: family, file: Path.join(dir, rel)}
+  end
+
   @doc "Lifecycle declarations across plugins, each tagged with `:plugin`."
   @spec lifecycle([plugin()]) :: [map()]
   def lifecycle(plugins) do

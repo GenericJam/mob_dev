@@ -266,6 +266,12 @@ defmodule MobDev.Plugin.Validator do
       notification_handlers:
         {:collision,
          [{"notification match (notifications.handlers.match)", &notification_matches/1}]},
+      default_font:
+        {:collision,
+         [
+           {"plugin default_font declaration — only one plugin may set it (see MOB_FONTS.md); the host's own Mob.Theme.set/1 or an activated style package's theme always outranks any plugin's, so this only fires when two CAPABILITY plugins both suggest one",
+            &default_font_declared/1}
+         ]},
       # ── non-colliding (documented; no check needed) ───────────────────────
       settings: {:namespaced, "settings stored under a per-plugin key in Mob.State"},
       assets:
@@ -687,5 +693,19 @@ defmodule MobDev.Plugin.Validator do
         is_map(h),
         Map.has_key?(h, :match),
         do: h.match
+  end
+
+  # Only one plugin's default_font can actually apply (Mob.Theme.fonts[:default]
+  # is a single value) — so unlike the other collision checks above, the
+  # conflict isn't "two plugins picked the same value", it's "two plugins
+  # picked ANY value at all". A constant sentinel makes collisions/3's
+  # same-value-from-2+-plugins logic detect exactly that: every declaring
+  # plugin contributes the identical sentinel, so 2+ declarations always
+  # collide regardless of what path each one names.
+  defp default_font_declared(manifest) do
+    case Map.get(manifest, :default_font) do
+      %{family: family, file: file} when is_binary(family) and is_binary(file) -> [:default_font]
+      _ -> []
+    end
   end
 end

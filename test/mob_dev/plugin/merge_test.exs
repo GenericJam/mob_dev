@@ -531,6 +531,40 @@ defmodule MobDev.Plugin.MergeTest do
              ] = Merge.notification_handlers(plugins)
     end
 
+    test "default_font/1 resolves :file to absolute, keeps :family, tags with plugin name" do
+      plugins = [
+        {"/abs/p",
+         base(%{
+           name: :p,
+           default_font: %{
+             family: "PluginFont-Regular",
+             file: "priv/fonts/PluginFont-Regular.ttf"
+           }
+         })}
+      ]
+
+      assert [
+               %{
+                 plugin: :p,
+                 family: "PluginFont-Regular",
+                 file: "/abs/p/priv/fonts/PluginFont-Regular.ttf"
+               }
+             ] = Merge.default_font(plugins)
+    end
+
+    test "default_font/1 contributes nothing when unset" do
+      plugins = [{"/abs/p", base(%{name: :p})}]
+      assert Merge.default_font(plugins) == []
+    end
+
+    test "default_font/1 treats a malformed value as unset (no crash)" do
+      plugins = [{"/abs/p", base(%{name: :p, default_font: 123})}]
+      assert Merge.default_font(plugins) == []
+
+      plugins = [{"/abs/p", base(%{name: :p, default_font: %{family: "X"}})}]
+      assert Merge.default_font(plugins) == []
+    end
+
     test "host_requirements/1 tags each obligation with its plugin, skipping malformed" do
       plugins = [
         {"/a", base(%{name: :a, host_requirements: ["add the <service> fragment", :oops]})},

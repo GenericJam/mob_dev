@@ -139,6 +139,25 @@ defmodule MobDev.Plugin.ConflictSurfaceTest do
       assert %{errors: errs} = Validator.cross_validate(plugins)
       assert Enum.any?(errs, &(&1 =~ "notification match"))
     end
+
+    test "two plugins both declaring default_font is a conflict, even with different fonts" do
+      # Deliberately DIFFERENT fonts — the point of the sentinel-based check is
+      # that this still collides, because only one plugin's default can win.
+      plugins =
+        two(
+          %{
+            assets: %{fonts: ["priv/a.ttf"]},
+            default_font: %{family: "A", file: "priv/a.ttf"}
+          },
+          %{
+            assets: %{fonts: ["priv/b.ttf"]},
+            default_font: %{family: "B", file: "priv/b.ttf"}
+          }
+        )
+
+      assert %{errors: errs} = Validator.cross_validate(plugins)
+      assert Enum.any?(errs, &(&1 =~ "plugin default_font declaration"))
+    end
   end
 
   describe "no false positives (distinct values compose cleanly)" do
@@ -166,6 +185,18 @@ defmodule MobDev.Plugin.ConflictSurfaceTest do
             notifications: %{handlers: [%{match: %{type: "b"}, handler: {M, :f, 1}}]}
           }
         )
+
+      assert %{errors: []} = Validator.cross_validate(plugins)
+    end
+
+    test "a single plugin declaring default_font is NOT a conflict" do
+      plugins = [
+        {:a,
+         Map.merge(@base, %{
+           assets: %{fonts: ["priv/a.ttf"]},
+           default_font: %{family: "A", file: "priv/a.ttf"}
+         })}
+      ]
 
       assert %{errors: []} = Validator.cross_validate(plugins)
     end

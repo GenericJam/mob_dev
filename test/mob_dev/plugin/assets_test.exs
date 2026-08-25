@@ -71,17 +71,10 @@ defmodule MobDev.Plugin.AssetsTest do
     end
   end
 
-  describe "android_font_resource_name/1" do
-    test "lowercases, drops the extension, and underscores non-alnum" do
-      assert Assets.android_font_resource_name("Georgia.ttf") == "georgia"
-      assert Assets.android_font_resource_name("Inter-Regular.otf") == "inter_regular"
-      assert Assets.android_font_resource_name("My Font 2.ttf") == "my_font_2"
-    end
-
-    test "prefixes a non-letter leading char so it is a valid resource id" do
-      assert Assets.android_font_resource_name("123Sans.ttf") == "f_123sans"
-    end
-  end
+  # android_font_resource_name/1's tests moved to mob core (Mob.FontTest) —
+  # the function itself relocated to Mob.Font.android_resource_name/1 so
+  # Mob.Theme.font/2 (on-device, at theme-build time) can call the exact
+  # same implementation this planner uses. See MOB_FONTS.md.
 
   describe "plan_ios_font_bundle/1" do
     test "maps each font to its bundle basename" do
