@@ -45,8 +45,29 @@ defmodule MobDev.Plugin.RuntimeManifest do
       nifs: nif_modules(plugins),
       composites: composites(plugins),
       styles: styles,
-      default_style: default_style
+      default_style: default_style,
+      default_font: default_font(plugins)
     }
+  end
+
+  # Converts the (at most one, post-conflict-check) activated plugin's
+  # default_font declaration into the on-device font spec Mob.Theme.fonts
+  # values use: the iOS name as the plugin gave it, the Android name computed
+  # from the bundled file via the SAME function mob_dev's font-bundling
+  # planner uses to name the res/font/ resource — one computation, so the
+  # spec this manifest carries and the resource native_build actually copied
+  # can't drift apart (see MOB_FONTS.md). `Validator.cross_validate/1` (run
+  # earlier in the build) is what guarantees at most one survives; this just
+  # takes the first defensively rather than crashing if that guard were ever
+  # bypassed.
+  defp default_font(plugins) do
+    case Merge.default_font(plugins) do
+      [%{family: family, file: file} | _] ->
+        %{ios: family, android: Mob.Font.android_resource_name(Path.basename(file))}
+
+      [] ->
+        nil
+    end
   end
 
   # Pure-Elixir composite components (the ui_components expand: form) — core

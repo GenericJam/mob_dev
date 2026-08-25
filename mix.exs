@@ -68,6 +68,15 @@ defmodule MobDev.MixProject do
 
   defp deps do
     [
+      # Mob.Font.android_resource_name/1 — the asset planner (Assets module,
+      # below) calls this so the Android res/font/ resource name is computed
+      # by the SAME function `Mob.Theme.font/2` uses on the runtime side.
+      # Before this, mob_dev had its own copy of the normalization logic,
+      # kept in sync with mob core's copy only by convention — see MOB_FONTS.md.
+      #
+      # TEMP: path dep until mob publishes a version with Mob.Font. Switch to
+      # {:mob, "~> 0.8"} (or whatever mob's next version is) once that's out.
+      {:mob, path: "../mob", runtime: false},
       {:eqrcode, "~> 0.2"},
       {:jason, "~> 1.4"},
       {:mix_audit, "~> 2.1", runtime: false},

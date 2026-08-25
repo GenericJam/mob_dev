@@ -77,25 +77,6 @@ defmodule MobDev.Plugin.Assets do
   end
 
   @doc """
-  The Android `res/font/` resource name for a font file: lowercase, the
-  extension dropped, and any character outside `[a-z0-9_]` replaced with `_`
-  (Android resource-name rules). `"Georgia.ttf"` → `"georgia"`,
-  `"Inter-Regular.ttf"` → `"inter_regular"`. The renderer normalises the `font:`
-  prop the same way to find the resource. A leading non-letter is prefixed with
-  `f_` so the name is a valid resource identifier.
-  """
-  @spec android_font_resource_name(String.t()) :: String.t()
-  def android_font_resource_name(filename) do
-    base =
-      filename
-      |> Path.basename(Path.extname(filename))
-      |> String.downcase()
-      |> String.replace(~r/[^a-z0-9_]/, "_")
-
-    if base =~ ~r/^[a-z]/, do: base, else: "f_" <> base
-  end
-
-  @doc """
   Plans the iOS font-bundle copies: each distinct source font copies to the `.app`
   root under its basename (and is listed in `UIAppFonts` by basename). Two distinct
   sources sharing a basename (e.g. two plugins both shipping `Icons.ttf`) would
@@ -114,10 +95,15 @@ defmodule MobDev.Plugin.Assets do
 
   @doc """
   Plans the Android `res/font/` copies: each distinct source maps to
-  `<android_font_resource_name>.<ext>`. Two distinct sources normalising to the
-  same resource name (e.g. `Inter-Regular.ttf` and `Inter_Regular.ttf` both →
-  `inter_regular.ttf`) would silently overwrite each other, so that is surfaced
-  as an error.
+  `<Mob.Font.android_resource_name/1>.<ext>`. Two distinct sources
+  normalising to the same resource name (e.g. `Inter-Regular.ttf` and
+  `Inter_Regular.ttf` both → `inter_regular.ttf`) would silently overwrite
+  each other, so that is surfaced as an error.
+
+  Uses `Mob.Font.android_resource_name/1` — the SAME function
+  `Mob.Theme.font/2` uses to compute a theme font token's Android name —
+  so the resource this planner copies to and the name a theme token
+  points at can't drift apart. See `MOB_FONTS.md` in the `mob` repo.
 
   Returns `{:ok, [{src, res_filename}]}` or
   `{:error, {:font_resource_collision, res_filename, [src, ...]}}`.
@@ -129,7 +115,7 @@ defmodule MobDev.Plugin.Assets do
     plan_font_copies(
       fonts,
       fn src ->
-        android_font_resource_name(Path.basename(src)) <> String.downcase(Path.extname(src))
+        Mob.Font.android_resource_name(Path.basename(src)) <> String.downcase(Path.extname(src))
       end,
       :font_resource_collision
     )

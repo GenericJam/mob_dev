@@ -462,6 +462,65 @@ defmodule MobDev.Plugin.ManifestTest do
       assert {:error, errs} = Manifest.validate(m)
       assert Enum.any?(errs, &(&1 =~ "assets.fonts must be a list of path strings"))
     end
+
+    test "accepts a default_font whose :file references one of the plugin's own assets.fonts" do
+      m =
+        @valid
+        |> Map.put(:assets, %{fonts: ["priv/fonts/PluginFont-Regular.ttf"]})
+        |> Map.put(:default_font, %{
+          family: "PluginFont-Regular",
+          file: "priv/fonts/PluginFont-Regular.ttf"
+        })
+
+      assert {:ok, ^m} = Manifest.validate(m)
+    end
+
+    test "rejects a default_font whose :file is not present in assets.fonts" do
+      m =
+        @valid
+        |> Map.put(:assets, %{fonts: ["priv/fonts/PluginFont-Regular.ttf"]})
+        |> Map.put(:default_font, %{family: "PluginFont-Regular", file: "priv/fonts/Other.ttf"})
+
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "default_font.file must be one of assets.fonts"))
+    end
+
+    test "rejects a default_font when the plugin declares no assets.fonts at all" do
+      m =
+        Map.put(@valid, :default_font, %{
+          family: "PluginFont-Regular",
+          file: "priv/fonts/PluginFont-Regular.ttf"
+        })
+
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "default_font.file must be one of assets.fonts"))
+    end
+
+    test "rejects a default_font missing :family or :file" do
+      m = Map.put(@valid, :default_font, %{family: "PluginFont-Regular"})
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "default_font must be %{family: string, file: string}"))
+    end
+
+    test "rejects a default_font with extra keys" do
+      m =
+        @valid
+        |> Map.put(:assets, %{fonts: ["priv/fonts/PluginFont-Regular.ttf"]})
+        |> Map.put(:default_font, %{
+          family: "PluginFont-Regular",
+          file: "priv/fonts/PluginFont-Regular.ttf",
+          weight: "bold"
+        })
+
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "default_font must have only :family and :file keys"))
+    end
+
+    test "rejects a non-map default_font" do
+      m = Map.put(@valid, :default_font, "priv/fonts/PluginFont-Regular.ttf")
+      assert {:error, errs} = Manifest.validate(m)
+      assert Enum.any?(errs, &(&1 =~ "default_font must be %{family: string, file: string}"))
+    end
   end
 
   describe "validate/1 — tier 4 sections" do

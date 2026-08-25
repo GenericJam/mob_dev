@@ -90,6 +90,7 @@ defmodule MobDev.Plugin.Manifest do
       |> check_screens_generator(manifest)
       |> check_migrations(manifest)
       |> check_assets(manifest)
+      |> check_default_font(manifest)
       |> check_lifecycle(manifest)
       |> check_settings(manifest)
       |> check_notifications(manifest)
@@ -453,6 +454,46 @@ defmodule MobDev.Plugin.Manifest do
 
   defp bad_assets(errors, key),
     do: ["assets.#{key} must be a list of path strings" | errors]
+
+  # `:default_font` (tier 3, optional) — sets Mob.Theme.fonts[:default] if the
+  # host hasn't set its own (see MOB_FONTS.md for the full precedence ladder).
+  # `%{family:, file:}` — mirrors Mob.Theme.font/2's two required inputs: the
+  # iOS PostScript name (can't be derived from a filename — it's embedded in
+  # the font file's own metadata, so the plugin author must supply it), and
+  # the bundled file mob_dev computes the Android resource name from. `file`
+  # must be one of the plugin's own assets.fonts paths — a plugin can't
+  # suggest a default that isn't a font it's actually bundling.
+  defp check_default_font(
+         errors,
+         %{default_font: %{family: family, file: file} = spec} = manifest
+       )
+       when is_binary(family) and is_binary(file) do
+    fonts = get_in(manifest, [:assets, :fonts]) || []
+
+    cond do
+      map_size(spec) != 2 ->
+        ["default_font must have only :family and :file keys, got: #{inspect(spec)}" | errors]
+
+      file not in fonts ->
+        [
+          "default_font.file must be one of assets.fonts (got #{inspect(file)}, " <>
+            "assets.fonts: #{inspect(fonts)})"
+          | errors
+        ]
+
+      true ->
+        errors
+    end
+  end
+
+  defp check_default_font(errors, %{default_font: other}),
+    do: [
+      "default_font must be %{family: string, file: string} " <>
+        "(file: one of assets.fonts), got: #{inspect(other)}"
+      | errors
+    ]
+
+  defp check_default_font(errors, _), do: errors
 
   # ── Tier 4: lifecycle / settings / notifications ──────────────────────────
 
