@@ -12,11 +12,24 @@ defmodule MobDev.Plugin.Manifest do
   that case, and `tier(nil)` is `0`.
   """
 
+  require Logger
+
   @manifest_path "priv/mob_plugin.exs"
 
   # Spec versions this mob_dev understands. Bumped when MOB_PLUGINS.md makes a
   # breaking schema change; old plugins keep validating against old specs.
   @supported_spec_versions [1, 2]
+
+  # Every top-level key either spec version 1 or 2 recognizes — see the
+  # check_* pipeline in validate/1 below, one clause per key here. Keep this
+  # in lockstep with that pipeline: adding a check_* clause for a new key
+  # means adding the key here too, or check_unknown_keys/2 will warn on it.
+  @known_keys ~w(
+    name mob_version plugin_spec_version permissions android ios nifs
+    nifs_generator screens screens_generator migrations assets default_font
+    lifecycle settings notifications ui_components ui_components_generator
+    host_requirements
+  )a
 
   @native_sections [
     :nifs,
@@ -97,6 +110,8 @@ defmodule MobDev.Plugin.Manifest do
       |> check_ui_components(manifest)
       |> check_host_requirements(manifest)
 
+    warn_unknown_keys(manifest)
+
     case errors do
       [] -> {:ok, manifest}
       errs -> {:error, Enum.reverse(errs)}
@@ -136,6 +151,32 @@ defmodule MobDev.Plugin.Manifest do
 
   defp check_spec_version(errors, _),
     do: [":plugin_spec_version is required and must be an integer" | errors]
+
+  # A key that isn't in @known_keys almost always means the author meant a
+  # different file — e.g. `styles:`/`default_style:` belong in the STYLE
+  # manifest (priv/mob_style.exs, see MOB_STYLES.md), not this one; putting
+  # them here validates cleanly (nothing here checks for them) and then goes
+  # nowhere, since MobDev.Plugin.Merge never reads them from this manifest
+  # either. A warning, not an error: an unrecognized key on a SUPPORTED spec
+  # version is author error, not forward-compat — a manifest declaring a spec
+  # version this mob_dev doesn't understand already fails check_spec_version,
+  # so we don't pile a second, noisier warning on top of that one.
+  defp warn_unknown_keys(%{plugin_spec_version: v} = manifest)
+       when v in @supported_spec_versions do
+    case Map.keys(manifest) -- @known_keys do
+      [] ->
+        :ok
+
+      unknown ->
+        Logger.warning(
+          "[mob_plugin manifest] unknown key(s) #{inspect(unknown)} — silently ignored. " <>
+            "See MOB_PLUGINS.md for the supported manifest schema (theming does not ride " <>
+            "this manifest — see MOB_STYLES.md)."
+        )
+    end
+  end
+
+  defp warn_unknown_keys(_manifest), do: :ok
 
   # `:permissions` is optional. When present it must be a list of maps, each with
   # a `:capability` atom (the value `Mob.Permissions.request/2` accepts) and an
