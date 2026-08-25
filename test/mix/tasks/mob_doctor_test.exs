@@ -45,4 +45,30 @@ defmodule Mix.Tasks.Mob.DoctorTest do
                ["plugin_c_nifs"]
     end
   end
+
+  describe "__component_event_jni_mismatched__/1 (MOB-98 JNI owner check)" do
+    test "flags the pre-fix declaration (bare external fun, no @JvmStatic)" do
+      pre_fix = """
+      object MobNativeViewRegistry {
+          external fun nativeDeliverComponentEvent(handle: Int, event: String, payloadJson: String)
+      }
+      """
+
+      assert Mix.Tasks.Mob.Doctor.__component_event_jni_mismatched__(pre_fix)
+    end
+
+    test "does not flag the corrected declaration (@JvmStatic, owned by MobBridge)" do
+      fixed = """
+      object MobBridge {
+          @JvmStatic external fun nativeDeliverComponentEvent(handle: Int, event: String, payloadJson: String)
+      }
+      """
+
+      refute Mix.Tasks.Mob.Doctor.__component_event_jni_mismatched__(fixed)
+    end
+
+    test "does not flag a file that doesn't declare the callback at all" do
+      refute Mix.Tasks.Mob.Doctor.__component_event_jni_mismatched__("object MobBridge {}")
+    end
+  end
 end
