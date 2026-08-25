@@ -4,7 +4,7 @@ defmodule MobDev.MixProject do
   def project do
     [
       app: :mob_dev,
-      version: "0.6.24",
+      version: "0.6.25",
       elixir: "~> 1.19",
       description: "Development tooling for the Mob mobile framework",
       source_url: "https://github.com/genericjam/mob_dev",
@@ -73,12 +73,7 @@ defmodule MobDev.MixProject do
       # by the SAME function `Mob.Theme.font/2` uses on the runtime side.
       # Before this, mob_dev had its own copy of the normalization logic,
       # kept in sync with mob core's copy only by convention — see MOB_FONTS.md.
-      #
-      # TEMP: git dep (master) until mob publishes a version with Mob.Font.
-      # A path dep here would only work on machines with a sibling `mob`
-      # checkout — broke CI, which has no such directory. Switch to
-      # {:mob, "~> 0.8"} (or whatever mob's next version is) once that's out.
-      {:mob, git: "https://github.com/GenericJam/mob.git", branch: "master", runtime: false},
+      {:mob, "~> 0.7.25", runtime: false},
       {:eqrcode, "~> 0.2"},
       {:jason, "~> 1.4"},
       {:mix_audit, "~> 2.1", runtime: false},
