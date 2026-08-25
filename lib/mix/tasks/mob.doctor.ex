@@ -573,11 +573,62 @@ defmodule Mix.Tasks.Mob.Doctor do
         check_deps_fetched(),
         check_compiled(),
         check_driver_tab(),
-        check_plugin_build_options()
+        check_plugin_build_options(),
+        check_component_event_jni()
       ])
     else
       []
     end
+  end
+
+  # ── Component event JNI ownership (MOB-98) ────────────────────────────────
+  #
+  # Apps generated before the mob_new fix declare `nativeDeliverComponentEvent`
+  # as an `external fun` on MobNativeViewRegistry, but the generated JNI export
+  # is `Java_..._MobBridge_nativeDeliverComponentEvent` — JNI resolves a native
+  # method by its declaring class, so the mismatch only surfaces as an
+  # UnsatisfiedLinkError the first time a real tier-2 native component fires an
+  # event. mob_new's template fix doesn't reach already-generated projects (see
+  # mob_dev/decisions/ for why this repo doesn't auto-patch hand-editable native
+  # source) — this check exists so it's caught by `mix mob.doctor` instead of a
+  # crash on first real interaction.
+  defp check_component_event_jni do
+    "android/app/src/main/java/**/MobBridge.kt"
+    |> Path.wildcard()
+    |> Enum.flat_map(fn path ->
+      case File.read(path) do
+        {:ok, content} ->
+          if __component_event_jni_mismatched__(content) do
+            [
+              {:warn, "component event JNI (#{path})",
+               "declares nativeDeliverComponentEvent as an external fun on " <>
+                 "MobNativeViewRegistry, but the generated JNI export is owned by " <>
+                 "MobBridge — JNI resolves a native method by its declaring class, so " <>
+                 "a real tier-2 native component event throws UnsatisfiedLinkError",
+               "Port the fix from a freshly generated app (mix mob.new) or " <>
+                 "mob_new's MobBridge.kt.eex: move `external fun " <>
+                 "nativeDeliverComponentEvent` onto MobBridge as `@JvmStatic external " <>
+                 "fun`, and call it as `MobBridge.nativeDeliverComponentEvent(...)` " <>
+                 "from MobNativeViewRegistry."}
+            ]
+          else
+            []
+          end
+
+        {:error, _} ->
+          []
+      end
+    end)
+  end
+
+  @doc false
+  # Pure kernel: true when MobBridge.kt still has the pre-fix declaration
+  # (bare `external fun`, no `@JvmStatic`) rather than the corrected one.
+  # Public for tests.
+  @spec __component_event_jni_mismatched__(String.t()) :: boolean()
+  def __component_event_jni_mismatched__(content) do
+    String.contains?(content, "external fun nativeDeliverComponentEvent") and
+      not String.contains?(content, "@JvmStatic external fun nativeDeliverComponentEvent")
   end
 
   # ── Plugin build options ──────────────────────────────────────────────────────
