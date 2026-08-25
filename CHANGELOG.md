@@ -8,6 +8,26 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.6.26] - 2026-08-25
+
+### Added
+- **`MobDev.Plugin.Manifest.validate/1` now warns on unknown top-level
+  keys in `priv/mob_plugin.exs`.** `mix mob.plugins` previously reported
+  "vetting clean" for a manifest carrying keys that meant nothing — the
+  validator only checked the shape of known keys, never that every key
+  was one of them. A `styles:` / `default_style:` key (which belongs in
+  the separate `priv/mob_style.exs` manifest — see `mob`'s
+  `MOB_PLUGINS.md`) validated silently and then went nowhere. The
+  warning is spec-versioned: a manifest declaring a `plugin_spec_version`
+  this `mob_dev` doesn't support already errors separately
+  (`check_spec_version`), so an unrecognized key there doesn't pile a
+  second, noisier warning on top — forward-compat stays intact. For a
+  *supported* spec version, an unrecognized key is almost always author
+  error, and now says so instead of vanishing.
+
+Found via a real report from someone building a style plugin against
+this system.
+
 ## [0.6.25] - 2026-08-25
 
 ### Added
