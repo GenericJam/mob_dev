@@ -70,5 +70,19 @@ defmodule Mix.Tasks.Mob.DoctorTest do
     test "does not flag a file that doesn't declare the callback at all" do
       refute Mix.Tasks.Mob.Doctor.__component_event_jni_mismatched__("object MobBridge {}")
     end
+
+    test "does not flag @JvmStatic on its own line above external fun (idiomatic Kotlin)" do
+      # mix mob.doctor only warns — it never re-checks a hand-applied fix, so
+      # a false positive here would tell a dev "still broken" forever even
+      # after they correctly ported it in the idiomatic two-line style.
+      fixed = """
+      object MobBridge {
+          @JvmStatic
+          external fun nativeDeliverComponentEvent(handle: Int, event: String, payloadJson: String)
+      }
+      """
+
+      refute Mix.Tasks.Mob.Doctor.__component_event_jni_mismatched__(fixed)
+    end
   end
 end
