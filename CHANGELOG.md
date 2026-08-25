@@ -8,6 +8,37 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.6.25] - 2026-08-25
+
+### Added
+- **Plugin-declared default fonts, part of the mob custom-fonts feature
+  (see [`mob`'s `MOB_FONTS.md`](https://github.com/GenericJam/mob/blob/master/MOB_FONTS.md)).**
+  A capability plugin's `priv/mob_plugin.exs` manifest can now carry a
+  `default_font: %{family:, file:}` field — `family` is the iOS PostScript
+  name (can't be derived from the filename, so the plugin author supplies
+  it), `file` must be one of the plugin's own `assets.fonts` entries.
+  `MobDev.Plugin.Manifest`'s validation pipeline checks the shape and the
+  file reference; `MobDev.Plugin.Merge.default_font/1` gathers it;
+  `MobDev.Plugin.Validator`'s conflict surface makes two plugins declaring
+  one a build error (only one can win, since `Mob.Theme.fonts[:default]`
+  is a single slot); `MobDev.Plugin.RuntimeManifest.build/1` converts the
+  survivor to the on-device `%{ios:, android:}` spec read at boot by
+  `Mob.Plugins.default_font/0`.
+- **`Mob.Font.android_resource_name/1` is now called from mob core instead
+  of a local copy.** The plugin asset planner (`MobDev.Plugin.Assets`)
+  used to carry its own filename→Android-resource-name normalization,
+  kept in sync with mob's runtime copy (`Mob.Theme.font/2`) only by
+  convention. Both now call the one implementation in `mob`, so a build-time
+  bundled font and its runtime theme token can no longer drift apart.
+
+### Fixed
+- **`{:mob, path: "../mob"}` only resolved on a machine with a sibling
+  `mob` checkout — broke `mob_dev`'s own CI**, which has no such directory
+  (`** (Mix) Cannot compile dependency :mob because it isn't available`).
+  Switched to a git dependency during font development, and now to the
+  proper Hex constraint (`~> 0.7.25`) now that mob has published the
+  version carrying `Mob.Font`.
+
 ## [0.6.24] - 2026-08-19
 
 ### Fixed
