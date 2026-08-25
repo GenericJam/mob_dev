@@ -117,6 +117,31 @@ defmodule MobDev.Plugin.ManifestTest do
       assert {:ok, ^m} = Manifest.validate(m)
     end
 
+    test "warns (but still validates) on an unknown top-level key" do
+      m = Map.put(@valid, :styles, [%{name: :mob_theme_x, theme: ThemeX}])
+
+      log = ExUnit.CaptureLog.capture_log(fn -> assert {:ok, ^m} = Manifest.validate(m) end)
+
+      assert log =~ "unknown key"
+      assert log =~ "styles"
+      assert log =~ "MOB_STYLES.md"
+    end
+
+    test "does not warn when every key is recognized" do
+      log =
+        ExUnit.CaptureLog.capture_log(fn -> assert {:ok, @valid} = Manifest.validate(@valid) end)
+
+      refute log =~ "unknown key"
+    end
+
+    test "does not pile an unknown-key warning on top of an unsupported spec version" do
+      m = @valid |> Map.put(:plugin_spec_version, 99) |> Map.put(:styles, [])
+
+      log = ExUnit.CaptureLog.capture_log(fn -> Manifest.validate(m) end)
+
+      refute log =~ "unknown key"
+    end
+
     test "reports every problem at once, not just the first" do
       assert {:error, errs} = Manifest.validate(%{plugin_spec_version: "nope"})
       assert length(errs) == 3
