@@ -74,9 +74,11 @@ defmodule MobDev.MixProject do
       # Before this, mob_dev had its own copy of the normalization logic,
       # kept in sync with mob core's copy only by convention — see MOB_FONTS.md.
       #
-      # TEMP: path dep until mob publishes a version with Mob.Font. Switch to
+      # TEMP: git dep (master) until mob publishes a version with Mob.Font.
+      # A path dep here would only work on machines with a sibling `mob`
+      # checkout — broke CI, which has no such directory. Switch to
       # {:mob, "~> 0.8"} (or whatever mob's next version is) once that's out.
-      {:mob, path: "../mob", runtime: false},
+      {:mob, git: "https://github.com/GenericJam/mob.git", branch: "master", runtime: false},
       {:eqrcode, "~> 0.2"},
       {:jason, "~> 1.4"},
       {:mix_audit, "~> 2.1", runtime: false},
