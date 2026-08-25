@@ -589,9 +589,10 @@ defmodule Mix.Tasks.Mob.Doctor do
   # method by its declaring class, so the mismatch only surfaces as an
   # UnsatisfiedLinkError the first time a real tier-2 native component fires an
   # event. mob_new's template fix doesn't reach already-generated projects (see
-  # mob_dev/decisions/ for why this repo doesn't auto-patch hand-editable native
-  # source) — this check exists so it's caught by `mix mob.doctor` instead of a
-  # crash on first real interaction.
+  # decisions/2026-08-25-detect-dont-autopatch-native-source.md for why this
+  # repo doesn't auto-patch hand-editable native source) — this check exists
+  # so it's caught by `mix mob.doctor` instead of a crash on first real
+  # interaction.
   defp check_component_event_jni do
     "android/app/src/main/java/**/MobBridge.kt"
     |> Path.wildcard()
@@ -625,10 +626,20 @@ defmodule Mix.Tasks.Mob.Doctor do
   # Pure kernel: true when MobBridge.kt still has the pre-fix declaration
   # (bare `external fun`, no `@JvmStatic`) rather than the corrected one.
   # Public for tests.
+  #
+  # @JvmStatic and `external fun` may be on the same line or split across
+  # two (idiomatic Kotlin puts annotations on their own line) — a plain
+  # String.contains? on the one-line form flagged a correctly hand-ported
+  # fix as still broken forever, since mix mob.doctor only warns and never
+  # re-checks itself. Regex.compile!/1 (runtime), not a ~r// literal — see
+  # mob's AGENTS.md rule #9: compile-time ~r// bakes a call to
+  # :re.import/1, removed in OTP 28.
   @spec __component_event_jni_mismatched__(String.t()) :: boolean()
   def __component_event_jni_mismatched__(content) do
+    fixed = Regex.compile!("@JvmStatic\\s+external\\s+fun\\s+nativeDeliverComponentEvent")
+
     String.contains?(content, "external fun nativeDeliverComponentEvent") and
-      not String.contains?(content, "@JvmStatic external fun nativeDeliverComponentEvent")
+      not Regex.match?(fixed, content)
   end
 
   # ── Plugin build options ──────────────────────────────────────────────────────
