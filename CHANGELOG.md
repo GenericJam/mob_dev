@@ -8,6 +8,27 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.6.27] - 2026-08-26
+
+### Added
+- **`mix mob.doctor` detects the pre-fix Android component-event JNI
+  mismatch** (see `mob`'s 0.7.25 CHANGELOG entry) in an already-generated
+  project's `MobBridge.kt` and points at the fix — this repo doesn't
+  auto-patch hand-editable native source (see
+  `decisions/2026-08-25-detect-dont-autopatch-native-source.md`), so an
+  existing app stays broken until a human ports the template fix or
+  regenerates; this surfaces it via `mix mob.doctor` instead of an
+  `UnsatisfiedLinkError` on first real interaction with a tier-2 native
+  component. (MOB-98)
+
+### Fixed
+- **`mix mob.connect` waited the full ~500ms iOS accessibility settle
+  delay even against physical devices**, where it does nothing —
+  `IOS.enable_accessibility/1` shells out to `xcrun simctl`, simulator-only
+  tooling. Now gated on simulator type as well as platform, matching the
+  same predicate already used elsewhere in this file for the identical
+  reason. (MOB-99)
+
 ## [0.6.26] - 2026-08-25
 
 ### Added
