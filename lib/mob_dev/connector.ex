@@ -70,9 +70,14 @@ defmodule MobDev.Connector do
       # beat to propagate before any caller can start driving taps — the app
       # itself is still booting (wait_for_nodes below) and SwiftUI needs a
       # moment after the notifyutil broadcast to actually rebuild its tree.
-      ios_targets = Enum.filter(tunneled, &(&1.platform == :ios))
-      Enum.each(ios_targets, fn d -> IOS.enable_accessibility(d.serial) end)
-      if ios_targets != [], do: Process.sleep(@ios_accessibility_settle_ms)
+      #
+      # Simulator only, not just iOS: IOS.enable_accessibility/1 shells out to
+      # `xcrun simctl spawn <udid> ...`, which is simulator-only tooling — a
+      # no-op (or error) against a physical device's UDID. Same predicate
+      # kill_stale_simulator_apps/1 above already uses for the same reason.
+      ios_sim_targets = Enum.filter(tunneled, &(&1.platform == :ios && &1.type == :simulator))
+      Enum.each(ios_sim_targets, fn d -> IOS.enable_accessibility(d.serial) end)
+      if ios_sim_targets != [], do: Process.sleep(@ios_accessibility_settle_ms)
 
       # Wait for nodes to come online
       IO.puts("\n  Waiting for nodes...")
