@@ -15,6 +15,9 @@ defmodule MobDev.Connector do
   @connect_timeout 25_000
   # ms between polls
   @connect_interval 500
+  # ms to let SwiftUI's accessibility tree rebuild after enable_accessibility's
+  # notifyutil broadcast — see MOB-99.
+  @ios_accessibility_settle_ms 500
 
   @doc """
   Discovers all connected devices, sets up tunnels, restarts apps, and waits
@@ -63,10 +66,18 @@ defmodule MobDev.Connector do
 
       # Activate accessibility on iOS simulators so ui_tree() returns elements.
       # SwiftUI lazily populates its a11y tree; this one-time activation persists
-      # for the simulator session (survives app restarts).
-      tunneled
-      |> Enum.filter(&(&1.platform == :ios))
-      |> Enum.each(fn d -> IOS.enable_accessibility(d.serial) end)
+      # for the simulator session (survives app restarts). MOB-99: give it a
+      # beat to propagate before any caller can start driving taps — the app
+      # itself is still booting (wait_for_nodes below) and SwiftUI needs a
+      # moment after the notifyutil broadcast to actually rebuild its tree.
+      #
+      # Simulator only, not just iOS: IOS.enable_accessibility/1 shells out to
+      # `xcrun simctl spawn <udid> ...`, which is simulator-only tooling — a
+      # no-op (or error) against a physical device's UDID. Same predicate
+      # kill_stale_simulator_apps/1 above already uses for the same reason.
+      ios_sim_targets = Enum.filter(tunneled, &(&1.platform == :ios && &1.type == :simulator))
+      Enum.each(ios_sim_targets, fn d -> IOS.enable_accessibility(d.serial) end)
+      if ios_sim_targets != [], do: Process.sleep(@ios_accessibility_settle_ms)
 
       # Wait for nodes to come online
       IO.puts("\n  Waiting for nodes...")
