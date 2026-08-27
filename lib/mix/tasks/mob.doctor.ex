@@ -574,7 +574,8 @@ defmodule Mix.Tasks.Mob.Doctor do
         check_compiled(),
         check_driver_tab(),
         check_plugin_build_options(),
-        check_component_event_jni()
+        check_component_event_jni(),
+        check_sheet_dismiss_wire_shape()
       ])
     else
       []
@@ -640,6 +641,74 @@ defmodule Mix.Tasks.Mob.Doctor do
 
     String.contains?(content, "external fun nativeDeliverComponentEvent") and
       not Regex.match?(fixed, content)
+  end
+
+  # ── Sheet dismissal wire shape (MOB-104) ──────────────────────────────────
+  #
+  # An app generated before the MOB-104 fix routes sheet dismissal through
+  # `MobBridge.nativeSendTap`, delivering `{:tap, tag}`. `Mob.UI.sheet/2`
+  # documents `:on_dismiss` as `{:dismiss, tag}` and iOS has always sent that,
+  # so a screen written to the documented contract never matches: Mob.Screen
+  # forwards the unmatched message to handle_info, which raises
+  # FunctionClauseError and kills the screen — or silently drops it with a
+  # catch-all, in which case the BEAM never learns the sheet closed and can't
+  # re-present it.
+  #
+  # Worse to diagnose than MOB-98: that one failed loudly with an
+  # UnsatisfiedLinkError, while this delivers a plausible-but-wrong message.
+  # MobBridge.kt is app-owned and never re-rendered, so mob_new's template fix
+  # doesn't reach existing projects (see
+  # decisions/2026-08-25-detect-dont-autopatch-native-source.md for why this
+  # repo detects rather than auto-patches hand-editable native source).
+  defp check_sheet_dismiss_wire_shape do
+    "android/app/src/main/java/**/MobBridge.kt"
+    |> Path.wildcard()
+    |> Enum.flat_map(fn path ->
+      case File.read(path) do
+        {:ok, content} ->
+          if __sheet_dismiss_wire_shape_stale__(content) do
+            [
+              {:warn, "sheet dismissal wire shape (#{path})",
+               "renders Mob.UI.sheet/2 but has no nativeSendDismiss, so dismissal " <>
+                 "goes through nativeSendTap and delivers {:tap, tag}. Screens " <>
+                 "written to the documented {:dismiss, tag} contract won't match " <>
+                 "it — the screen process dies with FunctionClauseError, or the " <>
+                 "dismissal is silently dropped and the sheet can't be re-presented",
+               "Port from a freshly generated app (mix mob.new) or mob_new's " <>
+                 "templates: add `@JvmStatic external fun nativeSendDismiss(handle: " <>
+                 "Int)` to object MobBridge, add the matching " <>
+                 "Java_<pkg>_MobBridge_nativeSendDismiss thunk to " <>
+                 "android/app/src/main/jni/beam_jni.c calling mob_send_dismiss, and " <>
+                 "switch sendDismissOnce to MobBridge.nativeSendDismiss. Requires " <>
+                 "mob >= 0.7.31, which exports mob_send_dismiss."}
+            ]
+          else
+            []
+          end
+
+        {:error, _} ->
+          []
+      end
+    end)
+  end
+
+  @doc false
+  # Pure kernel: true when this MobBridge.kt renders sheets but predates the
+  # MOB-104 dismissal fix. Public for tests.
+  #
+  # Gated on the sheet renderer being present at all — an app generated before
+  # Mob.UI.sheet/2 existed has no MobSheet and nothing to be wrong about, so
+  # flagging it would be noise. `nativeSendDismiss` is matched as a bare
+  # substring rather than a declaration shape on purpose: the fix's declaration
+  # can be split across lines, and the MOB-98 kernel above already had to be
+  # rewritten once because a one-line String.contains? reported a correctly
+  # hand-ported fix as broken forever (mix mob.doctor only warns, and never
+  # re-checks itself).
+  @spec __sheet_dismiss_wire_shape_stale__(String.t()) :: boolean()
+  def __sheet_dismiss_wire_shape_stale__(content) do
+    renders_sheets = Regex.match?(Regex.compile!("fun\\s+MobSheet\\s*\\("), content)
+
+    renders_sheets and not String.contains?(content, "nativeSendDismiss")
   end
 
   # ── Plugin build options ──────────────────────────────────────────────────────

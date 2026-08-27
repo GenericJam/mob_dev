@@ -85,4 +85,77 @@ defmodule Mix.Tasks.Mob.DoctorTest do
       refute Mix.Tasks.Mob.Doctor.__component_event_jni_mismatched__(fixed)
     end
   end
+
+  describe "__sheet_dismiss_wire_shape_stale__/1 (MOB-104 dismissal wire shape)" do
+    test "flags a sheet renderer that still dismisses through nativeSendTap" do
+      pre_fix = """
+      object MobBridge {
+          @JvmStatic external fun nativeSendTap(handle: Int)
+      }
+
+      @Composable
+      private fun MobSheet(node: MobNode) {
+          fun sendDismissOnce() {
+              dismissHandle?.let { MobBridge.nativeSendTap(it) }
+          }
+      }
+      """
+
+      assert Mix.Tasks.Mob.Doctor.__sheet_dismiss_wire_shape_stale__(pre_fix)
+    end
+
+    test "does not flag once nativeSendDismiss has been ported in" do
+      fixed = """
+      object MobBridge {
+          @JvmStatic external fun nativeSendTap(handle: Int)
+          @JvmStatic external fun nativeSendDismiss(handle: Int)
+      }
+
+      @Composable
+      private fun MobSheet(node: MobNode) {
+          fun sendDismissOnce() {
+              dismissHandle?.let { MobBridge.nativeSendDismiss(it) }
+          }
+      }
+      """
+
+      refute Mix.Tasks.Mob.Doctor.__sheet_dismiss_wire_shape_stale__(fixed)
+    end
+
+    test "does not flag @JvmStatic split across lines (idiomatic Kotlin)" do
+      # Same trap the MOB-98 kernel fell into: doctor only warns and never
+      # re-checks, so a false positive tells a dev "still broken" forever.
+      fixed = """
+      object MobBridge {
+          @JvmStatic
+          external fun nativeSendDismiss(handle: Int)
+      }
+
+      private fun MobSheet(node: MobNode) {}
+      """
+
+      refute Mix.Tasks.Mob.Doctor.__sheet_dismiss_wire_shape_stale__(fixed)
+    end
+
+    test "does not flag an app generated before Mob.UI.sheet/2 existed" do
+      # No MobSheet means no sheet support to be wrong about — warning here
+      # would be pure noise on every pre-0.4.24 project.
+      no_sheets = """
+      object MobBridge {
+          @JvmStatic external fun nativeSendTap(handle: Int)
+      }
+      """
+
+      refute Mix.Tasks.Mob.Doctor.__sheet_dismiss_wire_shape_stale__(no_sheets)
+    end
+
+    test "tolerates whitespace variation in the MobSheet signature" do
+      pre_fix = """
+      object MobBridge { @JvmStatic external fun nativeSendTap(handle: Int) }
+      private fun MobSheet (node: MobNode) {}
+      """
+
+      assert Mix.Tasks.Mob.Doctor.__sheet_dismiss_wire_shape_stale__(pre_fix)
+    end
+  end
 end
