@@ -8,6 +8,22 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [Unreleased]
+
+### Added
+- **`mix mob.doctor` warns when a project still carries the pre-MOB-104 sheet
+  dismissal wiring.** An app generated before the fix routes
+  `Mob.UI.sheet/2`'s `:on_dismiss` through `MobBridge.nativeSendTap` and
+  delivers `{:tap, tag}`, but the documented contract — and iOS — deliver
+  `{:dismiss, tag}`. A screen written to the contract never matches it and
+  dies with `FunctionClauseError`, or the dismissal is silently swallowed and
+  the sheet can never be re-presented. `MobBridge.kt` is app-owned and never
+  re-rendered, so mob_new's template fix doesn't reach existing projects (see
+  `decisions/2026-08-25-detect-dont-autopatch-native-source.md` for why this
+  repo detects rather than auto-patches). The check names the two-line port and
+  notes it needs mob >= 0.7.31. Only fires on projects that actually render
+  sheets, so apps predating `Mob.UI.sheet/2` stay quiet (MOB-104).
+
 ## [0.6.27] - 2026-08-26
 
 ### Added
