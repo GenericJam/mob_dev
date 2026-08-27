@@ -168,7 +168,16 @@ Canonical process lives in
 [`mob/RELEASE.md`](https://github.com/GenericJam/mob/blob/master/RELEASE.md)
 — trigger model (mix.exs as source of truth), patch-bump default with
 mandatory permission, CHANGELOG conventions, per-step idempotency of
-`release.yml`. **mob_dev specifics:**
+`release.yml`.
+
+> **Review gate is on by default.** Everything that landed since the
+> last published version gets a code review *before* you publish —
+> scoped at `v<last-published>..HEAD`, not per-PR — plus the
+> version-sanity checks (is this version already published? did
+> anything merge after the bump commit?). Skip only if the user says
+> so. See RELEASE.md → "Review gate".
+
+**mob_dev specifics:**
 
 - The pre-push hook (below) additionally runs `mix mob.security_scan`
   in this repo — the scanner ships from here, so we get the
