@@ -441,6 +441,19 @@ this system.
 
 ## [0.6.7] - 2026-06-18
 
+### Breaking
+- **`MobDev.Tunnel.setup/2` → `setup/1`.** The dist port is now derived from
+  the device serial internally, so callers no longer pass an index. `setup/1`
+  is `@doc`'d public API, so out-of-tree callers (a custom deploy Mix task,
+  for example) break at compile time with `MobDev.Tunnel.setup/2 is undefined
+  or private. Did you mean: setup/1`. Fix: drop the second argument — the
+  returned `%Device{}` carries the assigned `dist_port`.
+
+  *(Noted retroactively. This shipped in 0.6.7 mentioned only as a
+  parenthetical inside a "Fixed" bullet about dist-port keying, where anyone
+  scanning for breaking changes would miss it — reported by @dl-alexandre in
+  GenericJam/mob_dev#25.)*
+
 ### Fixed
 - **`mix mob.connect` reliability — dist ports keyed by device serial, not run
   index.** The Mac runs one shared EPMD; assigning ports as `9100 + index` meant
@@ -450,8 +463,7 @@ this system.
   serial (`Tunnel.serial_base_port/1`, a crc32 hash into 9100..9899) and bumped
   past any port another live node/forward already holds (`assign_dist_port/2`).
   A given phone always gets the same unique port across runs and projects, and
-  deploy and connect agree on it. `Tunnel.setup/2` → `setup/1` (port is now
-  serial-derived, not index-passed).
+  deploy and connect agree on it.
 - **Stale-tunnel cleanup.** `Tunnel.setup` removes the device's own old forwards
   first (scoped to that serial), so prior runs no longer leave duplicate/wrong
   forwards that poison the next connect.
