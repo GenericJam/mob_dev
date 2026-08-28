@@ -1,6 +1,6 @@
 defmodule MobDev.Deployer do
   @moduledoc """
-  Pushes compiled BEAM files from `_build/dev/lib/*/ebin/` to connected devices.
+  Pushes compiled BEAM files from the active Mix build path to connected devices.
 
   Does NOT rebuild APKs or recompile native code — that's `deploy.sh` (first-time setup).
   Use this for day-to-day code iteration: edit Elixir → `mix mob.deploy` → code running.
@@ -963,27 +963,149 @@ defmodule MobDev.Deployer do
   #
   # The merged staging dir is named <app> so that devicectl's directory-copy
   # semantics land the files at Documents/otp/<app>/ on device.
+  @doc false
+  @spec validate_ios_override(String.t(), String.t(), String.t()) ::
+          :ok | {:error, String.t()}
+  def validate_ios_override(compile_path, staging_dir, app) do
+    active_bootstrap = Path.join(compile_path, "#{app}.beam")
+    staged_bootstrap = Path.join(staging_dir, "#{app}.beam")
+
+    case File.stat(active_bootstrap) do
+      {:ok, %{type: :regular, size: size}} when size > 0 ->
+        cond do
+          not File.regular?(staged_bootstrap) ->
+            # Absence, not mismatch. Wrapping the enoent inside "does not match
+            # active compile output" pointed the user at the wrong file.
+            {:error,
+             "staged iOS override is missing the application bootstrap " <>
+               "(#{Path.basename(staged_bootstrap)}) — the staging copy dropped it"}
+
+          true ->
+            case verify_ios_bootstrap(active_bootstrap, staged_bootstrap) do
+              :ok ->
+                :ok
+
+              {:error, reason} ->
+                {:error, "iOS override does not match active compile output: #{reason}"}
+            end
+        end
+
+      _ ->
+        {:error,
+         "active Mix compile output missing required application bootstrap: #{active_bootstrap}"}
+    end
+  end
+
+  @doc false
+  @spec ios_override_copy_args(String.t(), String.t(), String.t(), String.t()) :: [String.t()]
+  def ios_override_copy_args(udid, bundle, staging_dir, app) do
+    [
+      "devicectl",
+      "device",
+      "copy",
+      "to",
+      "--device",
+      udid,
+      "--domain-type",
+      "appDataContainer",
+      "--domain-identifier",
+      bundle,
+      "--source",
+      staging_dir,
+      "--destination",
+      "Documents/otp/#{app}",
+      "--remove-existing-content",
+      "true"
+    ]
+  end
+
+  @doc false
+  @spec ios_override_verify_args(String.t(), String.t(), String.t(), String.t()) :: [String.t()]
+  def ios_override_verify_args(udid, bundle, destination, app) do
+    [
+      "devicectl",
+      "device",
+      "copy",
+      "from",
+      "--device",
+      udid,
+      "--domain-type",
+      "appDataContainer",
+      "--domain-identifier",
+      bundle,
+      "--source",
+      "Documents/otp/#{app}/#{app}.beam",
+      "--destination",
+      destination
+    ]
+  end
+
+  @doc false
+  @spec verify_ios_bootstrap(String.t(), String.t()) :: :ok | {:error, String.t()}
+  def verify_ios_bootstrap(expected, actual) do
+    with {:ok, expected_binary} <- File.read(expected),
+         {:ok, ^expected_binary} <- File.read(actual) do
+      :ok
+    else
+      {:ok, _other} -> {:error, "physical iOS bootstrap verification mismatch"}
+      {:error, reason} -> {:error, "physical iOS bootstrap verification failed: #{reason}"}
+    end
+  end
+
   defp deploy_ios_physical(%Device{serial: udid} = device, beam_dirs, opts) do
     restart = Keyword.get(opts, :restart, true)
     beam_flags = Keyword.get(opts, :beam_flags, nil)
     bundle = ios_bundle_id()
     app = app_name()
+    compile_path = Mix.Project.compile_path()
+    active_bootstrap = Path.join(compile_path, "#{app}.beam")
 
     # When discovered via WiFi-only EPMD scan the serial is the IP address, which
     # xcrun devicectl does not accept as a --device argument. Resolve to a hardware
     # UDID before proceeding.
     udid = resolve_ios_udid_if_ip(udid)
 
-    if Regex.match?(Regex.compile!("^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$"), udid) do
-      throw(
-        {:error,
-         "device only reachable via WiFi (#{udid}) — use `mix mob.push` for BEAM-only updates, or connect via USB for a native deploy"}
-      )
-    end
+    # Returned, not thrown: this sits OUTSIDE the try/catch below, so a throw
+    # here escapes deploy_ios/3 and deploy_all/1 (neither catches) and aborts
+    # the whole run with a raw ** (throw) — losing the summary for devices that
+    # already succeeded, instead of marking just this one failed.
+    wifi_only? =
+      Regex.match?(Regex.compile!("^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$"), udid)
 
+    if wifi_only? do
+      {:error,
+       "device only reachable via WiFi (#{udid}) — use `mix mob.push` for BEAM-only updates, or connect via USB for a native deploy"}
+    else
+      do_deploy_ios_physical(device, beam_dirs, %{
+        udid: udid,
+        bundle: bundle,
+        app: app,
+        compile_path: compile_path,
+        active_bootstrap: active_bootstrap,
+        restart: restart,
+        beam_flags: beam_flags
+      })
+    end
+  end
+
+  defp do_deploy_ios_physical(device, beam_dirs, %{
+         udid: udid,
+         bundle: bundle,
+         app: app,
+         compile_path: compile_path,
+         active_bootstrap: active_bootstrap,
+         restart: restart,
+         beam_flags: beam_flags
+       }) do
     # Stage all BEAMs (and priv/) into a temp dir named <app>.
+    # PID-qualified: unique_integer restarts low in a fresh VM, so two
+    # concurrent `mix mob.deploy` runs could previously collide and one's
+    # `after` cleanup would delete the other's staging mid-copy.
     staging_parent =
-      Path.join(System.tmp_dir!(), "mob_ios_deploy_#{:erlang.unique_integer([:positive])}")
+      Path.join(
+        System.tmp_dir!(),
+        "mob_ios_deploy_#{:os.getpid()}_#{:erlang.unique_integer([:positive])}"
+      )
 
     staging_dir = Path.join(staging_parent, app)
     File.mkdir_p!(staging_dir)
@@ -1016,27 +1138,25 @@ defmodule MobDev.Deployer do
         File.write!(Path.join(staging_dir, "mob_beam_flags"), beam_flags)
       end
 
+      case validate_ios_override(compile_path, staging_dir, app) do
+        :ok -> :ok
+        {:error, reason} -> throw({:error, reason})
+      end
+
       # devicectl copies the contents of --source into --destination.
       # To land BEAMs at Documents/otp/<app>/, the destination must include
       # the app subdirectory explicitly (staging_dir naming alone is not enough).
+      # From here the on-device override is being REPLACED, not merged
+      # (--remove-existing-content). Any failure past this point leaves it in
+      # an unknown state, and mob_beam.m prefers Documents/otp/<app> on mere
+      # directory existence — so there is no falling back to the signed
+      # bundle, and `xcrun devicectl device` has no delete verb to undo it.
+      # Record that we crossed the line so the error can say so.
+      Process.put(:mob_ios_override_replaced, true)
+
       case System.cmd(
              "xcrun",
-             [
-               "devicectl",
-               "device",
-               "copy",
-               "to",
-               "--device",
-               udid,
-               "--domain-type",
-               "appDataContainer",
-               "--domain-identifier",
-               bundle,
-               "--source",
-               staging_dir,
-               "--destination",
-               "Documents/otp/#{app}"
-             ],
+             ios_override_copy_args(udid, bundle, staging_dir, app),
              stderr_to_stdout: true
            ) do
         {_, 0} ->
@@ -1067,13 +1187,57 @@ defmodule MobDev.Deployer do
           throw({:error, reason})
       end
 
+      received_bootstrap = Path.join(staging_parent, "received_#{app}.beam")
+
+      case System.cmd(
+             "xcrun",
+             ios_override_verify_args(udid, bundle, received_bootstrap, app),
+             stderr_to_stdout: true
+           ) do
+        {_, 0} ->
+          case verify_ios_bootstrap(active_bootstrap, received_bootstrap) do
+            :ok -> :ok
+            {:error, reason} -> throw({:error, reason})
+          end
+
+        {out, _} ->
+          throw({:error, "physical iOS bootstrap verification failed: #{out}"})
+      end
+
       if restart, do: IOS.restart_app_physical(udid, bundle)
 
+      Process.delete(:mob_ios_override_replaced)
       {:ok, device}
     catch
-      {:error, reason} -> {:error, reason}
+      {:error, reason} ->
+        {:error, annotate_override_state(reason, app)}
     after
+      Process.delete(:mob_ios_override_replaced)
       File.rm_rf!(staging_parent)
+    end
+  end
+
+  # If the destructive copy had already begun, the device is now in a worse
+  # state than we found it: Documents/otp/<app> exists but is incomplete, and
+  # mob_beam.m selects that override on directory existence alone. The app will
+  # boot from it — and fail — on the next launch from Springboard, even though
+  # we correctly skipped the restart.
+  #
+  # There is no clean rollback. `xcrun devicectl device` has no delete verb, and
+  # copying an EMPTY directory does not help: the directory still exists, so it
+  # is still preferred, and the app would then have no BEAMs at all. So say so
+  # plainly and give the two recoveries that do work.
+  defp annotate_override_state(reason, app) do
+    if Process.get(:mob_ios_override_replaced) do
+      reason <>
+        "\n\nThe on-device override at Documents/otp/#{app} was already being " <>
+        "replaced when this failed, so it is now incomplete. The app prefers that " <>
+        "directory over its signed bundle, so the next launch will fail even " <>
+        "though it was not restarted.\n" <>
+        "Recover with a successful `mix mob.deploy` (or `--native`), or delete " <>
+        "and reinstall the app."
+    else
+      reason
     end
   end
 

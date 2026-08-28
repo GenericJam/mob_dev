@@ -3,6 +3,117 @@ defmodule MobDev.DeployerTest do
 
   alias MobDev.Deployer
 
+  describe "physical iOS override" do
+    test "requires staged bootstrap bytes to match the active compile output" do
+      root = Path.join(System.tmp_dir!(), "mob_ios_override_#{System.unique_integer()}")
+      compile_path = Path.join(root, "compile")
+      staging_dir = Path.join(root, "staging")
+      File.mkdir_p!(compile_path)
+      File.mkdir_p!(staging_dir)
+      on_exit(fn -> File.rm_rf!(root) end)
+
+      assert {:error, message} =
+               Deployer.validate_ios_override(compile_path, staging_dir, "sample_app")
+
+      assert message =~ "active Mix compile output"
+      assert message =~ Path.join(compile_path, "sample_app.beam")
+
+      File.write!(Path.join(compile_path, "sample_app.beam"), "current bootstrap")
+
+      # Staged file ABSENT is a different fault from staged file DIFFERENT, and
+      # must say so — wrapping the enoent in "does not match active compile
+      # output" sent the reader to the wrong file.
+      assert {:error, message} =
+               Deployer.validate_ios_override(compile_path, staging_dir, "sample_app")
+
+      assert message =~ "missing the application bootstrap"
+      assert message =~ "sample_app.beam"
+      refute message =~ "does not match active compile output"
+
+      File.write!(Path.join(staging_dir, "sample_app.beam"), "stale dependency bootstrap")
+
+      assert {:error, message} =
+               Deployer.validate_ios_override(compile_path, staging_dir, "sample_app")
+
+      assert message =~ "does not match active compile output"
+      assert message =~ "verification mismatch"
+
+      File.write!(Path.join(staging_dir, "sample_app.beam"), "current bootstrap")
+
+      assert :ok =
+               Deployer.validate_ios_override(compile_path, staging_dir, "sample_app")
+    end
+
+    test "copy command replaces the exact override directory" do
+      args = Deployer.ios_override_copy_args("device-id", "com.example.app", "/tmp/app", "app")
+
+      assert args == [
+               "devicectl",
+               "device",
+               "copy",
+               "to",
+               "--device",
+               "device-id",
+               "--domain-type",
+               "appDataContainer",
+               "--domain-identifier",
+               "com.example.app",
+               "--source",
+               "/tmp/app",
+               "--destination",
+               "Documents/otp/app",
+               "--remove-existing-content",
+               "true"
+             ]
+    end
+
+    test "verification command retrieves the exact remote bootstrap" do
+      assert Deployer.ios_override_verify_args(
+               "device-id",
+               "com.example.app",
+               "/tmp/received.beam",
+               "app"
+             ) == [
+               "devicectl",
+               "device",
+               "copy",
+               "from",
+               "--device",
+               "device-id",
+               "--domain-type",
+               "appDataContainer",
+               "--domain-identifier",
+               "com.example.app",
+               "--source",
+               "Documents/otp/app/app.beam",
+               "--destination",
+               "/tmp/received.beam"
+             ]
+    end
+
+    test "remote bootstrap must match staged bytes" do
+      dir = Path.join(System.tmp_dir!(), "mob_ios_verify_#{System.unique_integer()}")
+      staged = Path.join(dir, "staged.beam")
+      received = Path.join(dir, "received.beam")
+      File.mkdir_p!(dir)
+      File.write!(staged, "same beam")
+      File.write!(received, "same beam")
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      assert :ok = Deployer.verify_ios_bootstrap(staged, received)
+
+      File.write!(received, "different beam")
+
+      assert {:error, "physical iOS bootstrap verification mismatch"} =
+               Deployer.verify_ios_bootstrap(staged, received)
+
+      File.rm!(received)
+
+      assert {:error, "physical iOS bootstrap verification failed: enoent"} =
+               Deployer.verify_ios_bootstrap(staged, received)
+    end
+  end
+
   # ── generate_crypto_shim/0 ────────────────────────────────────────────────
 
   describe "generate_crypto_shim/0" do
