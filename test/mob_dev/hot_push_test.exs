@@ -3,6 +3,105 @@ defmodule MobDev.HotPushTest do
 
   alias MobDev.HotPush
 
+  describe "select_runtime_beam_paths/4" do
+    test "uses only active app beams when the build path has stale app output" do
+      root = Path.join(System.tmp_dir!(), "mob_[edge]_paths_#{System.unique_integer()}")
+      build_path = Path.join(root, "active-build")
+      app_ebin = Path.join(root, "application-ebin")
+      File.mkdir_p!(app_ebin)
+
+      erlang_bootstrap = Path.join(app_ebin, "sample_app.beam")
+      elixir_module = Path.join(app_ebin, "Elixir.SampleApp.beam")
+      File.write!(erlang_bootstrap, "erlang")
+      File.write!(elixir_module, "elixir")
+      File.write!(Path.join(app_ebin, "sample_app.app"), "app metadata")
+
+      stale_app_ebin = Path.join([build_path, "lib", "sample_app", "ebin"])
+      File.mkdir_p!(stale_app_ebin)
+      stale_bootstrap = Path.join(stale_app_ebin, "sample_app.beam")
+      removed_module = Path.join(stale_app_ebin, "Elixir.RemovedModule.beam")
+      File.write!(stale_bootstrap, "stale erlang")
+      File.write!(removed_module, "removed")
+
+      runtime_ebin = Path.join([build_path, "lib", "runtime_dep", "ebin"])
+      File.mkdir_p!(runtime_ebin)
+      runtime_module = Path.join(runtime_ebin, "Elixir.RuntimeDep.beam")
+      File.write!(runtime_module, "runtime")
+
+      dev_ebin = Path.join([build_path, "lib", "dev_tool", "ebin"])
+      File.mkdir_p!(dev_ebin)
+      File.write!(Path.join(dev_ebin, "Elixir.DevTool.beam"), "dev")
+
+      on_exit(fn -> File.rm_rf!(root) end)
+
+      runtime = MapSet.new(["sample_app", "runtime_dep"])
+
+      selected =
+        HotPush.select_runtime_beam_paths(build_path, app_ebin, runtime, "sample_app")
+
+      assert selected == [
+               runtime_module,
+               elixir_module,
+               erlang_bootstrap
+             ]
+
+      refute stale_bootstrap in selected
+      refute removed_module in selected
+    end
+  end
+
+  describe "select_runtime_beam_dirs/4" do
+    test "selects the active application ebin and excludes stale build output" do
+      root = Path.join(System.tmp_dir!(), "mob_[edge]_dirs_#{System.unique_integer()}")
+      build_path = Path.join(root, "active-build")
+      app_ebin = Path.join(root, "application-ebin")
+      File.mkdir_p!(app_ebin)
+      File.write!(Path.join(app_ebin, "sample_app.beam"), "erlang")
+      File.write!(Path.join(app_ebin, "Elixir.SampleApp.beam"), "elixir")
+
+      stale_app_ebin = Path.join([build_path, "lib", "sample_app", "ebin"])
+      File.mkdir_p!(stale_app_ebin)
+      File.write!(Path.join(stale_app_ebin, "sample_app.beam"), "stale erlang")
+      File.write!(Path.join(stale_app_ebin, "Elixir.RemovedModule.beam"), "removed")
+
+      dep_ebin = Path.join([build_path, "lib", "runtime_dep", "ebin"])
+      File.mkdir_p!(dep_ebin)
+      File.write!(Path.join(dep_ebin, "Elixir.RuntimeDep.beam"), "dep")
+
+      dev_ebin = Path.join([build_path, "lib", "dev_tool", "ebin"])
+      File.mkdir_p!(dev_ebin)
+      File.write!(Path.join(dev_ebin, "Elixir.DevTool.beam"), "dev")
+
+      on_exit(fn -> File.rm_rf!(root) end)
+
+      dirs =
+        HotPush.select_runtime_beam_dirs(
+          build_path,
+          app_ebin,
+          MapSet.new(["sample_app", "runtime_dep"]),
+          "sample_app"
+        )
+
+      assert dirs == [dep_ebin, app_ebin]
+      refute dev_ebin in dirs
+      refute stale_app_ebin in dirs
+
+      staged_names =
+        dirs
+        |> Enum.flat_map(&File.ls!/1)
+        |> MapSet.new()
+
+      assert MapSet.subset?(
+               MapSet.new([
+                 "sample_app.beam",
+                 "Elixir.SampleApp.beam",
+                 "Elixir.RuntimeDep.beam"
+               ]),
+               staged_names
+             )
+    end
+  end
+
   # ── snapshot_beams/0 ─────────────────────────────────────────────────────────
 
   describe "snapshot_beams/0" do
@@ -65,8 +164,16 @@ defmodule MobDev.HotPushTest do
 
     test "push count is less than total beam files in _build" do
       # push_all only pushes runtime deps — dev-only deps (mob_dev itself, Bandit,
-      # Phoenix, etc.) must be excluded even though their BEAMs are in _build/dev.
-      total_beams = Path.wildcard("_build/dev/lib/*/ebin/*.beam") |> length()
+      # Phoenix, etc.) must be excluded even though their BEAMs are in the build path.
+      total_beams =
+        Mix.Project.build_path()
+        |> Path.join("lib")
+        |> File.ls!()
+        |> Enum.map(&Path.join([Mix.Project.build_path(), "lib", &1, "ebin"]))
+        |> Enum.filter(&File.dir?/1)
+        |> Enum.flat_map(&File.ls!/1)
+        |> Enum.count(&String.ends_with?(&1, ".beam"))
+
       {pushed, _} = HotPush.push_all([])
       assert pushed > 0
       assert pushed < total_beams

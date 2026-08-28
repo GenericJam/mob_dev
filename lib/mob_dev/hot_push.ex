@@ -44,7 +44,7 @@ defmodule MobDev.HotPush do
   end
 
   @doc """
-  Pushes all compiled BEAM files from `_build/dev/lib/*/ebin/` to `nodes`.
+  Pushes all compiled BEAM files from the active Mix build path to `nodes`.
 
   Only pushes BEAMs for runtime dependencies — deps marked `only: :dev` or
   `runtime: false` in `mix.exs` (and their transitive deps) are excluded.
@@ -106,12 +106,14 @@ defmodule MobDev.HotPush do
   # their transitive deps (resolved via OTP .app files).
   defp runtime_beam_paths do
     runtime = runtime_lib_names()
+    project_app = to_string(Mix.Project.config()[:app])
 
-    Path.wildcard("_build/dev/lib/*/ebin/*.beam")
-    |> Enum.filter(fn path ->
-      lib = path |> Path.split() |> Enum.at(-3)
-      MapSet.member?(runtime, lib)
-    end)
+    select_runtime_beam_paths(
+      Mix.Project.build_path(),
+      Mix.Project.compile_path(),
+      runtime,
+      project_app
+    )
   end
 
   @doc """
@@ -121,39 +123,65 @@ defmodule MobDev.HotPush do
   @spec runtime_beam_dirs() :: [String.t()]
   def runtime_beam_dirs do
     runtime = runtime_lib_names()
+    project_app = to_string(Mix.Project.config()[:app])
 
-    case File.ls("_build/dev/lib") do
-      {:ok, libs} ->
-        libs
-        |> Enum.filter(&MapSet.member?(runtime, &1))
-        |> Enum.map(&"_build/dev/lib/#{&1}/ebin")
-        |> Enum.filter(&File.dir?/1)
+    select_runtime_beam_dirs(
+      Mix.Project.build_path(),
+      Mix.Project.compile_path(),
+      runtime,
+      project_app
+    )
+  end
 
-      {:error, _} ->
-        []
-    end
+  @doc false
+  @spec select_runtime_beam_paths(String.t(), String.t(), MapSet.t(String.t()), String.t()) ::
+          [String.t()]
+  def select_runtime_beam_paths(build_path, compile_path, runtime, project_app) do
+    build_path
+    |> select_runtime_beam_dirs(compile_path, runtime, project_app)
+    |> Enum.flat_map(&beam_files/1)
+  end
+
+  @doc false
+  @spec select_runtime_beam_dirs(String.t(), String.t(), MapSet.t(String.t()), String.t()) ::
+          [String.t()]
+  def select_runtime_beam_dirs(build_path, compile_path, runtime, project_app) do
+    lib_path = Path.join(build_path, "lib")
+
+    runtime_dirs =
+      case File.ls(lib_path) do
+        {:ok, libs} ->
+          libs
+          |> Enum.filter(&(MapSet.member?(runtime, &1) and &1 != project_app))
+          |> Enum.map(&Path.join([lib_path, &1, "ebin"]))
+          |> Enum.filter(&File.dir?/1)
+
+        {:error, _} ->
+          []
+      end
+
+    dependency_dirs = Enum.sort(runtime_dirs)
+
+    if File.dir?(compile_path), do: dependency_dirs ++ [compile_path], else: dependency_dirs
   end
 
   defp runtime_lib_names do
-    project_app = to_string(Mix.Project.config()[:app])
-
     # Direct runtime deps: no only: :dev and not runtime: false
     direct =
       Mix.Project.config()
       |> Keyword.get(:deps, [])
       |> Enum.flat_map(&dep_runtime_name/1)
       |> MapSet.new()
-      |> MapSet.put(project_app)
 
-    expand_runtime_libs(direct)
+    expand_runtime_libs(direct, Mix.Project.build_path())
   end
 
   # Expand a set of lib names to include their transitive OTP deps,
-  # by reading each lib's .app file in _build/dev.
-  defp expand_runtime_libs(libs) do
+  # by reading each lib's .app file in the active Mix build path.
+  defp expand_runtime_libs(libs, build_path) do
     new_libs =
       Enum.flat_map(libs, fn lib ->
-        case Path.wildcard("_build/dev/lib/#{lib}/ebin/*.app") do
+        case app_files(Path.join([build_path, "lib", lib, "ebin"])) do
           [app_file | _] ->
             case :file.consult(String.to_charlist(app_file)) do
               {:ok, [{:application, _app, props}]} ->
@@ -173,7 +201,33 @@ defmodule MobDev.HotPush do
     if MapSet.size(new_libs) == 0 do
       libs
     else
-      expand_runtime_libs(MapSet.union(libs, new_libs))
+      expand_runtime_libs(MapSet.union(libs, new_libs), build_path)
+    end
+  end
+
+  defp beam_files(dir) do
+    case File.ls(dir) do
+      {:ok, files} ->
+        files
+        |> Enum.filter(&String.ends_with?(&1, ".beam"))
+        |> Enum.sort()
+        |> Enum.map(&Path.join(dir, &1))
+
+      {:error, _} ->
+        []
+    end
+  end
+
+  defp app_files(dir) do
+    case File.ls(dir) do
+      {:ok, files} ->
+        files
+        |> Enum.filter(&String.ends_with?(&1, ".app"))
+        |> Enum.sort()
+        |> Enum.map(&Path.join(dir, &1))
+
+      {:error, _} ->
+        []
     end
   end
 

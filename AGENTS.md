@@ -41,6 +41,15 @@ mix test --exclude integration # skip the device-dependent ones
   `narrow_platforms_for_device/2` and is the single source of truth for both
   build and deploy. Bypass it and you'll get either spurious "No device
   matched" warnings (deploy) or builds for the wrong platform (build).
+- **Deployment BEAM discovery follows Mix's active paths.** Use
+  `Mix.Project.build_path/0` for dependency output and
+  `Mix.Project.compile_path/0` for every application BEAM, including modules
+  compiled from `erlc_paths`. Hard-coding `_build/dev` can push a stale,
+  incomplete override that shadows the complete application bundle.
+- **Physical iOS BEAM overrides must be exact and self-verifying.** The app
+  prefers `Documents/otp/<app>` over its complete signed bundle. Replace that
+  directory rather than incrementally merging it, require `<app>.beam` before
+  transfer, and verify the received bootstrap bytes before restarting.
 - **`xcodebuild` errors get rewritten** to actionable hints by
   `diagnose_xcodebuild_failure/1` in `mob.provision`. Apple's verbatim text is
   preserved alongside our hint so the snippet stays google-able. Add new
