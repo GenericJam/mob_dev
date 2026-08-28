@@ -179,4 +179,41 @@ defmodule MobDev.HotPushTest do
       assert pushed < total_beams
     end
   end
+
+  describe "runtime_lib_names/0 (drives what actually gets pushed)" do
+    # This is the function that decides the push set, and until now it had no
+    # coverage: every other test hand-builds the MapSet it produces, so a
+    # regression inside it stayed green. Driven here against mob_dev's own
+    # project, which has both real runtime deps and only: :dev ones.
+    test "keeps runtime deps and excludes dev-only ones" do
+      libs = MobDev.HotPush.__runtime_lib_names__()
+
+      assert MapSet.member?(libs, "mob_dev")
+
+      for dev_only <- ["credo", "ex_slop", "mix_audit", "ex_doc"] do
+        refute MapSet.member?(libs, dev_only),
+               "#{dev_only} is only: :dev and must not be pushed to a device"
+      end
+    end
+
+    test "traverses the project's own .app so extra_applications survive" do
+      # The regression this guards: dropping project_app from the expansion
+      # seed stops the project's .app being read at all, so a dependency
+      # reachable only via `runtime: false` + `extra_applications:` — the
+      # documented idiom for opting a build-time dep back into the runtime
+      # application list — is silently never pushed. The app then boots and
+      # dies with undef on first use.
+      libs = MobDev.HotPush.__runtime_lib_names__()
+
+      extra =
+        Mix.Project.get().application()
+        |> Keyword.get(:extra_applications, [])
+        |> Enum.map(&to_string/1)
+
+      for app <- extra do
+        assert MapSet.member?(libs, app),
+               "#{app} is in extra_applications and must survive the runtime filter"
+      end
+    end
+  end
 end
