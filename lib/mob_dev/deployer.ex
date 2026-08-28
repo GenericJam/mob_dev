@@ -1,6 +1,6 @@
 defmodule MobDev.Deployer do
   @moduledoc """
-  Pushes compiled BEAM files from `_build/dev/lib/*/ebin/` to connected devices.
+  Pushes compiled BEAM files from the active Mix build path to connected devices.
 
   Does NOT rebuild APKs or recompile native code — that's `deploy.sh` (first-time setup).
   Use this for day-to-day code iteration: edit Elixir → `mix mob.deploy` → code running.
@@ -963,11 +963,92 @@ defmodule MobDev.Deployer do
   #
   # The merged staging dir is named <app> so that devicectl's directory-copy
   # semantics land the files at Documents/otp/<app>/ on device.
+  @doc false
+  @spec validate_ios_override(String.t(), String.t(), String.t()) ::
+          :ok | {:error, String.t()}
+  def validate_ios_override(compile_path, staging_dir, app) do
+    active_bootstrap = Path.join(compile_path, "#{app}.beam")
+    staged_bootstrap = Path.join(staging_dir, "#{app}.beam")
+
+    case File.stat(active_bootstrap) do
+      {:ok, %{type: :regular, size: size}} when size > 0 ->
+        case verify_ios_bootstrap(active_bootstrap, staged_bootstrap) do
+          :ok ->
+            :ok
+
+          {:error, reason} ->
+            {:error, "iOS override does not match active compile output: #{reason}"}
+        end
+
+      _ ->
+        {:error,
+         "active Mix compile output missing required application bootstrap: #{active_bootstrap}"}
+    end
+  end
+
+  @doc false
+  @spec ios_override_copy_args(String.t(), String.t(), String.t(), String.t()) :: [String.t()]
+  def ios_override_copy_args(udid, bundle, staging_dir, app) do
+    [
+      "devicectl",
+      "device",
+      "copy",
+      "to",
+      "--device",
+      udid,
+      "--domain-type",
+      "appDataContainer",
+      "--domain-identifier",
+      bundle,
+      "--source",
+      staging_dir,
+      "--destination",
+      "Documents/otp/#{app}",
+      "--remove-existing-content",
+      "true"
+    ]
+  end
+
+  @doc false
+  @spec ios_override_verify_args(String.t(), String.t(), String.t(), String.t()) :: [String.t()]
+  def ios_override_verify_args(udid, bundle, destination, app) do
+    [
+      "devicectl",
+      "device",
+      "copy",
+      "from",
+      "--device",
+      udid,
+      "--domain-type",
+      "appDataContainer",
+      "--domain-identifier",
+      bundle,
+      "--source",
+      "Documents/otp/#{app}/#{app}.beam",
+      "--destination",
+      destination
+    ]
+  end
+
+  @doc false
+  @spec verify_ios_bootstrap(String.t(), String.t()) :: :ok | {:error, String.t()}
+  def verify_ios_bootstrap(expected, actual) do
+    with {:ok, expected_binary} <- File.read(expected),
+         {:ok, ^expected_binary} <- File.read(actual) do
+      :ok
+    else
+      {:ok, _other} -> {:error, "physical iOS bootstrap verification mismatch"}
+      {:error, reason} -> {:error, "physical iOS bootstrap verification failed: #{reason}"}
+    end
+  end
+
   defp deploy_ios_physical(%Device{serial: udid} = device, beam_dirs, opts) do
     restart = Keyword.get(opts, :restart, true)
     beam_flags = Keyword.get(opts, :beam_flags, nil)
     bundle = ios_bundle_id()
     app = app_name()
+    compile_path = Mix.Project.compile_path()
+    active_bootstrap = Path.join(compile_path, "#{app}.beam")
 
     # When discovered via WiFi-only EPMD scan the serial is the IP address, which
     # xcrun devicectl does not accept as a --device argument. Resolve to a hardware
@@ -1016,27 +1097,17 @@ defmodule MobDev.Deployer do
         File.write!(Path.join(staging_dir, "mob_beam_flags"), beam_flags)
       end
 
+      case validate_ios_override(compile_path, staging_dir, app) do
+        :ok -> :ok
+        {:error, reason} -> throw({:error, reason})
+      end
+
       # devicectl copies the contents of --source into --destination.
       # To land BEAMs at Documents/otp/<app>/, the destination must include
       # the app subdirectory explicitly (staging_dir naming alone is not enough).
       case System.cmd(
              "xcrun",
-             [
-               "devicectl",
-               "device",
-               "copy",
-               "to",
-               "--device",
-               udid,
-               "--domain-type",
-               "appDataContainer",
-               "--domain-identifier",
-               bundle,
-               "--source",
-               staging_dir,
-               "--destination",
-               "Documents/otp/#{app}"
-             ],
+             ios_override_copy_args(udid, bundle, staging_dir, app),
              stderr_to_stdout: true
            ) do
         {_, 0} ->
@@ -1065,6 +1136,23 @@ defmodule MobDev.Deployer do
             end
 
           throw({:error, reason})
+      end
+
+      received_bootstrap = Path.join(staging_parent, "received_#{app}.beam")
+
+      case System.cmd(
+             "xcrun",
+             ios_override_verify_args(udid, bundle, received_bootstrap, app),
+             stderr_to_stdout: true
+           ) do
+        {_, 0} ->
+          case verify_ios_bootstrap(active_bootstrap, received_bootstrap) do
+            :ok -> :ok
+            {:error, reason} -> throw({:error, reason})
+          end
+
+        {out, _} ->
+          throw({:error, "physical iOS bootstrap verification failed: #{out}"})
       end
 
       if restart, do: IOS.restart_app_physical(udid, bundle)
