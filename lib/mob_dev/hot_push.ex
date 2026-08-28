@@ -110,7 +110,7 @@ defmodule MobDev.HotPush do
 
     select_runtime_beam_paths(
       Mix.Project.build_path(),
-      Mix.Project.compile_path(),
+      active_compile_path(),
       runtime,
       project_app
     )
@@ -127,7 +127,7 @@ defmodule MobDev.HotPush do
 
     select_runtime_beam_dirs(
       Mix.Project.build_path(),
-      Mix.Project.compile_path(),
+      active_compile_path(),
       runtime,
       project_app
     )
@@ -165,15 +165,97 @@ defmodule MobDev.HotPush do
     if File.dir?(compile_path), do: dependency_dirs ++ [compile_path], else: dependency_dirs
   end
 
+  # Mix.Project.compile_path/0 RAISES for an umbrella root ("umbrellas have no
+  # app"), where the previous hardcoded _build/dev wildcard just returned
+  # nothing. mob does not support umbrellas (MobDev.AdoptGuard refuses them
+  # outright), so fail with that message rather than leaking Mix's internal
+  # error out of a deploy.
+  defp active_compile_path do
+    if Mix.Project.umbrella?() do
+      Mix.raise(
+        "mob does not support umbrella applications — run mix mob.deploy from a " <>
+          "child app, not the umbrella root"
+      )
+    end
+
+    Mix.Project.compile_path()
+  end
+
+  @doc false
+  # Test seam. runtime_lib_names/0 reads Mix.Project.config() and is the
+  # function that actually decides what gets pushed, but being private it had
+  # no coverage — the tests all hand-built the MapSet it produces and so could
+  # not catch a regression in it. Exposed so a fixture project can drive it.
+  @spec __runtime_lib_names__() :: MapSet.t(String.t())
+  def __runtime_lib_names__, do: runtime_lib_names()
+
   defp runtime_lib_names do
+    config = Mix.Project.config()
+    project_app = to_string(config[:app])
+
     # Direct runtime deps: no only: :dev and not runtime: false
     direct =
-      Mix.Project.config()
+      config
       |> Keyword.get(:deps, [])
       |> Enum.flat_map(&dep_runtime_name/1)
       |> MapSet.new()
 
-    expand_runtime_libs(direct, Mix.Project.build_path())
+    # Seed with the project itself so its OWN .app is traversed. A dependency
+    # can be reachable only through the project's `applications:` list — the
+    # documented `runtime: false` + `extra_applications:` idiom, where
+    # extra_applications deliberately overrides the runtime: false flag. Drop
+    # the seed and those libs are never pushed; the app boots and dies with
+    # undef on first use, which is the same failure class this module exists
+    # to avoid.
+    #
+    # The reason the seed was previously removed is real though: the project's
+    # .app also lists `only: :dev` deps under MIX_ENV=dev, which leaked them
+    # into the runtime set and contradicted this module's docs. So expand
+    # first, then subtract the deps we know are dev-only or runtime: false.
+    # project_app itself is excluded at the directory-selection step
+    # (select_runtime_beam_dirs/4), where the stale-output concern lives.
+    expanded =
+      direct
+      |> MapSet.put(project_app)
+      |> expand_runtime_libs(Mix.Project.build_path())
+
+    MapSet.difference(expanded, non_runtime_dep_names(config))
+  end
+
+  # Names of direct deps explicitly marked `only: :dev`/`:test` or
+  # `runtime: false`, EXCEPT any the project re-declares in
+  # `extra_applications` — that combination is how a build-time dep is opted
+  # back into the runtime application list, and it must survive the subtraction.
+  defp non_runtime_dep_names(config) do
+    # extra_applications lives on the project module's application/0 callback,
+    # NOT in Mix.Project.config/0 — reading it from config silently yields []
+    # and subtracts the very libs this is meant to keep.
+    kept =
+      case Mix.Project.get() do
+        nil ->
+          MapSet.new()
+
+        module ->
+          if function_exported?(module, :application, 0) do
+            module.application()
+            |> Keyword.get(:extra_applications, [])
+            |> Enum.map(&to_string/1)
+            |> MapSet.new()
+          else
+            MapSet.new()
+          end
+      end
+
+    config
+    |> Keyword.get(:deps, [])
+    |> Enum.flat_map(fn dep ->
+      case dep_runtime_name(dep) do
+        [] -> [to_string(elem(dep, 0))]
+        _ -> []
+      end
+    end)
+    |> MapSet.new()
+    |> MapSet.difference(kept)
   end
 
   # Expand a set of lib names to include their transitive OTP deps,

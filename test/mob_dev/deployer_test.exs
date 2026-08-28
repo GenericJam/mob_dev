@@ -20,16 +20,22 @@ defmodule MobDev.DeployerTest do
 
       File.write!(Path.join(compile_path, "sample_app.beam"), "current bootstrap")
 
+      # Staged file ABSENT is a different fault from staged file DIFFERENT, and
+      # must say so — wrapping the enoent in "does not match active compile
+      # output" sent the reader to the wrong file.
       assert {:error, message} =
                Deployer.validate_ios_override(compile_path, staging_dir, "sample_app")
 
-      assert message =~ "does not match active compile output"
+      assert message =~ "missing the application bootstrap"
+      assert message =~ "sample_app.beam"
+      refute message =~ "does not match active compile output"
 
       File.write!(Path.join(staging_dir, "sample_app.beam"), "stale dependency bootstrap")
 
       assert {:error, message} =
                Deployer.validate_ios_override(compile_path, staging_dir, "sample_app")
 
+      assert message =~ "does not match active compile output"
       assert message =~ "verification mismatch"
 
       File.write!(Path.join(staging_dir, "sample_app.beam"), "current bootstrap")

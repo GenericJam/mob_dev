@@ -10,6 +10,36 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ## [Unreleased]
 
+### Fixed
+- **`mix mob.deploy` no longer drops dependencies reachable only through
+  `extra_applications`.** The runtime filter stopped consulting the project's
+  own `.app` file, so a dep declared `runtime: false` and opted back in via
+  `extra_applications:` — the documented idiom — was silently never pushed. The
+  app booted and died with `undef` on first use. The project's `.app` is
+  traversed again, with dev-only deps subtracted afterwards rather than by
+  skipping the traversal.
+- BEAM discovery follows `Mix.Project.build_path/0` and `compile_path/0` instead
+  of a hardcoded `_build/dev`, so a non-dev `MIX_ENV` or a custom `:build_path`
+  is honoured. Projects using `build_per_environment: false` previously pushed
+  no dependency BEAMs at all.
+- `mix mob.deploy` from an umbrella root now reports that mob does not support
+  umbrellas instead of leaking a raw `Mix.Project.app_path/1` error.
+- A physical-iOS deploy targeting a WiFi-only device returns a per-device error
+  instead of throwing past the run and aborting every other device's summary.
+- iOS staging directories are PID-qualified, so two concurrent deploys cannot
+  delete each other's staging mid-copy.
+
+### Changed
+- **Physical iOS overrides are now replaced, not merged**
+  (`devicectl --remove-existing-content`), and the transfer is verified before
+  the app is restarted. Note the trade-off: because `mob_beam.m` prefers
+  `Documents/otp/<app>` on directory existence alone, a transfer interrupted
+  after the copy begins leaves an incomplete override that the next launch will
+  still prefer over the signed bundle. There is no rollback — `devicectl` has no
+  delete verb, and an empty directory is still preferred — so the deploy now
+  says so explicitly and names the recoveries (re-run the deploy, or reinstall).
+
+
 ### Added
 - **`mix mob.doctor` warns when a project still carries the pre-MOB-104 sheet
   dismissal wiring.** An app generated before the fix routes
