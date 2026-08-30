@@ -8,6 +8,16 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.6.30] - 2026-08-30
+
+### Fixed
+- **0.6.29's published package could not compile.** The compile-time Zig-pin
+  reader loaded the repository-root `.tool-versions`, which Hex omits from
+  packages. The required version now lives in packaged source (lockstep test
+  against the repo's `.tool-versions`), and a packed-artifact regression
+  compiles the real Hex layout and exercises doctor/native exact, mismatch,
+  and failed probes. Use 0.6.30 instead of 0.6.29.
+
 ## [0.6.29] - 2026-08-30
 
 ### Changed
