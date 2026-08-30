@@ -8,6 +8,20 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [0.6.29] - 2026-08-30
+
+### Changed
+- **Zig preflight now enforces the exact Android build toolchain.**
+  `mix mob.deploy --native` and `mix mob.doctor` derive the required version
+  from `.tool-versions` (`zig 0.17.0-dev.269+ebff43698`) and report
+  missing/mismatched/broken zig with exact `mise install` commands, replacing
+  the stale `zig 0.15.x` advice (asdf guidance dropped — asdf cannot fetch
+  historical dev nightlies). **Behavior change:** a non-exact zig now fails
+  the preflight even for legacy projects with app-owned `build.zig` that
+  previously built with other versions — install the pinned version
+  (`mise install zig@0.17.0-dev.269+ebff43698`). Companion to mob_new
+  0.4.27, which pins the same version in generated projects.
+
 ## [0.6.28] - 2026-08-28
 
 ### Added
