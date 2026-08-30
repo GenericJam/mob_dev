@@ -67,6 +67,13 @@ mix test --exclude integration # skip the device-dependent ones
 - **The release scripts assume `~/code/otp` exists** with the right cross-compile
   output. The patches in `scripts/release/patches/` are applied automatically
   by `xcompile_ios_device.sh`, idempotently — re-running is safe.
+- **The application-build Zig version is exact.** `MobDev.Toolchain` embeds the
+  root `.tool-versions` pin and both native build preflight and `mob.doctor`
+  reject any other version. `mob.adopt` deliberately does not rewrite an
+  existing Phoenix project's toolchain file: it installs `build.zig`-bearing
+  native trees, then the preflight reports a missing or conflicting pin with
+  the exact mise command. Changing an adopted app's existing language/runtime
+  pins without its owner's consent would be destructive.
 - **`mob.add_nif` is the entry point for new NIFs.** Don't add `:static_nifs`
   entries by hand to `mob.exs` — the task already does the AST-aware append,
   generates the Elixir stub via Igniter, and re-runs `mob.regen_driver_tab`
@@ -139,6 +146,7 @@ narrowing functions). Don't make them private:
 - `NativeBuild.pythonx_in_project?/1`, `python_apple_support_env/2`
 - `NativeBuild.__prune_plugin_artifacts__/2` (the plugin-removal prune; ledger-tracked per merge concern)
 - `Mix.Tasks.Mob.Doctor.__zig_install_fix__/0`
+- `Mix.Tasks.Mob.Doctor.__zig_check_result__/1`
 - `Enable.inject_pythonx_dep/1`, `inject_pythonx_uv_init_gate/2`, `python_paths_module_template/1`
 - `Emulators.parse_simctl_json/1`, `find_emulator_binary/1`
 - `Provision.diagnose_xcodebuild_failure/1`
