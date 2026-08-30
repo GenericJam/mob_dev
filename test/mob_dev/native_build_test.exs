@@ -1944,8 +1944,9 @@ defmodule MobDev.NativeBuildTest do
       # the cause: zig missing + the vanished C fallback source
       assert msg =~ "zig is not on your PATH"
       assert msg =~ "mob_nif.c"
-      # the fix: the version mob.doctor pins, plus how to verify
-      assert msg =~ "zig 0.15"
+      # the fix: the exact application-build version, plus how to verify
+      assert msg =~ "zig 0.17.0-dev.269+ebff43698"
+      refute msg =~ "zig 0.15"
       assert msg =~ "mix mob.doctor"
     end
 
