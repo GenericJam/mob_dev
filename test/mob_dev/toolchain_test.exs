@@ -6,7 +6,17 @@ defmodule MobDev.ToolchainTest do
   test "required Zig version stays in lockstep with .tool-versions" do
     tool_versions = File.read!(Path.expand("../../.tool-versions", __DIR__))
 
-    assert tool_versions =~ "zig #{Toolchain.required_zig_version()}"
+    pinned_zig =
+      tool_versions
+      |> String.split("\n")
+      |> Enum.find_value(fn line ->
+        case String.split(line) do
+          ["zig", version] -> version
+          _ -> nil
+        end
+      end)
+
+    assert pinned_zig == Toolchain.required_zig_version()
   end
 
   test "accepts the exact required Zig version" do

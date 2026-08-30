@@ -1,17 +1,9 @@
 defmodule MobDev.Toolchain do
   @moduledoc false
 
-  @tool_versions_path Path.expand("../../.tool-versions", __DIR__)
-  @external_resource @tool_versions_path
-  @required_zig_version @tool_versions_path
-                        |> File.read!()
-                        |> String.split("\n")
-                        |> Enum.find_value(fn line ->
-                          case String.split(line) do
-                            ["zig", version] -> version
-                            _ -> nil
-                          end
-                        end) || raise("zig is not pinned in #{@tool_versions_path}")
+  # This value must live in packaged source; the root toolchain file is not in
+  # Hex archives. The source test keeps both release authorities in lockstep.
+  @required_zig_version "0.17.0-dev.269+ebff43698"
 
   @type zig_status ::
           :missing
