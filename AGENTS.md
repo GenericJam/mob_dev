@@ -36,6 +36,10 @@ mix test --exclude integration # skip the device-dependent ones
 - **Compile-time regex literals are unsafe** on Elixir 1.19 / OTP 28.0. Use
   `Regex.compile!("...", "flags")` for runtime compilation. Already swept in
   0.3.17 — don't reintroduce.
+- **Hex packages omit repository-root dotfiles by default.** Code under `lib/`
+  must not compile-time read `.tool-versions` or another root-only file. Keep a
+  packaged authority in source, enforce exact lockstep with the root file in a
+  source test, and compile the unpacked Hex artifact in the regression suite.
 - **`mix mob.deploy --device <id>`** resolves the id via discovery before
   deciding which platform to build. The narrowing logic is in
   `narrow_platforms_for_device/2` and is the single source of truth for both
