@@ -2,6 +2,7 @@ defmodule Mix.Tasks.Mob.Doctor do
   use Mix.Task
 
   alias MobDev.NdkVersion
+  alias MobDev.Toolchain
 
   @shortdoc "Check your environment for common Mob setup issues"
 
@@ -227,22 +228,33 @@ defmodule Mix.Tasks.Mob.Doctor do
   end
 
   defp check_zig do
-    case System.find_executable("zig") do
-      nil ->
-        {:warn, "zig",
-         "not on PATH — required as the C cross-compile driver from Phase 1 of the build-system migration",
-         "Install zig 0.15.x:\n      macOS:          brew install zig\n      Linux/asdf:     asdf plugin add zig && asdf install zig 0.15.2\n      manual:         https://ziglang.org/download/"}
+    Toolchain.zig_status()
+    |> __zig_check_result__()
+  end
 
-      _ ->
-        case System.cmd("zig", ["version"], stderr_to_stdout: true) do
-          {out, 0} ->
-            version = String.trim(out)
-            {:ok, "zig", version, nil}
+  @doc false
+  @spec __zig_install_fix__() :: String.t()
+  def __zig_install_fix__, do: Toolchain.zig_install_instructions()
 
-          _ ->
-            {:warn, "zig", "found but `zig version` failed", nil}
-        end
-    end
+  @doc false
+  @spec __zig_check_result__(Toolchain.zig_status()) ::
+          {:ok | :warn | :fail, String.t(), String.t(), String.t() | nil}
+  def __zig_check_result__(:missing) do
+    {:warn, "zig",
+     "not on PATH — required as the C cross-compile driver from Phase 1 of the build-system migration",
+     __zig_install_fix__()}
+  end
+
+  def __zig_check_result__({:ok, version}), do: {:ok, "zig", version, nil}
+
+  def __zig_check_result__({:version_mismatch, actual}) do
+    {:fail, "zig",
+     "version #{actual} found; Mob requires exactly #{Toolchain.required_zig_version()}",
+     __zig_install_fix__()}
+  end
+
+  def __zig_check_result__({:version_command_failed, output, exit_status}) do
+    {:fail, "zig", "`zig version` exited #{exit_status}: #{output}", __zig_install_fix__()}
   end
 
   defp check_xcrun do

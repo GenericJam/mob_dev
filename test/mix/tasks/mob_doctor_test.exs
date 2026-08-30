@@ -1,6 +1,52 @@
 defmodule Mix.Tasks.Mob.DoctorTest do
   use ExUnit.Case, async: true
 
+  describe "__zig_install_fix__/0" do
+    test "pins the exact application-build Zig version" do
+      fix = Mix.Tasks.Mob.Doctor.__zig_install_fix__()
+
+      assert fix =~ MobDev.Toolchain.required_zig_version()
+      refute fix =~ "zig 0.15"
+      refute fix =~ "ziglang.org/download"
+    end
+  end
+
+  describe "__zig_check_result__/1" do
+    test "accepts only the exact version" do
+      version = MobDev.Toolchain.required_zig_version()
+
+      assert {:ok, "zig", ^version, nil} =
+               Mix.Tasks.Mob.Doctor.__zig_check_result__({:ok, version})
+    end
+
+    test "fails an installed 0.15.x version" do
+      assert {:fail, "zig", detail, fix} =
+               Mix.Tasks.Mob.Doctor.__zig_check_result__({:version_mismatch, "0.15.2"})
+
+      assert detail =~ "0.15.2"
+      assert fix =~ MobDev.Toolchain.required_zig_version()
+    end
+
+    test "fails another nightly" do
+      assert {:fail, "zig", detail, _fix} =
+               Mix.Tasks.Mob.Doctor.__zig_check_result__(
+                 {:version_mismatch, "0.17.0-dev.270+different"}
+               )
+
+      assert detail =~ "0.17.0-dev.270+different"
+    end
+
+    test "fails when `zig version` fails" do
+      assert {:fail, "zig", detail, _fix} =
+               Mix.Tasks.Mob.Doctor.__zig_check_result__(
+                 {:version_command_failed, "dyld failure", 127}
+               )
+
+      assert detail =~ "exited 127"
+      assert detail =~ "dyld failure"
+    end
+  end
+
   describe "__missing_plugin_options__/2 (pre-plugin build.zig detection)" do
     # The real declaration shape every template uses.
     @declared """
