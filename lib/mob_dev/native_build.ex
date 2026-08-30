@@ -332,8 +332,9 @@ defmodule MobDev.NativeBuild do
     fallback would reference C sources (deps/mob/android/jni/mob_nif.c) that no
     longer ship with mob, so the build cannot succeed without zig.
 
-    Install zig 0.15.x, then re-run `mix mob.deploy --native --android`:
-      asdf:    asdf plugin add zig && asdf install zig 0.15.2 && asdf global zig 0.15.2
+    Install zig 0.17.0-dev.269+ebff43698, then re-run `mix mob.deploy --native --android`:
+      mise:    mise use zig@0.17.0-dev.269+ebff43698
+      asdf:    asdf plugin add zig && asdf install zig 0.17.0-dev.269+ebff43698 && asdf local zig 0.17.0-dev.269+ebff43698
       manual:  https://ziglang.org/download/  (then put `zig` on your PATH)
 
     Verify your toolchain any time with `mix mob.doctor`.\

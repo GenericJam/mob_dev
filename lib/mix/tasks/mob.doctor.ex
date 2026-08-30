@@ -231,7 +231,7 @@ defmodule Mix.Tasks.Mob.Doctor do
       nil ->
         {:warn, "zig",
          "not on PATH — required as the C cross-compile driver from Phase 1 of the build-system migration",
-         "Install zig 0.15.x:\n      macOS:          brew install zig\n      Linux/asdf:     asdf plugin add zig && asdf install zig 0.15.2\n      manual:         https://ziglang.org/download/"}
+         __zig_install_fix__()}
 
       _ ->
         case System.cmd("zig", ["version"], stderr_to_stdout: true) do
@@ -243,6 +243,15 @@ defmodule Mix.Tasks.Mob.Doctor do
             {:warn, "zig", "found but `zig version` failed", nil}
         end
     end
+  end
+
+  @doc false
+  @spec __zig_install_fix__() :: String.t()
+  def __zig_install_fix__ do
+    "Install zig 0.17.0-dev.269+ebff43698:\n" <>
+      "      mise:           mise use zig@0.17.0-dev.269+ebff43698\n" <>
+      "      asdf:           asdf plugin add zig && asdf install zig 0.17.0-dev.269+ebff43698 && asdf local zig 0.17.0-dev.269+ebff43698\n" <>
+      "      manual:         https://ziglang.org/download/"
   end
 
   defp check_xcrun do

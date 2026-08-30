@@ -1,6 +1,15 @@
 defmodule Mix.Tasks.Mob.DoctorTest do
   use ExUnit.Case, async: true
 
+  describe "__zig_install_fix__/0" do
+    test "pins the exact application-build Zig version" do
+      fix = Mix.Tasks.Mob.Doctor.__zig_install_fix__()
+
+      assert fix =~ "zig 0.17.0-dev.269+ebff43698"
+      refute fix =~ "zig 0.15"
+    end
+  end
+
   describe "__missing_plugin_options__/2 (pre-plugin build.zig detection)" do
     # The real declaration shape every template uses.
     @declared """
