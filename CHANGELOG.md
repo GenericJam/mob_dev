@@ -10,14 +10,21 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ## [Unreleased]
 
+## [0.6.32] - 2026-08-31
+
 ### Fixed
-- **Android plugin component registration is backward-compatible again.**
+- **Android plugin component registration is backward-compatible again**
+  (regression in 0.6.31 — **do not use 0.6.31**; upgrade from 0.6.30
+  directly to 0.6.32 or later).
   `ui_components.android.composable` remains the native registry key used by
   existing plugin bridges instead of being treated as a callable Kotlin
   symbol. Generated registration is now explicit through `android.factory`;
   opted-in factories receive both `props` and the native event sender. The
   generated factories run before bridge registration so a bridge-owned
   factory remains authoritative for the same key.
+
+- **Skew note:** `android.factory` is inert on mob_dev ≤ 0.6.30 (silently
+  ignored — the component renders only if bridge/host-registered).
 
 ## [0.6.31] - 2026-08-31
 
