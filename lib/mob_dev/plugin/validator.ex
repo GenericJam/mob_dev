@@ -58,6 +58,7 @@ defmodule MobDev.Plugin.Validator do
     |> add_mob_version_error(manifest, installed_mob_version)
     |> add_nif_module_errors(manifest)
     |> add_swift_struct_errors(manifest)
+    |> add_composable_errors(manifest)
     |> add_swift_import_errors(manifest, plugin_dir)
     |> add_android_permission_errors(manifest, plugin_dir)
     |> add_warnings(manifest)
@@ -419,6 +420,45 @@ defmodule MobDev.Plugin.Validator do
     "ui_components.ios.swift_struct #{inspect(value)} must be a Swift " <>
       "identifier matching /^[A-Za-z_][A-Za-z0-9_]*$/ (e.g. \"MobSignaturePadView\") — " <>
       "the iOS bootstrap codegen instantiates it as `<StructName>(props: props)`"
+  end
+
+  # ui_components.android.composable names the Compose factory the Android
+  # bootstrap codegen registers (`<Composable>(props)`), pasted straight into
+  # the generated MobPluginBootstrap. It must be a Kotlin identifier, or a
+  # dotted fully-qualified one (`io.mob.scene3d.MobScene3dViewport`) when the
+  # composable's package differs from the bridge_class's. Catch a bad value at
+  # validate time rather than at Gradle time, where the Kotlin error is far
+  # from the manifest that produced it.
+  @kotlin_composable_pattern ~r/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/
+
+  defp add_composable_errors(result, manifest) when is_map(manifest) do
+    errs =
+      for c <- Map.get(manifest, :ui_components, []),
+          is_map(c),
+          android = c[:android],
+          is_map(android),
+          Map.has_key?(android, :composable),
+          err = composable_error(android[:composable]),
+          do: err
+
+    %{result | errors: result.errors ++ errs}
+  end
+
+  defp add_composable_errors(result, _manifest), do: result
+
+  defp composable_error(value) when is_binary(value) do
+    if Regex.match?(@kotlin_composable_pattern, value),
+      do: nil,
+      else: bad_composable_message(value)
+  end
+
+  defp composable_error(other), do: bad_composable_message(other)
+
+  defp bad_composable_message(value) do
+    "ui_components.android.composable #{inspect(value)} must be a Kotlin " <>
+      "identifier or dotted path matching /^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$/ " <>
+      "(e.g. \"MobScene3dViewport\" or \"io.mob.scene3d.MobScene3dViewport\") — " <>
+      "the Android bootstrap codegen registers it as `<Composable>(props)`"
   end
 
   defp add_swift_import_errors(result, manifest, plugin_dir) do
