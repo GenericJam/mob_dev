@@ -240,8 +240,8 @@ defmodule MobDev.Plugin.Validator do
          [
            {"component atom (ui_components.atom)", &component_atoms/1},
            {"iOS native view key (ui_components.ios.view_module)", &component_view_modules/1},
-           {"Android native view key (ui_components.android.composable)",
-            &component_composables/1}
+           {"Android native view key (ui_components.android.composable/fallback)",
+            &component_android_view_modules/1}
          ]},
       migrations: {:collision, [{"migration repo_namespace", &repo_namespaces/1}]},
       nifs: {:collision, [{"NIF module (nifs.module)", &nif_modules/1}]},
@@ -422,13 +422,9 @@ defmodule MobDev.Plugin.Validator do
       "the iOS bootstrap codegen instantiates it as `<StructName>(props: props)`"
   end
 
-  # ui_components.android.composable names the Compose factory the Android
-  # bootstrap codegen registers (`<Composable>(props)`), pasted straight into
-  # the generated MobPluginBootstrap. It must be a Kotlin identifier, or a
-  # dotted fully-qualified one (`io.mob.scene3d.MobScene3dViewport`) when the
-  # composable's package differs from the bridge_class's. Catch a bad value at
-  # validate time rather than at Gradle time, where the Kotlin error is far
-  # from the manifest that produced it.
+  # ui_components.android.factory opts into generated registration and names
+  # the Kotlin function pasted into MobPluginBootstrap. `composable` retains
+  # its established role as the registry key.
   @kotlin_composable_pattern ~r/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/
 
   defp add_composable_errors(result, manifest) when is_map(manifest) do
@@ -437,8 +433,8 @@ defmodule MobDev.Plugin.Validator do
           is_map(c),
           android = c[:android],
           is_map(android),
-          Map.has_key?(android, :composable),
-          err = composable_error(android[:composable]),
+          Map.has_key?(android, :factory),
+          err = composable_error(android[:factory]),
           do: err
 
     %{result | errors: result.errors ++ errs}
@@ -455,10 +451,10 @@ defmodule MobDev.Plugin.Validator do
   defp composable_error(other), do: bad_composable_message(other)
 
   defp bad_composable_message(value) do
-    "ui_components.android.composable #{inspect(value)} must be a Kotlin " <>
+    "ui_components.android.factory #{inspect(value)} must be a Kotlin " <>
       "identifier or dotted path matching /^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$/ " <>
       "(e.g. \"MobScene3dViewport\" or \"io.mob.scene3d.MobScene3dViewport\") — " <>
-      "the Android bootstrap codegen registers it as `<Composable>(props)`"
+      "the Android bootstrap codegen invokes it as `<Factory>(props, send)`"
   end
 
   defp add_swift_import_errors(result, manifest, plugin_dir) do
@@ -615,13 +611,23 @@ defmodule MobDev.Plugin.Validator do
         do: ios[:view_module]
   end
 
-  defp component_composables(manifest) do
+  defp component_android_view_modules(manifest) do
     for c <- Map.get(manifest, :ui_components, []),
         is_map(c),
         android = c[:android],
         is_map(android),
-        is_binary(android[:composable]),
-        do: android[:composable]
+        key = android_registry_key(c, android),
+        is_binary(key),
+        do: key
+  end
+
+  defp android_registry_key(component, android) do
+    cond do
+      is_binary(android[:composable]) -> android[:composable]
+      is_binary(android[:view_module]) -> android[:view_module]
+      Map.has_key?(android, :factory) -> get_in(component, [:ios, :view_module])
+      true -> nil
+    end
   end
 
   defp screen_routes(manifest) do

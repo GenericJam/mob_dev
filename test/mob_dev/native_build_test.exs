@@ -465,24 +465,24 @@ defmodule MobDev.NativeBuildTest do
         call: "registerUiComponents()",
         body:
           "\n\n    private fun registerUiComponents() {\n" <>
-            "        com.example.app.MobNativeViewRegistry.register(\"Mob_Scene3d_Viewport\") { props, _send ->\n" <>
-            "            io.mob.scene3d.MobScene3dViewport(props)\n        }\n    }"
+            "        com.example.app.MobNativeViewRegistry.register(\"Mob_Scene3d_Viewport\") { props, send ->\n" <>
+            "            io.mob.scene3d.MobScene3dViewport(props, send)\n        }\n    }"
       }
 
       src = NativeBuild.__bootstrap_kotlin__(["io.mob.scene3d.MobScene3dBridge"], ui)
 
-      # registerAll runs the bridge register()s first, then the UI half, so
-      # every Compose factory is registered before MainActivity's setContent.
+      # Auto-registered factories run first. A plugin bridge that owns the same
+      # key therefore remains authoritative when register()/handOff() follows.
       assert src =~ "io.mob.scene3d.MobScene3dBridge.register()"
       assert src =~ "registerUiComponents()"
 
       register_pos = :binary.match(src, "MobScene3dBridge.register()") |> elem(0)
       ui_pos = :binary.match(src, "registerUiComponents()") |> elem(0)
-      assert register_pos < ui_pos
+      assert ui_pos < register_pos
 
       assert src =~ "private fun registerUiComponents()"
       assert src =~ ~s|com.example.app.MobNativeViewRegistry.register("Mob_Scene3d_Viewport")|
-      assert src =~ "io.mob.scene3d.MobScene3dViewport(props)"
+      assert src =~ "io.mob.scene3d.MobScene3dViewport(props, send)"
     end
 
     test "__bootstrap_kotlin__ registers ui_components even with zero bridge classes, without bridge helpers" do
