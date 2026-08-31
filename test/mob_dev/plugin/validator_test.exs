@@ -246,6 +246,41 @@ defmodule MobDev.Plugin.ValidatorTest do
 
       assert %{errors: []} = Validator.validate_plugin(m, dir, "0.6.20")
     end
+
+    test "accepts a bare or fully-qualified android.composable", %{dir: dir} do
+      for composable <- ["MobScene3dViewport", "io.mob.scene3d.MobScene3dViewport"] do
+        m =
+          Map.put(@base, :ui_components, [
+            %{
+              tag: "Scene3d",
+              atom: :scene3d,
+              ios: %{view_module: "Mob_Scene3d_Viewport", swift_struct: "MobScene3dViewport"},
+              android: %{composable: composable}
+            }
+          ])
+
+        assert %{errors: []} = Validator.validate_plugin(m, dir, "0.6.20")
+      end
+    end
+
+    test "rejects an android.composable the Kotlin codegen cannot paste", %{dir: dir} do
+      for bad <- ["Mob-Bad-View", "io.mob.", "1Bad", MobScene3dViewport] do
+        m =
+          Map.put(@base, :ui_components, [
+            %{
+              tag: "Scene3d",
+              atom: :scene3d,
+              ios: %{view_module: "Mob_Scene3d_Viewport", swift_struct: "MobScene3dViewport"},
+              android: %{composable: bad}
+            }
+          ])
+
+        assert %{errors: errs} = Validator.validate_plugin(m, dir, "0.6.20")
+
+        assert Enum.any?(errs, &(&1 =~ "android.composable")),
+               "expected #{inspect(bad)} to be rejected as a composable"
+      end
+    end
   end
 
   describe "validate_swift_imports/2" do

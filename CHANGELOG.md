@@ -8,6 +8,29 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **Android hosts now register plugin `ui_components` composables
+  automatically** (mob_scene3d-q03). The manifest's
+  `ui_components.android.composable` was data nobody consumed: every host had
+  to hand-register the Compose factory in `MainActivity.onCreate`, and a host
+  that forgot rendered the component as *nothing* —
+  `MobNativeViewRegistry.render` returns silently on an unknown key. The
+  generated `MobPluginBootstrap.registerAll(this)` (already called by every
+  generated/adopted MainActivity) now registers each activated plugin's
+  composable with the app's `MobNativeViewRegistry`, mirroring iOS's
+  `mob_register_plugins()` bootstrap (`MobDev.Plugin.AndroidBootstrap`). The
+  registry key is `android.view_module`, falling back to `ios.view_module`;
+  a bare `composable` is qualified with the `bridge_class` package. Silent
+  blanks are gone: a typo'd composable fails the Gradle Kotlin compile, a
+  malformed declaration (no key / no composable) fails the mob_dev build with
+  the manifest error, and a declared-but-unresolvable composable (the
+  hand-copied tier-2 workflow) registers a loud red "Missing native
+  component" placeholder + `Log.e` that the host's own later registration
+  overwrites. The validator also rejects an `android.composable` that isn't a
+  Kotlin identifier or dotted path, at validate time instead of Gradle time.
+
 ## [0.6.30] - 2026-08-30
 
 ### Fixed
