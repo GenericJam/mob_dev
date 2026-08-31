@@ -247,15 +247,15 @@ defmodule MobDev.Plugin.ValidatorTest do
       assert %{errors: []} = Validator.validate_plugin(m, dir, "0.6.20")
     end
 
-    test "accepts a bare or fully-qualified android.composable", %{dir: dir} do
-      for composable <- ["MobScene3dViewport", "io.mob.scene3d.MobScene3dViewport"] do
+    test "accepts a bare or fully-qualified android.factory", %{dir: dir} do
+      for factory <- ["MobScene3dViewport", "io.mob.scene3d.MobScene3dViewport"] do
         m =
           Map.put(@base, :ui_components, [
             %{
               tag: "Scene3d",
               atom: :scene3d,
               ios: %{view_module: "Mob_Scene3d_Viewport", swift_struct: "MobScene3dViewport"},
-              android: %{composable: composable}
+              android: %{composable: "Mob_Scene3d_Viewport", factory: factory}
             }
           ])
 
@@ -263,7 +263,7 @@ defmodule MobDev.Plugin.ValidatorTest do
       end
     end
 
-    test "rejects an android.composable the Kotlin codegen cannot paste", %{dir: dir} do
+    test "rejects an android.factory the Kotlin codegen cannot paste", %{dir: dir} do
       for bad <- ["Mob-Bad-View", "io.mob.", "1Bad", MobScene3dViewport] do
         m =
           Map.put(@base, :ui_components, [
@@ -271,14 +271,14 @@ defmodule MobDev.Plugin.ValidatorTest do
               tag: "Scene3d",
               atom: :scene3d,
               ios: %{view_module: "Mob_Scene3d_Viewport", swift_struct: "MobScene3dViewport"},
-              android: %{composable: bad}
+              android: %{composable: "Mob_Scene3d_Viewport", factory: bad}
             }
           ])
 
         assert %{errors: errs} = Validator.validate_plugin(m, dir, "0.6.20")
 
-        assert Enum.any?(errs, &(&1 =~ "android.composable")),
-               "expected #{inspect(bad)} to be rejected as a composable"
+        assert Enum.any?(errs, &(&1 =~ "android.factory")),
+               "expected #{inspect(bad)} to be rejected as a factory"
       end
     end
   end
@@ -609,6 +609,21 @@ defmodule MobDev.Plugin.ValidatorTest do
       b = Map.put(@base, :ui_components, [%{atom: :chart}])
       assert %{errors: errs} = Validator.cross_validate([{:a, a}, {:b, b}])
       assert Enum.any?(errs, &(&1 =~ "component atom"))
+    end
+
+    test "detects duplicate effective Android registry keys across fallback fields" do
+      a =
+        Map.put(@base, :ui_components, [
+          %{atom: :chart, android: %{composable: "Shared_Key", factory: "x.Chart"}}
+        ])
+
+      b =
+        Map.put(@base, :ui_components, [
+          %{atom: :gauge, android: %{view_module: "Shared_Key", factory: "x.Gauge"}}
+        ])
+
+      assert %{errors: errs} = Validator.cross_validate([{:a, a}, {:b, b}])
+      assert Enum.any?(errs, &(&1 =~ "Android native view key"))
     end
 
     test "detects a duplicate screen route across plugins" do

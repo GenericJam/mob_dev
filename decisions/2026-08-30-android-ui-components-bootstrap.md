@@ -1,7 +1,8 @@
 # Android ui_components registration rides the generated MobPluginBootstrap
 
 - Date: 2026-08-30
-- Status: accepted
+- Status: superseded by
+  [2026-08-31-explicit-android-component-factories.md](2026-08-31-explicit-android-component-factories.md)
 
 ## Context
 
