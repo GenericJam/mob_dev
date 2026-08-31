@@ -10,6 +10,8 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ## [Unreleased]
 
+## [0.6.31] - 2026-08-31
+
 ### Fixed
 - **Android hosts now register plugin `ui_components` composables
   automatically** (mob_scene3d-q03). The manifest's
