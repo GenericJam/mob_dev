@@ -506,11 +506,14 @@ defmodule MobDev.Plugin.Scaffold do
     """
     // #{mod} — tier-2 plugin Compose factory.
     //
-    // Until the plugin merge engine wires plugin Kotlin into the build
-    // automatically, the host app developer copies this content into
-    // MobBridge.kt (alongside the MobNativeViewRegistry definition) and
-    // arranges #{mod}Plugin.register() to run at startup — the documented
-    // workflow for native components today.
+    // A plugin that ships its composable in a bridge_kt (with a bridge_class
+    // in the manifest) gets it registered automatically by the generated
+    // MobPluginBootstrap. This scaffold has no bridge, so the host app
+    // developer copies this content into MobBridge.kt (alongside the
+    // MobNativeViewRegistry definition) and calls #{mod}Plugin.register() in
+    // MainActivity.onCreate AFTER MobPluginBootstrap.registerAll(this) — the
+    // real factory then replaces the loud "missing component" placeholder the
+    // bootstrap registers for a declared-but-unresolvable composable.
 
     object #{mod}Plugin {
         fun register() {

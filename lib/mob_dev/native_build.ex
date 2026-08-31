@@ -5058,8 +5058,11 @@ defmodule MobDev.NativeBuild do
   # Copies each activated plugin's `bridge_kt` into the app's Kotlin sourceSet
   # (at its own package path, read from the file's `package` line) so Gradle
   # compiles it, and (re)generates `io.mob.plugin.MobPluginBootstrap` whose
-  # `registerAll(activity)` calls each `bridge_class`'s `register()` and then
-  # hands the Activity to any bridge implementing `MobActivityAware`.
+  # `registerAll(activity)` calls each `bridge_class`'s `register()`, hands
+  # the Activity to any bridge implementing `MobActivityAware`, and registers
+  # the plugins' `ui_components` Compose factories with the app's
+  # MobNativeViewRegistry (MobDev.Plugin.AndroidBootstrap — the Android
+  # analog of the iOS mob_register_plugins bootstrap; see mob_scene3d-q03).
   # MainActivity calls `MobPluginBootstrap.registerAll(this)` in `onCreate`.
   # The `MobActivityAware` contract is written alongside the bootstrap, and
   # both are always written (empty registerAll body when no plugin declares a
@@ -5103,7 +5106,10 @@ defmodule MobDev.NativeBuild do
 
       write_generated_kotlin!(
         @plugin_bootstrap_path,
-        __bootstrap_kotlin__(MobDev.Plugin.Merge.bridge_classes(activated))
+        __bootstrap_kotlin__(
+          MobDev.Plugin.Merge.bridge_classes(activated),
+          android_ui_source!(activated)
+        )
       )
 
       :ok
@@ -5124,6 +5130,67 @@ defmodule MobDev.NativeBuild do
       [_, package] -> package
       _ -> nil
     end
+  end
+
+  # Resolves the ui_components half of the bootstrap for the activated
+  # plugins: classify the manifests (pure), raise on malformed declarations
+  # (an android-backed component codegen can't register is a manifest bug —
+  # surface it at build time, next to the manifest, not as a blank view on
+  # device), and locate the app package that defines MobNativeViewRegistry.
+  # Hosts without the registry (LiveView wrappers, pre-registry templates)
+  # can't render native views at all, so declared ui_components get a printed
+  # warning and no generated registrations there.
+  defp android_ui_source!(activated) do
+    classified = MobDev.Plugin.AndroidBootstrap.classify(activated)
+
+    if classified.errors != [] do
+      Mix.raise(
+        "Android ui_components cannot be registered:\n  " <>
+          Enum.join(classified.errors, "\n  ")
+      )
+    end
+
+    case {classified.registrations ++ classified.placeholders,
+          __android_app_package__(@android_java_root)} do
+      {[], _} ->
+        nil
+
+      {_some, nil} ->
+        IO.puts(
+          "  [plugin android] activated plugins declare ui_components but no " <>
+            "MobNativeViewRegistry was found under #{@android_java_root} " <>
+            "(MobBridge.kt) — skipping Compose factory registration. Native " <>
+            "view components will not render in this host."
+        )
+
+        nil
+
+      {_some, app_package} ->
+        MobDev.Plugin.AndroidBootstrap.ui_source(classified, app_package)
+    end
+  end
+
+  # The host app's Kotlin package — the package of the source file that
+  # defines `object MobNativeViewRegistry` (MobBridge.kt in generated and
+  # adopted hosts). The registry lives in the app package, which io.mob.plugin
+  # code can only reference fully qualified; codegen discovers it here. Nil
+  # when no defining file exists under the java root.
+  @doc false
+  @spec __android_app_package__(String.t()) :: String.t() | nil
+  def __android_app_package__(java_root) do
+    java_root
+    |> Path.join("**/*.kt")
+    |> Path.wildcard()
+    |> Enum.find_value(fn path ->
+      case File.read(path) do
+        {:ok, content} ->
+          if String.contains?(content, "object MobNativeViewRegistry"),
+            do: __parse_kotlin_package__(content)
+
+        _ ->
+          nil
+      end
+    end)
   end
 
   @doc false
@@ -5176,44 +5243,64 @@ defmodule MobDev.NativeBuild do
   # `as?` runtime check is valid for every bridge type — a direct
   # `(SomeFinalObject as? MobActivityAware)` would draw a "cast can never
   # succeed" warning for bridges that don't opt in.
+  #
+  # `ui` is the ui_components half from MobDev.Plugin.AndroidBootstrap
+  # (`%{call:, body:}` or nil): registerAll additionally runs `ui.call` so the
+  # plugins' Compose factories are registered before MainActivity's setContent
+  # renders anything, and `ui.body` splices the generated member functions
+  # into the object.
   @doc false
-  @spec __bootstrap_kotlin__([String.t()]) :: String.t()
-  def __bootstrap_kotlin__(bridge_classes) do
-    calls =
+  @spec __bootstrap_kotlin__([String.t()], %{call: String.t(), body: String.t()} | nil) ::
+          String.t()
+  def __bootstrap_kotlin__(bridge_classes, ui \\ nil) do
+    bridge_calls =
       bridge_classes
       |> Enum.map(fn cls ->
         "        #{cls}.register()\n        handOff(#{cls}, activity)\n        collectPermissionProvider(#{cls})"
       end)
       |> Enum.join("\n")
 
-    {body, helpers} =
-      if calls == "" do
-        {"", ""}
+    ui_call = if ui, do: "        #{ui.call}", else: ""
+    ui_body = if ui, do: ui.body, else: ""
+
+    calls =
+      [bridge_calls, ui_call]
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.join("\n")
+
+    body = if calls == "", do: "", else: "\n" <> calls <> "\n    "
+
+    # The handOff/collectPermissionProvider helpers exist for bridge classes
+    # only — a UI-only bootstrap must not emit them unused.
+    helpers =
+      if bridge_calls == "" do
+        ""
       else
-        {"\n" <> calls <> "\n    ",
-         "\n\n    // Hands the Activity to a bridge that opts in via" <>
-           " MobActivityAware.\n" <>
-           "    private fun handOff(bridge: Any, activity: Activity) {\n" <>
-           "        (bridge as? MobActivityAware)?.setActivity(activity)\n" <>
-           "    }\n\n" <>
-           "    // Records a bridge that opts in via MobPermissionProvider so" <>
-           " core\n" <>
-           "    // MobBridge.request_permission can fall through to it for a" <>
-           " capability\n" <>
-           "    // core no longer knows about.\n" <>
-           "    private fun collectPermissionProvider(bridge: Any) {\n" <>
-           "        (bridge as? MobPermissionProvider)?.let {\n" <>
-           "            if (!permissionProviders.contains(it)) permissionProviders.add(it)\n" <>
-           "        }\n" <>
-           "    }"}
+        "\n\n    // Hands the Activity to a bridge that opts in via" <>
+          " MobActivityAware.\n" <>
+          "    private fun handOff(bridge: Any, activity: Activity) {\n" <>
+          "        (bridge as? MobActivityAware)?.setActivity(activity)\n" <>
+          "    }\n\n" <>
+          "    // Records a bridge that opts in via MobPermissionProvider so" <>
+          " core\n" <>
+          "    // MobBridge.request_permission can fall through to it for a" <>
+          " capability\n" <>
+          "    // core no longer knows about.\n" <>
+          "    private fun collectPermissionProvider(bridge: Any) {\n" <>
+          "        (bridge as? MobPermissionProvider)?.let {\n" <>
+          "            if (!permissionProviders.contains(it)) permissionProviders.add(it)\n" <>
+          "        }\n" <>
+          "    }"
       end
 
     """
     // Generated by mob_dev (MobDev.NativeBuild) — do not edit.
     // Calls each activated plugin's bridge-class register() at startup, then
     // hands the Activity to any bridge implementing MobActivityAware and records
-    // any bridge implementing MobPermissionProvider; invoked from
-    // MainActivity.onCreate as registerAll(this).
+    // any bridge implementing MobPermissionProvider; also registers the plugins'
+    // ui_components Compose factories with the app's MobNativeViewRegistry.
+    // Invoked from MainActivity.onCreate as registerAll(this), before
+    // setContent renders anything.
     package io.mob.plugin
 
     import android.app.Activity
@@ -5234,7 +5321,7 @@ defmodule MobDev.NativeBuild do
                 if (perms != null) return perms
             }
             return null
-        }#{helpers}
+        }#{helpers}#{ui_body}
     }
     """
   end

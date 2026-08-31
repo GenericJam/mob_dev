@@ -460,6 +460,92 @@ defmodule MobDev.NativeBuildTest do
       refute src =~ "collectPermissionProvider"
     end
 
+    test "__bootstrap_kotlin__ splices the ui_components half into registerAll" do
+      ui = %{
+        call: "registerUiComponents()",
+        body:
+          "\n\n    private fun registerUiComponents() {\n" <>
+            "        com.example.app.MobNativeViewRegistry.register(\"Mob_Scene3d_Viewport\") { props, _send ->\n" <>
+            "            io.mob.scene3d.MobScene3dViewport(props)\n        }\n    }"
+      }
+
+      src = NativeBuild.__bootstrap_kotlin__(["io.mob.scene3d.MobScene3dBridge"], ui)
+
+      # registerAll runs the bridge register()s first, then the UI half, so
+      # every Compose factory is registered before MainActivity's setContent.
+      assert src =~ "io.mob.scene3d.MobScene3dBridge.register()"
+      assert src =~ "registerUiComponents()"
+
+      register_pos = :binary.match(src, "MobScene3dBridge.register()") |> elem(0)
+      ui_pos = :binary.match(src, "registerUiComponents()") |> elem(0)
+      assert register_pos < ui_pos
+
+      assert src =~ "private fun registerUiComponents()"
+      assert src =~ ~s|com.example.app.MobNativeViewRegistry.register("Mob_Scene3d_Viewport")|
+      assert src =~ "io.mob.scene3d.MobScene3dViewport(props)"
+    end
+
+    test "__bootstrap_kotlin__ registers ui_components even with zero bridge classes, without bridge helpers" do
+      ui = %{
+        call: "registerUiComponents()",
+        body: "\n\n    private fun registerUiComponents() {\n    }"
+      }
+
+      src = NativeBuild.__bootstrap_kotlin__([], ui)
+
+      assert src =~ "fun registerAll(activity: Activity) {\n        registerUiComponents()\n    }"
+      refute src =~ "handOff"
+      refute src =~ "collectPermissionProvider(io"
+    end
+
+    test "__bootstrap_kotlin__ without a ui half matches the pre-ui output byte for byte" do
+      assert NativeBuild.__bootstrap_kotlin__(["io.mob.x.Bridge"]) ==
+               NativeBuild.__bootstrap_kotlin__(["io.mob.x.Bridge"], nil)
+
+      refute NativeBuild.__bootstrap_kotlin__(["io.mob.x.Bridge"]) =~ "registerUiComponents"
+    end
+
+    test "__android_app_package__ finds the package of the file defining MobNativeViewRegistry" do
+      root =
+        Path.join(
+          System.tmp_dir!(),
+          "mob_app_pkg_#{System.unique_integer([:positive])}"
+        )
+
+      app_dir = Path.join(root, "com/genericjam/chopaat")
+      plugin_dir = Path.join(root, "io/mob/plugin")
+      File.mkdir_p!(app_dir)
+      File.mkdir_p!(plugin_dir)
+
+      on_exit(fn -> File.rm_rf!(root) end)
+
+      # Decoy without the registry — must not win.
+      File.write!(
+        Path.join(plugin_dir, "MobPluginBootstrap.kt"),
+        "package io.mob.plugin\n\nobject MobPluginBootstrap {}\n"
+      )
+
+      File.write!(
+        Path.join(app_dir, "MobBridge.kt"),
+        "package com.genericjam.chopaat\n\nobject MobNativeViewRegistry {}\n"
+      )
+
+      assert NativeBuild.__android_app_package__(root) == "com.genericjam.chopaat"
+    end
+
+    test "__android_app_package__ is nil when no file defines the registry" do
+      root =
+        Path.join(
+          System.tmp_dir!(),
+          "mob_app_pkg_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(root)
+      on_exit(fn -> File.rm_rf!(root) end)
+
+      assert NativeBuild.__android_app_package__(root) == nil
+    end
+
     test "__activity_aware_kotlin__ emits the stable MobActivityAware contract" do
       src = NativeBuild.__activity_aware_kotlin__()
       assert src =~ "package io.mob.plugin"
