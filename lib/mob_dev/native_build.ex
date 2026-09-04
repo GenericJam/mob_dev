@@ -4519,6 +4519,14 @@ defmodule MobDev.NativeBuild do
   end
 
   defp plist_set!(plist, key, value) do
+    # `Set` fails outright on a key that is not already present, which for an
+    # adopted project's hand-written Info.plist turned a previously working
+    # build into a MatchError. Add first and ignore its failure when the key
+    # does exist — the same idiom `release.ex` uses.
+    System.cmd("/usr/libexec/PlistBuddy", ["-c", "Add #{key} string #{value}", plist],
+      stderr_to_stdout: true
+    )
+
     {_, 0} =
       System.cmd("/usr/libexec/PlistBuddy", ["-c", "Set #{key} #{value}", plist],
         stderr_to_stdout: true
@@ -6052,7 +6060,13 @@ defmodule MobDev.NativeBuild do
   # keychain and provisioning profile directories. Fails with a clear message only
   # when auto-detection itself finds multiple candidates and can't pick one.
   defp check_device_signing_config(cfg) do
-    bundle_id = cfg[:bundle_id]
+    # The iOS id, not the generic one. `bundle_ios_device_app/3` stamps this id
+    # and `codesign_ios_device_app/3` signs against the profile chosen here, so
+    # looking it up by the Android id searches for a profile that was never
+    # minted — `mix mob.provision` creates it for `ios_bundle_id`. The two ids
+    # often cannot be the same string, since Apple rejects the underscores
+    # Android's applicationId allows.
+    bundle_id = ios_bundle_id(cfg)
 
     with {:ok, identity} <- resolve_sign_identity(cfg[:ios_sign_identity], cfg[:ios_team_id]),
          {:ok, {profile_uuid, team_id}} <-

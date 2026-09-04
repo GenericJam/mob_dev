@@ -78,6 +78,70 @@ defmodule MobDev.ConfigTest do
   # The two ids genuinely differ in real projects: Android's `applicationId`
   # may contain underscores (`com.example.mishka_mob`) which Apple rejects.
 
+  describe "uninstall resolves the id per platform" do
+    # An iOS device holds the app under `ios_bundle_id`, so uninstalling by the
+    # Android applicationId removes nothing and reports success — the same
+    # defect class as the deploy path, and missed by the original audit.
+    #
+    # Lives here rather than in `MobDev.UninstallerTest` because resolution
+    # reads `mob.exs` from the current working directory, and that module is
+    # `async: true` — changing the cwd there would corrupt its neighbours.
+    setup %{tmp: tmp} do
+      write_mob_exs(tmp, """
+      import Config
+      config :mob_dev,
+        bundle_id: "com.example.mishka_mob",
+        ios_bundle_id: "com.genericjam.mishkamob"
+      """)
+
+      :ok
+    end
+
+    test "an iOS device resolves the iOS id" do
+      device = %MobDev.Device{name: "iPhone", serial: "udid", platform: :ios}
+
+      assert MobDev.Uninstaller.resolve_apps_for_device(device, [], "com.") ==
+               ["com.genericjam.mishkamob"]
+    end
+
+    test "an Android device keeps the applicationId" do
+      device = %MobDev.Device{name: "emu", serial: "emulator-5554", platform: :android}
+
+      assert MobDev.Uninstaller.resolve_apps_for_device(device, [], "com.") ==
+               ["com.example.mishka_mob"]
+    end
+
+    test "an explicit --bundle-id still wins" do
+      device = %MobDev.Device{name: "iPhone", serial: "udid", platform: :ios}
+
+      assert MobDev.Uninstaller.resolve_apps_for_device(device, [bundle_id: "com.o.x"], "com.") ==
+               ["com.o.x"]
+    end
+  end
+
+  describe "the consumers are actually wired to it (MOB-150 review S1)" do
+    # The resolver was tested; the WIRING was not. Reverting either consumer to
+    # `defp ios_bundle_id, do: bundle_id()` — the original defect, byte for
+    # byte, in both modules — left the entire suite green. These pin the seam
+    # rather than the rule.
+    for {mod, name} <- [{MobDev.Deployer, "Deployer"}, {MobDev.Connector, "Connector"}] do
+      test "#{name}.ios_bundle_id/0 resolves the iOS id, not the Android one", %{tmp: tmp} do
+        write_mob_exs(tmp, """
+        import Config
+        config :mob_dev,
+          bundle_id: "com.example.mishka_mob",
+          ios_bundle_id: "com.genericjam.mishkamob"
+        """)
+
+        assert unquote(mod).ios_bundle_id() == "com.genericjam.mishkamob"
+
+        refute unquote(mod).ios_bundle_id() == MobDev.Config.bundle_id(),
+               "an iOS consumer resolving the Android id installs under one id " <>
+                 "and pushes at another"
+      end
+    end
+  end
+
   describe "ios_bundle_id/0" do
     test ":ios_bundle_id wins over :bundle_id", %{tmp: tmp} do
       write_mob_exs(tmp, """

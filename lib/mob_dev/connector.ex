@@ -10,7 +10,9 @@ defmodule MobDev.Connector do
 
   defp bundle_id, do: MobDev.Config.bundle_id()
   defp android_package, do: bundle_id()
-  defp ios_bundle_id, do: MobDev.Config.ios_bundle_id()
+  @doc false
+  @spec ios_bundle_id() :: String.t() | nil
+  def ios_bundle_id, do: MobDev.Config.ios_bundle_id()
   # ms to wait for node to appear
   @connect_timeout 25_000
   # ms between polls

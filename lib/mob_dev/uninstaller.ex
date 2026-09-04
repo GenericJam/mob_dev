@@ -397,7 +397,9 @@ defmodule MobDev.Uninstaller do
 
   # ── App resolution per device ──────────────────────────────────────────
 
-  defp resolve_apps_for_device(device, opts, bundle_prefix) do
+  @doc false
+  @spec resolve_apps_for_device(Device.t(), keyword(), String.t()) :: [String.t()]
+  def resolve_apps_for_device(device, opts, bundle_prefix) do
     cond do
       opts[:bundle_id] ->
         [opts[:bundle_id]]
@@ -406,9 +408,15 @@ defmodule MobDev.Uninstaller do
         list_matching_packages(device, bundle_prefix)
 
       true ->
-        [opts[:project_bundle_id] || MobDev.Config.bundle_id()]
+        # Per platform: an iOS device holds the app under `ios_bundle_id`, so
+        # uninstalling by the generic id silently removes nothing and reports
+        # success. Same defect class as the deploy path this release fixed.
+        [opts[:project_bundle_id] || default_bundle_id(device)]
     end
   end
+
+  defp default_bundle_id(%Device{platform: :ios}), do: MobDev.Config.ios_bundle_id()
+  defp default_bundle_id(_device), do: MobDev.Config.bundle_id()
 
   defp list_matching_packages(%Device{platform: :android, serial: serial}, prefix) do
     {output, _} =

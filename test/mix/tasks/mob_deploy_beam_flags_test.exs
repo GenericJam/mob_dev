@@ -226,6 +226,22 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
       assert Deploy.failure_message([], [], [skip]) == nil
     end
 
+    test "a skipped device does not absorb a failed one" do
+      # The combination the real bug produces — an iPhone that failed and an
+      # Android emulator without the app, on one default run — and the only
+      # combination no test covered. Two mutations passed the whole describe
+      # block without it: an added `failure_message(_, _, [_ | _]), do: nil`
+      # clause ("any skip makes the run non-fatal"), and counting
+      # `length(failed) + length(skipped)`.
+      failed = device("iPhone", "push timed out")
+      skipped = device("emulator-5554", "com.example not installed on emulator-5554")
+
+      message = Deploy.failure_message([], [failed], [skipped])
+
+      assert message =~ "Deploy failed on 1 device(s)",
+             "the skipped device must neither suppress the failure nor inflate the count"
+    end
+
     test "a failed device produces a message naming the count" do
       message = Deploy.failure_message([], [device("buggy", "push timed out")], [])
       assert message =~ "Deploy failed on 1 device(s)"

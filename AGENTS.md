@@ -163,9 +163,14 @@ narrowing functions). Don't make them private:
 - `Mix.Tasks.Mob.Doctor.__zig_check_result__/1`
 - `Enable.inject_pythonx_dep/1`, `inject_pythonx_uv_init_gate/2`, `python_paths_module_template/1`
 - `NativeBuild.ios_bundle_id/1` (the `:ios_bundle_id || :bundle_id` rule for the build side)
+- `Deployer.ios_bundle_id/0`, `Connector.ios_bundle_id/0` (the same rule on the
+  consumer side — public so the WIRING is testable, not just the resolver;
+  reverting either to `bundle_id/0` was the original defect and the suite
+  did not notice)
 - `Emulators.parse_simctl_json/1`, `find_emulator_binary/1`
 - `Provision.diagnose_xcodebuild_failure/1`
 - `Mix.Tasks.Mob.Deploy.failure_message/3` (which bucket makes a deploy exit non-zero)
+- `Uninstaller.resolve_apps_for_device/3` (which id gets uninstalled, per platform)
 
 If you make any of these private, every downstream test breaks loudly — but
 you'll lose the ability to evolve the parsers safely.
