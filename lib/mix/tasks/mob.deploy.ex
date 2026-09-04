@@ -116,6 +116,15 @@ defmodule Mix.Tasks.Mob.Deploy do
       # iOS simulator
       xcodebuild -scheme <app> -destination 'platform=iOS Simulator,...' build
       xcrun simctl install booted <app>.app
+
+  ## Exit status
+
+  Every targeted device is attempted and the full summary printed, then the
+  task exits non-zero if **any** device landed in the `Failed on N device(s)`
+  bucket — including a partial success where other devices deployed fine.
+
+  Devices under `Skipped on N device(s)` (app not installed for that
+  platform) do not fail the run.
   """
 
   @switches [
@@ -242,7 +251,37 @@ defmodule Mix.Tasks.Mob.Deploy do
       )
 
     Enum.each(format_summary(deployed, failed, skipped, restart: restart), &IO.puts/1)
+
+    # The full summary is printed first, then the status code is set — the
+    # fan-out across devices is unchanged, only the exit code is.
+    case failure_message(deployed, failed, skipped) do
+      nil -> :ok
+      message -> Mix.raise(message)
+    end
   end
+
+  @doc """
+  The `Mix.raise` message for a finished deploy, or `nil` when the run
+  should exit 0.
+
+  A deploy that printed "Failed on N device(s)" used to still exit 0, so
+  CI and wrapper scripts read a failed deploy as a success.
+
+  Only `failed` (a real error during push) is fatal. `skipped` is not:
+  it means "app not installed for that platform", the expected outcome of
+  e.g. building `--ios` with an Android phone also plugged in — the same
+  distinction `format_summary/4` renders.
+
+  Partial success is still a failure. Every targeted device is still
+  attempted and reported before this runs, so the operator can see which
+  ones got the BEAMs; a *script* has no way to notice one device missed
+  out if the status code says everything is fine.
+  """
+  @spec failure_message([Device.t()], [Device.t()], [Device.t()]) :: String.t() | nil
+  def failure_message(_deployed, [], _skipped), do: nil
+
+  def failure_message(_deployed, failed, _skipped),
+    do: "Deploy failed on #{length(failed)} device(s) — see errors above"
 
   @doc """
   Build the per-deploy summary lines from the three device buckets.

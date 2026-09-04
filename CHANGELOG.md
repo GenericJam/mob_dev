@@ -10,6 +10,51 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ## [Unreleased]
 
+### Changed
+
+- **`mix mob.deploy` now exits non-zero when a device fails.** A run that
+  printed `Failed on 1 device(s)` previously still returned status 0, so CI and
+  wrapper scripts read a failed deploy as success. Every device is still
+  attempted and the full summary still printed first — only the exit code
+  changed. A device that is *skipped* because the app is not installed on it
+  stays non-fatal on both platforms. **If you have CI that deploys to several
+  devices and has been passing, it may now fail** — check whether it was
+  passing on a partial deploy.
+
+### Added
+
+- **`:ios_bundle_id`** in `mob.exs`, for when Android's `applicationId` is not a
+  legal Apple bundle id. Apple forbids the underscores Android allows, and
+  `com.example.*` is often already claimed by another Apple team, so the two
+  frequently cannot be the same string. Every iOS path — deploy, connect,
+  provision, battery bench, uninstall, the simulator and device builds,
+  code-signing, and the release IPA — resolves `:ios_bundle_id || :bundle_id`.
+  Android keeps using `:bundle_id`.
+
+### Fixed
+
+- **iOS deploys installed the app under one bundle id and pushed BEAMs at
+  another.** `:ios_bundle_id` was resolved by the build but discarded by the
+  deployer and connector, so `mix mob.deploy --native --device <udid>` installed
+  successfully and then failed with *"App '…' is not installed on this device."*
+  On a machine that also had an older build under the other id it was worse: the
+  push silently succeeded against the wrong app and reported success.
+- **The simulator and device builds disagreed about the bundle id.** The
+  simulator build took it verbatim from `ios/Info.plist` while the device build
+  used the configured id, so `simctl launch <configured-id>` failed. Both paths
+  now stamp and print the id they installed.
+- **The device build looked its provisioning profile up by the Android id**, so
+  a profile minted by `mix mob.provision` (which uses the iOS id) was never
+  matched.
+- **The release IPA was stamped and signed with the Android `applicationId`**,
+  which App Store Connect rejects when it contains an underscore.
+- **`mix mob.uninstall` targeted the Android id on iOS devices**, removing
+  nothing and reporting success.
+- **`mix mob.doctor` warned that `bundle_id` was unset** for a project that
+  correctly set only `ios_bundle_id`.
+- **Stamping `CFBundleIdentifier` crashed on an `Info.plist` that lacked the
+  key** — plausible for `mix mob.adopt` projects — instead of adding it.
+
 ## [0.6.33] - 2026-09-04
 
 ### Fixed

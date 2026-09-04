@@ -2218,4 +2218,35 @@ defmodule MobDev.NativeBuildTest do
       assert File.exists?(logo)
     end
   end
+
+  # ── ios_bundle_id/1 ───────────────────────────────────────────────────────────
+  #
+  # The sim bundle, the device bundle, and code signing must all stamp the
+  # same id. They used to disagree: the sim path never touched
+  # CFBundleIdentifier (so the sim app kept ios/Info.plist's value) while the
+  # device path stamped this one, and `MobDev.Deployer` addressed a third.
+
+  describe "ios_bundle_id/1" do
+    test ":ios_bundle_id overrides :bundle_id" do
+      cfg = [bundle_id: "com.example.mishka_mob", ios_bundle_id: "com.genericjam.mishkamob"]
+      assert NativeBuild.ios_bundle_id(cfg) == "com.genericjam.mishkamob"
+    end
+
+    test "falls back to :bundle_id when :ios_bundle_id is absent" do
+      assert NativeBuild.ios_bundle_id(bundle_id: "com.example.shared") ==
+               "com.example.shared"
+    end
+
+    test "an underscored Android applicationId does not leak into the iOS id" do
+      # Apple rejects `_` in a bundle id, so a project whose Android
+      # applicationId has one must set :ios_bundle_id — the case that
+      # surfaced the bug.
+      cfg = [bundle_id: "com.example.mishka_mob", ios_bundle_id: "com.genericjam.mishkamob"]
+      refute NativeBuild.ios_bundle_id(cfg) =~ "_"
+    end
+
+    test "nil when neither key is set — load_config/0 always supplies :bundle_id" do
+      assert NativeBuild.ios_bundle_id([]) == nil
+    end
+  end
 end

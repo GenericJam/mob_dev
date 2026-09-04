@@ -567,7 +567,10 @@ defmodule Mix.Tasks.Mob.Doctor do
   end
 
   defp check_bundle_id(cfg) do
-    case cfg[:bundle_id] do
+    # `ios_bundle_id` alone is a legitimate configuration — an iOS-only project
+    # whose Apple id is the only one it needs. Warning about a missing
+    # `bundle_id` there sends the user to add a key nothing reads.
+    case cfg[:bundle_id] || cfg[:ios_bundle_id] do
       nil ->
         {:warn, "bundle_id", "not set in mob.exs (only needed for mob.battery_bench)",
          "Add to mob.exs: config :mob_dev, bundle_id: \"com.example.myapp\""}

@@ -10,7 +10,9 @@ defmodule MobDev.Connector do
 
   defp bundle_id, do: MobDev.Config.bundle_id()
   defp android_package, do: bundle_id()
-  defp ios_bundle_id, do: bundle_id()
+  @doc false
+  @spec ios_bundle_id() :: String.t() | nil
+  def ios_bundle_id, do: MobDev.Config.ios_bundle_id()
   # ms to wait for node to appear
   @connect_timeout 25_000
   # ms between polls
@@ -161,7 +163,7 @@ defmodule MobDev.Connector do
       |> Enum.map(& &1.serial)
       |> MapSet.new()
 
-    case System.cmd("pgrep", ["-fl", bundle_id()], stderr_to_stdout: true) do
+    case System.cmd("pgrep", ["-fl", ios_bundle_id()], stderr_to_stdout: true) do
       {output, 0} ->
         output
         |> String.split("\n", trim: true)

@@ -204,4 +204,68 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
       refute joined =~ "Failed", "Bug fix: 5 not-installed devices must NOT count as failed"
     end
   end
+
+  # ── failure_message/3 — deploy exit status ────────────────────────────────────
+  #
+  # Original bug: a run that printed "Failed on 1 device(s)" still exited 0,
+  # so CI treated a failed deploy as a success. `failure_message/3` is the
+  # decision behind the `Mix.raise` — it must agree with `format_summary/4`
+  # about which bucket means failure.
+
+  describe "failure_message/3" do
+    test "nothing attempted → no failure" do
+      assert Deploy.failure_message([], [], []) == nil
+    end
+
+    test "all deployed → no failure" do
+      assert Deploy.failure_message([device("iPhone")], [], []) == nil
+    end
+
+    test "skipped-because-not-installed is not a failure" do
+      skip = device("emulator-5554", "com.example not installed on emulator-5554")
+      assert Deploy.failure_message([], [], [skip]) == nil
+    end
+
+    test "a skipped device does not absorb a failed one" do
+      # The combination the real bug produces — an iPhone that failed and an
+      # Android emulator without the app, on one default run — and the only
+      # combination no test covered. Two mutations passed the whole describe
+      # block without it: an added `failure_message(_, _, [_ | _]), do: nil`
+      # clause ("any skip makes the run non-fatal"), and counting
+      # `length(failed) + length(skipped)`.
+      failed = device("iPhone", "push timed out")
+      skipped = device("emulator-5554", "com.example not installed on emulator-5554")
+
+      message = Deploy.failure_message([], [failed], [skipped])
+
+      assert message =~ "Deploy failed on 1 device(s)",
+             "the skipped device must neither suppress the failure nor inflate the count"
+    end
+
+    test "a failed device produces a message naming the count" do
+      message = Deploy.failure_message([], [device("buggy", "push timed out")], [])
+      assert message =~ "Deploy failed on 1 device(s)"
+    end
+
+    test "partial success still fails — one bad device out of three" do
+      deployed = [device("iPhone"), device("emulator-5554")]
+      fail = device("emulator-5556", "adb push failed: broken pipe")
+
+      assert Deploy.failure_message(deployed, [fail], []) =~ "Deploy failed on 1 device(s)"
+    end
+
+    test "the iPhone bundle-id scenario from the bug report" do
+      # `mix mob.deploy --native --device <udid>` installed the app, then the
+      # BEAM push hit the wrong bundle id. Summary said "Failed on 1", exit
+      # status said 0.
+      fail = device("Kevin's iPhone", "App 'com.example.mishka_mob' is not installed")
+
+      assert Deploy.failure_message([], [fail], []) =~ "Deploy failed on 1 device(s)"
+    end
+
+    test "counts every failed device, not just the first" do
+      failed = for i <- 1..3, do: device("emulator-#{i}", "adb push failed")
+      assert Deploy.failure_message([], failed, []) =~ "Deploy failed on 3 device(s)"
+    end
+  end
 end

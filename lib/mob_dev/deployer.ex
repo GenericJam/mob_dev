@@ -35,7 +35,9 @@ defmodule MobDev.Deployer do
   defp android_package, do: bundle_id()
   defp android_app_data, do: "/data/data/#{android_package()}/files"
   defp android_beams_dir, do: "#{android_app_data()}/otp/#{app_name()}"
-  defp ios_bundle_id, do: bundle_id()
+  @doc false
+  @spec ios_bundle_id() :: String.t() | nil
+  def ios_bundle_id, do: MobDev.Config.ios_bundle_id()
 
   defp ios_beams_dir do
     # The simulator's OTP_ROOT is resolved by `MobDev.Paths.sim_runtime_dir/1`.
@@ -1163,28 +1165,38 @@ defmodule MobDev.Deployer do
           :ok
 
         {out, _} ->
-          reason =
-            if String.contains?(out, "ContainerLookupErrorDomain") do
-              """
-              App '#{bundle}' is not installed on this device.
+          # "Not installed" is the same condition Android reports as :skipped
+          # (deploy_android/2), and it must be bucketed the same way. It means
+          # "this device is not a target for this app" — a phone that happens to
+          # be plugged in — not "the deploy failed". Since mob.deploy started
+          # returning a non-zero exit code for failures, tagging this as an
+          # error made a plain `mix mob.deploy` fail on any Mac with an
+          # unrelated iPhone attached.
+          if String.contains?(out, "ContainerLookupErrorDomain") do
+            throw(
+              {:skipped,
+               """
+               App '#{bundle}' is not installed on this device.
 
-              To fix this, you need to build and install the app on the device first.
-              The easiest way is to open the ios/ directory in Xcode and run on device:
+               To fix this, you need to build and install the app on the device first.
+               The easiest way is to open the ios/ directory in Xcode and run on device:
 
-                  open ios/*.xcodeproj    (or ios/*.xcworkspace)
+                   open ios/*.xcodeproj    (or ios/*.xcworkspace)
 
-              Then select your device in Xcode and press Run (⌘R).
+               Then select your device in Xcode and press Run (⌘R).
 
-              Alternatively, if you have another app with a different bundle ID already
-              installed on the device, update bundle_id in mob.exs to match it:
+               Alternatively, if you have another app with a different bundle ID already
+               installed on the device, update the ID in mob.exs to match it:
 
-                  config :mob_dev, bundle_id: "com.yourcompany.yourapp"
-              """
-            else
-              "devicectl copy failed: #{out}"
-            end
+                   config :mob_dev, ios_bundle_id: "com.yourcompany.yourapp"
 
-          throw({:error, reason})
+               (`ios_bundle_id` overrides `bundle_id` on iOS only — use it when
+               Android's applicationId isn't a legal Apple bundle ID.)
+               """}
+            )
+          else
+            throw({:error, "devicectl copy failed: #{out}"})
+          end
       end
 
       received_bootstrap = Path.join(staging_parent, "received_#{app}.beam")
@@ -1209,6 +1221,11 @@ defmodule MobDev.Deployer do
       Process.delete(:mob_ios_override_replaced)
       {:ok, device}
     catch
+      # Not annotated with override state: the copy never started, so nothing
+      # on the device was replaced and there is no partial override to warn about.
+      {:skipped, reason} ->
+        {:skipped, reason}
+
       {:error, reason} ->
         {:error, annotate_override_state(reason, app)}
     after

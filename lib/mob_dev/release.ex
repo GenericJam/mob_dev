@@ -112,7 +112,12 @@ defmodule MobDev.Release do
   @doc false
   @spec resolve_distribution_signing(keyword()) :: {:ok, keyword()} | {:error, String.t()}
   def resolve_distribution_signing(cfg) do
-    bundle_id = cfg[:bundle_id]
+    # See `NativeBuild.check_device_signing_config/1`: the distribution profile
+    # must be found by the id the IPA is actually stamped with. Getting this
+    # wrong ships an App Store build under the Android applicationId, which for
+    # a `com.example.*` id containing an underscore App Store Connect rejects
+    # outright.
+    bundle_id = MobDev.NativeBuild.ios_bundle_id(cfg)
 
     with {:ok, identity} <- resolve_dist_identity(cfg[:ios_dist_sign_identity]),
          {:ok, {profile_uuid, team_id}} <-
@@ -358,7 +363,7 @@ defmodule MobDev.Release do
       {"MOB_ELIXIR_LIB", Path.expand(elixir_lib)},
       {"MOB_IOS_DEVICE_OTP_ROOT", otp_root},
       {"MOB_IOS_EPMD_BUILD_SRC", epmd_src},
-      {"MOB_IOS_BUNDLE_ID", cfg[:bundle_id]},
+      {"MOB_IOS_BUNDLE_ID", MobDev.NativeBuild.ios_bundle_id(cfg)},
       {"MOB_IOS_TEAM_ID", cfg[:ios_team_id]},
       {"MOB_IOS_SIGN_IDENTITY", cfg[:ios_dist_sign_identity]},
       {"MOB_IOS_PROFILE_UUID", cfg[:ios_dist_profile_uuid]},
