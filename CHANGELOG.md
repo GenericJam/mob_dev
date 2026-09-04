@@ -10,6 +10,32 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ## [Unreleased]
 
+## [0.6.33] - 2026-09-04
+
+### Fixed
+- **The shared OTP root keeps one version of an app, not every version it has
+  ever seen** (MOB-143). The root is keyed by OTP hash rather than by project,
+  so every app on the machine shares one `lib/`. Installing a dependency
+  without removing its other versions left them side by side, and the code
+  server resolves an application to the **highest** version it finds there.
+
+  That splits an app in half. Its beams come from its own `mix.lock` and are
+  pushed to the device; `code:lib_dir/1` — and so `code:priv_dir/1`, which is
+  where `load_nif` looks — resolves against the shared directory. An app
+  locking exqlite 0.38.0 would load 0.38.0's beams and 0.40.0's
+  `sqlite3_nif.so`, and `on_load` would fail with `bad_lib`, taking down every
+  database connection and the boot with it. The visible error talked about
+  database credentials and said nothing about a cached artifact.
+
+  It was also **non-local**: an app that built fine yesterday broke because a
+  *different* app upgraded a dependency. `pythonx` always swept by wildcard and
+  never had this; `exqlite`, `emlx` and the generic installer removed only a
+  malformed empty-version directory and let real versions accumulate.
+
+  All four install paths now sweep other versions, keep the target, and log
+  what they removed. A stale version left by an earlier build is cleaned on the
+  next native build, so the first build after upgrading may report removals.
+
 ## [0.6.32] - 2026-08-31
 
 ### Fixed
