@@ -1769,10 +1769,7 @@ defmodule MobDev.NativeBuild do
     if File.dir?(ebin) do
       vsn = detect_dep_version(app) || read_app_vsn(Path.join(ebin, "#{app}.app")) || "0.0.0"
       IO.puts("  === Installing #{app} as OTP library (priv/ empty — NIF static-linked)")
-      lib_dir = Path.join([otp_root, "lib", "#{app}-#{vsn}"])
-      File.rm_rf!(Path.join(otp_root, "lib/#{app}-"))
-      File.mkdir_p!(Path.join(lib_dir, "ebin"))
-      File.mkdir_p!(Path.join(lib_dir, "priv"))
+      lib_dir = prepare_otp_lib_dir!(otp_root, app, vsn)
 
       Path.wildcard("#{ebin}/*.beam")
       |> Enum.each(&File.cp!(&1, Path.join([lib_dir, "ebin", Path.basename(&1)])))
@@ -1802,10 +1799,7 @@ defmodule MobDev.NativeBuild do
     else
       vsn = detect_dep_version("emlx") || read_app_vsn(Path.join(ebin, "emlx.app")) || "0.0.0"
       IO.puts("  === Installing emlx as OTP library (priv/ empty — NIF is statically linked)")
-      lib_dir = Path.join([otp_root, "lib", "emlx-#{vsn}"])
-      File.rm_rf!(Path.join(otp_root, "lib/emlx-"))
-      File.mkdir_p!(Path.join(lib_dir, "ebin"))
-      File.mkdir_p!(Path.join(lib_dir, "priv"))
+      lib_dir = prepare_otp_lib_dir!(otp_root, "emlx", vsn)
 
       Path.wildcard("#{ebin}/*.beam")
       |> Enum.each(&File.cp!(&1, Path.join([lib_dir, "ebin", Path.basename(&1)])))
@@ -1847,11 +1841,7 @@ defmodule MobDev.NativeBuild do
 
       {:install, vsn} ->
         IO.puts("  === Installing exqlite as OTP library")
-        lib_dir = Path.join([otp_root, "lib", "exqlite-#{vsn}"])
-        # Remove any previous broken empty-version dir from older builds.
-        File.rm_rf!(Path.join(otp_root, "lib/exqlite-"))
-        File.mkdir_p!(Path.join(lib_dir, "ebin"))
-        File.mkdir_p!(Path.join(lib_dir, "priv"))
+        lib_dir = prepare_otp_lib_dir!(otp_root, "exqlite", vsn)
 
         Path.wildcard("#{ebin}/*.beam")
         |> Enum.each(&File.cp!(&1, Path.join([lib_dir, "ebin", Path.basename(&1)])))
@@ -2067,6 +2057,59 @@ defmodule MobDev.NativeBuild do
   defp copy_dir!(src, dst) do
     {_, 0} = System.cmd("cp", ["-R", src, dst], stderr_to_stdout: true)
     :ok
+  end
+
+  @doc """
+  Prepare `otp_root/lib/<app>-<vsn>`, removing every OTHER version of `app`
+  first, and return the path.
+
+  Public so the stale-version sweep can be regression-tested without running an
+  end-to-end native build, matching `install_exqlite_decision/2`.
+  """
+  @spec prepare_otp_lib_dir!(String.t(), String.t(), String.t()) :: String.t()
+  # Install `app` at `vsn` into the shared OTP root, removing every other
+  # version of it first.
+  #
+  # The OTP root is keyed by OTP hash, not by app, so every project on the
+  # machine shares one `lib/`. Installing a version without removing the others
+  # leaves them side by side, and the code server resolves an application to the
+  # HIGHEST version it finds there. The BEAMs an app pushes come from its own
+  # lock, but `code:lib_dir/1` — and therefore `code:priv_dir/1`, which is where
+  # `load_nif` looks — resolves against that shared directory.
+  #
+  # So an app locking exqlite 0.38.0 loads 0.38.0's beams and 0.40.0's
+  # `sqlite3_nif.so`, and `on_load` fails with
+  #
+  #     {:bad_lib, "Function not found 'Elixir.Exqlite.Sqlite3NIF':
+  #                 erlang_allocator_enabled/0"}
+  #
+  # because the newer native library declares a NIF the older module does not
+  # export. That takes down every DB connection, the supervision tree dies at
+  # boot, and the app never reaches its root screen — while the surface error
+  # talks about database credentials and says nothing about a cached artifact.
+  #
+  # It is also non-local and order-dependent: an app that built fine yesterday
+  # breaks because a DIFFERENT app upgraded a dependency. `pythonx` has always
+  # cleaned by wildcard; the others removed only a malformed empty-version dir
+  # (`lib/exqlite-`) and left real versions to accumulate. See MOB-143.
+  def prepare_otp_lib_dir!(otp_root, app, vsn) do
+    lib_dir = Path.join([otp_root, "lib", "#{app}-#{vsn}"])
+
+    Path.join(otp_root, "lib/#{app}-*")
+    |> Path.wildcard()
+    |> Enum.reject(&(&1 == lib_dir))
+    |> Enum.each(fn stale ->
+      IO.puts("  [#{app}] removing stale OTP lib #{Path.basename(stale)} (installing #{vsn})")
+      File.rm_rf!(stale)
+    end)
+
+    # The malformed empty-version dir older builds could leave behind is not
+    # matched by the wildcard above when vsn is empty, so clear it explicitly.
+    File.rm_rf!(Path.join(otp_root, "lib/#{app}-"))
+
+    File.mkdir_p!(Path.join(lib_dir, "ebin"))
+    File.mkdir_p!(Path.join(lib_dir, "priv"))
+    lib_dir
   end
 
   defp detect_dep_version(name) do
