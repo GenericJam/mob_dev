@@ -231,7 +231,23 @@ defmodule Mix.Tasks.Mob.Attest do
       Enum.map(failed, fn r -> "#{r.node}: #{elem(r.verdict, 1)}" end) ++
         Enum.map(down, fn n -> "#{n}: unreachable, so it was never checked" end)
 
-    unless messages == [], do: Mix.raise(Enum.join(messages, "\n"))
+    # Any hint here has to name a node that ANSWERED — pointing at one from
+    # `down` tells the reader to run a command guaranteed to fail differently.
+    hint =
+      case {down, results} do
+        {[], _} ->
+          ""
+
+        {_, [%{node: reachable} | _]} ->
+          "\n\nEvery discovered device is a candidate. To check just the one " <>
+            "that answered:\n    mix mob.attest --node #{reachable}\n" <>
+            "or connect the rest with `mix mob.connect --no-iex`."
+
+        _ ->
+          "\n\nConnect them with `mix mob.connect --no-iex` first."
+      end
+
+    unless messages == [], do: Mix.raise(Enum.join(messages, "\n") <> hint)
   end
 
   @doc false

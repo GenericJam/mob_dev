@@ -114,27 +114,24 @@ defmodule MobDev.Deployer do
           dist_port = dist_port_override || Tunnel.serial_base_port(device.serial)
           node = Device.node_name(device)
 
+          # Shared by both branches. `restart` is honoured by the fallback and
+          # overridden to false by the dist path, where the modules are
+          # already live.
+          platform_opts = [
+            restart: restart,
+            dist_port: dist_port,
+            node_suffix: node_suffix_override,
+            beam_flags: beam_flags
+          ]
+
           {method, result} =
             if node in dist_nodes do
-              {:dist, push_via_dist(node, device)}
+              {:dist, push_via_dist(node, device, beam_dirs, platform_opts)}
             else
               fallback =
                 case device.platform do
-                  :android ->
-                    deploy_android(device, beam_dirs,
-                      restart: restart,
-                      dist_port: dist_port,
-                      node_suffix: node_suffix_override,
-                      beam_flags: beam_flags
-                    )
-
-                  :ios ->
-                    deploy_ios(device, beam_dirs,
-                      restart: restart,
-                      dist_port: dist_port,
-                      node_suffix: node_suffix_override,
-                      beam_flags: beam_flags
-                    )
+                  :android -> deploy_android(device, beam_dirs, platform_opts)
+                  :ios -> deploy_ios(device, beam_dirs, platform_opts)
                 end
 
               {:adb, fallback}
@@ -352,6 +349,15 @@ defmodule MobDev.Deployer do
   # If the Elixir stdlib on the device was installed by a different Elixir version
   # than the host (e.g. after `asdf` upgrade), regex literals and other stdlib
   # internals will be incompatible. Detect the mismatch and push updated BEAMs.
+  # `adb shell id -u` is read-only: it cannot restart adbd, so it is safe to
+  # call on a path that a live dist session depends on.
+  defp already_root?(serial) do
+    case run_adb(["-s", serial, "shell", "id", "-u"]) do
+      {:ok, out} when is_binary(out) -> String.trim(out) == "0"
+      _ -> false
+    end
+  end
+
   defp sync_elixir_stdlib_android(serial) do
     host_vsn = System.version()
     pkg = android_package()
@@ -373,18 +379,27 @@ defmodule MobDev.Deployer do
 
       elixir_lib = :code.lib_dir(:elixir) |> to_string() |> Path.dirname()
 
+      # Ask before acting. `adb root` on a non-root adbd RESTARTS adbd, which
+      # drops every `adb forward`/`reverse` — including the dist tunnels an
+      # open `mix mob.connect` session is using. That was tolerable when this
+      # ran only on the fallback path; now that a dist deploy persists too, it
+      # would kill the user's IEx session from another terminal for nothing.
       rooted? =
-        case run_adb(["-s", serial, "root"]) do
-          {:ok, out} when is_binary(out) ->
-            if out =~ "restarting" or out =~ "already running as root" do
-              :timer.sleep(600)
-              true
-            else
-              false
-            end
+        if already_root?(serial) do
+          true
+        else
+          case run_adb(["-s", serial, "root"]) do
+            {:ok, out} when is_binary(out) ->
+              if out =~ "restarting" or out =~ "already running as root" do
+                :timer.sleep(600)
+                true
+              else
+                false
+              end
 
-          _ ->
-            false
+            _ ->
+              false
+          end
         end
 
       if rooted? do
@@ -1391,18 +1406,94 @@ defmodule MobDev.Deployer do
   #
   # This is why `mix mob.deploy` appeared to do nothing before this fix — the
   # code WAS pushed correctly, the screen just had no trigger to repaint.
-  defp push_via_dist(node, device) do
+  defp push_via_dist(node, device, beam_dirs, platform_opts) do
     {_pushed, failed} = HotPush.push_all([node])
 
     if failed == [] do
       # Best-effort: ignored if no screen is currently registered (nav edge
       # cases, app in background, etc.).
       :rpc.call(node, :erlang, :send, [:mob_screen, :__mob_hot_reload__])
-      {:ok, device}
+      persist_after_dist(device, beam_dirs, platform_opts)
     else
       mods = Enum.map_join(failed, ", ", fn {mod, _} -> inspect(mod) end)
       {:error, "dist push failed for: #{mods}"}
     end
+  end
+
+  # The hot load is the latency win; the file write is what makes it survive.
+  #
+  # Before this, a dist deploy loaded the new modules into the running VM and
+  # never touched the filesystem, so the app reverted to the last
+  # filesystem-deployed version on its next restart — and `mix mob.connect`
+  # restarts the app, so simply connecting to inspect your change undid it.
+  # That is the long-standing "mix mob.deploy didn't do anything" report
+  # (MOB-118), and it was invisible because every step reported success.
+  #
+  # `restart: false` because the modules are already live: restarting here
+  # would throw away the state the hot load exists to preserve.
+  defp persist_after_dist(device, beam_dirs, platform_opts) do
+    if persistable?(device) do
+      opts = Keyword.put(platform_opts, :restart, false)
+
+      result =
+        case device.platform do
+          :android -> deploy_android(device, beam_dirs, opts)
+          :ios -> deploy_ios(device, beam_dirs, opts)
+        end
+
+      dist_outcome(device, result)
+    else
+      warn_hot_load_only(device)
+      {:ok, device}
+    end
+  end
+
+  @doc false
+  # Whether writing this device's filesystem is both possible and safe from
+  # the dist path.
+  #
+  # A physical iPhone is neither. It is discovered by probing EPMD across the
+  # LAN (`Discovery.IOS`, whose own comment says "LAN-only devices will fall
+  # back to dist-only in the deployer"), and a LAN-only device has no
+  # `devicectl` route at all — the first version of this change turned that
+  # documented fallback into a hard exit 1 on a deploy that had previously
+  # succeeded. Even with USB attached, the write is an
+  # `xcrun devicectl ... --remove-existing-content` replace with no undo, so a
+  # cable knock mid-copy leaves the app unbootable. A hot load could never
+  # damage a device; making it able to, silently, is not a fix.
+  #
+  # The documented physical-iOS dist workflow is USB *unplugged* anyway, which
+  # is exactly the state in which the write cannot run.
+  @spec persistable?(Device.t()) :: boolean()
+  def persistable?(%Device{platform: :ios, type: :physical}), do: false
+  def persistable?(%Device{}), do: true
+
+  @doc false
+  # How a persist result combines with an already-successful hot load.
+  #
+  # The device HAS been deployed to — the running app is correct. Only
+  # durability is in question, so only a genuine write failure is an error.
+  @spec dist_outcome(
+          Device.t(),
+          {:ok, Device.t()} | {:error, String.t()} | {:skipped, String.t()}
+        ) ::
+          {:ok, Device.t()} | {:error, String.t()}
+  def dist_outcome(device, {:ok, _}), do: {:ok, device}
+
+  # `:skipped` here means the app is not installed for that platform — yet it
+  # answered over dist, so it plainly is. Failing the run on that would report
+  # a device as unreached when it was reached and updated.
+  def dist_outcome(device, {:skipped, _reason}), do: {:ok, device}
+
+  def dist_outcome(_device, {:error, reason}),
+    do: {:error, "hot load succeeded but the on-disk BEAMs were not updated: #{reason}"}
+
+  defp warn_hot_load_only(device) do
+    IO.puts(
+      "\n    #{color(:yellow)}hot-loaded only — #{device.name || device.serial} has no " <>
+        "filesystem path from here, so this change will not survive a restart. " <>
+        "Use `mix mob.deploy --native` to make it durable.#{color(:reset)}"
+    )
   end
 
   # ── Helpers ──────────────────────────────────────────────────────────────────
