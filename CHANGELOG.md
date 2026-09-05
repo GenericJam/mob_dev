@@ -21,6 +21,21 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ### Fixed
 
+- **`mix mob.deploy --help` and `mix mob.mutate --help` refused to help.**
+  Strict option parsing turned the flag people try first, on the task they run
+  most, into `Unrecognized or invalid option(s): --help` — telling the reader
+  to go and read the help. Both now defer to `MobDev.TaskHelp`, as
+  `mix mob.uninstall` already did.
+- **`mix mob.uninstall` ignored `:ios_bundle_id`.** The task resolved one
+  bundle id for both platforms and passed it down, so the per-platform clause
+  that was supposed to pick `:ios_bundle_id` for an iOS device never ran. On a
+  device holding the app under a different iOS id, uninstall removed nothing
+  and reported success. The accompanying test passed an opts shape the task
+  never sends, which is why the suite stayed green.
+- **`mix mob.deploy`'s error told you the equals form was required for
+  dash-prefixed values.** It stopped being true in the same commit that wrote
+  it, once the spaced form was handled.
+
 - **`--beam-flags "-S 4:4 -A 4"` aborted the deploy.** `OptionParser` will not
   consume a dash-prefixed argument as a string value, so the spelling this
   repo prints in seven places — the moduledoc, five README recipes and both

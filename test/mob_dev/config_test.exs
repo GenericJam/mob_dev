@@ -97,18 +97,31 @@ defmodule MobDev.ConfigTest do
       :ok
     end
 
+    # `[]` is not what the task passes, and that is why this suite stayed green
+    # while the feature did not work: `mix mob.uninstall` sent a
+    # `project_bundle_id` it had already resolved, the `||` short-circuited,
+    # and the per-platform clause was dead on every real invocation. These now
+    # use the task's own opts shape.
+    @task_opts [in_project: true]
+
     test "an iOS device resolves the iOS id" do
       device = %MobDev.Device{name: "iPhone", serial: "udid", platform: :ios}
 
-      assert MobDev.Uninstaller.resolve_apps_for_device(device, [], "com.") ==
+      assert MobDev.Uninstaller.resolve_apps_for_device(device, @task_opts, "com.") ==
                ["com.genericjam.mishkamob"]
     end
 
     test "an Android device keeps the applicationId" do
       device = %MobDev.Device{name: "emu", serial: "emulator-5554", platform: :android}
 
-      assert MobDev.Uninstaller.resolve_apps_for_device(device, [], "com.") ==
+      assert MobDev.Uninstaller.resolve_apps_for_device(device, @task_opts, "com.") ==
                ["com.example.mishka_mob"]
+    end
+
+    test "outside a Mix project there is no project app to uninstall" do
+      device = %MobDev.Device{name: "iPhone", serial: "udid", platform: :ios}
+
+      assert MobDev.Uninstaller.resolve_apps_for_device(device, [], "com.") == []
     end
 
     test "an explicit --bundle-id still wins" do

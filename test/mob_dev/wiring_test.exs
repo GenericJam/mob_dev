@@ -211,4 +211,32 @@ defmodule MobDev.WiringTest do
                ~r/unless invalid == \[\] do\s*Mix\.raise\(invalid_options_message\(invalid\)\)/
     end
   end
+
+  describe "mob.uninstall resolves the bundle id where the device is known" do
+    @uninstall_task File.read!(Path.expand("../../lib/mix/tasks/mob.uninstall.ex", __DIR__))
+
+    test "the task passes whether it is in a project, not which id to use" do
+      # The gap that hid the bug: the task resolved one id for both platforms
+      # and passed it down, so the `||` in resolve_apps_for_device/3
+      # short-circuited past the per-platform clause. The unit test passed an
+      # opts shape the task never sends, so it could not see any of that.
+      assert @uninstall_task =~ "in_project: in_project?"
+
+      refute @uninstall_task =~ "project_bundle_id:",
+             "resolving the id in the task is what made the iOS branch dead code"
+    end
+  end
+
+  describe "--help is answered, not refused" do
+    # Strict parsing made `mix mob.deploy --help` fail with "Unrecognized or
+    # invalid option(s): --help" — the flag people try first, on the task they
+    # run most, telling them to go read the help. `mob.uninstall` had already
+    # solved this with MobDev.TaskHelp; deploy and mutate had not.
+    for task <- ~w(mob.deploy mob.mutate) do
+      test "#{task} defers to MobDev.TaskHelp" do
+        path = Path.expand("../../lib/mix/tasks/#{unquote(task)}.ex", __DIR__)
+        assert File.read!(path) =~ "MobDev.TaskHelp.help_requested?(args)"
+      end
+    end
+  end
 end

@@ -85,8 +85,22 @@ defmodule Mix.Tasks.Mob.DeployParsingTest do
       assert message =~ "Unrecognized or invalid"
     end
 
-    test "the message points at the equals form for dashed values" do
-      assert Deploy.invalid_options_message([{"--beam-flags", nil}]) =~ "--beam-flags="
+    test "the message does not claim the equals form is required" do
+      # It was, before `join_dashed_values/1` landed in the same commit that
+      # wrote this advice. Telling someone their working spelling is wrong is
+      # its own small version of a tool that lies.
+      message = Deploy.invalid_options_message([{"--beam-flags", nil}])
+
+      refute message =~ "equals form"
+      assert message =~ "mix help mob.deploy"
+    end
+  end
+
+  describe "--help" do
+    test "the helper recognises both spellings" do
+      assert MobDev.TaskHelp.help_requested?(["--help"])
+      assert MobDev.TaskHelp.help_requested?(["-h"])
+      refute MobDev.TaskHelp.help_requested?(["--device", "x"])
     end
   end
 end
