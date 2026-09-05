@@ -12,6 +12,18 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ### Added
 
+- **`mix mob.attest`** — prove the device is running the code you just pushed.
+  Compares `module_info(:md5)` on the device against `:beam_lib.md5/1` of the
+  local `.beam`, so a push that never landed, landed in the wrong place, or
+  landed and was never loaded all show up. Exits non-zero on a mismatch, and
+  also when the check could not run — a check that could not run is not a check
+  that passed. Modules the device has not loaded yet are reported and are not a
+  failure. Written after a bundle-id divergence let a BEAM push succeed against
+  the wrong app's container, printing a tick while the app kept running old
+  code; it found a second live instance (MOB-161) on its first real use.
+
+### Added
+
 - **`mix mob.mutate`** — mutation testing for the lines a branch changed.
   Breaks the production code one line at a time and reports the changes nothing
   noticed, which is the only cheap way to tell a test that guards something
