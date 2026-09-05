@@ -10,6 +10,30 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ## [Unreleased]
 
+### Changed
+
+- **`mix mob.deploy` rejects unrecognised options instead of ignoring them.**
+  A run that passed an extra or misspelled flag used to carry on regardless;
+  it now fails and names the option. **If you have a wrapper script, CI step
+  or shell alias passing a flag this task does not accept, it will start
+  failing.** It also takes no positional arguments — `mix mob.deploy --native
+  ABC123` deployed to every device and said nothing, and now refuses.
+
+### Fixed
+
+- **`--beam-flags "-S 4:4 -A 4"` aborted the deploy.** `OptionParser` will not
+  consume a dash-prefixed argument as a string value, so the spelling this
+  repo prints in seven places — the moduledoc, five README recipes and both
+  battery-bench workflows — parsed as two unknown options. Under the previous
+  lenient parsing the value was silently dropped and the deploy carried on
+  with whatever `mob.exs` held; strict parsing turned that into a hard failure
+  whose message named `--beam-flags` itself as unknown. Both spellings work
+  now.
+- **The error said "Unknown option(s)" for options that are known.**
+  `--schedulers abc` reported `--schedulers` as unknown and discarded the
+  value, sending the reader to a help page that lists it. It now distinguishes
+  an unrecognised flag from a bad value and prints both.
+
 ### Added
 
 - **`mix mob.mutate`** — mutation testing for the lines a branch changed.

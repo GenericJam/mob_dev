@@ -23,7 +23,7 @@ defmodule Mix.Tasks.Mob.Deploy do
 
     * `--native`              — build native binaries before pushing BEAMs
     * `--no-restart`          — push BEAMs but don't restart the app
-    * `--device <id>`         — target a specific device; use `mix mob.devices` to find IDs
+    * `-d`, `--device <id>`   — target a specific device; use `mix mob.devices` to find IDs
     * `--dist-port <N>`       — pin the BEAM dist listen port (default: auto-allocated per
                               device, `9100 + index`). Use to resolve EPMD collisions when
                               multiple sims/emulators are running the same app concurrently
@@ -179,8 +179,10 @@ defmodule Mix.Tasks.Mob.Deploy do
 
   @impl Mix.Task
   def run(args) do
-    {opts, _argv, invalid} =
-      OptionParser.parse(args, strict: @switches, aliases: [d: :device])
+    {opts, argv, invalid} =
+      args
+      |> join_dashed_values()
+      |> OptionParser.parse(strict: @switches, aliases: [d: :device])
 
     # `switches:` silently discards anything it does not recognise, so
     # `mix mob.deploy -d <udid>` — `-d` was never aliased here, though
@@ -190,6 +192,17 @@ defmodule Mix.Tasks.Mob.Deploy do
     # something other than what was asked.
     unless invalid == [] do
       Mix.raise(invalid_options_message(invalid))
+    end
+
+    # `mix mob.deploy --native ABC123` — a natural fumble of `--device` — parsed
+    # cleanly, deployed to every device, and said nothing. This task takes no
+    # positional arguments, so tolerating them is the same silent-ignore the
+    # strict parsing above was added to end.
+    unless argv == [] do
+      Mix.raise(
+        "mix mob.deploy takes no positional arguments, got: #{Enum.join(argv, ", ")}\n\n" <>
+          "Did you mean `--device #{hd(argv)}`?"
+      )
     end
 
     # Under --json, stdout must carry ONE document and nothing else. Every
@@ -421,6 +434,47 @@ defmodule Mix.Tasks.Mob.Deploy do
     end
   end
 
+  @doc false
+  @spec switches() :: keyword()
+  def switches, do: @switches
+
+  @doc """
+  Rewrite `--flag value` to `--flag=value` when the value starts with a dash.
+
+  `OptionParser` will not consume a dash-prefixed argument as a `:string`
+  value, so `--beam-flags "-S 4:4 -A 4"` — the spelling this repo prints in
+  seven places, including the README and both battery-bench workflows — parsed
+  as two unknown options. Under the old lenient parsing the value was silently
+  dropped and the deploy carried on with whatever `mob.exs` held; under strict
+  parsing it became a hard failure that named a valid option as unknown.
+
+  BEAM flags essentially all start with a dash, so this is not an edge case:
+  it is the documented invocation.
+  """
+  @spec join_dashed_values([String.t()]) :: [String.t()]
+  def join_dashed_values(args), do: join_dashed(args, [])
+
+  defp join_dashed([], acc), do: Enum.reverse(acc)
+
+  defp join_dashed(["--" | rest], acc), do: Enum.reverse(acc) ++ ["--" | rest]
+
+  defp join_dashed([flag, value | rest], acc) do
+    if string_switch?(flag) and String.starts_with?(value, "-") do
+      join_dashed(rest, ["#{flag}=#{value}" | acc])
+    else
+      join_dashed([value | rest], [flag | acc])
+    end
+  end
+
+  defp join_dashed([last], acc), do: Enum.reverse([last | acc])
+
+  # Only the switches whose value is free text can legitimately begin with a
+  # dash. Doing this for every switch would swallow `--android --ios`.
+  defp string_switch?("--" <> name),
+    do: Keyword.get(@switches, String.to_atom(String.replace(name, "-", "_"))) == :string
+
+  defp string_switch?(_), do: false
+
   @doc """
   The error for options the task does not accept.
 
@@ -429,11 +483,20 @@ defmodule Mix.Tasks.Mob.Deploy do
   """
   @spec invalid_options_message([{String.t(), String.t() | nil}]) :: String.t()
   def invalid_options_message(invalid) do
-    names = invalid |> Enum.map(&elem(&1, 0)) |> Enum.join(", ")
+    # `OptionParser`'s `invalid` list conflates "unrecognised flag" with
+    # "recognised flag, unparseable value". Reporting both as "unknown" sends
+    # someone who typed `--schedulers abc` to a help page that lists
+    # `--schedulers`, with the offending value discarded and nothing to go on.
+    # `mob.new_plugin` already got this right; this now matches it.
+    names =
+      Enum.map_join(invalid, ", ", fn
+        {flag, nil} -> flag
+        {flag, value} -> "#{flag} #{value}"
+      end)
 
-    "Unknown option(s): #{names}\n\n" <>
-      "Run `mix help mob.deploy` for the accepted options. " <>
-      "Short forms are not aliases except `-d` for `--device`."
+    "Unrecognized or invalid option(s): #{names}\n\n" <>
+      "Run `mix help mob.deploy` for the accepted options.\n" <>
+      "A value beginning with `-` needs the equals form: --beam-flags=\"-S 4:4\"."
   end
 
   @doc """
