@@ -407,11 +407,14 @@ defmodule MobDev.Uninstaller do
       opts[:all_apps] ->
         list_matching_packages(device, bundle_prefix)
 
+      opts[:in_project] ->
+        # Per platform, resolved HERE because only here is the device known.
+        # An iOS device holds the app under `:ios_bundle_id`; uninstalling by
+        # the Android applicationId removes nothing and reports success.
+        [default_bundle_id(device)]
+
       true ->
-        # Per platform: an iOS device holds the app under `ios_bundle_id`, so
-        # uninstalling by the generic id silently removes nothing and reports
-        # success. Same defect class as the deploy path this release fixed.
-        [opts[:project_bundle_id] || default_bundle_id(device)]
+        []
     end
   end
 

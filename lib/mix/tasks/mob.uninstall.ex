@@ -104,11 +104,14 @@ defmodule Mix.Tasks.Mob.Uninstall do
     {opts, _positional, _} = OptionParser.parse(args, strict: @switches, aliases: @aliases)
     device_ids = Keyword.get_values(opts, :device)
 
-    project_bundle_id =
-      case Mix.Project.get() do
-        nil -> nil
-        _ -> MobDev.Config.bundle_id()
-      end
+    # Whether we are in a Mix project — NOT which id to use. Resolving that
+    # here picked one id for both platforms, and the `||` in
+    # `resolve_apps_for_device/3` then short-circuited past the per-platform
+    # clause, so the iOS branch was dead on every real invocation and
+    # `mix mob.uninstall` removed nothing on a device holding the app under
+    # `:ios_bundle_id`. The test that was supposed to cover it passed `[]` for
+    # opts, which is not what this task passes.
+    in_project? = Mix.Project.get() != nil
 
     uninstaller_opts = [
       device_ids: device_ids,
@@ -117,7 +120,7 @@ defmodule Mix.Tasks.Mob.Uninstall do
       bundle_id: opts[:bundle_id],
       all_apps: Keyword.get(opts, :all_apps, false),
       bundle_prefix: opts[:bundle_prefix],
-      project_bundle_id: project_bundle_id
+      in_project: in_project?
     ]
 
     case Uninstaller.plan(uninstaller_opts) do

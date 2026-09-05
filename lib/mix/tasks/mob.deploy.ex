@@ -495,8 +495,7 @@ defmodule Mix.Tasks.Mob.Deploy do
       end)
 
     "Unrecognized or invalid option(s): #{names}\n\n" <>
-      "Run `mix help mob.deploy` for the accepted options.\n" <>
-      "A value beginning with `-` needs the equals form: --beam-flags=\"-S 4:4\"."
+      "Run `mix help mob.deploy` for the accepted options."
   end
 
   @doc """
