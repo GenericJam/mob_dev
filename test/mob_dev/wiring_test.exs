@@ -239,4 +239,37 @@ defmodule MobDev.WiringTest do
       end
     end
   end
+
+  describe "a dist deploy also writes the filesystem (MOB-118)" do
+    @deployer File.read!(Path.expand("../../lib/mob_dev/deployer.ex", __DIR__))
+
+    test "the dist branch persists after hot-loading" do
+      # The two paths used to be mutually exclusive: dist hot-loaded into the
+      # running VM and never touched disk, so the app reverted to the last
+      # filesystem deploy on its next restart — and `mix mob.connect` restarts
+      # it, so connecting to inspect your change undid it.
+      body = region(@deployer, "defp push_via_dist(node, device, beam_dirs", "\n  end")
+
+      assert body =~ "HotPush.push_all([node])"
+      assert body =~ "persist_after_dist(device, beam_dirs, platform_opts)"
+    end
+
+    test "persisting does not restart — the modules are already live" do
+      body = region(@deployer, "defp persist_after_dist(", "\n  end")
+
+      assert body =~ "Keyword.put(platform_opts, :restart, false)",
+             "restarting here throws away the state the hot load exists to preserve"
+
+      assert body =~ ":android -> deploy_android(device, beam_dirs, opts)"
+      assert body =~ ":ios -> deploy_ios(device, beam_dirs, opts)"
+    end
+
+    test "a failed disk write is reported, not swallowed" do
+      # The running app is correct and will silently revert, which is worse
+      # than a clean failure.
+      body = region(@deployer, "defp persist_after_dist(", "\n  end")
+
+      assert body =~ "hot load succeeded but the on-disk BEAMs were not updated"
+    end
+  end
 end

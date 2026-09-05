@@ -11,6 +11,18 @@
 
 ### Fixed
 
+- **`mix mob.deploy` hot-pushed over distribution without writing the BEAMs to
+  disk, so changes reverted on the next restart.** The dist and filesystem
+  paths were mutually exclusive: when a device answered over dist, the new
+  modules were loaded into the running VM and the on-disk copies were left
+  stale. The app then reverted to the last filesystem deploy whenever it
+  restarted — and `mix mob.connect` restarts the app, so connecting to inspect
+  your change was enough to undo it. This is the long-standing "`mix
+  mob.deploy` didn't do anything" report; `--native` was unaffected because it
+  skips dist entirely. The dist path now hot-loads *and* writes, without
+  restarting, and a failed write is reported instead of being hidden behind a
+  successful hot load. Verify with `mix mob.attest` after a restart.
+
 - **`mix mob.deploy --help` and `mix mob.mutate --help` refused to help.**
   Strict option parsing turned the flag people try first, on the task they run
   most, into `Unrecognized or invalid option(s): --help` — telling the reader

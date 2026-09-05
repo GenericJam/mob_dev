@@ -114,9 +114,16 @@ defmodule MobDev.Deployer do
           dist_port = dist_port_override || Tunnel.serial_base_port(device.serial)
           node = Device.node_name(device)
 
+          platform_opts = [
+            restart: restart,
+            dist_port: dist_port,
+            node_suffix: node_suffix_override,
+            beam_flags: beam_flags
+          ]
+
           {method, result} =
             if node in dist_nodes do
-              {:dist, push_via_dist(node, device)}
+              {:dist, push_via_dist(node, device, beam_dirs, platform_opts)}
             else
               fallback =
                 case device.platform do
@@ -1391,17 +1398,51 @@ defmodule MobDev.Deployer do
   #
   # This is why `mix mob.deploy` appeared to do nothing before this fix — the
   # code WAS pushed correctly, the screen just had no trigger to repaint.
-  defp push_via_dist(node, device) do
+  defp push_via_dist(node, device, beam_dirs, platform_opts) do
     {_pushed, failed} = HotPush.push_all([node])
 
     if failed == [] do
       # Best-effort: ignored if no screen is currently registered (nav edge
       # cases, app in background, etc.).
       :rpc.call(node, :erlang, :send, [:mob_screen, :__mob_hot_reload__])
-      {:ok, device}
+      persist_after_dist(device, beam_dirs, platform_opts)
     else
       mods = Enum.map_join(failed, ", ", fn {mod, _} -> inspect(mod) end)
       {:error, "dist push failed for: #{mods}"}
+    end
+  end
+
+  # The hot load is the latency win; the file write is what makes it survive.
+  #
+  # Before this, a dist deploy loaded the new modules into the running VM and
+  # never touched the filesystem, so the app reverted to the last
+  # filesystem-deployed version on its next restart — and `mix mob.connect`
+  # restarts the app, so simply connecting to inspect your change undid it.
+  # That is the long-standing "mix mob.deploy didn't do anything" report
+  # (MOB-118), and it was invisible because every step reported success.
+  #
+  # `restart: false` because the modules are already live: restarting here
+  # would throw away the state the hot load exists to preserve.
+  defp persist_after_dist(device, beam_dirs, platform_opts) do
+    opts = Keyword.put(platform_opts, :restart, false)
+
+    result =
+      case device.platform do
+        :android -> deploy_android(device, beam_dirs, opts)
+        :ios -> deploy_ios(device, beam_dirs, opts)
+      end
+
+    case result do
+      {:ok, _} ->
+        {:ok, device}
+
+      {:error, reason} ->
+        # The running app is correct and will silently revert on restart, which
+        # is worse than a clean failure — say so rather than reporting success.
+        {:error, "hot load succeeded but the on-disk BEAMs were not updated: #{reason}"}
+
+      {:skipped, reason} ->
+        {:skipped, reason}
     end
   end
 
