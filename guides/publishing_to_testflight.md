@@ -82,6 +82,38 @@ Examples:
 Bundle IDs are forever — once Apple registers it under your team you
 can't transfer it cleanly. Pick something you'll be happy with in 5 years.
 
+#### When iOS and Android cannot share one id
+
+`mob.exs` has a single `:bundle_id`, which Android uses as its
+`applicationId`. The two platforms frequently **cannot** be the same string:
+
+- Apple rejects underscores; Android's `applicationId` allows them, so a
+  generated `com.example.my_app` is legal on Android and illegal on iOS.
+- `com.example.*` is often already registered to a different Apple team.
+
+Set `:ios_bundle_id` for those cases. It overrides `:bundle_id` on iOS only,
+and Android keeps using `:bundle_id`:
+
+```elixir
+config :mob_dev,
+  bundle_id: "com.example.my_app",            # Android applicationId
+  ios_bundle_id: "com.beyondagronomy.myapp"   # iOS, everywhere
+```
+
+"Everywhere" means everywhere: the simulator and device builds, code-signing,
+the provisioning profile lookup, `mix mob.provision`, `mix mob.deploy`,
+`mix mob.connect`, `mix mob.uninstall`, the battery bench, and the release IPA. Before this was
+consistent, a deploy could install the app under one id and then push BEAMs at
+another — succeeding, or failing with *"App '…' is not installed on this
+device"* immediately after a successful install.
+
+**The build stamps `CFBundleIdentifier` from this value**, so §1.2's iOS plist
+edit below is not needed once you set `:ios_bundle_id` — whatever
+`ios/Info.plist` holds is overwritten at build time. Set it in one place.
+
+If you set only `:bundle_id`, nothing changes: `:ios_bundle_id` falls back to
+it.
+
 ### 1.2 Update the bundle ID + display name in your project
 
 **iOS** — edit `ios/Info.plist`:
