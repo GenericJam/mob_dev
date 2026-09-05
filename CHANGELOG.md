@@ -10,6 +10,14 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`mix mob.deploy` silently ignored unknown options.** `-d` was never aliased
+  to `--device` here — `mob.connect` has aliased it all along — so
+  `mix mob.deploy -d <udid>` deployed to *every* connected device instead of
+  the one named, without a word. A typo'd `--devcie` did the same. Parsing is
+  strict now and the run refuses, naming the offending options.
+
 ### Changed
 
 - **`mix mob.deploy` no longer exits 0 after shipping nothing.** Four ways it

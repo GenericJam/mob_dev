@@ -463,4 +463,19 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
       assert result |> Jason.encode!() |> Jason.decode!() == result
     end
   end
+
+  describe "unknown options are refused, not discarded" do
+    # `mix mob.deploy -d <udid>` deployed to every device instead of the one
+    # named, and said nothing: `-d` was never aliased here even though
+    # `mob.connect` has aliased it all along, and `switches:` silently drops
+    # what it does not recognise. Found while verifying MOB-151, when two
+    # native builds went to the wrong device for this reason.
+    test "the message names the offending options" do
+      message = Deploy.invalid_options_message([{"-d", nil}, {"--devcie", "x"}])
+
+      assert message =~ "-d"
+      assert message =~ "--devcie"
+      assert message =~ "Unknown option"
+    end
+  end
 end
