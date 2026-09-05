@@ -29,6 +29,11 @@ defmodule MobDev.Attest do
   This deliberately does not hash whole files or directories: two builds of the
   same source differ in timestamps and paths, and a check that cries wolf gets
   turned off.
+
+  Note the side effect: the device runs an interactive code server, so probing
+  a module it has not loaded causes it to load. That makes the comparison
+  stronger — it is the file on the code path, not just the resident set — at
+  the cost of nudging the thing being measured.
   """
 
   @typedoc """
@@ -37,10 +42,12 @@ defmodule MobDev.Attest do
   * `:match` — the device is running the bytes we have.
   * `:stale` — it is running *something*, but not this. The push did not land,
     or landed somewhere else, or landed and was not loaded.
-  * `:missing` — the device has never loaded this module. Expected for a lazily
-    loaded module, damning for one the app needs to boot.
-  * `:unreadable` — the local `.beam` could not be digested, so nothing can be
-    concluded. Not a pass.
+  * `:missing` — the device answered `:undef`. On an interactive code server —
+    which is what Mob devices run — that means the module is on no code path
+    at all, because asking for it would otherwise have loaded it. For a module
+    `mix mob.deploy` pushed, that is a real failure, so it is fatal.
+  * `:unreadable` — the check could not run: the local `.beam` would not
+    digest, or the RPC failed for any reason other than `:undef`. Not a pass.
   """
   @type verdict :: :match | :stale | :missing | :unreadable
 
@@ -76,20 +83,27 @@ defmodule MobDev.Attest do
   def compare(module, nil, _remote),
     do: %{module: module, verdict: :unreadable, expected: nil, actual: nil}
 
-  def compare(module, expected, remote) do
-    case normalise_remote(remote) do
-      ^expected -> %{module: module, verdict: :match, expected: expected, actual: expected}
-      nil -> %{module: module, verdict: :missing, expected: expected, actual: nil}
-      actual -> %{module: module, verdict: :stale, expected: expected, actual: actual}
-    end
+  def compare(module, expected, digest) when is_binary(digest) do
+    verdict = if digest == expected, do: :match, else: :stale
+    %{module: module, verdict: verdict, expected: expected, actual: digest}
   end
 
   # A module the device has never loaded raises :undef, which arrives as a
-  # badrpc EXIT rather than a value. That is "missing", not "different" — the
-  # distinction matters because a lazily loaded module being absent is normal
-  # and a mismatched one never is.
-  defp normalise_remote(digest) when is_binary(digest), do: digest
-  defp normalise_remote(_other), do: nil
+  # badrpc EXIT. That is genuinely "not loaded".
+  def compare(module, expected, {:badrpc, {:EXIT, {:undef, _}}}),
+    do: %{module: module, verdict: :missing, expected: expected, actual: nil}
+
+  # Every OTHER badrpc is the transport failing, and must never be scored as
+  # "not loaded" — `:missing` is non-fatal, so a node that went away mid-run
+  # produced 400 missing modules and a cheerful `:ok`. Zero evidence gathered,
+  # tick printed: the precise failure this module was written to abolish,
+  # reproduced inside it. An earlier test asserted the wrong behaviour here,
+  # which is how it survived.
+  def compare(module, expected, {:badrpc, _reason}),
+    do: %{module: module, verdict: :unreadable, expected: expected, actual: nil}
+
+  def compare(module, expected, _unrecognised),
+    do: %{module: module, verdict: :unreadable, expected: expected, actual: nil}
 
   @doc """
   Whether a set of findings means the deploy can be believed.
@@ -101,14 +115,33 @@ defmodule MobDev.Attest do
   could not run must not report success — that is the same defect as a deploy
   exiting 0 having shipped nothing.
 
-  `:missing` is not fatal on its own. Interactive BEAM loads a module when
-  something first calls it, so a module that is shipped but not yet loaded is
-  the normal state of most of the bundle. It is reported, not failed on.
+  `:missing` is fatal, and the reason is the opposite of what an earlier version
+  of this doc claimed. That version said interactive BEAM loads a module on
+  first call, so most of a bundle is legitimately unloaded and `:missing` must
+  be tolerated. Measured on a real device, the inference runs the other way:
+  the code server *is* interactive, so asking for `module_info(:md5)` triggers
+  the load and returns a digest. `:undef` therefore does not mean "not loaded
+  yet" — it means the module is on no code path at all, which for something
+  `mix mob.deploy` pushed is a genuine failure.
+
+  Two consequences worth stating plainly. The check is stronger than first
+  documented: it compares the file the device would load, not merely the set
+  that happens to be resident. And it has a side effect — probing an unloaded
+  module loads it. That is a small mutation of the thing being measured, and
+  it is the reason this connects without restarting: a restart would reload
+  everything and destroy far more than a probe does.
   """
   @spec verdict([finding()]) :: :ok | {:error, String.t()}
+  def verdict([]),
+    # Nothing was compared, so nothing was proved. A green attestation over an
+    # empty set is worse than no attestation: it is the switched-off check that
+    # still reports.
+    do: {:error, "no modules were compared, so nothing was verified"}
+
   def verdict(findings) do
     stale = Enum.filter(findings, &(&1.verdict == :stale))
     unreadable = Enum.filter(findings, &(&1.verdict == :unreadable))
+    missing = Enum.filter(findings, &(&1.verdict == :missing))
 
     cond do
       stale != [] ->
@@ -120,6 +153,11 @@ defmodule MobDev.Attest do
         {:error,
          "#{length(unreadable)} module(s) could not be digested locally: " <>
            name_list(unreadable) <> ". Nothing can be concluded about the device."}
+
+      missing != [] ->
+        {:error,
+         "#{length(missing)} module(s) are on no code path on the device: " <>
+           name_list(missing) <> ". They were pushed, and the device cannot find them."}
 
       true ->
         :ok

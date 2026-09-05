@@ -28,19 +28,31 @@ defmodule MobDev.AttestTest do
       assert finding.actual == @digest_b
     end
 
-    test "a module the device never loaded is missing, not stale" do
-      # `module_info(:md5)` raises :undef for an unloaded module, which arrives
-      # as a badrpc EXIT. Interactive BEAM loads a module when something first
-      # calls it, so most of a bundle is legitimately unloaded — calling that
-      # stale would make the check cry wolf and get it turned off.
-      for remote <- [
-            {:badrpc, {:EXIT, {:undef, []}}},
-            {:badrpc, :nodedown},
-            nil,
-            :undefined
-          ] do
-        assert %{verdict: :missing} = Attest.compare(Foo, @digest_a, remote)
+    test "an :undef answer is missing — the device has it on no code path" do
+      # Measured on a device: the code server is interactive, so asking for
+      # module_info(:md5) LOADS an unloaded module and returns a digest.
+      # :undef therefore does not mean "not resident yet", it means the module
+      # is not findable at all.
+      assert %{verdict: :missing} =
+               Attest.compare(Foo, @digest_a, {:badrpc, {:EXIT, {:undef, []}}})
+    end
+
+    test "a transport failure is unreadable, NOT missing" do
+      # The bug this replaces, and the one a previous version of this test
+      # actively pinned: every badrpc collapsed to :missing, :missing was
+      # non-fatal, and a node that went away mid-run produced hundreds of
+      # missing modules and a cheerful :ok. Zero evidence, tick printed.
+      for remote <- [{:badrpc, :nodedown}, {:badrpc, :timeout}, nil, :undefined] do
+        assert %{verdict: :unreadable} = Attest.compare(Foo, @digest_a, remote),
+               "#{inspect(remote)} means the check could not run, not that the module is absent"
       end
+    end
+
+    test "a node that went away does not attest green" do
+      dead = for _ <- 1..400, do: Attest.compare(Foo, @digest_a, {:badrpc, :nodedown})
+
+      assert {:error, message} = Attest.verdict(dead)
+      assert message =~ "could not"
     end
 
     test "an undigestable local beam is unreadable, never a match" do
@@ -57,8 +69,20 @@ defmodule MobDev.AttestTest do
       assert Attest.verdict([finding(:match), finding(:match)]) == :ok
     end
 
-    test "unloaded modules alone do not fail the check" do
-      assert Attest.verdict([finding(:match), finding(:missing), finding(:missing)]) == :ok
+    test "a module the device cannot find is a failure" do
+      # These were pushed. If the device answers :undef for one, on an
+      # interactive code server it is not on any code path — which is the
+      # thing a deploy was supposed to have put there.
+      assert {:error, message} = Attest.verdict([finding(:match), finding(:missing)])
+      assert message =~ "on no code path"
+    end
+
+    test "nothing compared is not a pass" do
+      # A typo'd --app used to glob no files, produce no findings, and report
+      # success. A green attestation over an empty set is the switched-off
+      # check that still reports.
+      assert {:error, message} = Attest.verdict([])
+      assert message =~ "nothing was verified"
     end
 
     test "one stale module fails, however many matched" do
@@ -97,7 +121,12 @@ defmodule MobDev.AttestTest do
 
       assert {:error, message} = Attest.verdict(findings)
       assert message =~ "50 module(s)"
-      assert length(String.split(message, ", ")) <= 6
+
+      # Count the names, not the commas. `String.split(message, ", ")` returned
+      # exactly 6 parts whether the cap was 5 or 6, because the last name is
+      # glued to the trailing sentence — so the cap test did not test the cap,
+      # which a review demonstrated by mutating take(5) to take(6).
+      assert length(Regex.scan(~r/:Mod\d+/, message)) == 5
     end
   end
 

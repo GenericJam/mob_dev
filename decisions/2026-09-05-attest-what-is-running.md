@@ -65,3 +65,23 @@ shipped-set question and the two are complementary.
 It found MOB-161 on its first real use, which is the argument for building it
 and also a caution: the failure it found had been happening silently, and there
 is no way to know for how long.
+
+That sentence needs a correction, though. The first version of this task scoped
+itself to the project's own application, and MOB-161's twelve stale modules
+were in `mob` — a dependency. So the default would have reported `:ok`, and the
+evidence for the design working was only obtainable by passing `--app mob`,
+which nothing suggested doing. The default is now the exact set
+`mix mob.deploy` pushes (`HotPush.runtime_beam_dirs/0`), so what is attested
+and what was shipped cannot drift apart, and `--app` narrows rather than
+replaces.
+
+A second correction, from the same review. This record originally justified
+`:missing` being non-fatal with "interactive BEAM loads a module when something
+first calls it, so most of a bundle is legitimately unloaded". Measured on a
+device, the inference runs the other way: the code server *is* interactive, so
+the probe itself triggers the load and returns a digest. `:undef` therefore
+means the module is on no code path at all, which for something that was just
+pushed is a real failure — it is now fatal. The check is correspondingly
+stronger than described, comparing the file the device would load rather than
+the resident set, and it has a side effect worth stating: probing an unloaded
+module loads it.

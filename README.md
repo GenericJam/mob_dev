@@ -35,6 +35,7 @@ end
 | `mix mob.watch` | Auto-push BEAMs on file save |
 | `mix mob.watch_stop` | Stop a running `mix mob.watch` |
 | `mix mob.devices` | List connected devices and their status |
+| `mix mob.attest` | Prove a device is running the code you just pushed — compares module digests, not artifacts ([see below](#did-that-deploy-actually-land-mix-mobattest)) |
 | `mix mob.push` | Hot-push only changed modules (no restart) |
 | `mix mob.enable <feature>...` | Wire up an optional Mob feature — platform-manifest entries, Elixir stubs, dep injections ([see below](#mix-mobenable-feature)) |
 | `mix mob.add_nif <name>` | Scaffold a statically-linked NIF — Elixir stub + `mob.exs` `:static_nifs` append + optional native skeleton ([see below](#mix-mobadd_nif-name)) |
@@ -92,6 +93,41 @@ Pushing 14 BEAM file(s) to 2 device(s)...
 If dist is not reachable (first deploy, app not running), it falls back to `adb push` + restart. Mixed deploys work — one device can hot-push while another restarts.
 
 **Requirements:** The app must call `Mob.Dist.ensure_started/1` at startup, and the cookie must match the one in `mob.exs` (default `:mob_secret`).
+
+## Did that deploy actually land? (`mix mob.attest`)
+
+`mix mob.deploy` reports what it *did*. It does not report what is now *true*,
+and the two come apart more often than the exit code suggests.
+
+Two real cases: a bundle-id divergence sent the BEAM push into one app's
+container while a *different* app was running — it succeeded and printed a tick,
+because both containers existed on the device. And a plain dist deploy reported
+success while twelve modules on the device kept their old code.
+
+```bash
+mix mob.connect --no-iex     # set up the tunnel
+mix mob.attest               # compare the device against this build
+mix mob.attest --json        # machine-readable, for CI or an agent
+```
+
+```
+mob_plugin_demo_ios_8a4250e9@127.0.0.1: 55 match, 12 stale, 0 not loaded, 0 unreadable
+  stale: Mob.Renderer
+  12 module(s) on the device do not match this build. The app is running code
+  you did not just push.
+```
+
+It compares `module_info(:md5)` on the device against `:beam_lib.md5/1` of the
+local `.beam` — the same digest for the same bytes. Deliberately **not** an
+artifact hash: two builds of the same source differ in timestamps and paths, so
+that would report a mismatch on every rebuild, and a check that cries wolf gets
+switched off.
+
+Exits non-zero when a module differs, and also when the check could not run —
+a check that could not run is not a check that passed. Modules the device has
+not loaded yet are reported and are **not** a failure: interactive BEAM loads a
+module when something first calls it, so most of a bundle is legitimately
+unloaded at any moment.
 
 ## `mix mob.enable <feature>`
 

@@ -23,8 +23,11 @@ defmodule Mix.Tasks.Mob.Attest do
 
   ## Options
 
-    * `--app NAME`  — restrict to one application (default: the project's own)
+    * `--app NAME`  — narrow to one application. The default is everything
+                      `mix mob.deploy` pushes, which is the only scope that
+                      cannot drift from what was actually shipped
     * `--node NAME` — attest one node instead of every connected one
+    * `--cookie C`  — dist cookie (default: `mob_secret`, as `Mob.Dist` sets)
     * `--json`      — machine-readable result on stdout, progress on stderr
 
   ## Exit status
@@ -41,7 +44,7 @@ defmodule Mix.Tasks.Mob.Attest do
 
   alias MobDev.Attest
 
-  @switches [app: :string, node: :string, json: :boolean]
+  @switches [app: :string, node: :string, cookie: :string, json: :boolean]
 
   @impl Mix.Task
   def run(args) do
@@ -53,14 +56,18 @@ defmodule Mix.Tasks.Mob.Attest do
 
     if opts[:json] do
       Process.put(:attest_stdout, Process.group_leader())
-      Process.group_leader(self(), Process.whereis(:standard_error))
+
+      case Process.whereis(:standard_error) do
+        nil -> Mix.raise("--json needs :standard_error, which is not registered in this VM")
+        pid -> Process.group_leader(self(), pid)
+      end
     end
 
     Mix.Task.run("compile")
-    start_dist!()
+    start_dist!(String.to_atom(opts[:cookie] || "mob_secret"))
 
     case reachable_nodes(opts) do
-      [] ->
+      {[], _down} ->
         emit(opts, %{"outcome" => "no_nodes", "nodes" => []})
 
         Mix.raise("""
@@ -71,9 +78,9 @@ defmodule Mix.Tasks.Mob.Attest do
         not a check that passed.
         """)
 
-      nodes ->
+      {nodes, down} ->
         results = Enum.map(nodes, &attest_node(&1, opts))
-        report(results, opts)
+        report(results, down, opts)
     end
   end
 
@@ -88,87 +95,163 @@ defmodule Mix.Tasks.Mob.Attest do
         name -> [String.to_atom(name)]
       end
 
-    {up, down} = Enum.split_with(candidates, &Node.connect/1)
-
-    for node <- down do
-      IO.puts("#{node}: unreachable — run `mix mob.connect --no-iex` first")
-    end
-
-    up
+    # `Node.connect/1` returns `true | false | :ignored`, and `:ignored` — the
+    # local node not being alive — is truthy. Matching on `true` keeps a run
+    # that could not connect at all from looking like a run that connected to
+    # everything.
+    Enum.split_with(candidates, &(Node.connect(&1) == true))
   end
 
+  # Use the name discovery already resolved rather than deriving one again.
+  # `Device.node_name/1` and the discovery path disagree for WiFi-adb Android:
+  # the former builds a suffix from the adb id (`10.0.0.17:5555` ->
+  # `app_android_10_0_0_17`), the latter prefers `ro.serialno`
+  # (`app_android_zy22k6bsjm`). That divergence is documented in
+  # `discovery/android.ex` as a fixed bug; re-deriving reintroduced it, and the
+  # symptom was a device silently landing in the unreachable list.
   defp discover_node_names do
     (MobDev.Discovery.Android.list_devices() ++ MobDev.Discovery.IOS.list_devices())
-    |> Enum.map(&MobDev.Device.node_name/1)
+    |> Enum.map(& &1.node)
+    |> Enum.reject(&is_nil/1)
     |> Enum.uniq()
   end
 
-  defp start_dist!() do
+  defp start_dist!(cookie) do
     unless Node.alive?() do
       MobDev.Connector.start_epmd()
-
-      MobDev.Connector.handle_dist_start(
-        Node.start(:"mob_attest@127.0.0.1", :longnames),
-        :mob_secret
-      )
+      MobDev.Connector.handle_dist_start(Node.start(:"mob_attest@127.0.0.1", :longnames), cookie)
     end
   end
 
   defp attest_node(node, opts) do
-    app = String.to_atom(opts[:app] || to_string(Mix.Project.config()[:app]))
-    findings = Enum.map(beams(app), &finding(node, &1))
+    scope = opts[:app] || "everything mob.deploy pushes"
+    findings = Enum.map(beams(opts[:app]), &finding(&1, fn m -> remote_digest(node, m) end))
 
-    %{node: node, app: app, findings: findings, verdict: Attest.verdict(findings)}
+    %{
+      node: node,
+      app: scope,
+      identity: identity(node),
+      findings: findings,
+      verdict: Attest.verdict(findings)
+    }
   end
 
-  defp finding(node, path) do
-    case Attest.local_digest(path) do
-      nil ->
-        Attest.compare(module_from_path(path), nil, nil)
+  # Say WHAT answered, not just that something did.
+  #
+  # The bug this task was written for is two containers with divergent bundle
+  # ids built from one project: both register the same node-name pattern and
+  # whichever wins the EPMD slot is what you reach, which may not be the one
+  # you deployed to. Physical-device discovery also probes EPMD across the LAN,
+  # so a colleague running the same project name is reachable. An attestation
+  # that cannot name its subject proves less than it appears to.
+  defp identity(node) do
+    %{
+      root: rpc_string(node, :init, :get_argument, [:root]),
+      otp: rpc_string(node, :erlang, :system_info, [:otp_release]),
+      code_mode: rpc_string(node, :code, :get_mode, [])
+    }
+  end
 
-      {module, expected} ->
-        Attest.compare(module, expected, remote_digest(node, module))
+  defp rpc_string(node, m, f, a) do
+    case :rpc.call(node, m, f, a, 5_000) do
+      {:badrpc, _} -> "unknown"
+      value -> value |> inspect() |> String.slice(0, 120)
     end
   end
 
-  # `module_info(:md5)` raises :undef for a module the device has never
-  # loaded, which arrives here as a badrpc EXIT rather than a value.
-  defp remote_digest(node, module), do: :rpc.call(node, module, :module_info, [:md5], 10_000)
-
-  defp module_from_path(path), do: path |> Path.basename(".beam") |> String.to_atom()
-
-  defp beams(app) do
-    Mix.Project.build_path()
-    |> Path.join("lib/#{app}/ebin/*.beam")
-    |> Path.wildcard()
+  @doc false
+  # Takes the digest fetcher so the wiring is testable without a device. This
+  # was the whole of the task's logic and none of it had a test: replacing
+  # `remote_digest` with `expected` would have reported 100% match on every
+  # run, with the suite green.
+  @spec finding(Path.t(), (module() -> term())) :: Attest.finding()
+  def finding(path, fetch) do
+    case Attest.local_digest(path) do
+      nil -> Attest.compare(module_from_path(path), nil, nil)
+      {module, expected} -> Attest.compare(module, expected, fetch.(module))
+    end
   end
 
-  defp report(results, opts) do
+  # `module_info(:md5)` raises :undef for a module the device cannot find,
+  # which arrives here as a badrpc EXIT rather than a value.
+  defp remote_digest(node, module), do: :rpc.call(node, module, :module_info, [:md5], 10_000)
+
+  @doc false
+  @spec module_from_path(Path.t()) :: module()
+  def module_from_path(path), do: path |> Path.basename(".beam") |> String.to_atom()
+
+  # Default to exactly the set `mix mob.deploy` pushes, so what is attested and
+  # what was shipped cannot drift apart. Scoping to the project's own app —
+  # the first version of this — would have reported :ok on MOB-161, because
+  # those twelve stale modules were in `mob`, a dependency. The evidence for
+  # this task working was only obtainable with a non-default flag.
+  #
+  # `--app` narrows that set rather than replacing it, and an --app naming
+  # nothing raises: a glob that matches no files produced an empty finding
+  # list, and an empty finding list used to be a pass.
+  defp beams(nil) do
+    MobDev.HotPush.runtime_beam_dirs()
+    |> Enum.flat_map(&Path.wildcard(Path.join(&1, "*.beam")))
+  end
+
+  defp beams(app) do
+    case Enum.filter(beams(nil), &(Path.basename(Path.dirname(Path.dirname(&1))) == app)) do
+      [] ->
+        Mix.raise("""
+        --app #{app} matched no beams in anything mob.deploy pushes.
+
+        Attesting nothing and reporting success is the failure this task
+        exists to catch, so this refuses instead. Run without --app to check
+        everything, or `mix mob.devices` to confirm you are in the right
+        project.
+        """)
+
+      beams ->
+        beams
+    end
+  end
+
+  defp report(results, down, opts) do
     Enum.each(results, &say_node/1)
+    Enum.each(down, &IO.puts("#{&1}: unreachable — nothing was checked on it"))
 
     failed = Enum.filter(results, &match?({:error, _}, &1.verdict))
 
     emit(opts, %{
-      "outcome" => if(failed == [], do: "ok", else: "mismatch"),
-      "nodes" => Enum.map(results, &json_node/1)
+      "outcome" => outcome(failed, down),
+      "nodes" =>
+        Enum.map(results, &json_node/1) ++
+          Enum.map(down, &%{"node" => to_string(&1), "outcome" => "unreachable"})
     })
 
-    unless failed == [] do
-      Mix.raise(
-        failed
-        |> Enum.map(fn r -> "#{r.node}: #{elem(r.verdict, 1)}" end)
-        |> Enum.join("\n")
-      )
-    end
+    # A device that never answered is not a device that passed. Checking one
+    # phone while another sits wedged, and reporting "ok", is the same shape as
+    # a deploy that skips a target and exits 0.
+    messages =
+      Enum.map(failed, fn r -> "#{r.node}: #{elem(r.verdict, 1)}" end) ++
+        Enum.map(down, fn n -> "#{n}: unreachable, so it was never checked" end)
+
+    unless messages == [], do: Mix.raise(Enum.join(messages, "\n"))
   end
 
-  defp say_node(%{node: node, findings: findings, verdict: verdict}) do
+  @doc false
+  # What a CI job reads. An unreachable device must never leave this "ok":
+  # checking one phone while another sits wedged and reporting success is the
+  # same shape as a deploy that skips a target and exits 0.
+  @spec outcome([map()], [node()]) :: String.t()
+  def outcome([], []), do: "ok"
+  def outcome([], _down), do: "unreachable"
+  def outcome(_failed, _down), do: "mismatch"
+
+  defp say_node(%{node: node, findings: findings, verdict: verdict, identity: id}) do
     t = Attest.tally(findings)
 
     IO.puts(
       "#{node}: #{t.match} match, #{t.stale} stale, #{t.missing} not loaded, " <>
         "#{t.unreadable} unreadable"
     )
+
+    IO.puts("  answered by: root=#{id.root} otp=#{id.otp} code=#{id.code_mode}")
 
     for f <- findings, f.verdict in [:stale, :unreadable] do
       IO.puts("  #{f.verdict}: #{inspect(f.module)}")
@@ -180,10 +263,11 @@ defmodule Mix.Tasks.Mob.Attest do
     end
   end
 
-  defp json_node(%{node: node, app: app, findings: findings, verdict: verdict}) do
+  defp json_node(%{node: node, app: app, findings: findings, verdict: verdict, identity: id}) do
     %{
       "node" => to_string(node),
       "app" => to_string(app),
+      "identity" => %{"root" => id.root, "otp" => id.otp, "code_mode" => id.code_mode},
       "outcome" => if(verdict == :ok, do: "ok", else: "mismatch"),
       "message" => if(verdict == :ok, do: nil, else: elem(verdict, 1)),
       "tally" => Map.new(Attest.tally(findings), fn {k, v} -> {to_string(k), v} end),
