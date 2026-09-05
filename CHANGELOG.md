@@ -1,13 +1,3 @@
-# Changelog
-
-All notable changes to **mob_dev** are documented here.
-
-Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
-
-Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
-
----
-
 ## [Unreleased]
 
 ### Changed
@@ -51,6 +41,18 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ### Added
 
+- **`mix mob.attest`** — prove the device is running the code you just pushed.
+  Compares `module_info(:md5)` on the device against `:beam_lib.md5/1` of the
+  local `.beam`, so a push that never landed, landed in the wrong place, or
+  landed and was never loaded all show up. Exits non-zero on a mismatch, and
+  also when the check could not run — a check that could not run is not a check
+  that passed. Modules the device has not loaded yet are reported and are not a
+  failure. Defaults to the exact set `mix mob.deploy` pushes, so what is
+  attested cannot drift from what was shipped. Written after a bundle-id
+  divergence let a BEAM push succeed against the wrong app's container,
+  printing a tick while the app kept running old code; it found a second live
+  instance (MOB-161) on its first real use.
+
 - **`mix mob.mutate`** — mutation testing for the lines a branch changed.
   Breaks the production code one line at a time and reports the changes nothing
   noticed, which is the only cheap way to tell a test that guards something
@@ -60,13 +62,20 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
   running, never supplied. `--file`, `--base`, `--test-command`, `--max`,
   `--json`; exits non-zero when anything survives.
 
-### Fixed
+- **`mix mob.deploy --json`** — a machine-readable result on stdout listing the
+  deployed, failed and skipped devices with their per-device reasons, and an
+  `outcome` that mirrors the exit status. Progress output is redirected to
+  stderr for the run, so `mix mob.deploy --json | jq` receives exactly one
+  document. Emitted on the native-build failure path too, which is when a
+  caller most needs it.
 
-- **`mix mob.deploy` silently ignored unknown options.** `-d` was never aliased
-  to `--device` here — `mob.connect` has aliased it all along — so
-  `mix mob.deploy -d <udid>` deployed to *every* connected device instead of
-  the one named, without a word. A typo'd `--devcie` did the same. Parsing is
-  strict now and the run refuses, naming the offending options.
+- **`:ios_bundle_id`** in `mob.exs`, for when Android's `applicationId` is not a
+  legal Apple bundle id. Apple forbids the underscores Android allows, and
+  `com.example.*` is often already claimed by another Apple team, so the two
+  frequently cannot be the same string. Every iOS path — deploy, connect,
+  provision, battery bench, uninstall, the simulator and device builds,
+  code-signing, and the release IPA — resolves `:ios_bundle_id || :bundle_id`.
+  Android keeps using `:bundle_id`.
 
 ### Changed
 
@@ -88,17 +97,6 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
   A `--native` run that built the artifact and found no device to push it to
   still exits 0 — "build the APK now, attach the phone after" is unchanged.
 
-### Added
-
-- **`mix mob.deploy --json`** — a machine-readable result on stdout listing the
-  deployed, failed and skipped devices with their per-device reasons, and an
-  `outcome` that mirrors the exit status. Progress output is redirected to
-  stderr for the run, so `mix mob.deploy --json | jq` receives exactly one
-  document. Emitted on the native-build failure path too, which is when a
-  caller most needs it.
-
-### Changed
-
 - **`mix mob.deploy` now exits non-zero when a device fails.** A run that
   printed `Failed on 1 device(s)` previously still returned status 0, so CI and
   wrapper scripts read a failed deploy as success. Every device is still
@@ -108,17 +106,13 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
   devices and has been passing, it may now fail** — check whether it was
   passing on a partial deploy.
 
-### Added
-
-- **`:ios_bundle_id`** in `mob.exs`, for when Android's `applicationId` is not a
-  legal Apple bundle id. Apple forbids the underscores Android allows, and
-  `com.example.*` is often already claimed by another Apple team, so the two
-  frequently cannot be the same string. Every iOS path — deploy, connect,
-  provision, battery bench, uninstall, the simulator and device builds,
-  code-signing, and the release IPA — resolves `:ios_bundle_id || :bundle_id`.
-  Android keeps using `:bundle_id`.
-
 ### Fixed
+
+- **`mix mob.deploy` silently ignored unknown options.** `-d` was never aliased
+  to `--device` here — `mob.connect` has aliased it all along — so
+  `mix mob.deploy -d <udid>` deployed to *every* connected device instead of
+  the one named, without a word. A typo'd `--devcie` did the same. Parsing is
+  strict now and the run refuses, naming the offending options.
 
 - **iOS deploys installed the app under one bundle id and pushed BEAMs at
   another.** `:ios_bundle_id` was resolved by the build but discarded by the
