@@ -475,7 +475,7 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
 
       assert message =~ "-d"
       assert message =~ "--devcie"
-      assert message =~ "Unknown option"
+      assert message =~ "Unrecognized or invalid option"
     end
   end
 end

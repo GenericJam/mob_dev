@@ -197,8 +197,11 @@ defmodule MobDev.WiringTest do
       # restores the silent-ignore.
       source = @deploy_task
 
-      assert source =~ "OptionParser.parse(args, strict: @switches, aliases: [d: :device])"
-      refute source =~ "OptionParser.parse(args, switches: @switches)"
+      # Fragments, not the whole line: this call grew a `join_dashed_values/1`
+      # step and `mix format` rewrapped it, which would have broken an
+      # exact-line assertion with no behaviour change.
+      assert source =~ "strict: @switches, aliases: [d: :device]"
+      refute source =~ "switches: @switches"
     end
 
     test "the run raises rather than proceeding" do
