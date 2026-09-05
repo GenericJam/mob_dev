@@ -10,6 +10,17 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ## [Unreleased]
 
+### Added
+
+- **`mix mob.mutate`** — mutation testing for the lines a branch changed.
+  Breaks the production code one line at a time and reports the changes nothing
+  noticed, which is the only cheap way to tell a test that guards something
+  from one that merely runs. Doing this by hand has found real defects every
+  time it has been tried here, and got the baseline comparison wrong once,
+  reporting a surviving mutation as caught. The baseline is always captured by
+  running, never supplied. `--file`, `--base`, `--test-command`, `--max`,
+  `--json`; exits non-zero when anything survives.
+
 ### Fixed
 
 - **`mix mob.deploy` silently ignored unknown options.** `-d` was never aliased
