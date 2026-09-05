@@ -95,4 +95,12 @@ defmodule Mix.Tasks.Mob.DeployParsingTest do
       assert message =~ "mix help mob.deploy"
     end
   end
+
+  describe "--help" do
+    test "the helper recognises both spellings" do
+      assert MobDev.TaskHelp.help_requested?(["--help"])
+      assert MobDev.TaskHelp.help_requested?(["-h"])
+      refute MobDev.TaskHelp.help_requested?(["--device", "x"])
+    end
+  end
 end

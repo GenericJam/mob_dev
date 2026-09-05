@@ -21,6 +21,11 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ### Fixed
 
+- **`mix mob.deploy --help` and `mix mob.mutate --help` refused to help.**
+  Strict option parsing turned the flag people try first, on the task they run
+  most, into `Unrecognized or invalid option(s): --help` — telling the reader
+  to go and read the help. Both now defer to `MobDev.TaskHelp`, as
+  `mix mob.uninstall` already did.
 - **`mix mob.uninstall` ignored `:ios_bundle_id`.** The task resolved one
   bundle id for both platforms and passed it down, so the per-platform clause
   that was supposed to pick `:ios_bundle_id` for an iOS device never ran. On a

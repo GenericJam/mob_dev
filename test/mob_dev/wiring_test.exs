@@ -226,4 +226,17 @@ defmodule MobDev.WiringTest do
              "resolving the id in the task is what made the iOS branch dead code"
     end
   end
+
+  describe "--help is answered, not refused" do
+    # Strict parsing made `mix mob.deploy --help` fail with "Unrecognized or
+    # invalid option(s): --help" — the flag people try first, on the task they
+    # run most, telling them to go read the help. `mob.uninstall` had already
+    # solved this with MobDev.TaskHelp; deploy and mutate had not.
+    for task <- ~w(mob.deploy mob.mutate) do
+      test "#{task} defers to MobDev.TaskHelp" do
+        path = Path.expand("../../lib/mix/tasks/#{unquote(task)}.ex", __DIR__)
+        assert File.read!(path) =~ "MobDev.TaskHelp.help_requested?(args)"
+      end
+    end
+  end
 end

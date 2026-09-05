@@ -179,6 +179,14 @@ defmodule Mix.Tasks.Mob.Deploy do
 
   @impl Mix.Task
   def run(args) do
+    if MobDev.TaskHelp.help_requested?(args) do
+      MobDev.TaskHelp.print_module_help(__MODULE__)
+    else
+      do_run(args)
+    end
+  end
+
+  defp do_run(args) do
     {opts, argv, invalid} =
       args
       |> join_dashed_values()
