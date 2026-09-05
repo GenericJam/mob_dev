@@ -118,6 +118,11 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
     defp device(name, error \\ nil),
       do: %MobDev.Device{name: name, serial: name, platform: :android, error: error}
 
+    # The requested-vs-incidental rule keys on `:platform`, so the fixtures
+    # have to be able to be an iPhone.
+    defp ios_device(name, error \\ nil),
+      do: %MobDev.Device{name: name, serial: name, platform: :ios, error: error}
+
     defp strip_ansi(line), do: String.replace(line, ~r/\e\[[0-9;]*m/, "")
 
     test "all three buckets empty → 'No devices found' hint" do
@@ -266,6 +271,196 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
     test "counts every failed device, not just the first" do
       failed = for i <- 1..3, do: device("emulator-#{i}", "adb push failed")
       assert Deploy.failure_message([], failed, []) =~ "Deploy failed on 3 device(s)"
+    end
+  end
+
+  # ── MOB-150: a run that shipped nothing must not report success ──────────────
+  #
+  # PR #44 made a *failed* device fatal and deliberately left a *skipped* one
+  # alone, on the grounds that a skip means "this device is not a target".
+  # That is right for an incidental skip and wrong for a requested one, and it
+  # left three ways to exit 0 having deployed nothing.
+
+  describe "requested_platforms/1" do
+    test "reads the raw flags, not the resolved platform list" do
+      assert Deploy.requested_platforms(android: true) == [:android]
+      assert Deploy.requested_platforms(ios: true) == [:ios]
+      assert Deploy.requested_platforms(android: true, ios: true) == [:android, :ios]
+    end
+
+    test "a negated flag is not a request" do
+      # `--no-android` must not register as "you asked for Android", which
+      # would make the run fatal for a platform the user explicitly turned off.
+      #
+      # A review flagged the original `&opts[&1]` as a truthiness bug here. It
+      # was not: `false` is falsy, so that already excluded a negated flag, and
+      # mutating it back leaves this test green. The explicit `== true` is
+      # clarity about intent, not a fix — worth keeping, worth not
+      # misdescribing.
+      assert Deploy.requested_platforms(android: false) == []
+      assert Deploy.requested_platforms(android: false, ios: true) == [:ios]
+    end
+
+    test "no flag means nothing was explicitly requested" do
+      # The load-bearing case. `resolve_platforms/1` turns "no flag" into every
+      # platform with a scaffold; using that here would make an ordinary
+      # incidental skip fatal on every default run.
+      assert Deploy.requested_platforms([]) == []
+      assert Deploy.requested_platforms(restart: true, slim: false) == []
+    end
+  end
+
+  describe "failure_message/4 — a skip you asked for" do
+    test "an incidental skip is still not a failure" do
+      skip = ios_device("iPhone", "app not installed")
+      assert Deploy.failure_message([device("emulator")], [], [skip], []) == nil
+    end
+
+    test "every device of a platform you named being skipped is a failure" do
+      skip = ios_device("iPhone", "app not installed")
+
+      message = Deploy.failure_message([], [], [skip], [:ios])
+
+      assert message =~ "reached no --ios device"
+    end
+
+    test "a partial success is NOT a failure — one sim skipped, another deployed" do
+      # The false positive that made the first version of this rule unshippable.
+      # Two booted simulators with the app on only the one you are working on,
+      # or a spare phone plugged in, is an ordinary setup — and `--ios` is the
+      # only way to scope a run on macOS, where the default is both platforms.
+      #
+      # The earlier rule filtered SKIPPED devices by requested platform, which
+      # `deploy_all/1` makes a tautology: it only enumerates devices for
+      # platforms in the resolved list, and that list is a subset of the
+      # requested one. So the filter was always true and the rule reduced to
+      # "any skip at all is fatal once you name a platform".
+      deployed = ios_device("iPhone 17 Pro")
+      skipped = ios_device("stale sim", "app not installed")
+
+      assert Deploy.failure_message([deployed], [], [skipped], [:ios]) == nil
+    end
+
+    test "one platform fully skipped still fails when the other succeeded" do
+      # `--android --ios` where every Android device skipped: iOS working must
+      # not mask the half that was asked for and got nothing.
+      message =
+        Deploy.failure_message(
+          [ios_device("iPhone")],
+          [],
+          [device("emulator-5554", "not installed")],
+          [:android, :ios]
+        )
+
+      assert message =~ "--android"
+      refute message =~ "--ios"
+    end
+
+    test "a real failure still outranks a skip" do
+      failed = device("buggy", "push timed out")
+      skip = ios_device("iPhone", "app not installed")
+
+      assert Deploy.failure_message([], [failed], [skip], [:ios]) =~ "failed on 1 device(s)"
+    end
+
+    test "asking for a platform and reaching nothing at all is a failure" do
+      # `--ios` on Linux resolves to no platforms, so no device is even
+      # enumerated: every bucket is empty and the run previously exited 0.
+      assert Deploy.failure_message([], [], [], [:ios]) =~ "reached no device for --ios"
+    end
+
+    test "a successful native build with no device attached is not a failure" do
+      # "Build the APK now, attach the phone after" exited 0 before this ticket
+      # and must keep doing so — the run produced the artifact it was asked
+      # for and merely had nowhere to push it.
+      assert Deploy.failure_message([], [], [], [:android], true) == nil
+
+      # Without a native build the run's only purpose was to push, and it
+      # pushed nowhere.
+      assert Deploy.failure_message([], [], [], [:android], false) =~ "none was connected"
+    end
+
+    test "reaching nothing without asking for anything is fine" do
+      assert Deploy.failure_message([], [], [], []) == nil
+    end
+
+    test "failure_message/3 keeps its old meaning" do
+      skip = ios_device("iPhone", "app not installed")
+      assert Deploy.failure_message([], [], [skip]) == nil
+    end
+  end
+
+  describe "missing_device_message/4" do
+    test "a named device that was not found is a failure" do
+      message = Deploy.missing_device_message("NOPE", [], [], [])
+      assert message =~ "No device matched --device NOPE"
+    end
+
+    test "no --device means an empty run is just nothing plugged in" do
+      assert Deploy.missing_device_message(nil, [], [], []) == nil
+    end
+
+    test "a named device that WAS found and deployed is not a failure" do
+      assert Deploy.missing_device_message("serial", [device("serial")], [], []) == nil
+    end
+
+    test "a named device that failed is left to failure_message" do
+      # It reports the actual error; double-reporting would mask the reason.
+      assert Deploy.missing_device_message("serial", [], [device("serial", "boom")], []) == nil
+    end
+
+    test "a named device that was found but skipped is a failure" do
+      # Naming a device by id is at least as explicit as naming a platform, so
+      # a run that shipped nothing to it must say so. This exited 0.
+      skipped = [device("emulator-5554", "app not installed")]
+
+      assert Deploy.missing_device_message("emulator-5554", [], [], skipped) =~
+               "was skipped — nothing was deployed"
+    end
+  end
+
+  describe "json_result/4" do
+    # An agent driving mob.deploy otherwise infers the outcome from coloured
+    # prose, and the exit code alone does not say WHICH target missed out.
+    test "a clean run reports ok and lists what was deployed" do
+      result = Deploy.json_result([device("emulator-5554")], [], [], nil)
+
+      assert result["outcome"] == "ok"
+      assert result["message"] == nil
+      assert [%{"serial" => "emulator-5554", "platform" => "android"}] = result["deployed"]
+    end
+
+    test "outcome mirrors the exit status, not the buckets" do
+      # A skip is fatal or not depending on whether it was requested, so the
+      # buckets alone cannot tell a caller what the exit code will be. The
+      # message is the decision, and outcome must follow it.
+      skip = ios_device("iPhone", "app not installed")
+
+      assert Deploy.json_result([], [], [skip], nil)["outcome"] == "ok"
+      assert Deploy.json_result([], [], [skip], "asked for --ios")["outcome"] == "error"
+    end
+
+    test "each bucket carries the per-device reason" do
+      failed = device("buggy", "push timed out")
+      result = Deploy.json_result([], [failed], [], "Deploy failed on 1 device(s)")
+
+      assert [%{"name" => "buggy", "reason" => "push timed out"}] = result["failed"]
+      assert result["message"] == "Deploy failed on 1 device(s)"
+    end
+
+    test "each device reports its own platform" do
+      # Only one assertion checked `platform`, and it expected "android", so
+      # hardcoding that string passed the suite.
+      result = Deploy.json_result([ios_device("iPhone")], [], [device("emu")], nil)
+
+      assert [%{"platform" => "ios"}] = result["deployed"]
+      assert [%{"platform" => "android"}] = result["skipped"]
+    end
+
+    test "it survives a round trip through Jason" do
+      result = Deploy.json_result([device("a")], [device("b", "boom")], [ios_device("c")], nil)
+
+      assert result |> Jason.encode!() |> Jason.decode!() == result
     end
   end
 end

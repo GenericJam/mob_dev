@@ -12,6 +12,35 @@ Full module documentation: [hexdocs.pm/mob_dev](https://hexdocs.pm/mob_dev).
 
 ### Changed
 
+- **`mix mob.deploy` no longer exits 0 after shipping nothing.** Four ways it
+  could, all fixed (MOB-150):
+  - `--android --native` with no `sdk.dir` in `android/local.properties`
+    printed a skip warning, built nothing, and succeeded. The old rule was
+    `ok_count == length(results)`, which is `0 == 0` for a run that produced no
+    results at all.
+  - `--ios` / `--android` where every device of that platform was skipped.
+    A skip stays non-fatal when it is incidental — a phone that happens to be
+    attached — and is fatal when the run named that platform. The rule is per
+    **platform**, not per device: one simulator deploying while a stale one is
+    skipped is a success, not a failure.
+  - `--device X` that reached X and deployed nothing to it, and `--device NOPE`
+    matching no device at all.
+  - `--ios` on Linux, which resolves to no platforms and enumerated no devices.
+
+  A `--native` run that built the artifact and found no device to push it to
+  still exits 0 — "build the APK now, attach the phone after" is unchanged.
+
+### Added
+
+- **`mix mob.deploy --json`** — a machine-readable result on stdout listing the
+  deployed, failed and skipped devices with their per-device reasons, and an
+  `outcome` that mirrors the exit status. Progress output is redirected to
+  stderr for the run, so `mix mob.deploy --json | jq` receives exactly one
+  document. Emitted on the native-build failure path too, which is when a
+  caller most needs it.
+
+### Changed
+
 - **`mix mob.deploy` now exits non-zero when a device fails.** A run that
   printed `Failed on 1 device(s)` previously still returned status 0, so CI and
   wrapper scripts read a failed deploy as success. Every device is still

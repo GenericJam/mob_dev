@@ -2249,4 +2249,55 @@ defmodule MobDev.NativeBuildTest do
       assert NativeBuild.ios_bundle_id([]) == nil
     end
   end
+
+  describe "build_outcome/2 — MOB-150" do
+    # The observed bug: `mix mob.deploy --android --native` with no `sdk.dir`
+    # in android/local.properties printed a skip warning, built nothing, and
+    # exited 0. The old rule was `ok_count == length(results)`, which is
+    # `0 == 0` for a run that produced no results at all.
+
+    test "everything asked for was built" do
+      assert NativeBuild.build_outcome([{:ok, "Android"}], [:android]) == :ok
+    end
+
+    test "a build that failed is a failure" do
+      results = [{:error, "Android", "gradle exited 1"}]
+      assert {:error, message} = NativeBuild.build_outcome(results, [:android])
+      assert message =~ "1 native build(s) failed"
+    end
+
+    test "building nothing when nothing was asked for is fine" do
+      # A default `mix mob.deploy --native` on a machine with only the iOS
+      # toolchain: Android is skipped and nobody asked for it.
+      assert NativeBuild.build_outcome([], []) == :ok
+      assert NativeBuild.build_outcome([{:ok, "iOS"}], []) == :ok
+    end
+
+    test "building nothing for a platform you named is a failure" do
+      assert {:error, message} = NativeBuild.build_outcome([], [:android])
+      assert message =~ "nothing was built for --android"
+    end
+
+    test "building only the other platform you named is a failure" do
+      # `--android --ios` where the Android toolchain is missing: iOS
+      # succeeding must not mask the half that was skipped.
+      assert {:error, message} =
+               NativeBuild.build_outcome([{:ok, "iOS"}], [:android, :ios])
+
+      assert message =~ "--android"
+      refute message =~ "--ios"
+    end
+
+    test "the device iOS label counts as iOS" do
+      # The physical-device chain reports "iOS (device)", not "iOS", and a
+      # prefix match is what keeps that from reading as an unserved request.
+      assert NativeBuild.build_outcome([{:ok, "iOS (device)"}], [:ios]) == :ok
+    end
+
+    test "a failure outranks an unserved request" do
+      results = [{:error, "iOS", "zig exited 2"}]
+      assert {:error, message} = NativeBuild.build_outcome(results, [:android, :ios])
+      assert message =~ "failed"
+    end
+  end
 end

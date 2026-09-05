@@ -79,6 +79,12 @@ defmodule MobDev.NativeBuild do
           results
 
         not File.dir?("android") ->
+          if :android in Keyword.get(opts, :requested, []) do
+            IO.puts(
+              "  #{IO.ANSI.yellow()}⚠  Skipping Android build — no android/ directory in this project#{IO.ANSI.reset()}"
+            )
+          end
+
           results
 
         not android_toolchain_available?() ->
@@ -115,6 +121,12 @@ defmodule MobDev.NativeBuild do
             [build_ios(cfg, device_id) | results]
 
           true ->
+            if :ios in Keyword.get(opts, :requested, []) do
+              IO.puts(
+                "  #{IO.ANSI.yellow()}⚠  Skipping iOS build — no ios/build.zig in this project#{IO.ANSI.reset()}"
+              )
+            end
+
             results
         end
       else
@@ -137,9 +149,67 @@ defmodule MobDev.NativeBuild do
         )
     end)
 
-    ok_count = Enum.count(results, &match?({:ok, _}, &1))
-    ok_count == length(results)
+    # Intersect with the NARROWED platform list. `narrow_platforms_for_device/2`
+    # above drops Android when the target is an iOS UDID — including one this
+    # task auto-detected rather than one the user named — and counting that as
+    # an unserved `--android` request fails a build that did exactly what was
+    # asked of it.
+    requested = Enum.filter(Keyword.get(opts, :requested, []), &(&1 in platforms))
+
+    case build_outcome(results, requested) do
+      :ok ->
+        true
+
+      {:error, message} ->
+        IO.puts("  #{IO.ANSI.red()}✗ #{message}#{IO.ANSI.reset()}")
+        false
+    end
   end
+
+  @doc """
+  Whether a native build run succeeded, given what it produced and what the
+  user explicitly asked for.
+
+  `results` entries are `{:ok, label}` / `{:error, label, reason}` where label
+  is the display name ("Android", "iOS", "iOS (device)").
+
+  `requested` is the platforms named by an explicit `--android` / `--ios`
+  flag — NOT the resolved platform list, which collapses "no flag given" into
+  every platform and would make an ordinary skip fatal.
+
+  The rule this exists for: `ok_count == length(results)` is `0 == 0` for a run
+  that built nothing, so `mix mob.deploy --android --native` with no `sdk.dir`
+  printed a warning, built nothing, and reported success. A skip is fine when
+  nobody asked for that platform; it is a failure when they did.
+  """
+  @spec build_outcome([{:ok, String.t()} | {:error, String.t(), term()}], [atom()]) ::
+          :ok | {:error, String.t()}
+  def build_outcome(results, requested) do
+    built = results |> Enum.map(&result_platform/1) |> Enum.reject(&is_nil/1) |> Enum.uniq()
+    failed = Enum.filter(results, &match?({:error, _, _}, &1))
+    missing = requested -- built
+
+    cond do
+      failed != [] ->
+        {:error, "#{length(failed)} native build(s) failed — see errors above"}
+
+      missing != [] ->
+        names = missing |> Enum.map(&"--#{&1}") |> Enum.join(", ")
+
+        {:error,
+         "nothing was built for #{names}, which you asked for — see the skip reason above"}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp result_platform({:ok, label}), do: label_platform(label)
+  defp result_platform({:error, label, _reason}), do: label_platform(label)
+
+  defp label_platform("Android" <> _), do: :android
+  defp label_platform("iOS" <> _), do: :ios
+  defp label_platform(_), do: nil
 
   # ── Android ──────────────────────────────────────────────────────────────────
 
