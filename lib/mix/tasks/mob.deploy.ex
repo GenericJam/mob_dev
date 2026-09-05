@@ -33,6 +33,8 @@ defmodule Mix.Tasks.Mob.Deploy do
                               for scripted scenarios where you need a specific naming scheme.
     * `--schedulers <N>`      — set BEAM scheduler count (saved to mob.exs)
     * `--beam-flags "<flags>"` — arbitrary BEAM flags string (saved to mob.exs)
+    * `--json`                — machine-readable result on stdout; progress goes to
+                              stderr, so `mix mob.deploy --json | jq` gets one document
     * `--slim`                — strip OTP source/debug for size measurement on
                                 a real device. OFF by default for dev iteration
                                 (the strip pass adds ~5-10s per build); use this
@@ -123,12 +125,34 @@ defmodule Mix.Tasks.Mob.Deploy do
   task exits non-zero if **any** device landed in the `Failed on N device(s)`
   bucket — including a partial success where other devices deployed fine.
 
-  Devices under `Skipped on N device(s)` (app not installed for that
-  platform) do not fail the run.
+  Devices under `Skipped on N device(s)` (app not installed for that platform)
+  do not fail the run — *unless you named that platform*. A skip means "this
+  device is not a target for this app", which is ordinary when it is a phone
+  that happens to be attached, and a failure when the run asked for it:
+
+    * `mix mob.deploy` with an unrelated phone attached — exit 0.
+    * `mix mob.deploy --ios` where every iOS device was skipped — exit 1.
+    * `mix mob.deploy --ios` where one simulator deployed and a stale one was
+      skipped — exit 0. A partial success is a success; the rule is per
+      platform, not per device.
+    * `mix mob.deploy --device X` that reached X and deployed nothing — exit 1.
+    * `mix mob.deploy --device NOPE` matching no device — exit 1.
+    * `mix mob.deploy --android --native` that built the APK with no device
+      attached — exit 0. The artifact is what was asked for.
+
+  `--native` fails the run when a platform you named built nothing at all, which
+  is what a missing `sdk.dir` in `android/local.properties` produces.
   """
+
+  alias MobDev.Device
 
   @switches [
     native: :boolean,
+    # Machine-readable result on stdout, for a caller that needs to know which
+    # targets got what without parsing coloured prose. Progress is redirected
+    # to stderr for the run (see the group-leader swap in `run/1`) so stdout
+    # carries exactly one document.
+    json: :boolean,
     restart: :boolean,
     android: :boolean,
     ios: :boolean,
@@ -156,6 +180,22 @@ defmodule Mix.Tasks.Mob.Deploy do
   @impl Mix.Task
   def run(args) do
     {opts, _, _} = OptionParser.parse(args, switches: @switches)
+
+    # Under --json, stdout must carry ONE document and nothing else. Every
+    # progress line in this task, the deployer and the native build is a plain
+    # `IO.puts/1`, which resolves `:stdio` through the group leader — so
+    # repointing it sends all of them, and the `into: IO.stream()` subprocess
+    # output too, to stderr. The JSON is then written to the real stdout
+    # explicitly. Rewriting several hundred call sites to take a device would
+    # be the alternative.
+    if opts[:json] do
+      # Capture the real stdout FIRST. `:standard_io` also resolves through the
+      # group leader, so swapping it without saving this sends the document to
+      # stderr along with the prose — the flag then emits nothing a pipe can
+      # read, which is the whole failure it exists to prevent.
+      Process.put(:mob_deploy_stdout, Process.group_leader())
+      Process.group_leader(self(), Process.whereis(:standard_error))
+    end
 
     restart = Keyword.get(opts, :restart, true)
     native = Keyword.get(opts, :native, false)
@@ -220,7 +260,8 @@ defmodule Mix.Tasks.Mob.Deploy do
         MobDev.NativeBuild.build_all(
           platforms: platforms,
           device: effective_device_id,
-          slim: slim
+          slim: slim,
+          requested: requested_platforms(opts)
         )
       end
 
@@ -233,6 +274,7 @@ defmodule Mix.Tasks.Mob.Deploy do
         "#{IO.ANSI.yellow()}Run `mix mob.doctor` to check your environment, or `mix mob.deploy` (without --native) once the issue is fixed.#{IO.ANSI.reset()}"
       )
 
+      emit_json(opts, [], [], [], "Native build failed")
       Mix.raise("Native build failed")
     end
 
@@ -254,7 +296,19 @@ defmodule Mix.Tasks.Mob.Deploy do
 
     # The full summary is printed first, then the status code is set — the
     # fan-out across devices is unchanged, only the exit code is.
-    case failure_message(deployed, failed, skipped) do
+    message =
+      missing_device_message(device_id, deployed, failed, skipped) ||
+        failure_message(
+          deployed,
+          failed,
+          skipped,
+          requested_platforms(opts),
+          native and native_ok == true
+        )
+
+    emit_json(opts, deployed, failed, skipped, message)
+
+    case message do
       nil -> :ok
       message -> Mix.raise(message)
     end
@@ -278,10 +332,137 @@ defmodule Mix.Tasks.Mob.Deploy do
   out if the status code says everything is fine.
   """
   @spec failure_message([Device.t()], [Device.t()], [Device.t()]) :: String.t() | nil
-  def failure_message(_deployed, [], _skipped), do: nil
+  def failure_message(deployed, failed, skipped),
+    do: failure_message(deployed, failed, skipped, [])
 
-  def failure_message(_deployed, failed, _skipped),
+  @doc """
+  As `failure_message/3`, but knowing which platforms were explicitly asked for.
+
+  A skipped device is normally not a failure — it means "this device is not a
+  target for this app", the expected outcome of an Android phone being attached
+  during a default run. It IS a failure when the run named that platform: a
+  `mix mob.deploy --android` that skips every Android device asked for
+  something and got nothing, and must not report success.
+
+  Pass `[]` for requested and every skip is incidental, which is the
+  `failure_message/3` behaviour.
+  """
+  @spec failure_message([Device.t()], [Device.t()], [Device.t()], [atom()]) :: String.t() | nil
+  def failure_message(_deployed, failed, _skipped, _requested) when failed != [],
     do: "Deploy failed on #{length(failed)} device(s) — see errors above"
+
+  def failure_message(deployed, failed, skipped, requested),
+    do: failure_message(deployed, failed, skipped, requested, false)
+
+  @doc """
+  As `failure_message/4`, but knowing whether a native build succeeded.
+
+  A `--native` run that built the artifact and found no device to push it to
+  did its main job. Failing it would break "build the APK now, attach the phone
+  after", which used to exit 0.
+  """
+  @spec failure_message([Device.t()], [Device.t()], [Device.t()], [atom()], boolean()) ::
+          String.t() | nil
+  def failure_message(_deployed, failed, _skipped, _requested, _native) when failed != [],
+    do: "Deploy failed on #{length(failed)} device(s) — see errors above"
+
+  def failure_message(deployed, _failed, skipped, requested, native_built?) do
+    # Per PLATFORM, not per device. `deploy_all/1` only enumerates devices for
+    # platforms in the resolved list, and the resolved list is a subset of the
+    # requested one, so "is this skip's platform requested?" is always true and
+    # the rule would reduce to "any skip at all is fatal once you name a
+    # platform". That fails a perfectly good run: two booted simulators with
+    # the app on only the one you are working on, or a spare phone plugged in.
+    # A platform is unserved only when it skipped AND nothing of it landed.
+    unserved =
+      Enum.filter(requested, fn platform ->
+        Enum.any?(skipped, &(&1.platform == platform)) and
+          not Enum.any?(deployed, &(&1.platform == platform))
+      end)
+
+    cond do
+      unserved != [] ->
+        "Deploy reached no #{names(unserved)} device — every one was skipped, " <>
+          "and you asked for it"
+
+      # Asked for a platform and reached nothing at all. Covers `--ios` on
+      # Linux, where platform resolution yields an empty list, so no device is
+      # even enumerated and every bucket is empty.
+      #
+      # Not when a native build succeeded: that run produced the artifact it
+      # was asked for and merely had nowhere to push it.
+      requested != [] and deployed == [] and skipped == [] and not native_built? ->
+        "Deploy reached no device for #{names(requested)} — none was connected"
+
+      true ->
+        nil
+    end
+  end
+
+  defp names(platforms), do: platforms |> Enum.map(&"--#{&1}") |> Enum.join(", ")
+
+  # Written to the REAL stdout, not the group leader — which under --json now
+  # points at stderr so the progress prose gets out of the document's way.
+  defp emit_json(opts, deployed, failed, skipped, message) do
+    if opts[:json] do
+      json = Jason.encode!(json_result(deployed, failed, skipped, message), pretty: true)
+      IO.puts(Process.get(:mob_deploy_stdout, :standard_io), json)
+    end
+  end
+
+  @doc """
+  The machine-readable result of a finished deploy.
+
+  Exists because an agent driving `mix mob.deploy` otherwise has to infer the
+  outcome from coloured prose, and the exit code alone does not say *which*
+  target missed out. `outcome` mirrors the exit status: `"ok"` when the task
+  returns 0, `"error"` when it raises.
+  """
+  @spec json_result([Device.t()], [Device.t()], [Device.t()], String.t() | nil) :: map()
+  def json_result(deployed, failed, skipped, message) do
+    %{
+      "outcome" => if(message, do: "error", else: "ok"),
+      "message" => message,
+      "deployed" => Enum.map(deployed, &json_device/1),
+      "failed" => Enum.map(failed, &json_device/1),
+      "skipped" => Enum.map(skipped, &json_device/1)
+    }
+  end
+
+  defp json_device(%MobDev.Device{} = device) do
+    %{
+      "name" => device.name,
+      "serial" => device.serial,
+      "platform" => to_string(device.platform),
+      "reason" => device.error
+    }
+  end
+
+  @doc """
+  The message for a run that named a device and did not find it, or `nil`.
+
+  `mix mob.deploy --device NOPE` printed "No devices found." and exited 0. The
+  device filter matches nothing, every bucket comes back empty, and a run that
+  shipped to a device you named by id is indistinguishable from one that
+  shipped nowhere.
+
+  Only fires when a device was named: with no `--device`, an empty run is the
+  ordinary "nothing is plugged in" case and stays non-fatal.
+  """
+  @spec missing_device_message(String.t() | nil, [Device.t()], [Device.t()], [Device.t()]) ::
+          String.t() | nil
+  def missing_device_message(nil, _deployed, _failed, _skipped), do: nil
+
+  def missing_device_message(device_id, [], [], []),
+    do: "No device matched --device #{device_id} — nothing was deployed"
+
+  # Found, but nothing landed on it. Naming a device by id is at least as
+  # explicit as naming a platform, so a run that shipped nowhere must say so.
+  # `failed` is left to `failure_message/5`, which reports the actual error.
+  def missing_device_message(device_id, [], [], skipped) when skipped != [],
+    do: "--device #{device_id} was skipped — nothing was deployed to it"
+
+  def missing_device_message(_device_id, _deployed, _failed, _skipped), do: nil
 
   @doc """
   Build the per-deploy summary lines from the three device buckets.
@@ -351,6 +532,20 @@ defmodule Mix.Tasks.Mob.Deploy do
     header = "\n#{IO.ANSI.red()}Failed on #{length(failed)} device(s)#{IO.ANSI.reset()}"
     rows = Enum.map(failed, fn d -> "  ✗ #{d.name || d.serial}: #{d.error}" end)
     acc ++ [header | rows]
+  end
+
+  @doc """
+  The platforms the user explicitly asked for, from the raw flags.
+
+  Deliberately NOT `resolve_platforms/1`, which collapses "no flag given" into
+  every platform with a scaffold. That distinction is the whole point: a device
+  skipped during a default run is incidental (a phone that happens to be
+  attached), while one skipped during `--android` is a request that went
+  unserved. Returns `[]` when no platform flag was given.
+  """
+  @spec requested_platforms(keyword()) :: [:android | :ios]
+  def requested_platforms(opts) do
+    Enum.filter([:android, :ios], &(opts[&1] == true))
   end
 
   defp resolve_platforms(opts) do
