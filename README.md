@@ -36,6 +36,7 @@ end
 | `mix mob.watch_stop` | Stop a running `mix mob.watch` |
 | `mix mob.devices` | List connected devices and their status |
 | `mix mob.attest` | Prove a device is running the code you just pushed — compares module digests, not artifacts ([see below](#did-that-deploy-actually-land-mix-mobattest)) |
+| `mix mob.mutate` | Mutation-test the lines this branch changed: break the code on purpose and report what nothing noticed ([see below](#do-the-tests-guard-anything-mix-mobmutate)) |
 | `mix mob.push` | Hot-push only changed modules (no restart) |
 | `mix mob.enable <feature>...` | Wire up an optional Mob feature — platform-manifest entries, Elixir stubs, dep injections ([see below](#mix-mobenable-feature)) |
 | `mix mob.add_nif <name>` | Scaffold a statically-linked NIF — Elixir stub + `mob.exs` `:static_nifs` append + optional native skeleton ([see below](#mix-mobadd_nif-name)) |
@@ -128,6 +129,105 @@ a check that could not run is not a check that passed. Modules the device has
 not loaded yet are reported and are **not** a failure: interactive BEAM loads a
 module when something first calls it, so most of a bundle is legitimately
 unloaded at any moment.
+### Exit status and argument handling
+
+`mix mob.deploy` exits non-zero when:
+
+- any device **failed**, including a partial success where others deployed;
+- every device of a platform you **named** was skipped — `mix mob.deploy --ios`
+  where every iOS device lacked the app. A skip stays non-fatal when it is
+  incidental, so a plain `mix mob.deploy` with an unrelated phone attached
+  still exits 0, and one simulator deploying while a stale one is skipped is a
+  success;
+- you named `--device X` and nothing was deployed to it, or no device matched;
+- `--native` built nothing for a platform you **named** — a missing `sdk.dir`
+  in `android/local.properties` under `--android --native`, say. A plain
+  `mix mob.deploy --native` that skips a platform nobody asked for still
+  exits 0;
+- you **named** a platform and no device of it was connected at all, which is
+  also what `--ios` on Linux does.
+
+A `--native` run that built the artifact and found no device to push it to
+still exits 0: "build the APK now, attach the phone after" is a legitimate
+workflow.
+
+**Unrecognised options and stray arguments are refused rather than ignored.**
+`mix mob.deploy -d <udid>` previously deployed to *every* connected device —
+`-d` was not an alias here — and a typo'd `--devcie` did the same, silently.
+So did `mix mob.deploy --native ABC123`, a natural fumble of `--device`: it
+parsed cleanly and deployed everywhere. All three now fail and name what was
+wrong, distinguishing an unrecognised flag from a recognised one with a bad
+value. `-d` is aliased to `--device`, matching `mix mob.connect`.
+
+**`--beam-flags` accepts both spellings.** `OptionParser` will not consume a
+dash-prefixed argument as a value, so `mix mob.deploy` joins them before
+parsing:
+
+```bash
+mix mob.deploy --beam-flags "-S 4:4 -A 4"
+mix mob.deploy --beam-flags="-S 4:4 -A 4"
+```
+
+`--json` prints a machine-readable result on stdout: an `outcome` mirroring the
+exit code, a `message`, and the deployed, failed and skipped devices with their
+per-device reasons. Progress goes to stderr, so `mix mob.deploy --json | jq`
+receives exactly one document.
+
+## Do the tests guard anything? (`mix mob.mutate`)
+
+A green suite says the tests ran, not that they guard anything. This changes
+the production code one line at a time, runs the suite, and reports the changes
+nothing noticed.
+
+```bash
+mix mob.mutate                                   # lines this branch changed
+mix mob.mutate --base main                       # diff base (default: origin/master)
+mix mob.mutate --file lib/foo.ex                 # every mutable line in a file; repeatable
+mix mob.mutate --max 20                          # bound a first run
+mix mob.mutate --test-command "mix test test/foo_test.exs"
+mix mob.mutate --json
+```
+
+**Every mutant runs the suite once**, so a run costs roughly
+`mutations × suite`. Narrow it with `--test-command` and bound it with
+`--max` before pointing it at a large diff. `--base` defaults to
+`origin/master`; on a repo whose default branch is `main`, or a shallow CI
+checkout, pass it explicitly or the run fails rather than silently measuring
+nothing.
+
+It exits non-zero when any mutation survived, so it can gate a change the way
+a failing test does.
+
+```
+89 killed, 6 survived, 57 did not build, 0 unmeasured
+
+Nothing noticed these changes:
+
+  lib/foo.ex:188  delete: file: file,
+  lib/foo.ex:196  flip comparison: if count == 0 do
+  …
+```
+
+Three operators: delete the line, flip a boolean, flip a comparison. Deletion
+is the blunt one and the most informative — it asks whether anything notices
+the line exists at all, which is the question a vacuous test fails.
+
+A mutant that fails to compile is counted apart from a real kill — it died
+without any test noticing, so counting it as a win inflates the score. So is a
+run that could not be measured at all.
+
+**It rewrites real source files** and restores them from memory, so an
+interrupted run leaves the last mutant on disk. It therefore refuses to start
+unless the files it would touch are clean in git, which makes
+`git checkout -- <file>` a complete recovery.
+
+In default mode that means it will essentially always refuse until you commit
+or stash: the lines it targets are the ones you just changed. Commit first,
+then mutate.
+
+Expect roughly a third of the mutants on idiomatic Elixir to land in "did not
+build": removing a `def` head or a middle segment of a pipeline is a syntax
+error, not a test failure.
 
 ## `mix mob.enable <feature>`
 
@@ -601,6 +701,13 @@ Agent (Claude Code)
 
 ```elixir
 node = :"my_app_ios@127.0.0.1"
+
+# What can this build actually be probed with? Ask before choosing an approach
+# — on Android a probe is unavailable when the app's generated MobBridge.kt
+# lacks the method, and on iOS the whole harness is compiled out of release
+# builds. A freshly generated Android app has no synthetic input at all.
+Mob.Test.capabilities(node)
+#=> %{dist_rpc: true, tap_xy: false, screenshot: true, element_frames: true, ...}
 
 # Inspection
 Mob.Test.screen(node)               #=> MyApp.HomeScreen
