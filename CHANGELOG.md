@@ -22,6 +22,9 @@
   skips dist entirely. The dist path now hot-loads *and* writes, without
   restarting, and a failed write is reported instead of being hidden behind a
   successful hot load. Verify with `mix mob.attest` after a restart.
+  Physical iPhones are excluded and get the hot load plus a warning: they
+  are often LAN-only with no `devicectl` route, and the write is a
+  no-undo replace that a mid-copy interruption would leave unbootable.
 
 - **`mix mob.deploy --help` and `mix mob.mutate --help` refused to help.**
   Strict option parsing turned the flag people try first, on the task they run
