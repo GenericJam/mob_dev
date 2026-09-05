@@ -179,4 +179,33 @@ defmodule MobDev.WiringTest do
                ~r/emit_json\(opts, \[\], \[\], \[\], "Native build failed"\)\s*Mix\.raise/
     end
   end
+
+  describe "mob.deploy refuses what it does not recognise" do
+    # `-d` was never aliased here, and `switches:` drops unknown flags in
+    # silence — so `mix mob.deploy -d <udid>` deployed to every device instead
+    # of the one named. Source assertions because the parse happens inside
+    # run/1, before anything testable is reached.
+    test "-d is aliased to --device, matching mob.connect" do
+      source = @deploy_task
+
+      assert source =~ "aliases: [d: :device]"
+    end
+
+    test "parsing is strict, so nothing is dropped in silence" do
+      # `switches:` puts an unrecognised flag in `invalid` and carries on;
+      # `strict:` is what makes the run able to refuse. Reverting this one word
+      # restores the silent-ignore.
+      source = @deploy_task
+
+      assert source =~ "OptionParser.parse(args, strict: @switches, aliases: [d: :device])"
+      refute source =~ "OptionParser.parse(args, switches: @switches)"
+    end
+
+    test "the run raises rather than proceeding" do
+      source = @deploy_task
+
+      assert source =~
+               ~r/unless invalid == \[\] do\s*Mix\.raise\(invalid_options_message\(invalid\)\)/
+    end
+  end
 end

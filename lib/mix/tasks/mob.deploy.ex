@@ -179,7 +179,18 @@ defmodule Mix.Tasks.Mob.Deploy do
 
   @impl Mix.Task
   def run(args) do
-    {opts, _, _} = OptionParser.parse(args, switches: @switches)
+    {opts, _argv, invalid} =
+      OptionParser.parse(args, strict: @switches, aliases: [d: :device])
+
+    # `switches:` silently discards anything it does not recognise, so
+    # `mix mob.deploy -d <udid>` — `-d` was never aliased here, though
+    # `mob.connect` has aliased it all along — deployed to every device
+    # instead of the one named, and said nothing. A typo'd `--devcie` did the
+    # same. `strict:` collects them so the run can refuse rather than do
+    # something other than what was asked.
+    unless invalid == [] do
+      Mix.raise(invalid_options_message(invalid))
+    end
 
     # Under --json, stdout must carry ONE document and nothing else. Every
     # progress line in this task, the deployer and the native build is a plain
@@ -408,6 +419,21 @@ defmodule Mix.Tasks.Mob.Deploy do
       json = Jason.encode!(json_result(deployed, failed, skipped, message), pretty: true)
       IO.puts(Process.get(:mob_deploy_stdout, :standard_io), json)
     end
+  end
+
+  @doc """
+  The error for options the task does not accept.
+
+  Names them, because the failure this replaces was silent: the flag was
+  dropped and the deploy proceeded as if it had never been passed.
+  """
+  @spec invalid_options_message([{String.t(), String.t() | nil}]) :: String.t()
+  def invalid_options_message(invalid) do
+    names = invalid |> Enum.map(&elem(&1, 0)) |> Enum.join(", ")
+
+    "Unknown option(s): #{names}\n\n" <>
+      "Run `mix help mob.deploy` for the accepted options. " <>
+      "Short forms are not aliases except `-d` for `--device`."
   end
 
   @doc """
