@@ -31,6 +31,47 @@ mix test                       # all tests
 mix test --exclude integration # skip the device-dependent ones
 ```
 
+## Verification fidelity ladder
+
+This repo builds and deploys other people's apps, so its failures are mostly
+failures to notice that nothing happened. Run every applicable lower rung, plus
+the highest rung the change actually reaches, and say which rung you stopped at.
+
+1. **Static.** `mix format --check-formatted`, `mix credo --strict` (ex_slop
+   included), `mix compile --warnings-as-errors`.
+2. **Host unit.** `mix test`. Proves the task's logic against fixtures. Proves
+   nothing about a real toolchain.
+3. **Task run against a real project.** Actually invoke the task on a generated
+   app and read the output. A task that unit-tests green can still skip its real
+   work — a missing toolchain or a mismatched device id once produced a clean
+   exit-0 from a deploy that never built anything, and cost several hours of
+   debugging failures that had not happened.
+4. **Deployed, and the app answers.** `mix mob.deploy` to a simulator or
+   emulator, then attach and confirm the BEAM is up and a screen renders.
+   Deploy success is the tool's opinion; a reachable node is evidence.
+5. **Physical device, and the release variant.** Release changes linkage and
+   packaging: iOS release links plugin NIFs by a separate path
+   (`decisions/2026-07-07-ios-release-links-plugin-nifs.md`), and release
+   `otp.zip` handling is variant-scoped
+   (`decisions/2026-07-24-release-otp-zip-variant-scoped-assets.md`). A release
+   also leaves an `assets/otp.zip` that crash-loops the next debug deploy.
+6. **From the packed Hex tarball, not the working tree.** Hex omits
+   repository-root dotfiles, so code under `lib/` that reads one compiles here
+   and fails for everyone else. Two releases shipped broken this way. Build the
+   package and compile from it before publishing.
+
+Every rung above exists because something got through the one below it.
+
+Two rules that outrank the list:
+
+- **Never substitute a lower rung because a higher one is slow, broken, or
+  inconvenient.** Fix the harness, open an issue, or state plainly that the rung
+  was unavailable and why. An unavailable rung is a fine answer. A silently
+  skipped one is not.
+- **Verify effects, not exit codes.** This repo is where that rule was learned
+  and it is the repo most able to break it: every task here should prove its
+  effect happened rather than reporting that it returned.
+
 ## Things that bite specifically in mob_dev
 
 - **Compile-time regex literals are unsafe** on Elixir 1.19 / OTP 28.0. Use
