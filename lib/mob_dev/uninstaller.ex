@@ -482,6 +482,13 @@ defmodule MobDev.Uninstaller do
 
     {output, exit_code} = System.cmd("xcrun", args, stderr_to_stdout: true)
     {outcome, reason} = interpret_devicectl_uninstall(output, exit_code)
+
+    # Stop claiming this app is ours. The kill-scope registry matches by app
+    # NAME (the process listing carries no bundle ids), so a stale entry is not
+    # inert — it stays killable for ever, and a third-party app that later
+    # takes that name inherits it. See MOB-70.
+    if outcome == :uninstalled, do: MobDev.IOSInstalls.forget(udid, bundle_id)
+
     %{device: d, bundle_id: bundle_id, outcome: outcome, reason: reason}
   end
 

@@ -534,8 +534,11 @@ defmodule MobDev.Discovery.IOS do
 
   @doc """
   Restarts the app on a physical iOS device via xcrun devicectl.
-  Kills any other user-installed app first (they all share EPMD port 4369 and
-  only one can run at a time), then launches the target app fresh.
+
+  First clears other Mob apps that `mob_dev` installed on this device — they
+  each hold EPMD 4369 and only one can run at a time — then launches the
+  target app fresh. Apps `mob_dev` did not install are never touched, whoever
+  they belong to. See `MobDev.IOSInstalls` and MOB-70.
   """
   @spec restart_app_physical(String.t(), String.t()) :: {String.t(), non_neg_integer()}
   def restart_app_physical(udid, bundle_id) do
@@ -558,25 +561,96 @@ defmodule MobDev.Discovery.IOS do
     )
   end
 
-  # Kill any user-installed app that is not `except_bundle`.
-  # User apps run from /private/var/containers/Bundle/Application/.
-  # All physical-device Mob apps share in-process EPMD on port 4369, so only
-  # one can run at a time. We kill the others before launching to avoid the
-  # EADDRINUSE crash that would otherwise prevent BEAM from starting.
+  @doc """
+  Process ids on the device that belong to Mob apps we may kill.
+
+  Pure, so the decision that used to be untestable is now the testable part.
+  `process_output` is `devicectl device info processes` output; `ours` is what
+  `MobDev.IOSInstalls` says we installed on this device; `except_app_name` is
+  the app about to be launched, which the caller launches with
+  `--terminate-existing` anyway.
+
+  Matching is on the `.app` bundle name in the executable path, because that
+  is the only identifier the process listing carries — it has no bundle ids.
+
+  **Anything not in `ours` is left alone.** The bug this replaced matched every
+  process under `Bundle/Application/`, which is where *all* third-party apps
+  live, so running `mix mob.connect` with a personal iPhone attached force-quit
+  every app the owner had open (MOB-70). An empty `ours` returns `[]`: not
+  knowing what is ours means killing nothing.
+  """
+  @spec mob_pids_to_kill(String.t(), [String.t()], String.t() | nil) :: [pos_integer()]
+  def mob_pids_to_kill(process_output, ours, except_app_name \\ nil) do
+    killable = MapSet.new(ours) |> MapSet.delete(except_app_name)
+
+    process_output
+    |> String.split("\n")
+    |> Enum.flat_map(fn line ->
+      # Anchored to Bundle/Application/, which is where third-party apps live.
+      # Without the anchor this matches system processes too — SpringBoard,
+      # Preferences, Spotlight, News — and the only thing standing between us
+      # and killing one is that no project happens to camelize to its name.
+      # That is not a safety property. A project named `news` produces
+      # `News.app`; Apple ships `News.app` too, and `MobileCal.app` really does
+      # run from Bundle/Application/, so a project named `mobile_cal` would
+      # collide exactly. The registry is what protects the user here — the
+      # anchor only removes the 24 system processes that were never candidates.
+      case Regex.run(~r{^\s*(\d+)\s+.*/Bundle/Application/[^/]+/([^/]+)\.app/}, line) do
+        [_, pid_str, app_name] ->
+          if MapSet.member?(killable, app_name), do: [String.to_integer(pid_str)], else: []
+
+        _ ->
+          []
+      end
+    end)
+  end
+
+  @doc """
+  The `.app` name for `bundle_id`, or `nil` if we have no record of it.
+
+  Extracted so the translation is testable. Getting it wrong is not
+  cosmetic: returning `nil` for the app about to be launched puts that app
+  back in the kill set, so mob_dev `--kill`s it moments before `devicectl
+  launch` targets it — the exact race the caller avoids by excluding it.
+  """
+  @spec except_app_name_for([MobDev.IOSInstalls.app()], String.t() | nil) :: String.t() | nil
+  def except_app_name_for(ours, bundle_id) do
+    Enum.find_value(ours, &if(&1.bundle_id == bundle_id, do: &1.app_name))
+  end
+
+  # Clear other Mob apps off the device before launching.
+  #
+  # Physical-device Mob apps each start an in-process EPMD on 0.0.0.0:4369
+  # (mob/ios/mob_beam.m), so only one can run at a time — a second gets
+  # EADDRINUSE and never boots. Clearing the others is genuinely required.
+  #
+  # What is not required is guessing. See `mob_pids_to_kill/3`.
   defp kill_other_user_apps_physical(udid, except_bundle) do
+    ours = MobDev.IOSInstalls.installed(udid)
+    app_names = Enum.map(ours, & &1.app_name)
+
+    # The trade this fix makes, said out loud. A Mob app installed by some
+    # other route — Xcode, TestFlight, a colleague's build — is no longer
+    # cleared, so it keeps EPMD 4369 and the incoming app's BEAM dies inside a
+    # launch that otherwise reports success. Left unexplained that is a worse
+    # failure than the one being fixed, because it is silent.
+    if app_names == [] do
+      IO.puts(
+        "  ⚠  No record of mob_dev installs on this device — nothing was cleared.\n" <>
+          "     If the app launches but never joins the network, another Mob app may\n" <>
+          "     be holding EPMD 4369; quit it on the device and retry."
+      )
+    end
+
+    except_app_name = except_app_name_for(ours, except_bundle)
+
     {out, 0} =
       System.cmd("xcrun", ["devicectl", "device", "info", "processes", "--device", udid],
         stderr_to_stdout: true
       )
 
     out
-    |> String.split("\n")
-    |> Enum.flat_map(fn line ->
-      case Regex.run(Regex.compile!("^\\s*(\\d+)\\s+(.+Bundle/Application/.+\\.app/.+)$"), line) do
-        [_, pid_str, _path] -> [String.to_integer(pid_str)]
-        _ -> []
-      end
-    end)
+    |> mob_pids_to_kill(app_names, except_app_name)
     |> Enum.each(fn pid ->
       System.cmd(
         "xcrun",
@@ -595,7 +669,6 @@ defmodule MobDev.Discovery.IOS do
       )
     end)
 
-    _ = except_bundle
     :ok
   rescue
     _ -> :ok
