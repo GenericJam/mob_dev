@@ -139,7 +139,11 @@ defmodule MobDev.IOSInstalls do
     # normal here, and `File.write!` is not atomic — a concurrent reader can
     # otherwise observe a half-written file, fail to decode, and treat the
     # whole registry as absent. Rename is atomic within a filesystem.
-    tmp = file <> ".tmp"
+    # Unique per write. A shared `.tmp` defeats the point: two concurrent
+    # deploys write the same path, and one can rename while the other is
+    # mid-write — publishing a torn file atomically, which is worse than the
+    # torn read this was meant to prevent.
+    tmp = file <> ".tmp." <> Integer.to_string(System.unique_integer([:positive]))
     File.write!(tmp, :json.encode(map) |> IO.iodata_to_binary())
     File.rename!(tmp, file)
     :ok

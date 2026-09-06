@@ -534,8 +534,11 @@ defmodule MobDev.Discovery.IOS do
 
   @doc """
   Restarts the app on a physical iOS device via xcrun devicectl.
-  Kills any other user-installed app first (they all share EPMD port 4369 and
-  only one can run at a time), then launches the target app fresh.
+
+  First clears other Mob apps that `mob_dev` installed on this device — they
+  each hold EPMD 4369 and only one can run at a time — then launches the
+  target app fresh. Apps `mob_dev` did not install are never touched, whoever
+  they belong to. See `MobDev.IOSInstalls` and MOB-70.
   """
   @spec restart_app_physical(String.t(), String.t()) :: {String.t(), non_neg_integer()}
   def restart_app_physical(udid, bundle_id) do
@@ -588,8 +591,10 @@ defmodule MobDev.Discovery.IOS do
       # Preferences, Spotlight, News — and the only thing standing between us
       # and killing one is that no project happens to camelize to its name.
       # That is not a safety property. A project named `news` produces
-      # `News.app`, and the attached device already runs both a Mob app called
-      # News and Apple's.
+      # `News.app`; Apple ships `News.app` too, and `MobileCal.app` really does
+      # run from Bundle/Application/, so a project named `mobile_cal` would
+      # collide exactly. The registry is what protects the user here — the
+      # anchor only removes the 24 system processes that were never candidates.
       case Regex.run(~r{^\s*(\d+)\s+.*/Bundle/Application/[^/]+/([^/]+)\.app/}, line) do
         [_, pid_str, app_name] ->
           if MapSet.member?(killable, app_name), do: [String.to_integer(pid_str)], else: []

@@ -23,6 +23,13 @@ was honoured.
 Measured on the iPhone attached while writing this: the old code would have
 killed **15** user apps, TestFlight among them.
 
+Anchoring the match to `Bundle/Application/` removes 24 system processes from
+consideration, but that is tidiness, not safety: Apple's `MobileCal.app` runs
+from `Bundle/Application/` too, and app names come from
+`Macro.camelize(project)`, so a project named `mobile_cal` collides exactly.
+**The registry is the safety property.** The anchor only narrows what the
+registry then has to be right about.
+
 ## Decision
 
 **mob_dev may kill an app on an attached device only if mob_dev installed it
