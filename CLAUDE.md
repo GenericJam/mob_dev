@@ -128,6 +128,21 @@ If something in mob_dev isn't tested today, that's a bug-discovery
 opportunity in waiting — list it as a follow-up rather than letting
 the next user find it.
 
+## Issue tracking — status lives in Linear
+
+Status lives in **Linear** (team `MOB`), which is the single board across `mob`,
+`mob_dev` and `mob_new` — see `mob/CLAUDE.md` for the full split of
+responsibilities. The short version, because work in this repo routinely starts
+from an issue filed against another one:
+
+- **Linear (`MOB`)** — live status and worklist. One issue per thread.
+- **`decisions/`** — durable rationale. Link it from the issue; don't copy it in.
+- **PRs / git** — the code. Reference the issue id.
+
+Keep the issue current as you go, not at the end. An issue that says what was
+tried and ruled out is worth more than one that says "done" — most of what this
+project has learned lives in the ruled-out half.
+
 ## Pre-commit checklist
 
 Before committing changes, run **all** in this order:
@@ -161,6 +176,18 @@ Swift Package deps, the **bundled OpenSSL/OTP/Elixir/SQLite versions**
 analysis. See [`README.md`](README.md#security-scan-mix-mobsecurity_scan)
 for the full layer list and the one-time `brew install` of external
 scanners.
+
+### Tests are part of the change, not a follow-up
+
+New behaviour ships with a test unless the change is small enough that a test
+would only restate it — a rename, a doc string, a formatting pass. "I'll add
+coverage later" is how the untested paths in this repo got there.
+
+The bar is not coverage percentage, it is: **would this test fail if the fix
+were reverted?** Check by reverting it. A test that passes either way is worse
+than none, because it is claimed as evidence. More than one fix here shipped
+with a test that could not fail — including a headline fix whose entire clause
+could be deleted with the full suite still green.
 
 ### Decision log — check both directions
 
@@ -235,6 +262,65 @@ otherwise have shipped:
 
 The one substantial change that skipped review that session was the largest one
 in the batch. Do not let size be the reason to skip.
+
+### Before the merge — a second review, on the PR
+
+The pre-commit review reads a diff. This one reads a diff **that claims to be
+finished**, against a master that has moved since you started. Those are
+different questions, and the second one has caught more.
+
+Both frame-timing PRs in one session passed pre-commit review. The pre-merge
+review then found that one of them shipped its headline fix untested — it
+deleted the conversion and all 1545 tests still passed — and blocked the other
+outright over per-widget state that navigation had silently stopped resetting.
+Neither was visible in the diff alone; both needed someone asking "is this
+actually done, and does it still fit?"
+
+Give the reviewer the PR, what it claims, and what you are least sure of, and
+ask for a verdict — MERGE or DO NOT MERGE, with reasons. Then act on it. A
+review you overrule is fine if you say why; a review you skip because the work
+felt done is the case this exists for.
+
+**Check the mechanical preconditions yourself; do not delegate them:**
+
+- **CI is green AND the run is newer than the last commit.** A green check from
+  before your latest push proves nothing. One PR here carried a month-old green
+  run from 40 commits of master ago.
+- **The branch is not behind master.** The `pre-push` hook says how far.
+- **Cross-repo claims are true now, not eventually.** Documentation that names
+  a sibling's version — "requires mob_new 0.4.32" — is false until that version
+  exists. Land the sibling first, or make the claim true in the same session.
+- **Stacked PRs merge base-first**, and the child gets retargeted and re-checked
+  after the base lands.
+
+### Trust the instrument last
+
+Every rung of the fidelity ladder assumes the thing measuring is honest. When it
+is not, the failure does not look like an error — it looks like a result.
+
+Two from one session, both of which were believed for a while:
+
+* A navigation benchmark reported a 6.5x improvement. The tree was installed by
+  a `LaunchedEffect`, which runs *after* composition, so the frame being timed
+  still showed the old screen. The real figure was about half that, and the
+  published numbers had to be retracted.
+* An on-device check printed `PASS` against a build that had failed to compile,
+  because the deploy before it had failed and the previous build was still
+  installed. The screen it claimed proved the fix had never scrolled.
+
+So:
+
+- **A number better than the theory allows is a bug in the measurement.**
+  Navigation cannot be cheaper than re-rendering the same tree. When the result
+  is too good, go and find out why before reporting it.
+- **Make a probe fail loudly when its own precondition does not hold.** A check
+  that silently passes when the setup did not happen is worse than no check.
+- **Corroborate against something you did not build.** Platform counters,
+  `Davey!` frame reports, `Skipped N frames`, a screenshot. Agreement within
+  30% of an independent source is evidence; your own instrument agreeing with
+  itself is not.
+- **When you publish a number that turns out wrong, retract it in place** and
+  say what was wrong. Someone will otherwise act on it.
 
 ## Release flow
 
