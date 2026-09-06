@@ -1,5 +1,27 @@
 ## [Unreleased]
 
+### Fixed
+- **`mix mob.connect` no longer force-quits every app on an attached iPhone**
+  (MOB-70). Clearing other Mob apps off the device before a launch is
+  necessary — each one starts an in-process EPMD on `0.0.0.0:4369`, so only one
+  can run at a time — but the code decided what to clear by matching every
+  process under `Bundle/Application/`, which is where **all** third-party apps
+  live. Plugging in a personal iPhone and running `mix mob.connect` terminated
+  every app its owner had open, and the `except_bundle` argument meant to spare
+  the target app was discarded outright.
+
+  Measured against an attached iPhone SE: the old code would have killed 15
+  user apps, TestFlight among them. It now kills 0 unless mob_dev installed
+  them itself.
+
+  mob_dev records what it installs (`MobDev.IOSInstalls`, `~/.mob/ios_installs.json`)
+  and kills only that. An absent or unreadable record means kill nothing.
+  **Behaviour change:** a Mob app installed by another route — Xcode,
+  TestFlight, a colleague's build — is no longer cleared, so it will still hold
+  EPMD 4369 and the launch will fail as it did before mob_dev cleared anything.
+  See `decisions/2026-09-06-mob-dev-kills-only-what-it-installed.md`.
+
+
 ### Changed
 
 - **`mix mob.deploy` rejects unrecognised options instead of ignoring them.**

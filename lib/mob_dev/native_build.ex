@@ -6117,10 +6117,35 @@ defmodule MobDev.NativeBuild do
            stderr_to_stdout: true,
            into: IO.stream()
          ) do
-      {_, 0} -> :ok
-      {_, code} -> {:error, "devicectl install failed (exit #{code}) — check output above"}
+      {_, 0} ->
+        # Record what we put on this device, so a later launch can clear other
+        # Mob apps off EPMD 4369 without guessing from the process list — the
+        # guess used to match every third-party app on the phone (MOB-70).
+        MobDev.IOSInstalls.record(udid, bundle_id_for(app_path), app_name_for(app_path))
+        :ok
+
+      {_, code} ->
+        {:error, "devicectl install failed (exit #{code}) — check output above"}
     end
   end
+
+  @doc false
+  # The .app bundle name is what a running process exposes in its executable
+  # path; the bundle id is what we address the app by. The registry needs both
+  # to translate between them.
+  #
+  # Public-but-@doc false so the invariant these rest on is testable: the
+  # bundle directory basename equals the executable name equals
+  # `ios_display_name/0`, by construction (the binary is copied to
+  # `<name>.app/<name>` and CFBundleExecutable is set to the same). If that
+  # ever stops holding, the registry records a name that never matches a
+  # running process and the kill scope silently becomes empty.
+  @spec app_name_for(Path.t()) :: String.t()
+  def app_name_for(app_path), do: Path.basename(app_path, ".app")
+
+  @doc false
+  @spec bundle_id_for(Path.t()) :: String.t()
+  def bundle_id_for(_app_path), do: MobDev.Config.ios_bundle_id()
 
   defp throw_bundle_id_error,
     do: throw({:error, "bundle_id not set in mob.exs"})
