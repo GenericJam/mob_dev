@@ -141,8 +141,14 @@ defmodule MobDev.Differential do
       # `{:error, :not_ready}` is the comparator's own answer when a tree
       # it was handed is unusable; pass it through, do not fall over to the
       # other node (rerunning would just repeat the same answer).
-      {:error, reason} ->
-        {:error, reason}
+      {:error, :not_ready} ->
+        {:error, :not_ready}
+
+      # Any other `{:error, _}` from the comparator is a novel shape not in
+      # the documented `run_error` set. Wrap it as `:comparator_error` so
+      # callers pattern-matching on the taxonomy do not silently miss it.
+      {:error, _} = other ->
+        {:error, {:comparator_error, node, other}}
 
       {:badrpc, {:EXIT, {:undef, _}}} ->
         call_comparator(rest, rpc, ios_tree, android_tree, opts, timeout)

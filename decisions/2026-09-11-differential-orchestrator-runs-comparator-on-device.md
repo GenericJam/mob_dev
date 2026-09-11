@@ -39,14 +39,24 @@ triggers fallover; any other `:badrpc` is a real error and surfaces as
 node , `:not_ready` reflects tree shape, not comparator availability, so
 running the same comparison a second time would just repeat the answer.
 
-`sample/3` short-circuits with `{:error, :not_ready}` if either device returns
-`:no_window` (device hasn't rendered yet). Only the comparator call itself
-proceeds when both trees are in hand , running the comparator with a missing
-tree would produce a bogus divergence.
+`sample/3` only proceeds to the comparator when both trees are in hand;
+running the comparator with a missing tree would produce a bogus divergence.
 
-The orchestrator forwards `frame_tolerance_dp` to the comparator via
-`Keyword.take/2`, but does not forward its own `rpc_timeout`. The rpc argument
-is injectable (`opts[:rpc]`) so the test suite can stub it.
+> **Corrected during pre-commit review:** an earlier draft said the
+> not-ready signal was `:no_window` from `Mob.Test.view_tree/1`. That is
+> not a shape the view-tree NIF ever produces (it belongs to the
+> screenshot NIF). The real signal turned out to be a root with
+> `children: []` (both platforms produce a synthetic root wrapper during
+> boot). The empty-root check in `sample/3` is what actually ships; see
+> the "Empty root at the sampler is `:not_ready`" bullet below.
+
+`Keyword.take/2` forwards `frame_tolerance_dp` to the comparator; `Keyword.validate!/2` rejects any other option. `rpc_timeout` is forwarded to all three RPCs (both `view_tree` calls and the comparator dispatch), so worst-case wall clock is `~3 * rpc_timeout`. The rpc argument is injectable (`opts[:rpc]`) so the test suite can stub it.
+
+> **Corrected during pre-commit review:** an earlier draft said `rpc_timeout`
+> was *not* forwarded and that `Keyword.take/2` alone handled options.
+> Both changed: unknown options now raise (`Keyword.validate!/2`), and the
+> comparator dispatch runs under the caller's timeout too. The addendum
+> bullets below carry the shipping contract.
 
 ## Consequences
 

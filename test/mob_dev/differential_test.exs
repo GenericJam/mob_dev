@@ -131,7 +131,7 @@ defmodule MobDev.DifferentialTest do
   end
 
   describe "device not ready" do
-    test "an empty root on either side becomes {:error, :not_ready} and short-circuits" do
+    test "an iOS empty root short-circuits to {:error, :not_ready}" do
       # A device that has not rendered yet returns a synthetic root with no
       # children. Two identically-empty roots would compare as `:ok`, and a
       # green run on a phone that never actually booted the screen under
@@ -140,6 +140,22 @@ defmodule MobDev.DifferentialTest do
         start_rpc(%{
           {@ios, Mob.Test, :view_tree} => empty_root(:UIWindow),
           {@android, Mob.Test, :view_tree} => tree(:root)
+        })
+
+      assert Differential.run(@ios, @android, rpc: rpc) == {:error, :not_ready}
+
+      refute Enum.any?(calls(agent), fn {{_, m, _}, _} -> m == Mob.Differential end),
+             "the comparator must not run when a sample is missing"
+    end
+
+    test "an Android empty root short-circuits to {:error, :not_ready}" do
+      # Symmetric to the iOS case: the check must fire regardless of which
+      # side is empty. If only iOS were guarded, an Android that has not
+      # booted the screen would slip through to a spurious `:ok`.
+      {rpc, agent} =
+        start_rpc(%{
+          {@ios, Mob.Test, :view_tree} => tree(:root),
+          {@android, Mob.Test, :view_tree} => empty_root(:ComposeView)
         })
 
       assert Differential.run(@ios, @android, rpc: rpc) == {:error, :not_ready}
@@ -241,6 +257,25 @@ defmodule MobDev.DifferentialTest do
 
       assert compare_targets == [@ios],
              "an honest :not_ready from the comparator must not fan out to a second attempt"
+    end
+
+    test "a comparator {:error, novel_reason} is wrapped as :comparator_error (contract-drift guard)" do
+      # The documented `run_error` taxonomy is a fixed set. If the comparator
+      # ever grows a new `{:error, _}` reason, callers pattern-matching on
+      # `:not_ready | :differential_unavailable | :tree_error | :comparator_error`
+      # would silently miss it. Wrap anything that isn't the known
+      # `:not_ready` so the taxonomy stays honest.
+      same = tree(:root)
+
+      {rpc, _} =
+        start_rpc(%{
+          {@ios, Mob.Test, :view_tree} => same,
+          {@android, Mob.Test, :view_tree} => same,
+          {@ios, Mob.Differential, :compare} => {:error, :some_novel_reason}
+        })
+
+      assert {:error, {:comparator_error, @ios, {:error, :some_novel_reason}}} =
+               Differential.run(@ios, @android, rpc: rpc)
     end
 
     test "a non-:undef :badrpc on the comparator is not a fallover trigger" do
