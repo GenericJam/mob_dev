@@ -277,6 +277,26 @@ defmodule MobDev.Plugin.ScaffoldTest do
       assert Manifest.tier(manifest) == 3
       assert %{errors: []} = Validator.validate_plugin(manifest, dir, satisfying_mob_version())
     end
+
+    test "a generated row tap pushes its detail screen" do
+      name = "mob_scaffold_navigation_#{System.unique_integer([:positive])}"
+      files = Scaffold.files_for(3, name)
+      module = Scaffold.module_name(name)
+      list_screen = Module.concat([module, "ListScreen"])
+      detail_screen = Module.concat([module, "DetailScreen"])
+
+      Code.compile_string(content_for(files, "lib/#{name}/detail_screen.ex"))
+      Code.compile_string(content_for(files, "lib/#{name}/list_screen.ex"))
+      unload_modules_on_exit([list_screen, detail_screen])
+
+      socket = Mob.Socket.new(list_screen)
+
+      assert {:noreply, pushed_socket} =
+               list_screen.handle_info({:tap, {:open, "beta"}}, socket)
+
+      assert pushed_socket.__mob__.nav_action == {:push, detail_screen, %{key: "beta"}}
+      assert {:noreply, ^socket} = list_screen.handle_info(:unrelated, socket)
+    end
   end
 
   describe "files_for/2 — tier 4" do
@@ -314,6 +334,29 @@ defmodule MobDev.Plugin.ScaffoldTest do
   end
 
   describe "files_for/2 — test scaffolding (all tiers)" do
+    test "every generated plugin compiles" do
+      for tier <- 0..4 do
+        name = "mob_scaffold_tier_#{tier}"
+        dir = write_to_tmpdir!(Scaffold.files_for(tier, name))
+        link_compiled_dependencies!(dir)
+        mix = System.find_executable("mix") || flunk("mix executable not found")
+
+        {output, status} =
+          System.cmd(mix, ["compile", "--no-deps-check"],
+            cd: dir,
+            env: [
+              {"MIX_ENV", "test"},
+              {"MIX_DEPS_PATH", active_deps_path()},
+              {"MIX_BUILD_PATH", child_build_path(dir)}
+            ],
+            stderr_to_stdout: true
+          )
+
+        assert status == 0, "tier #{tier} failed to compile:\n#{output}"
+        assert_compiler_outputs!(dir, tier, name)
+      end
+    end
+
     test "every tier ships test/test_helper.exs + test/<name>_test.exs" do
       for tier <- 0..4 do
         ps = Scaffold.files_for(tier, "mob_demo_widget") |> paths()
@@ -388,7 +431,8 @@ defmodule MobDev.Plugin.ScaffoldTest do
   end
 
   defp write_to_tmpdir!(files) do
-    dir = Path.join(System.tmp_dir!(), "mob_scaffold_#{System.unique_integer([:positive])}")
+    suffix = :crypto.strong_rand_bytes(12) |> Base.encode16(case: :lower)
+    dir = Path.join(System.tmp_dir!(), "mob_scaffold_#{suffix}")
     File.mkdir_p!(dir)
     on_exit_cleanup(dir)
 
@@ -399,6 +443,58 @@ defmodule MobDev.Plugin.ScaffoldTest do
     end)
 
     dir
+  end
+
+  defp link_compiled_dependencies!(dir) do
+    compiled_dependencies = Path.join(Mix.Project.build_path(), "lib") |> Path.expand()
+    dependency_apps = Mix.Dep.cached() |> Enum.map(&Atom.to_string(&1.app)) |> MapSet.new()
+    target_lib = Path.join(dir, "_build/test/lib")
+    File.mkdir_p!(target_lib)
+
+    compiled_dependencies
+    |> File.ls!()
+    |> Enum.filter(&MapSet.member?(dependency_apps, &1))
+    |> Enum.each(fn app ->
+      File.ln_s!(Path.join(compiled_dependencies, app), Path.join(target_lib, app))
+    end)
+  end
+
+  defp active_deps_path, do: Mix.Project.deps_path() |> Path.expand()
+  defp child_build_path(dir), do: Path.join([dir, "_build", "test"])
+
+  defp assert_compiler_outputs!(dir, tier, name) do
+    ebin = Path.join([child_build_path(dir), "lib", name, "ebin"])
+    assert File.regular?(Path.join(ebin, "#{name}.app")), "tier #{tier} did not emit an .app"
+
+    for beam <- expected_beams(tier) do
+      assert File.regular?(Path.join(ebin, beam)), "tier #{tier} did not emit #{beam}"
+    end
+  end
+
+  defp expected_beams(0), do: ["Elixir.MobScaffoldTier0.beam"]
+
+  defp expected_beams(1),
+    do: ["Elixir.MobScaffoldTier1.beam", "mob_scaffold_tier_1_nif.beam"]
+
+  defp expected_beams(2),
+    do: ["Elixir.MobScaffoldTier2.beam", "Elixir.MobScaffoldTier2.View.beam"]
+
+  defp expected_beams(3),
+    do: ["Elixir.MobScaffoldTier3.ListScreen.beam", "Elixir.MobScaffoldTier3.DetailScreen.beam"]
+
+  defp expected_beams(4) do
+    for suffix <- ["", ".Worker", ".Notifications", ".SettingsScreen"] do
+      "Elixir.MobScaffoldTier4#{suffix}.beam"
+    end
+  end
+
+  defp unload_modules_on_exit(modules) do
+    ExUnit.Callbacks.on_exit(fn ->
+      Enum.each(modules, fn module ->
+        :code.purge(module)
+        :code.delete(module)
+      end)
+    end)
   end
 
   defp on_exit_cleanup(dir) do

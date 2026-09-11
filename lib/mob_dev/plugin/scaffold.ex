@@ -417,15 +417,8 @@ defmodule MobDev.Plugin.Scaffold do
       @moduledoc \"\"\"
       Tier-2 mob plugin: a native UI component.
 
-      Wraps `Mob.UI.native_view` so a host screen can write:
-
-          use Mob.Sigil
-
-          ~MOB\"""
-          <Column>
-            {#{mod}.widget(id: :w)}
-          </Column>
-          \"""
+      Wraps `Mob.UI.native_view` so a host screen can embed
+      `{#{mod}.widget(id: :w)}` in a `~MOB` sigil.
 
       The matching `#{mod}.View` (`use Mob.Component`) owns Elixir-side state.
       The host's `MobBridge.kt` registers the Kotlin factory under
@@ -563,19 +556,23 @@ defmodule MobDev.Plugin.Scaffold do
       def mount(_params, _session, socket), do: {:ok, socket}
 
       def render(_assigns) do
+        items = @items
+
         ~MOB\"""
         <Scroll background={:background}>
           <Column background={:background} padding={:space_lg}>
             <Text text="#{mod}" text_size={:xl} text_color={:on_surface} padding={:space_sm} />
-            {for item <- @items, do: row(item)}
+            {for item <- items, do: row(item)}
           </Column>
         </Scroll>
         \"""
       end
 
-      def handle_event("open", %{"key" => key}, socket) do
+      def handle_info({:tap, {:open, key}}, socket) do
         {:noreply, Mob.Socket.push_screen(socket, #{mod}.DetailScreen, %{key: key})}
       end
+
+      def handle_info(_message, socket), do: {:noreply, socket}
 
       defp row(item) do
         ~MOB\"""
