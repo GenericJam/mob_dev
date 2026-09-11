@@ -331,6 +331,27 @@ defmodule MobDev.NativeBuildTest do
       assert NativeBuild.filter_serials(@serials, nil) == @serials
     end
 
+    test "an empty frozen target list selects nothing" do
+      assert NativeBuild.filter_serials(@serials, []) == []
+    end
+
+    test "a frozen target list cannot grow when another adb device appears" do
+      assert NativeBuild.filter_serials(@serials ++ ["UNRELATED"], ["emulator-5554"]) == [
+               "emulator-5554"
+             ]
+    end
+
+    test "a selected device disappearing fails instead of widening the target set" do
+      assert {:error, message} =
+               NativeBuild.resolve_frozen_adb_targets(
+                 ["emulator-5554", "UNRELATED"],
+                 ["emulator-5554", "PHONE"]
+               )
+
+      assert message =~ "PHONE"
+      refute message =~ "UNRELATED"
+    end
+
     test "exact serial match" do
       assert NativeBuild.filter_serials(@serials, "ZY22K6BSJM") == ["ZY22K6BSJM"]
     end
@@ -1334,6 +1355,14 @@ defmodule MobDev.NativeBuildTest do
     File.mkdir_p!(pkg)
     File.write!(Path.join(pkg, "__init__.py"), "")
     File.write!(Path.join(pkg, "_ext.so"), <<0xCA, 0xFE, 0xBA, 0xBE>>)
+  end
+
+  describe "resolve_ios_sim_targets/1" do
+    test "a frozen simulator list is accepted without discovery" do
+      ids = ["SIM-A", "SIM-B"]
+      assert NativeBuild.resolve_ios_sim_targets(ids) == {:ok, ids}
+      assert NativeBuild.resolve_ios_sim_targets([]) == {:ok, []}
+    end
   end
 
   # ── resolve_booted_udid/2 ───────────────────────────────────────────────

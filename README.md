@@ -23,7 +23,7 @@ end
 | `mix mob.new APP_NAME` | Generate a new Mob project (see `mob_new` archive) |
 | `mix mob.adopt` | Install Mob into an **existing** Phoenix project (Igniter-based; composes `mob.adopt.{deps,bridge,screen,mob_app,mob_exs,native,finalize}`). The install-into-existing counterpart to `mix mob.new` |
 | `mix mob.install` | First-run setup: download OTP runtime, generate icons, write `mob.exs` |
-| `mix mob.deploy` | Compile and push BEAMs to all connected devices |
+| `mix mob.deploy` | Compile and push BEAMs to one selected emulator/simulator |
 | `mix mob.deploy --native` | Also build and install the native APK/iOS app |
 | `mix mob.deploy --slim` | Same, but with the App Store strip pass applied (slow, lets you verify a slim build before TestFlight — see [`guides/slim_release.md`](guides/slim_release.md)) |
 | `mix mob.release` | Build a signed `.ipa` / `.aab` for App Store / TestFlight / Play Store (slim by default) |
@@ -83,6 +83,14 @@ Watch events broadcast on `"watch"` PubSub topic:
 
 ## Hot-push transport (`mix mob.deploy`)
 
+The task resolves its target set once before compiling. With no target flag it
+automatically selects exactly one emulator or simulator and never selects a
+physical device. Use `--device <id>` for one explicit target,
+`--all-devices` for every emulator/simulator, or `--all-physical` for attached
+phones. Combining the two broad flags selects every connected device.
+`ANDROID_SERIAL` has the same single-target effect as `--device` for Android;
+an explicit CLI scope takes precedence.
+
 When Erlang distribution is reachable, `mix mob.deploy` hot-pushes changed BEAMs in-place via RPC — no `adb push`, no app restart. The running modules are replaced exactly like `nl/1` in IEx.
 
 ```
@@ -134,18 +142,15 @@ unloaded at any moment.
 `mix mob.deploy` exits non-zero when:
 
 - any device **failed**, including a partial success where others deployed;
-- every device of a platform you **named** was skipped — `mix mob.deploy --ios`
-  where every iOS device lacked the app. A skip stays non-fatal when it is
-  incidental, so a plain `mix mob.deploy` with an unrelated phone attached
-  still exits 0, and one simulator deploying while a stale one is skipped is a
-  success;
+- every selected device of a platform you **named** was skipped —
+  `mix mob.deploy --ios --device <id>` where the target lacked the app;
 - you named `--device X` and nothing was deployed to it, or no device matched;
 - `--native` built nothing for a platform you **named** — a missing `sdk.dir`
   in `android/local.properties` under `--android --native`, say. A plain
   `mix mob.deploy --native` that skips a platform nobody asked for still
   exits 0;
-- you **named** a platform and no device of it was connected at all, which is
-  also what `--ios` on Linux does.
+- you selected a broad scope and no device matched it. Naming a platform alone
+  still permits a native artifact-only build with no attached device.
 
 A `--native` run that built the artifact and found no device to push it to
 still exits 0: "build the APK now, attach the phone after" is a legitimate

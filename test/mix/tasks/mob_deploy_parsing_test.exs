@@ -11,6 +11,7 @@ defmodule Mix.Tasks.Mob.DeployParsingTest do
   """
   use ExUnit.Case, async: true
 
+  alias MobDev.Device
   alias Mix.Tasks.Mob.Deploy
 
   defp parse(argv) do
@@ -32,6 +33,8 @@ defmodule Mix.Tasks.Mob.DeployParsingTest do
       ~w(--native --android),
       ~w(--device ABC123),
       ~w(-d ABC123),
+      ~w(--all-devices),
+      ~w(--all-physical),
       ~w(--dist-port 9200),
       ~w(--node-suffix sim1),
       ~w(--schedulers 4),
@@ -67,6 +70,104 @@ defmodule Mix.Tasks.Mob.DeployParsingTest do
       # positional. The task rejects positionals, so this is a loud failure
       # rather than a silent deploy-to-everything — which is the point.
       assert {[native: true], ["-S"], []} = parse(~w(--native -- -S))
+    end
+  end
+
+  describe "target resolution" do
+    defp device(serial, platform, type) do
+      %Device{serial: serial, name: serial, platform: platform, type: type, status: :discovered}
+    end
+
+    test "ANDROID_SERIAL selects its exact Android target" do
+      emulator = device("emulator-5554", :android, :emulator)
+      phone = device("ZY22K6BSJM", :android, :physical)
+
+      assert {:ok, [^phone]} =
+               Deploy.resolve_targets([emulator, phone], [:android], [], "ZY22K6BSJM")
+    end
+
+    test "--device takes precedence over ANDROID_SERIAL" do
+      emulator = device("emulator-5554", :android, :emulator)
+      phone = device("ZY22K6BSJM", :android, :physical)
+
+      assert {:ok, [^emulator]} =
+               Deploy.resolve_targets(
+                 [emulator, phone],
+                 [:android],
+                 [device: "emulator-5554"],
+                 "ZY22K6BSJM"
+               )
+    end
+
+    test "--all-devices takes precedence over ANDROID_SERIAL and excludes phones" do
+      emulator = device("emulator-5554", :android, :emulator)
+      phone = device("ZY22K6BSJM", :android, :physical)
+
+      assert {:ok, [^emulator]} =
+               Deploy.resolve_targets(
+                 [emulator, phone],
+                 [:android],
+                 [all_devices: true],
+                 "ZY22K6BSJM"
+               )
+    end
+
+    test "an iOS-only run ignores ANDROID_SERIAL" do
+      simulator = device("SIM-UDID", :ios, :simulator)
+
+      assert {:ok, [^simulator]} =
+               Deploy.resolve_targets([simulator], [:ios], [], "ZY22K6BSJM")
+    end
+
+    test "a mixed-platform run ignores ANDROID_SERIAL and auto-picks the sole dev device" do
+      # The default macOS `mix mob.deploy` runs on `[:android, :ios]`. A
+      # leftover `ANDROID_SERIAL` in the shell (from adb-based tooling) must
+      # not hijack the default and turn every bare deploy into an explicit
+      # single-device selection — that would raise :no_matching_devices
+      # against any connected iOS simulator. The decision record narrows the
+      # ANDROID_SERIAL rule to Android-only runs on purpose.
+      simulator = device("SIM-UDID", :ios, :simulator)
+
+      assert {:ok, [^simulator]} =
+               Deploy.resolve_targets([simulator], [:android, :ios], [], "some-stale-serial")
+    end
+
+    test "whitespace-only ANDROID_SERIAL is treated as unset" do
+      # A shell that exports `ANDROID_SERIAL=""` or `ANDROID_SERIAL="   "`
+      # (some CI wrappers do this) must not raise a "no device matched"
+      # error looking for `"   "` — the shape is functionally unset.
+      emulator = device("emulator-5554", :android, :emulator)
+
+      assert {:ok, [^emulator]} =
+               Deploy.resolve_targets([emulator], [:android], [], "   ")
+    end
+
+    test "zero devices remains a valid native artifact-build input" do
+      assert {:ok, []} =
+               Deploy.resolve_targets([], [:android], [native: true, android: true], nil)
+    end
+
+    test "explicit selection fails before work when it matches nothing" do
+      assert {:error, message} =
+               Deploy.resolve_targets([], [:android], [device: "missing"], nil)
+
+      assert message =~ "missing"
+    end
+
+    test "selected platforms come only from the frozen device snapshot" do
+      simulator = device("SIM-UDID", :ios, :simulator)
+      assert Deploy.selected_platforms([:android, :ios], [simulator]) == [:ios]
+      assert Deploy.selected_platforms([:android, :ios], []) == [:android, :ios]
+    end
+
+    test "broad target scopes make their selected platforms required" do
+      assert Deploy.required_platforms([all_devices: true], [:android, :ios]) == [
+               :android,
+               :ios
+             ]
+
+      assert Deploy.required_platforms([ios: true], [:ios]) == [:ios]
+      assert Deploy.required_platforms([], [:android]) == []
     end
   end
 

@@ -1,11 +1,11 @@
 defmodule Mix.Tasks.Mob.Deploy do
   use Mix.Task
 
-  @shortdoc "Build and deploy to all connected mob devices"
+  @shortdoc "Build and deploy to explicitly selected mob devices"
 
   @moduledoc """
-  Compiles the project then pushes BEAM files to all connected
-  Android devices and iOS simulators.
+  Compiles the project then pushes BEAM files to a frozen set of selected
+  Android and iOS devices.
 
   ## Modes
 
@@ -19,11 +19,19 @@ defmodule Mix.Tasks.Mob.Deploy do
 
       mix mob.deploy --native
 
+  Device selection is resolved once before any build or push starts. With no
+  selection flag, one emulator or simulator is selected automatically; physical
+  devices always require an explicit `--device` or `--all-physical`. The
+  `ANDROID_SERIAL` environment variable is treated like `--device` for Android.
+
   ## Options
 
     * `--native`              — build native binaries before pushing BEAMs
     * `--no-restart`          — push BEAMs but don't restart the app
     * `-d`, `--device <id>`   — target a specific device; use `mix mob.devices` to find IDs
+    * `--all-devices`         — target all emulators and simulators
+    * `--all-physical`        — target all physical devices; combine with
+                               `--all-devices` to target every connected device
     * `--dist-port <N>`       — pin the BEAM dist listen port (default: auto-allocated per
                               device, `9100 + index`). Use to resolve EPMD collisions when
                               multiple sims/emulators are running the same app concurrently
@@ -126,15 +134,15 @@ defmodule Mix.Tasks.Mob.Deploy do
   bucket — including a partial success where other devices deployed fine.
 
   Devices under `Skipped on N device(s)` (app not installed for that platform)
-  do not fail the run — *unless you named that platform*. A skip means "this
-  device is not a target for this app", which is ordinary when it is a phone
-  that happens to be attached, and a failure when the run asked for it:
+  do not fail an implicit single-emulator run. They do fail when an explicit
+  device, broad scope, or platform was requested and nothing reached that
+  target platform:
 
-    * `mix mob.deploy` with an unrelated phone attached — exit 0.
-    * `mix mob.deploy --ios` where every iOS device was skipped — exit 1.
-    * `mix mob.deploy --ios` where one simulator deployed and a stale one was
-      skipped — exit 0. A partial success is a success; the rule is per
-      platform, not per device.
+    * `mix mob.deploy --ios --device X` where X lacked the app — exit 1.
+    * `mix mob.deploy --all-devices` where every selected iOS simulator was
+      skipped — exit 1 for the requested iOS target set.
+    * `mix mob.deploy --ios --all-devices` where one simulator deployed and a
+      stale one was skipped — exit 0. The rule remains per platform.
     * `mix mob.deploy --device X` that reached X and deployed nothing — exit 1.
     * `mix mob.deploy --device NOPE` matching no device — exit 1.
     * `mix mob.deploy --android --native` that built the APK with no device
@@ -144,7 +152,7 @@ defmodule Mix.Tasks.Mob.Deploy do
   is what a missing `sdk.dir` in `android/local.properties` produces.
   """
 
-  alias MobDev.Device
+  alias MobDev.{Device, TaskTargets}
 
   @switches [
     native: :boolean,
@@ -157,6 +165,8 @@ defmodule Mix.Tasks.Mob.Deploy do
     android: :boolean,
     ios: :boolean,
     device: :string,
+    all_devices: :boolean,
+    all_physical: :boolean,
     schedulers: :integer,
     beam_flags: :string,
     # Manual overrides for the BEAM-distribution surface — useful when
@@ -231,22 +241,23 @@ defmodule Mix.Tasks.Mob.Deploy do
 
     restart = Keyword.get(opts, :restart, true)
     native = Keyword.get(opts, :native, false)
-    device_id = opts[:device]
     platforms = resolve_platforms(opts)
-    # Narrow once at the task level so build_all and deploy_all both see the
-    # same platform list. Without this, the deployer iterates over the
-    # irrelevant platform and `filter_by_device_id` emits a misleading
-    # "No device matched" warning even when the targeted platform succeeded.
-    platforms = MobDev.NativeBuild.narrow_platforms_for_device(platforms, device_id)
-    beam_flags = resolve_beam_flags(opts)
+    android_serial = System.get_env("ANDROID_SERIAL")
+    target_reference = explicit_target_reference(platforms, opts, android_serial)
+    discovered = discover_devices(platforms)
 
-    # When no --device is given and we're doing a native iOS build, auto-detect
-    # a connected physical device now so both the native build and the BEAM push
-    # target the same device (not all simulators + the phone).
-    effective_device_id =
-      device_id ||
-        if native and :ios in platforms,
-          do: MobDev.NativeBuild.detect_physical_ios()
+    devices =
+      case resolve_targets(discovered, platforms, opts, android_serial) do
+        {:ok, selected} -> selected
+        {:error, message} -> Mix.raise(message)
+      end
+
+    # The selected snapshot is the authority for the rest of this run. Narrow
+    # the build platforms to it when devices exist, then pass the same structs
+    # through compatibility checks, native installation, and the final push.
+    platforms = selected_platforms(platforms, devices)
+    required_platforms = required_platforms(opts, platforms)
+    beam_flags = resolve_beam_flags(opts)
 
     # Validate every targeted device against the project's enabled
     # features (Pythonx, etc.) BEFORE we waste time on a multi-minute
@@ -262,7 +273,7 @@ defmodule Mix.Tasks.Mob.Deploy do
     # only as good as the data it's based on, and an escape hatch is
     # how we keep that data honest.
     if System.get_env("MOB_FORCE_DEPLOY") in [nil, ""] do
-      validate_device_compatibility!(platforms, effective_device_id)
+      validate_device_compatibility!(devices)
     else
       IO.puts(
         "  #{IO.ANSI.yellow()}MOB_FORCE_DEPLOY set — skipping device compatibility check#{IO.ANSI.reset()}"
@@ -291,9 +302,9 @@ defmodule Mix.Tasks.Mob.Deploy do
       if native do
         MobDev.NativeBuild.build_all(
           platforms: platforms,
-          device: effective_device_id,
+          devices: devices,
           slim: slim,
-          requested: requested_platforms(opts)
+          requested: required_platforms
         )
       end
 
@@ -314,9 +325,8 @@ defmodule Mix.Tasks.Mob.Deploy do
       MobDev.Deployer.deploy_all(
         restart: restart,
         platforms: platforms,
+        devices: devices,
         force_fs: native,
-        device: device_id,
-        ios_device: effective_device_id,
         beam_flags: beam_flags,
         # nil → auto-allocation (per-device port + auto-derived suffix).
         # Set → all targeted devices use these values verbatim.
@@ -329,12 +339,12 @@ defmodule Mix.Tasks.Mob.Deploy do
     # The full summary is printed first, then the status code is set — the
     # fan-out across devices is unchanged, only the exit code is.
     message =
-      missing_device_message(device_id, deployed, failed, skipped) ||
+      missing_device_message(target_reference, deployed, failed, skipped) ||
         failure_message(
           deployed,
           failed,
           skipped,
-          requested_platforms(opts),
+          required_platforms,
           native and native_ok == true
         )
 
@@ -545,20 +555,28 @@ defmodule Mix.Tasks.Mob.Deploy do
   Only fires when a device was named: with no `--device`, an empty run is the
   ordinary "nothing is plugged in" case and stays non-fatal.
   """
-  @spec missing_device_message(String.t() | nil, [Device.t()], [Device.t()], [Device.t()]) ::
-          String.t() | nil
+  @spec missing_device_message(
+          String.t() | {:device | :android_serial, String.t()} | nil,
+          [Device.t()],
+          [Device.t()],
+          [Device.t()]
+        ) :: String.t() | nil
   def missing_device_message(nil, _deployed, _failed, _skipped), do: nil
 
-  def missing_device_message(device_id, [], [], []),
-    do: "No device matched --device #{device_id} — nothing was deployed"
+  def missing_device_message(reference, [], [], []),
+    do: "No device matched #{target_reference_label(reference)} — nothing was deployed"
 
   # Found, but nothing landed on it. Naming a device by id is at least as
   # explicit as naming a platform, so a run that shipped nowhere must say so.
   # `failed` is left to `failure_message/5`, which reports the actual error.
-  def missing_device_message(device_id, [], [], skipped) when skipped != [],
-    do: "--device #{device_id} was skipped — nothing was deployed to it"
+  def missing_device_message(reference, [], [], skipped) when skipped != [],
+    do: "#{target_reference_label(reference)} was skipped — nothing was deployed to it"
 
   def missing_device_message(_device_id, _deployed, _failed, _skipped), do: nil
+
+  defp target_reference_label({:device, id}), do: "--device #{id}"
+  defp target_reference_label({:android_serial, id}), do: "ANDROID_SERIAL=#{id}"
+  defp target_reference_label(id) when is_binary(id), do: "--device #{id}"
 
   @doc """
   Build the per-deploy summary lines from the three device buckets.
@@ -644,6 +662,117 @@ defmodule Mix.Tasks.Mob.Deploy do
     Enum.filter([:android, :ios], &(opts[&1] == true))
   end
 
+  @doc false
+  @spec required_platforms(keyword(), [:android | :ios]) :: [:android | :ios]
+  def required_platforms(opts, selected_platforms) do
+    requested = requested_platforms(opts)
+
+    if requested == [] and (opts[:all_devices] == true or opts[:all_physical] == true),
+      do: selected_platforms,
+      else: requested
+  end
+
+  @doc false
+  @spec resolve_targets([Device.t()], [:android | :ios], keyword(), String.t() | nil) ::
+          {:ok, [Device.t()]} | {:error, String.t()}
+  def resolve_targets(discovered, platforms, opts, android_serial) do
+    broad? = opts[:all_devices] == true or opts[:all_physical] == true
+
+    ids =
+      case explicit_target_reference(platforms, opts, android_serial) do
+        {_source, id} -> [id]
+        nil -> []
+      end
+
+    cond do
+      discovered == [] and ids != [] ->
+        {:error, "No connected device matched #{inspect(hd(ids))}. Run `mix mob.devices`."}
+
+      discovered == [] and broad? ->
+        {:error, "No connected devices matched the requested target scope."}
+
+      discovered == [] ->
+        {:ok, []}
+
+      true ->
+        case TaskTargets.resolve(discovered, ids, opts) do
+          {:ok, selected} -> {:ok, selected}
+          {:error, reason, context} -> {:error, target_error(reason, context, ids)}
+        end
+    end
+  end
+
+  defp explicit_target_reference(platforms, opts, android_serial) do
+    broad? = opts[:all_devices] == true or opts[:all_physical] == true
+
+    cond do
+      is_binary(opts[:device]) ->
+        {:device, opts[:device]}
+
+      broad? ->
+        nil
+
+      # ANDROID_SERIAL is honoured only on Android-only runs. The default
+      # macOS `mix mob.deploy` runs on `[:android, :ios]`, and a leftover
+      # ANDROID_SERIAL from another tool would otherwise turn every bare
+      # deploy into an explicit named target — a fresh regression that
+      # would raise :no_matching_devices for anyone with a valid iOS
+      # simulator connected. The decision record's exact phrasing —
+      # "For Android, a non-empty ANDROID_SERIAL is a named target" —
+      # explicitly scopes to Android; this is that scope.
+      platforms == [:android] and is_binary(android_serial) and
+          String.trim(android_serial) != "" ->
+        {:android_serial, String.trim(android_serial)}
+
+      true ->
+        nil
+    end
+  end
+
+  @doc false
+  @spec selected_platforms([:android | :ios], [Device.t()]) :: [:android | :ios]
+  def selected_platforms(platforms, []), do: platforms
+
+  def selected_platforms(platforms, devices) do
+    Enum.filter(platforms, fn platform -> Enum.any?(devices, &(&1.platform == platform)) end)
+  end
+
+  @doc false
+  @spec discover_devices([:android | :ios], keyword()) :: [Device.t()]
+  def discover_devices(platforms, opts \\ []) do
+    android_lister = Keyword.get(opts, :android_lister, &MobDev.Discovery.Android.list_devices/0)
+    ios_lister = Keyword.get(opts, :ios_lister, &MobDev.Discovery.IOS.list_devices/0)
+
+    []
+    |> maybe_concat(:android in platforms, android_lister)
+    |> maybe_concat(:ios in platforms, ios_lister)
+    |> Enum.reject(&(&1.status == :unauthorized))
+  end
+
+  defp target_error(:no_matching_devices, _context, ids),
+    do:
+      "No connected device matched #{Enum.map_join(ids, ", ", &inspect/1)}. Run `mix mob.devices`."
+
+  defp target_error(:no_dev_devices, %{hint: hint}, _ids), do: hint
+
+  defp target_error(:no_physical_devices, _context, _ids),
+    do: "No physical devices are connected. Run `mix mob.devices`."
+
+  defp target_error(:ambiguous_devices, context, _ids) do
+    case context do
+      %{non_physical: 0, physical: physical} when physical > 0 ->
+        "Only physical devices are connected. Use `--device <id>` or `--all-physical`."
+
+      %{non_physical: count} when count > 1 ->
+        "#{count} emulators/simulators are connected. Use `--device <id>` or `--all-devices`."
+
+      _ ->
+        "Device selection is ambiguous. Run `mix mob.devices` and choose a target."
+    end
+  end
+
+  defp target_error(:no_devices, _context, _ids), do: "No connected devices found."
+
   defp resolve_platforms(opts) do
     android = opts[:android]
     ios = opts[:ios]
@@ -692,15 +821,13 @@ defmodule Mix.Tasks.Mob.Deploy do
   # We deliberately don't filter — if any one of the targeted devices fails,
   # we halt and surface every device that fails. Skipping unsupported devices
   # silently would just regrow the silent-failure problem at a different layer.
-  defp validate_device_compatibility!(platforms, device_id) do
+  defp validate_device_compatibility!(devices) do
     project_dir = File.cwd!()
     features = MobDev.SupportMatrix.enabled_features(project_dir)
 
     if features == [] do
       :ok
     else
-      devices = candidate_devices(platforms, device_id)
-
       issues =
         devices
         |> Enum.flat_map(fn device ->
@@ -727,33 +854,6 @@ defmodule Mix.Tasks.Mob.Deploy do
 
           Mix.raise("Device compatibility check failed")
       end
-    end
-  end
-
-  # Returns the connected devices that mob.deploy would actually target.
-  # Mirrors what the deployer / build pipeline does internally — narrow by
-  # platform and (if given) by --device id.
-  defp candidate_devices(platforms, device_id) do
-    devices =
-      []
-      |> maybe_concat(:android in platforms, fn ->
-        try do
-          MobDev.Discovery.Android.list_devices()
-        rescue
-          _ -> []
-        end
-      end)
-      |> maybe_concat(:ios in platforms, fn ->
-        try do
-          MobDev.Discovery.IOS.list_simulators()
-        rescue
-          _ -> []
-        end
-      end)
-
-    case device_id do
-      nil -> devices
-      id -> Enum.filter(devices, &MobDev.Device.match_id?(&1, id))
     end
   end
 
