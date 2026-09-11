@@ -48,9 +48,13 @@ defmodule MobDev.Differential do
   the same fixture to group across runs; omit it for ad-hoc runs where
   grouping by `reason` + `path` alone is what you want.
 
-  `:ok` and any `{:error, _}` result do not emit — nothing to report on a
-  clean run, and a harness gap (`:not_ready`, `:differential_unavailable`)
-  is not a framework defect.
+  `:ok` and the documented `{:error, _}` variants do not emit — nothing to
+  report on a clean run, and a harness gap (`:not_ready`,
+  `:differential_unavailable`, `:tree_error`, `:comparator_error`) is not
+  a framework defect. A novel result shape logs a warning and is likewise
+  not emitted (see the fallback clause of the `emit` helper); adding a new
+  taxonomy member is an explicit decision to compare or skip it, not
+  silent absorption.
 
   The emit path is a no-op when the resolved `mob` version does not
   export `Mob.Defect.emit_divergence/2` — the dep spec allows a 0.7.x
