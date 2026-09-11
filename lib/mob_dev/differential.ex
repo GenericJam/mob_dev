@@ -1,4 +1,6 @@
 defmodule MobDev.Differential do
+  require Logger
+
   @moduledoc """
   Drive `Mob.Differential.compare/3` against two live device nodes.
 
@@ -30,12 +32,39 @@ defmodule MobDev.Differential do
   * No fixture management. Both apps are already running the screen you
     want to compare; orchestrating the same fixture across two devices is a
     separate change on top of this.
-  * No sink. The result is returned to the caller; wiring divergences into a
-    defect bus is MOB-159.
+
+  ## Divergences emit to the defect bus
+
+  On a `{:divergence, ...}` result the run also emits a
+  `Mob.Defect.Capsule` onto `Mob.Defect.Bus` (kind: `:divergence`, owner:
+  `:mob`). This is MOB-159 phase 2 — the observer half of the closing
+  loop that phase 1 built in `mob`.
+
+  The capsule's fingerprint key is `%{fixture: fixture, reason: reason,
+  path: path}` — so runs that both omit `:fixture` group with each other
+  on `reason` + `path`, but a run that passes `:fixture` never groups
+  with a run that omits it (they hash a different key). Pass `:fixture`
+  as a caller-supplied identifier when you want the same divergence in
+  the same fixture to group across runs; omit it for ad-hoc runs where
+  grouping by `reason` + `path` alone is what you want.
+
+  `:ok` and the documented `{:error, _}` variants do not emit — nothing to
+  report on a clean run, and a harness gap (`:not_ready`,
+  `:differential_unavailable`, `:tree_error`, `:comparator_error`) is not
+  a framework defect. A novel result shape logs a warning and is likewise
+  not emitted (see the fallback clause of the `emit` helper); adding a new
+  taxonomy member is an explicit decision to compare or skip it, not
+  silent absorption.
+
+  The emit path is a no-op when the resolved `mob` version does not
+  export `Mob.Defect.emit_divergence/2` — the dep spec allows a 0.7.x
+  `mob` for consumers who have not moved to 0.8.1 yet, and the older
+  library has no defect bus to emit onto. Callers who require the emit
+  should pin `mob >= 0.8.1` in their own `mix.exs`.
 
   ## Usage
 
-      MobDev.Differential.run(:"my_app_ios@127.0.0.1", :"my_app_android_emulator_5554@127.0.0.1")
+      MobDev.Differential.run(:"my_app_ios@127.0.0.1", :"my_app_android_emulator_5554@127.0.0.1", fixture: :counter_screen)
       #=> :ok | {:divergence, %{path: [...], reason: :type, ios: ..., android: ...}}
       #=> {:error, :not_ready | :differential_unavailable | {:tree_error | :comparator_error, node, term}}
   """
@@ -53,7 +82,7 @@ defmodule MobDev.Differential do
   @type result :: :ok | {:divergence, map()} | {:error, run_error()}
 
   @default_rpc_timeout 15_000
-  @known_opts [:frame_tolerance_dp, :rpc_timeout, :rpc]
+  @known_opts [:frame_tolerance_dp, :rpc_timeout, :rpc, :fixture]
 
   @doc """
   Sample `Mob.Test.view_tree/1` on both nodes and compare.
@@ -66,6 +95,11 @@ defmodule MobDev.Differential do
       roughly `3 * rpc_timeout`.
     * `:rpc` - module implementing `:rpc.call/5`. For tests. Real callers
       should not pass this.
+    * `:fixture` - a caller-supplied identifier for what is being compared
+      (an atom, string, or module). Recorded on the emitted defect capsule's
+      fingerprint key when a divergence is reported, so the same divergence
+      in the same fixture groups across runs. Omit for ad-hoc runs where
+      grouping across fixtures is acceptable.
 
   Unknown keys raise `ArgumentError` rather than being silently ignored:
   a run that thinks it tightened `frame_tolerance_dp` but actually used
@@ -76,19 +110,66 @@ defmodule MobDev.Differential do
     Keyword.validate!(opts, @known_opts)
     rpc = Keyword.get(opts, :rpc, :rpc)
     timeout = Keyword.get(opts, :rpc_timeout, @default_rpc_timeout)
+    fixture = Keyword.get(opts, :fixture)
     compare_opts = Keyword.take(opts, [:frame_tolerance_dp])
 
-    with {:ok, ios_tree} <- sample(rpc, ios_node, timeout),
-         {:ok, android_tree} <- sample(rpc, android_node, timeout) do
-      call_comparator(
-        [ios_node, android_node],
-        rpc,
-        ios_tree,
-        android_tree,
-        compare_opts,
-        timeout
-      )
+    result =
+      with {:ok, ios_tree} <- sample(rpc, ios_node, timeout),
+           {:ok, android_tree} <- sample(rpc, android_node, timeout) do
+        call_comparator(
+          [ios_node, android_node],
+          rpc,
+          ios_tree,
+          android_tree,
+          compare_opts,
+          timeout
+        )
+      end
+
+    emit(result, fixture)
+    result
+  end
+
+  # Only a confirmed divergence is a framework defect. `:ok` is a clean
+  # comparison; `{:error, ...}` names a harness gap that would file the
+  # harness's own state as a defect if we let it through (`:not_ready`,
+  # `:differential_unavailable`, `:tree_error`, `:comparator_error`).
+  #
+  # Explicit clauses per documented shape so a novel `run_error` variant
+  # (added when a future failure mode joins the taxonomy) hits the loud
+  # fallback rather than being silently absorbed as "not a defect".
+  defp emit({:divergence, div}, fixture) do
+    # `function_exported?/3` returns false for an unloaded module — the
+    # BEAM does not auto-load a module named as an argument. `Code.ensure_loaded?/1`
+    # forces the load (or reports the miss), and then the export check
+    # actually reflects the resolved `mob` version.
+    #
+    # Guard for a `mob` older than 0.8.1: the dep spec allows it, and a
+    # bare call to `Mob.Defect.emit_divergence/2` there would raise
+    # `UndefinedFunctionError` and turn a divergence return into a
+    # crash. See the moduledoc; callers who need the emit pin
+    # `mob >= 0.8.1` themselves.
+    if Code.ensure_loaded?(Mob.Defect) and
+         function_exported?(Mob.Defect, :emit_divergence, 2) do
+      apply(Mob.Defect, :emit_divergence, [div, [fixture: fixture]])
+    else
+      :ok
     end
+  end
+
+  defp emit(:ok, _fixture), do: :ok
+  defp emit({:error, :not_ready}, _fixture), do: :ok
+  defp emit({:error, :differential_unavailable}, _fixture), do: :ok
+  defp emit({:error, {:tree_error, _node, _reason}}, _fixture), do: :ok
+  defp emit({:error, {:comparator_error, _node, _reason}}, _fixture), do: :ok
+
+  defp emit(other, _fixture) do
+    Logger.error(
+      "[MobDev.Differential] unknown result shape, not emitted as a defect: " <>
+        inspect(other)
+    )
+
+    :ok
   end
 
   defp sample(rpc, node, timeout) do
