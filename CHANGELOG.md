@@ -1,4 +1,4 @@
-## [Unreleased]
+## [0.7.0] - 2026-09-11
 
 ### Added
 - **`MobDev.Differential.run/3` drives the iOS/Android view-tree comparator
@@ -10,7 +10,11 @@
   If either device has not rendered yet (a root with `children: []`) the run
   short-circuits with `{:error, :not_ready}` before the comparator is called;
   a `:not_ready` answer from the comparator itself is **not** retried on the
-  other node. An error tuple from `Mob.Test.view_tree/1` (e.g. Android's
+  other node; any other `{:error, _}` from the comparator surfaces as
+  `{:error, {:comparator_error, node, other}}` so the documented error
+  taxonomy stays a closed set; if **neither** node has `Mob.Differential`
+  loaded (both apps predate the comparator), the run returns
+  `{:error, :differential_unavailable}`. An error tuple from `Mob.Test.view_tree/1` (e.g. Android's
   `{:error, :not_loaded}` when the Kotlin bridge predates
   `MobBridge.uiViewTree()`) surfaces as `{:error, {:tree_error, node,
   reason}}`, distinct from `:not_ready`. `frame_tolerance_dp` is forwarded

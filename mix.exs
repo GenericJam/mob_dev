@@ -4,7 +4,7 @@ defmodule MobDev.MixProject do
   def project do
     [
       app: :mob_dev,
-      version: "0.6.33",
+      version: "0.7.0",
       elixir: "~> 1.19",
       description: "Development tooling for the Mob mobile framework",
       source_url: "https://github.com/genericjam/mob_dev",
@@ -73,7 +73,7 @@ defmodule MobDev.MixProject do
       # by the SAME function `Mob.Theme.font/2` uses on the runtime side.
       # Before this, mob_dev had its own copy of the normalization logic,
       # kept in sync with mob core's copy only by convention — see MOB_FONTS.md.
-      {:mob, "~> 0.7.25", runtime: false},
+      {:mob, "~> 0.7.25 or ~> 0.8", runtime: false},
       {:eqrcode, "~> 0.2"},
       {:jason, "~> 1.4"},
       {:mix_audit, "~> 2.1", runtime: false},
