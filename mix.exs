@@ -73,7 +73,7 @@ defmodule MobDev.MixProject do
       # by the SAME function `Mob.Theme.font/2` uses on the runtime side.
       # Before this, mob_dev had its own copy of the normalization logic,
       # kept in sync with mob core's copy only by convention — see MOB_FONTS.md.
-      {:mob, "~> 0.7.25 or ~> 0.8", runtime: false},
+      {:mob, "~> 0.7.25 or ~> 0.8.1", runtime: false},
       {:eqrcode, "~> 0.2"},
       {:jason, "~> 1.4"},
       {:mix_audit, "~> 2.1", runtime: false},
