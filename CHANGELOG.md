@@ -1,6 +1,13 @@
 ## [Unreleased]
 
 ### Fixed
+- **Tier-2 projects from `mix mob.new_plugin` compile again** (MOB-168). The
+  generated module documentation embedded one heredoc inside another, which
+  ended the outer string early and left the example markup as invalid Elixir.
+  The same compile check caught a tier-3 list referring to module data as a
+  screen assign; it now binds that data as a local. Scaffold tests compile a
+  real generated project for every tier.
+
 - **`mix mob.connect` no longer force-quits every app on an attached iPhone**
   (MOB-70). Clearing other Mob apps off the device before a launch is
   necessary — each one starts an in-process EPMD on `0.0.0.0:4369`, so only one
