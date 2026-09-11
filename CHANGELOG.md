@@ -5,8 +5,9 @@
   generated module documentation embedded one heredoc inside another, which
   ended the outer string early and left the example markup as invalid Elixir.
   The same compile check caught a tier-3 list referring to module data as a
-  screen assign; it now binds that data as a local. Scaffold tests compile a
-  real generated project for every tier.
+  screen assign; executable navigation coverage then caught a callback that did
+  not match its row-tap messages. Generated tier-3 lists now render and navigate
+  correctly. Scaffold tests compile a real generated project for every tier.
 
 - **`mix mob.connect` no longer force-quits every app on an attached iPhone**
   (MOB-70). Clearing other Mob apps off the device before a launch is

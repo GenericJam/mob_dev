@@ -568,9 +568,11 @@ defmodule MobDev.Plugin.Scaffold do
         \"""
       end
 
-      def handle_event("open", %{"key" => key}, socket) do
+      def handle_info({:tap, {:open, key}}, socket) do
         {:noreply, Mob.Socket.push_screen(socket, #{mod}.DetailScreen, %{key: key})}
       end
+
+      def handle_info(_message, socket), do: {:noreply, socket}
 
       defp row(item) do
         ~MOB\"""

@@ -277,6 +277,26 @@ defmodule MobDev.Plugin.ScaffoldTest do
       assert Manifest.tier(manifest) == 3
       assert %{errors: []} = Validator.validate_plugin(manifest, dir, satisfying_mob_version())
     end
+
+    test "a generated row tap pushes its detail screen" do
+      name = "mob_scaffold_navigation_#{System.unique_integer([:positive])}"
+      files = Scaffold.files_for(3, name)
+      module = Scaffold.module_name(name)
+      list_screen = Module.concat([module, "ListScreen"])
+      detail_screen = Module.concat([module, "DetailScreen"])
+
+      Code.compile_string(content_for(files, "lib/#{name}/detail_screen.ex"))
+      Code.compile_string(content_for(files, "lib/#{name}/list_screen.ex"))
+      unload_modules_on_exit([list_screen, detail_screen])
+
+      socket = Mob.Socket.new(list_screen)
+
+      assert {:noreply, pushed_socket} =
+               list_screen.handle_info({:tap, {:open, "beta"}}, socket)
+
+      assert pushed_socket.__mob__.nav_action == {:push, detail_screen, %{key: "beta"}}
+      assert {:noreply, ^socket} = list_screen.handle_info(:unrelated, socket)
+    end
   end
 
   describe "files_for/2 — tier 4" do
@@ -466,6 +486,15 @@ defmodule MobDev.Plugin.ScaffoldTest do
     for suffix <- ["", ".Worker", ".Notifications", ".SettingsScreen"] do
       "Elixir.MobScaffoldTier4#{suffix}.beam"
     end
+  end
+
+  defp unload_modules_on_exit(modules) do
+    ExUnit.Callbacks.on_exit(fn ->
+      Enum.each(modules, fn module ->
+        :code.purge(module)
+        :code.delete(module)
+      end)
+    end)
   end
 
   defp on_exit_cleanup(dir) do
