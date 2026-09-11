@@ -1,5 +1,25 @@
 ## [Unreleased]
 
+### Added
+- **`MobDev.Differential.run/3` drives the iOS/Android view-tree comparator
+  against two live device BEAMs** (MOB-157). The orchestrator samples both
+  trees via `:rpc.call(node, Mob.Test, :view_tree, [node])`, then invokes
+  `Mob.Differential.compare/3` on one of the devices, iOS by convention. If
+  iOS returns `{:badrpc, {:EXIT, {:undef, _}}}` (i.e. the device's mob build
+  predates the comparator) the orchestrator falls over to the Android node.
+  If either device has not rendered yet (a root with `children: []`) the run
+  short-circuits with `{:error, :not_ready}` before the comparator is called;
+  a `:not_ready` answer from the comparator itself is **not** retried on the
+  other node. An error tuple from `Mob.Test.view_tree/1` (e.g. Android's
+  `{:error, :not_loaded}` when the Kotlin bridge predates
+  `MobBridge.uiViewTree()`) surfaces as `{:error, {:tree_error, node,
+  reason}}`, distinct from `:not_ready`. `frame_tolerance_dp` is forwarded
+  to the comparator; `rpc_timeout` bounds every RPC (worst-case wall clock
+  is roughly `3 * rpc_timeout` because the three round-trips are
+  sequential). Unknown options raise `ArgumentError` rather than being
+  silently dropped. The RPC module is injectable so callers can stub it in
+  tests.
+
 ### Fixed
 - **Tier-2 projects from `mix mob.new_plugin` compile again** (MOB-168). The
   generated module documentation embedded one heredoc inside another, which
