@@ -1,3 +1,34 @@
+## [0.7.1] - 2026-09-11
+
+### Added
+- **`MobDev.Differential.run/3` emits divergences onto `Mob.Defect.Bus`**
+  (MOB-159 phase 2). A `{:divergence, ...}` result now emits a
+  `Mob.Defect.Capsule` (kind: `:divergence`, owner: `:mob`) via
+  `Mob.Defect.emit_divergence/2`. New `:fixture` option threads a
+  caller-supplied identifier into the capsule's fingerprint key so
+  the same divergence in the same fixture groups across runs.
+
+  `:ok` and every documented `{:error, _}` shape (`:not_ready`,
+  `:differential_unavailable`, `:tree_error`, `:comparator_error`) do
+  not emit — nothing to report on a clean run, and a harness gap is
+  not a framework defect. A novel result shape logs at `:error` via
+  `Logger` and does not emit, so adding a new taxonomy member is an
+  explicit decision to compare or skip rather than silent absorption.
+
+  The emit path is guarded by `Code.ensure_loaded?(Mob.Defect) and
+  function_exported?(Mob.Defect, :emit_divergence, 2)`, so a resolver
+  picking a `mob 0.7.x` (still allowed by the widened dep spec below)
+  silently no-ops instead of crashing with `UndefinedFunctionError`.
+  Callers who require the emit should pin `mob >= 0.8.1` themselves.
+
+### Changed
+- **`{:mob, ...}` dep spec widened to `~> 0.7.25 or ~> 0.8.1`.** Blocks
+  0.8.0 (which predates `Mob.Defect.emit_divergence/2`) while still
+  admitting the 0.7.x line for consumers who have not moved to the 0.8
+  series yet.
+
+---
+
 ## [0.7.0] - 2026-09-11
 
 ### Added
