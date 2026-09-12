@@ -1,5 +1,20 @@
 ## [Unreleased]
 
+### Fixed
+
+- **Play upload keystore no longer bakes a trailing newline into the stored
+  password** (MOB-71). `Mix.shell().prompt/1` returns the whole input line
+  including the trailing `\n`, and `MobDev.GooglePlay.SetupWizard.generate_keystore/2`
+  passed that value verbatim to both `keytool -storepass` and
+  `android/keystore.properties`. The keystore then contained a password
+  ending in `\n` that Gradle read literally on every subsequent release
+  signing — a value nobody could re-type at the next Play upload, and only
+  discovered when a signed AAB fails to upload with a stack trace deep
+  inside `bundletool`. The three prompts (passphrase, name, org) are now
+  trimmed at the source (`prompt_trimmed/2`), and
+  `keystore_properties_content/1` is extracted and public so the trim is
+  covered by revert-verified unit tests.
+
 ### Changed
 
 - **`mix mob.deploy` now freezes an explicit target set before doing work**
