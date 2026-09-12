@@ -772,7 +772,8 @@ defmodule Mix.Tasks.Mob.AddNif do
 
        Kit.compact_button("#{name} demo", :open_#{name}_demo)
 
-       In a `--blank` app add to the render instead:
+       In a `--blank` app, or one generated before the Mishka showcase became
+       the default home screen, add to the render instead:
 
        {nav_button("#{name} demo", :open_#{name}_demo)}
 
