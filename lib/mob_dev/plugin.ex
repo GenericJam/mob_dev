@@ -104,17 +104,55 @@ defmodule MobDev.Plugin do
   `MobDev.Plugin.Merge`.
 
   Resolves each activated name to its dependency directory and loads its
-  manifest (nil for a tier-0 plugin). Activated names that don't resolve to a
-  dep are skipped — `mix mob.plugins` is where that mismatch surfaces to users.
+  manifest via `MobDev.Plugin.Verify.load_verified/1` — signature and
+  file-integrity checks run **before** `Code.eval_file` (MOB-74), so a
+  plugin that fails verification never has its `priv/mob_plugin.exs`
+  executed. Failed plugins come back as `{dir, nil}` here; callers that
+  need to distinguish "tier-0 plugin (no manifest)" from "verify failed"
+  should use `activated_with_verify/0` — that's the shape
+  `SignatureGate.check_activated/1` consumes to produce friendly
+  build-blocking errors. Activated names that don't resolve to a dep
+  are skipped — `mix mob.plugins` is where that mismatch surfaces
+  to users.
   """
   @spec activated() :: [{Path.t(), map() | nil}]
   def activated do
+    for {dir, manifest, _status} <- activated_with_verify(), do: {dir, manifest}
+  end
+
+  @typedoc """
+  Verification status returned from `activated_with_verify/0`. `:ok` means the
+  manifest was loaded after a passing signature + tamper check; `:unsigned`
+  means there was no manifest at all (tier-0 plugin — no signature required);
+  `{:error, reason}` means the plugin failed verification and its manifest
+  bytes were never eval'd. Reasons come from `MobDev.Plugin.Verify.verify_error/0`.
+  """
+  @type verify_status ::
+          :ok
+          | :unsigned
+          | {:error, MobDev.Plugin.Verify.verify_error()}
+
+  @typedoc "One entry in `activated_with_verify/0`'s return list."
+  @type activated_entry :: {Path.t(), map() | nil, verify_status()}
+
+  @doc """
+  Same as `activated/0` but also returns the verification status per plugin.
+
+  `SignatureGate.check_activated/1` consumes this shape so it can produce a
+  clear build-blocking error naming the failed plugin — without needing to
+  re-load or re-verify anything. A plugin that failed verification appears as
+  `{dir, nil, {:error, reason}}`; a tier-0 plugin (no `priv/mob_plugin.exs`
+  and no signature required) appears as `{dir, nil, :unsigned}`.
+  """
+  @spec activated_with_verify() :: [activated_entry()]
+  def activated_with_verify do
     deps = Mix.Project.deps_paths()
 
     for name <- activated_names(), dir = deps[name], not is_nil(dir) do
-      case MobDev.Plugin.Manifest.load(dir) do
-        {:ok, manifest} -> {dir, manifest}
-        {:error, _reason} -> {dir, nil}
+      case MobDev.Plugin.Verify.load_verified(dir) do
+        {:ok, nil} -> {dir, nil, :unsigned}
+        {:ok, manifest} -> {dir, manifest, :ok}
+        {:error, reason} -> {dir, nil, {:error, reason}}
       end
     end
   end

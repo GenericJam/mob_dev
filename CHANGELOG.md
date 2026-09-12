@@ -1,5 +1,35 @@
 ## [Unreleased]
 
+### Security
+
+- **Plugin signature verification now runs before `Code.eval_file`** on the
+  manifest (MOB-74). The v1 signature covered the eval'd manifest map, so
+  verifiers needed the eval to run first to rebuild the payload — letting
+  a malicious `priv/mob_plugin.exs` execute arbitrary code on the
+  consumer's machine during plugin activation.
+
+  Envelope v2 puts the signed `file_hashes` list on disk alongside the
+  signature; verification runs entirely off the envelope and the file
+  bytes, no eval required. `priv/mob_plugin.exs` is one of those
+  file_hashes, so tampering with the manifest bytes shifts its hash and
+  fails verification. `MobDev.Plugin.Verify.load_verified/1` is the new
+  safe consumer path: verify → then eval. `MobDev.Plugin.activated/0`,
+  `mix mob.plugins`, `mix mob.audit_plugins`, and `MobDev.Plugin.Report`
+  all migrated.
+
+  **v1 envelopes are refused** — accepting them silently reopens the
+  bug. The error is a distinguished `:envelope_v1_unsupported` reason
+  and the `SignatureGate` message points at
+  `mix mob.plugin.sign` on mob_dev 0.7.2+ to re-sign. Every published
+  plugin with a mob_dev ≤ 0.7.1 signature must be re-signed.
+
+  Follow-up tickets on file for the walk to data-only manifests
+  (safe-by-construction): **MOB-185** (`mix mob.plugin.lint`),
+  **MOB-186** (migrate first-party plugins to the pure-data subset),
+  **MOB-187** (static JSON/TOML manifest at 1.0).
+
+  See `decisions/2026-09-11-plugin-envelope-v2-verify-before-eval.md`.
+
 ### Fixed
 
 - **Play upload keystore no longer bakes a trailing newline into the stored

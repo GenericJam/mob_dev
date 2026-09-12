@@ -39,7 +39,7 @@ defmodule Mix.Tasks.Mob.AuditPlugins do
   """
 
   alias MobDev.Plugin
-  alias MobDev.Plugin.{Audit, Manifest, Report}
+  alias MobDev.Plugin.{Audit, Report}
 
   @switches [plugin: :string, accept_medium: :boolean]
 
@@ -88,7 +88,7 @@ defmodule Mix.Tasks.Mob.AuditPlugins do
 
     for name <- Plugin.activated_names(), dir = deps[name], not is_nil(dir) do
       manifest =
-        case Manifest.load(dir) do
+        case MobDev.Plugin.Verify.load_verified(dir) do
           {:ok, m} -> m
           {:error, _} -> nil
         end

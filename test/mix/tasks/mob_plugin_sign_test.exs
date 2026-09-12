@@ -1,7 +1,7 @@
 defmodule Mix.Tasks.Mob.Plugin.SignTest do
   use ExUnit.Case, async: false
 
-  alias MobDev.Plugin.{Manifest, Sign, Verify}
+  alias MobDev.Plugin.{Sign, Verify}
 
   setup do
     tmp_home =
@@ -37,8 +37,9 @@ defmodule Mix.Tasks.Mob.Plugin.SignTest do
 
     assert File.exists?(Sign.signature_path(dir))
 
-    {:ok, manifest} = Manifest.load(dir)
-    assert :ok = Verify.verify_plugin(dir, manifest)
+    # verify_plugin/1 (MOB-74): no manifest arg needed — the envelope carries
+    # the signed file_hashes list on disk so verification runs off the bytes.
+    assert :ok = Verify.verify_plugin(dir)
   end
 
   test "errors when no keygen has been run for the plugin", %{plugin_dir: dir} do

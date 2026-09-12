@@ -6,18 +6,39 @@ defmodule MobDev.Plugin.Sign do
 
   1. Loading the manifest (`priv/mob_plugin.exs`).
   2. Computing SHA-256 hashes for every file the manifest references
-     (Swift sources, Android bridge/JNI sources, NIF native_dir contents).
-  3. Building the canonical payload (manifest + sorted file hashes).
+     (Swift sources, Android bridge/JNI sources, NIF native_dir contents,
+     **and the manifest bytes themselves**).
+  3. Building the canonical payload (sorted file hashes + envelope
+     version).
   4. Signing the canonical encoding of the payload via `Crypto.sign/2`.
-  5. Writing a binary `priv/mob_plugin.sig` containing the signature.
+  5. Writing a binary `priv/mob_plugin.sig` containing the signature
+     **and the signed file_hashes list**, so verifiers can check
+     integrity without needing to `Code.eval_file` the manifest first
+     (see MOB-74).
 
   Pure helpers are exposed for tests: `compute_file_hashes/2` and
-  `build_payload/2` are deterministic given their inputs.
+  `build_payload/1` are deterministic given their inputs.
+
+  ## Envelope versions
+
+  - **v1** (deprecated, MOB-74) — payload was `%{manifest: <map>,
+    file_hashes: [...]}` and the envelope on disk carried only the
+    signature. Verifiers needed the eval'd manifest map to rebuild the
+    payload, so the eval had to run *before* verification could —
+    letting a malicious `priv/mob_plugin.exs` execute arbitrary code
+    at build time. Refused by `MobDev.Plugin.Verify` since mob_dev
+    0.7.2.
+  - **v2** (current) — payload is `%{file_hashes: [...],
+    envelope_version: 2}`; `file_hashes` includes
+    `priv/mob_plugin.exs`; envelope on disk embeds `file_hashes`
+    alongside the signature. Verifiers can check every on-disk file
+    against the signed hashes without touching the manifest map, so
+    verification is safe to run before eval.
   """
 
   alias MobDev.Plugin.{Crypto, Manifest}
 
-  @envelope_version 1
+  @envelope_version 2
 
   @signature_file "priv/mob_plugin.sig"
   @manifest_file "priv/mob_plugin.exs"
@@ -77,18 +98,22 @@ defmodule MobDev.Plugin.Sign do
   Shape:
 
       %{
-        manifest: <the loaded mob_plugin manifest>,
         file_hashes: [{rel_path, sha256}, ...],
-        envelope_version: 1
+        envelope_version: 2
       }
 
   Authoritative for what's inside the signature — any new field added
   here needs both author and host updates.
+
+  Note that the payload no longer includes the manifest term itself
+  (see MOB-74). The manifest is one of the files hashed in
+  `file_hashes`, so its bytes are covered — and dropping the map from
+  the payload lets `Verify` recompute the payload without eval'ing
+  the manifest first.
   """
-  @spec build_payload(map() | nil, file_hashes()) :: map()
-  def build_payload(manifest, file_hashes) do
+  @spec build_payload(file_hashes()) :: map()
+  def build_payload(file_hashes) do
     %{
-      manifest: manifest,
       file_hashes: file_hashes,
       envelope_version: @envelope_version
     }
@@ -105,20 +130,31 @@ defmodule MobDev.Plugin.Sign do
   @doc """
   Signs `plugin_dir` and writes `priv/mob_plugin.sig`.
 
-  Orchestrates the full author workflow: loads the manifest, computes
-  file hashes, builds the payload, signs it, wraps the signature in the
-  envelope binary, and writes the file. Returns `:ok` on success or
-  `{:error, reason}` if the manifest is missing/invalid.
+  Orchestrates the full author workflow: loads the manifest (to know
+  which files it references), computes file hashes (including the
+  manifest bytes themselves), builds the v2 payload, signs it, wraps
+  the signature **and the file_hashes list** in the envelope binary,
+  and writes the file. Returns `:ok` on success or `{:error, reason}`
+  if the manifest is missing/invalid.
+
+  The envelope carries `file_hashes` on disk so `Verify.verify_plugin/1`
+  can check tampering without needing to `Code.eval_file` the manifest
+  first — see MOB-74.
   """
   @spec sign_plugin(Path.t(), Crypto.priv_key()) :: :ok | {:error, term()}
   def sign_plugin(plugin_dir, priv_key) when is_binary(priv_key) do
     with {:ok, manifest} <- Manifest.load(plugin_dir),
          :ok <- refuse_if_no_manifest(manifest, plugin_dir) do
       file_hashes = compute_file_hashes(plugin_dir, manifest)
-      payload = build_payload(manifest, file_hashes)
+      payload = build_payload(file_hashes)
       signature = Crypto.sign(payload, priv_key)
 
-      envelope = %{signature: signature, envelope_version: @envelope_version}
+      envelope = %{
+        signature: signature,
+        file_hashes: file_hashes,
+        envelope_version: @envelope_version
+      }
+
       sig_path = Path.join(plugin_dir, @signature_file)
       File.mkdir_p!(Path.dirname(sig_path))
       File.write!(sig_path, Crypto.canonical_encode(envelope))
@@ -161,7 +197,11 @@ defmodule MobDev.Plugin.Sign do
 
     nifs = nif_files(manifest, plugin_dir)
 
-    swift ++ android ++ res ++ nifs
+    # The manifest itself MUST be signed — otherwise `Verify` has no way to
+    # detect a tampered `priv/mob_plugin.exs` without eval'ing it first,
+    # which is the whole class of bug MOB-74 closes. Always included, always
+    # at a stable relative path so `Verify` can look it up by name.
+    [@manifest_file | swift ++ android ++ res ++ nifs]
   end
 
   defp nif_files(manifest, plugin_dir) do
@@ -193,7 +233,13 @@ defmodule MobDev.Plugin.Sign do
     for s <- List.wrap(value), is_binary(s), do: s
   end
 
-  defp sha256!(path) do
+  @doc false
+  # Exposed so `Verify` can re-hash files on disk without duplicating the
+  # missing-file convention (missing file hashes as the SHA-256 of empty
+  # bytes so a tamper-check comparing declared vs actual notices the
+  # difference).
+  @spec sha256!(Path.t()) :: file_hash()
+  def sha256!(path) do
     case File.read(path) do
       {:ok, bytes} -> :crypto.hash(:sha256, bytes)
       {:error, _} -> :crypto.hash(:sha256, <<>>)
