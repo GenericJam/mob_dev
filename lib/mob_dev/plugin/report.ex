@@ -134,8 +134,12 @@ defmodule MobDev.Plugin.Report do
   defp find_row_name(rows, name), do: Enum.find_value(rows, name, &(&1.name == name && name))
 
   defp load_manifest(dir) do
-    case MobDev.Plugin.Manifest.load(dir) do
-      {:ok, manifest} -> manifest
+    # Verified load per MOB-74 — refuse to eval a manifest whose signature or
+    # file-hashes don't check out. Report-only path; a plugin that fails
+    # verification simply shows up with no capability data instead of running
+    # its code inside our process.
+    case MobDev.Plugin.Verify.load_verified(dir) do
+      {:ok, manifest} when is_map(manifest) -> manifest
       _ -> %{}
     end
   end

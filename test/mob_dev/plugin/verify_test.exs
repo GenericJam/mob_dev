@@ -30,40 +30,61 @@ defmodule MobDev.Plugin.VerifyTest do
     {:ok, dir: dir, manifest: manifest, pub: pub, priv: priv}
   end
 
-  describe "load_signature/1" do
-    test "loads the raw 64-byte signature", %{dir: dir} do
-      assert {:ok, sig} = Verify.load_signature(dir)
-      assert byte_size(sig) == 64
+  describe "load_envelope/1" do
+    test "loads the full v2 envelope with signature + file_hashes", %{dir: dir} do
+      assert {:ok, envelope} = Verify.load_envelope(dir)
+      assert byte_size(envelope.signature) == 64
+      assert envelope.envelope_version == 2
+
+      paths = Enum.map(envelope.file_hashes, &elem(&1, 0))
+      assert "priv/mob_plugin.exs" in paths
+      assert "ios/Demo.swift" in paths
     end
 
     test "returns :missing when the sig file is absent", %{dir: dir} do
       File.rm!(Sign.signature_path(dir))
-      assert {:error, :missing} = Verify.load_signature(dir)
+      assert {:error, :missing} = Verify.load_envelope(dir)
     end
 
     test "returns :corrupt when the sig file has garbage", %{dir: dir} do
       File.write!(Sign.signature_path(dir), "garbage")
-      assert {:error, :corrupt} = Verify.load_signature(dir)
+      assert {:error, :corrupt} = Verify.load_envelope(dir)
+    end
+
+    test "refuses a v1 envelope with :envelope_v1_unsupported so the caller can print a re-sign hint",
+         %{dir: dir} do
+      # A v1 envelope on disk carried only {signature, envelope_version: 1}.
+      # v1 verification required the eval'd manifest to rebuild the payload,
+      # which is the MOB-74 bug. Accepting v1 would silently reopen it.
+      # Revert-verify: change the guard to also accept envelope_version: 1
+      # and this fails.
+      v1_bytes =
+        Crypto.canonical_encode(%{
+          signature: :binary.copy(<<0>>, 64),
+          envelope_version: 1
+        })
+
+      File.write!(Sign.signature_path(dir), v1_bytes)
+      assert {:error, :envelope_v1_unsupported} = Verify.load_envelope(dir)
     end
 
     # Regression: the envelope is decoded with binary_to_term(_, [:safe]), which
-    # will not *create* atoms. The envelope contains :envelope_version, an atom
-    # Verify must intern at load time (via @envelope_atoms) — otherwise, in any
-    # BEAM where Sign (the only other interner) hadn't loaded yet, the :safe
-    # decode raised and a *valid* signature was misreported as :corrupt. That
-    # load-order dependence made the build signature gate intermittently reject
-    # good plugins. The true cold-VM repro is cross-process (atoms can't be
-    # un-interned in a live VM); these guard the fix's mechanism in-process.
-    # See decisions/2026-05-31-verify-safe-atom-intern.md.
+    # will not *create* atoms. The envelope contains :envelope_version and
+    # :file_hashes, atoms Verify must intern at load time (via @envelope_atoms)
+    # — otherwise, in any BEAM where Sign (the only other interner) hadn't
+    # loaded yet, the :safe decode raised and a *valid* signature was
+    # misreported as :corrupt. That load-order dependence made the build
+    # signature gate intermittently reject good plugins. See
+    # decisions/2026-05-31-verify-safe-atom-intern.md.
     test "interns the envelope atoms at module load (safe-decode guard)" do
       assert :signature in Verify.envelope_atoms()
       assert :envelope_version in Verify.envelope_atoms()
+      assert :file_hashes in Verify.envelope_atoms()
     end
+  end
 
-    test "decodes an envelope whose term includes the :envelope_version key",
-         %{dir: dir} do
-      raw = File.read!(Sign.signature_path(dir))
-      assert %{signature: _, envelope_version: 1} = :erlang.binary_to_term(raw, [:safe])
+  describe "load_signature/1 (back-compat shim)" do
+    test "still returns the 64-byte signature from a v2 envelope", %{dir: dir} do
       assert {:ok, sig} = Verify.load_signature(dir)
       assert byte_size(sig) == 64
     end
@@ -91,40 +112,163 @@ defmodule MobDev.Plugin.VerifyTest do
     end
   end
 
-  describe "verify_plugin/2" do
-    test "accepts a freshly-signed plugin", %{dir: dir, manifest: manifest} do
-      assert :ok = Verify.verify_plugin(dir, manifest)
+  describe "verify_plugin/1" do
+    test "accepts a freshly-signed plugin without needing the eval'd manifest", %{dir: dir} do
+      assert :ok = Verify.verify_plugin(dir)
     end
 
-    test "rejects when a referenced source file is tampered", %{dir: dir, manifest: manifest} do
+    test "rejects when a referenced source file is tampered", %{dir: dir} do
       File.write!(Path.join(dir, "ios/Demo.swift"), "import SwiftUI // EVIL\n")
-      assert {:error, :invalid_signature} = Verify.verify_plugin(dir, manifest)
+      assert {:error, :invalid_signature} = Verify.verify_plugin(dir)
     end
 
-    test "rejects when the manifest is altered after signing", %{dir: dir, manifest: manifest} do
-      tampered = put_in(manifest, [:ios, :swift_files], ["ios/Other.swift"])
-      assert {:error, :invalid_signature} = Verify.verify_plugin(dir, tampered)
+    test "rejects when the manifest BYTES are tampered — the MOB-74 CVE class", %{dir: dir} do
+      # Before MOB-74: the signature covered the eval'd manifest map, so a
+      # tampered priv/mob_plugin.exs that eval'd to the same map (e.g. added
+      # a side-effecting expression before the returning map literal) would
+      # verify clean. Now the file bytes are in file_hashes; any change to
+      # the .exs bytes shifts the hash and fails verification.
+      #
+      # Revert-verify: remove the @manifest_file prefix from
+      # `Sign.referenced_files/2` and this fails (verification would pass
+      # because the tampered map, if it eval'd to the same shape, wouldn't
+      # be caught).
+      original = File.read!(Path.join(dir, "priv/mob_plugin.exs"))
+      File.write!(Path.join(dir, "priv/mob_plugin.exs"), original <> "\n# tampered\n")
+      assert {:error, :invalid_signature} = Verify.verify_plugin(dir)
     end
 
-    test "rejects when the signature is missing", %{dir: dir, manifest: manifest} do
+    test "rejects when the signature is missing", %{dir: dir} do
       File.rm!(Sign.signature_path(dir))
-      assert {:error, :missing_signature} = Verify.verify_plugin(dir, manifest)
+      assert {:error, :missing_signature} = Verify.verify_plugin(dir)
     end
 
-    test "rejects when the pubkey is missing", %{dir: dir, manifest: manifest} do
+    test "rejects when the pubkey is missing", %{dir: dir} do
       File.rm!(Path.join(dir, "priv/mob_plugin.pub"))
-      assert {:error, :missing_pubkey} = Verify.verify_plugin(dir, manifest)
+      assert {:error, :missing_pubkey} = Verify.verify_plugin(dir)
     end
 
-    test "rejects when the pubkey doesn't match the signing key", %{dir: dir, manifest: manifest} do
+    test "rejects when the pubkey doesn't match the signing key", %{dir: dir} do
       {_other_priv, other_pub} = Crypto.generate_keypair()
       File.write!(Path.join(dir, "priv/mob_plugin.pub"), Base.encode64(other_pub) <> "\n")
-      assert {:error, :invalid_signature} = Verify.verify_plugin(dir, manifest)
+      assert {:error, :invalid_signature} = Verify.verify_plugin(dir)
+    end
+
+    test "rejects a v1 envelope with a distinguished error", %{dir: dir} do
+      v1_bytes =
+        Crypto.canonical_encode(%{
+          signature: :binary.copy(<<0>>, 64),
+          envelope_version: 1
+        })
+
+      File.write!(Sign.signature_path(dir), v1_bytes)
+      assert {:error, :envelope_v1_unsupported} = Verify.verify_plugin(dir)
+    end
+  end
+
+  describe "load_verified/1 — the safe consumer path (MOB-74)" do
+    test "verifies the plugin first, then evals the manifest", %{dir: dir, manifest: manifest} do
+      assert {:ok, loaded} = Verify.load_verified(dir)
+      assert loaded[:name] == manifest.name
+    end
+
+    test "returns {:ok, nil} for a tier-0 plugin (no priv/mob_plugin.exs, no signature)" do
+      dir = Path.join(System.tmp_dir!(), "mob_verify_tier0_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      assert {:ok, nil} = Verify.load_verified(dir)
+    end
+
+    test "refuses to eval a tampered manifest even if the side effect would run first",
+         %{dir: dir} do
+      # Stronger version: put a side-effect BEFORE the returning map. If
+      # load_verified accidentally eval'd, the marker file would appear.
+      # This directly guards the CVE class MOB-74 closes.
+      marker = Path.join(dir, "SIDE_EFFECT_RAN")
+
+      original_manifest = %{
+        name: :mob_demo,
+        mob_version: "~> 0.6",
+        plugin_spec_version: 1,
+        ios: %{swift_files: ["ios/Demo.swift"]}
+      }
+
+      # The tampered manifest still evaluates to a valid-looking map, so if
+      # verification had been re-ordered wrong (post-eval) or omitted, the
+      # side effect would land.
+      tampered = """
+      File.write!(#{inspect(marker)}, "pwned")
+      #{inspect(original_manifest, limit: :infinity)}
+      """
+
+      File.write!(Path.join(dir, "priv/mob_plugin.exs"), tampered)
+
+      assert {:error, :invalid_signature} = Verify.load_verified(dir)
+      refute File.exists?(marker), "Code.eval_file/1 ran despite invalid signature — MOB-74 open"
     end
 
     test "round-trips against the manifest loaded back from disk", %{dir: dir} do
-      {:ok, loaded} = Manifest.load(dir)
-      assert :ok = Verify.verify_plugin(dir, loaded)
+      {:ok, loaded_direct} = Manifest.load(dir)
+      {:ok, loaded_verified} = Verify.load_verified(dir)
+      assert loaded_direct == loaded_verified
+    end
+
+    test "acknowledged_unsafe: true loads an unsigned manifest (the escape hatch)",
+         %{dir: dir} do
+      # The documented :acknowledge_unsafe_plugins path. Without this,
+      # every acknowledged unsigned plugin's manifest map gets stripped
+      # out of the build silently (SignatureGate says :ok for the plugin
+      # but downstream Merge/AndroidBootstrap/RuntimeManifest filter on
+      # is_map(manifest) and skip the nil). See MOB-74 pre-merge review.
+      #
+      # Revert-verify: remove the `when acknowledged_unsafe?` clause in
+      # `Verify.load_verified/2` and this fails — an unsigned plugin
+      # would return `{:error, :missing_signature}` even with the opt.
+      File.rm!(Sign.signature_path(dir))
+
+      assert {:ok, manifest} = Verify.load_verified(dir, acknowledged_unsafe: true)
+      assert manifest[:name] == :mob_demo
+    end
+
+    test "acknowledged_unsafe: true does NOT bypass tamper detection", %{dir: dir} do
+      # The escape hatch is specifically for :missing_signature ("I know
+      # this isn't signed"). Invalid signatures — tampered files, wrong
+      # pubkey — must still refuse. The user opted into unsigned code,
+      # not into arbitrary attacker code passing itself off as the
+      # unsigned plugin.
+      original = File.read!(Path.join(dir, "priv/mob_plugin.exs"))
+      File.write!(Path.join(dir, "priv/mob_plugin.exs"), original <> "\n# tampered\n")
+
+      assert {:error, :invalid_signature} =
+               Verify.load_verified(dir, acknowledged_unsafe: true)
+    end
+
+    test "acknowledged_unsafe: true does NOT bypass a missing pubkey", %{dir: dir} do
+      # A signed plugin whose pubkey file vanished shouldn't fall into the
+      # "unsigned during dev" bucket — something is off with the plugin's
+      # own artefacts (author error or partial upload). Refuse and surface
+      # the real reason.
+      File.rm!(Path.join(dir, "priv/mob_plugin.pub"))
+
+      assert {:error, :missing_pubkey} =
+               Verify.load_verified(dir, acknowledged_unsafe: true)
+    end
+
+    test "acknowledged_unsafe: true does NOT bypass an envelope_v1 refusal", %{dir: dir} do
+      # A plugin author who moved from unsigned → v1-signed shouldn't
+      # auto-upgrade to "loaded via escape hatch" — they need to re-sign
+      # with v2 (that's the whole point of the v1 refusal).
+      v1_bytes =
+        Crypto.canonical_encode(%{
+          signature: :binary.copy(<<0>>, 64),
+          envelope_version: 1
+        })
+
+      File.write!(Sign.signature_path(dir), v1_bytes)
+
+      assert {:error, :envelope_v1_unsupported} =
+               Verify.load_verified(dir, acknowledged_unsafe: true)
     end
   end
 end

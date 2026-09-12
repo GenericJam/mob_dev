@@ -5,8 +5,13 @@ defmodule Mix.Tasks.Mob.Plugin.Sign do
 
   @moduledoc """
   Signs the plugin in `<dir>` (default: cwd) and writes
-  `priv/mob_plugin.sig`. The signature covers the loaded manifest
-  plus SHA-256 hashes of every file the manifest references.
+  `priv/mob_plugin.sig`. The signature covers the SHA-256 hashes of
+  `priv/mob_plugin.exs` and every source file the manifest references —
+  the manifest bytes are one of those files, so tampering with the
+  manifest fails verification. The v2 envelope on disk carries the
+  signed `file_hashes` list so `MobDev.Plugin.Verify.verify_plugin/1`
+  can check integrity without ever `Code.eval_file`-ing the manifest
+  (see MOB-74).
 
       mix mob.plugin.sign [--plugin <dir>]
 

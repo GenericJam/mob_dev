@@ -20,7 +20,7 @@ defmodule Mix.Tasks.Mob.Plugins do
   *activated* — only then are its contributions merged into the build.
   """
 
-  alias MobDev.Plugin.{Manifest, Report, Validator}
+  alias MobDev.Plugin.{Report, Validator}
 
   @impl Mix.Task
   def run(_args) do
@@ -56,7 +56,7 @@ defmodule Mix.Tasks.Mob.Plugins do
   defp load_all_manifests do
     Mix.Project.deps_paths()
     |> Enum.map(fn {app, path} ->
-      case Manifest.load(path) do
+      case MobDev.Plugin.Verify.load_verified(path) do
         {:ok, manifest} ->
           {app, manifest}
 

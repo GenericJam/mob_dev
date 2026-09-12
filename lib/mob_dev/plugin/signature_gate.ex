@@ -24,13 +24,14 @@ defmodule MobDev.Plugin.SignatureGate do
     user must run `mix mob.plugin.trust <name>`.
   """
 
-  alias MobDev.Plugin.{Crypto, TrustStore, Verify}
+  alias MobDev.Plugin.{Crypto, Manifest, TrustStore, Verify}
 
   @typedoc "Errors `check_plugin/2` can return."
   @type gate_error ::
           {:missing_signature, atom()}
           | {:missing_pubkey, atom()}
           | {:invalid_signature, atom()}
+          | {:envelope_v1_unsupported, atom()}
           | {:untrusted, atom(), Crypto.fingerprint(), Crypto.fingerprint() | nil}
 
   @doc """
@@ -56,9 +57,21 @@ defmodule MobDev.Plugin.SignatureGate do
   @spec check_activated([{Path.t(), map() | nil}], TrustStore.trust_map(), [atom()]) ::
           :ok | {:error, [gate_error()]}
   def check_activated(plugins, trust_map, acknowledged) do
+    # A `nil` manifest can mean two things after MOB-74:
+    #
+    # * tier-0 plugin (no `priv/mob_plugin.exs` at all — nothing to sign,
+    #   nothing to verify); skip.
+    # * tier-1+ plugin whose signature verification failed, so
+    #   `Verify.load_verified/1` refused to eval the manifest; the gate
+    #   must still surface the failure with a friendly name-and-reason
+    #   error, otherwise a tampered plugin silently gets treated like a
+    #   tier-0 one.
+    #
+    # `Manifest.manifest_present?/1` distinguishes the two without eval'ing
+    # anything.
     errors =
       for {dir, manifest} <- plugins,
-          is_map(manifest),
+          Manifest.manifest_present?(dir),
           err = check_plugin(dir, manifest, trust_map, acknowledged),
           err != :ok do
         err
@@ -130,11 +143,16 @@ defmodule MobDev.Plugin.SignatureGate do
   @doc false
   # Public for tests: checks a single plugin against the trust map and
   # acknowledgement list. Returns `:ok` on pass, a gate_error otherwise.
-  @spec check_plugin(Path.t(), map(), TrustStore.trust_map(), [atom()]) :: :ok | gate_error()
+  # `manifest` may be `nil` when `Verify.load_verified/1` refused to eval a
+  # plugin whose signature check failed; the error surface still needs a
+  # name, so we fall back to the dep-directory basename (which matches the
+  # published plugin name by convention).
+  @spec check_plugin(Path.t(), map() | nil, TrustStore.trust_map(), [atom()]) ::
+          :ok | gate_error()
   def check_plugin(dir, manifest, trust_map, acknowledged) do
-    name = manifest[:name]
+    name = manifest_name(dir, manifest)
 
-    case Verify.verify_plugin(dir, manifest) do
+    case Verify.verify_plugin(dir) do
       :ok ->
         check_trust(dir, name, trust_map)
 
@@ -146,7 +164,21 @@ defmodule MobDev.Plugin.SignatureGate do
 
       {:error, :invalid_signature} ->
         {:invalid_signature, name}
+
+      {:error, :envelope_v1_unsupported} ->
+        {:envelope_v1_unsupported, name}
     end
+  end
+
+  defp manifest_name(_dir, manifest) when is_map(manifest), do: manifest[:name]
+
+  # `String.to_atom` on unbounded input can exhaust the atom table, but the
+  # domain here is the deps-directory basename — one entry per Hex dep in
+  # `Mix.Project.deps_paths()`, a small set the consumer controls at
+  # dependency-declaration time. No attacker-controlled path reaches this
+  # helper.
+  defp manifest_name(dir, nil) do
+    dir |> Path.basename() |> String.to_atom()
   end
 
   defp check_trust(dir, name, trust_map) do
@@ -166,7 +198,19 @@ defmodule MobDev.Plugin.SignatureGate do
     end
   end
 
-  defp acknowledged_unsafe do
+  @doc """
+  The list of plugin names the consumer has opted into loading unsigned via
+  `:acknowledge_unsafe_plugins` (in `Application` env or `mob.exs`).
+
+  Exposed so `MobDev.Plugin.activated/0` can pass
+  `acknowledged_unsafe: true` into `Verify.load_verified/2` for these
+  plugins — otherwise a missing signature would silently strip the plugin
+  from the build (its manifest fields would never merge into the app),
+  producing "acknowledged" plugins that actually contribute nothing.
+  See MOB-74's pre-merge review.
+  """
+  @spec acknowledged_unsafe() :: [atom()]
+  def acknowledged_unsafe do
     Application.get_env(:mob, :acknowledge_unsafe_plugins, []) ++
       read_acknowledged_from_mob_exs()
   end
@@ -213,6 +257,14 @@ defmodule MobDev.Plugin.SignatureGate do
   defp format_error({:invalid_signature, name}) do
     "  - signature for plugin #{inspect(name)} is invalid — this can indicate\n" <>
       "    tampering with the plugin's manifest or source files."
+  end
+
+  defp format_error({:envelope_v1_unsupported, name}) do
+    "  - plugin #{inspect(name)} ships a v1 signature envelope (MOB-74).\n" <>
+      "    v1 required evaluating the manifest before verifying it, which\n" <>
+      "    let a malicious priv/mob_plugin.exs run arbitrary code at build\n" <>
+      "    time. Refused by this mob_dev. Ask the plugin author to re-sign\n" <>
+      "    with a mob_dev that produces envelope v2 (`mix mob.plugin.sign`)."
   end
 
   defp format_error({:untrusted, name, actual_fp, nil}) do

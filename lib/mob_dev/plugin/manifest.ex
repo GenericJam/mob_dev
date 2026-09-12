@@ -67,6 +67,17 @@ defmodule MobDev.Plugin.Manifest do
     end
   end
 
+  @doc """
+  Returns `true` when `plugin_dir` has a `priv/mob_plugin.exs`, `false`
+  otherwise. Distinguishes tier-0 plugins (no manifest, no signature
+  needed) from tier-1+ plugins (manifest present, signature required)
+  without evaluating the manifest itself. See `Verify.load_verified/1`.
+  """
+  @spec manifest_present?(Path.t()) :: boolean()
+  def manifest_present?(plugin_dir) do
+    File.exists?(Path.join(plugin_dir, @manifest_path))
+  end
+
   defp eval(path) do
     case Code.eval_file(path) do
       {map, _bindings} when is_map(map) ->
