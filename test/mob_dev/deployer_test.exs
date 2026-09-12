@@ -332,4 +332,96 @@ defmodule MobDev.DeployerTest do
       assert Deployer.__sqlite_nif_target__(lines) == "/data/app/x/lib/arm/libsqlite3_nif.so"
     end
   end
+
+  # MOB-182: `mix mob.deploy` used to fan out silently to every reachable
+  # device when no --device / --all filter was given, so a run intended for
+  # the local sim could also land on a teammate's paired phone. The pure
+  # predicate below decides refuse-vs-proceed independent of adb / simctl.
+  describe "check_fanout_gate/2" do
+    setup do
+      android = %MobDev.Device{platform: :android, serial: "emulator-5554"}
+      ios1 = %MobDev.Device{platform: :ios, serial: "78354490-EF38-1111"}
+      ios2 = %MobDev.Device{platform: :ios, serial: "78354490-EF38-2222"}
+      {:ok, %{android: android, ios1: ios1, ios2: ios2}}
+    end
+
+    test "single device runs without any flag", %{android: a} do
+      assert Deployer.check_fanout_gate([a], []) == :ok
+    end
+
+    test "no devices reachable is not the gate's problem", %{} do
+      # deploy_all already prints "No devices found" and exits; the gate
+      # only cares about ambiguity when there are targets.
+      assert Deployer.check_fanout_gate([], []) == :ok
+    end
+
+    test "two devices without any filter is refused", %{android: a, ios1: i} do
+      assert {:refuse, lines} = Deployer.check_fanout_gate([a, i], [])
+      joined = Enum.join(lines, "\n")
+      assert joined =~ "Refusing to deploy: 2 devices reachable"
+      assert joined =~ "--device"
+      assert joined =~ "--all"
+    end
+
+    test "two devices with --all fans out", %{android: a, ios1: i} do
+      assert Deployer.check_fanout_gate([a, i], all: true) == :ok
+    end
+
+    test "two devices with --device is allowed (deployer narrows further)",
+         %{android: a, ios1: i} do
+      # We pass the reachable list unfiltered; the deployer applies
+      # filter_by_device_id after the gate. The gate just trusts that an
+      # explicit --device is a real narrowing intent.
+      assert Deployer.check_fanout_gate([a, i], device: "emulator-5554") == :ok
+    end
+
+    test "two devices with --ios-device is allowed", %{ios1: i1, ios2: i2} do
+      assert Deployer.check_fanout_gate([i1, i2], ios_device: "78354490-EF38-1111") == :ok
+    end
+
+    test "refusal lines list every reachable device", %{android: a, ios1: i1, ios2: i2} do
+      {:refuse, lines} = Deployer.check_fanout_gate([a, i1, i2], [])
+      joined = Enum.join(lines, "\n")
+      assert joined =~ "emulator-5554"
+      assert joined =~ "78354490-EF38-1111"
+      assert joined =~ "78354490-EF38-2222"
+    end
+
+    test "all: false is the same as omitting the flag", %{android: a, ios1: i} do
+      # A missing flag defaults to false in OptionParser, and an explicit
+      # `--no-all` is the same thing — either should refuse a multi-device run.
+      assert {:refuse, _} = Deployer.check_fanout_gate([a, i], all: false)
+    end
+
+    # The permissive-path tests above (single-device, --all, --device) all pass
+    # against a trivial `def check_fanout_gate(_, _), do: :ok` — they only
+    # assert what the gate should NOT do. Pair each with a matching refuse on
+    # a bit-flipped input so a mutation that removes the gate entirely fails
+    # both halves.
+    test "paired: --all polarity", %{android: a, ios1: i} do
+      assert Deployer.check_fanout_gate([a, i], all: true) == :ok
+      assert {:refuse, _} = Deployer.check_fanout_gate([a, i], all: false)
+    end
+
+    test "paired: single-vs-multi with no filter", %{android: a, ios1: i} do
+      assert Deployer.check_fanout_gate([a], []) == :ok
+      assert {:refuse, _} = Deployer.check_fanout_gate([a, i], [])
+    end
+
+    test "paired: --device narrowing polarity", %{android: a, ios1: i} do
+      assert Deployer.check_fanout_gate([a, i], device: "emulator-5554") == :ok
+      assert {:refuse, _} = Deployer.check_fanout_gate([a, i], device: nil)
+    end
+
+    # `--device ""` is what a shell script produces from an unset variable.
+    # Treating it as "filter set" (which naive `is_binary` did) would bypass
+    # the gate silently — the empty string never narrows the device list,
+    # deploy_all would then fall through to `No device matched ""` and the
+    # user has a green pre-check that yielded a red deploy. The gate rejects
+    # the empty string like the missing flag it stands in for.
+    test "empty string --device does not count as a filter", %{android: a, ios1: i} do
+      assert {:refuse, _} = Deployer.check_fanout_gate([a, i], device: "")
+      assert {:refuse, _} = Deployer.check_fanout_gate([a, i], ios_device: "")
+    end
+  end
 end

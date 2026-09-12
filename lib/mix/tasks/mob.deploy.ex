@@ -24,6 +24,10 @@ defmodule Mix.Tasks.Mob.Deploy do
     * `--native`              — build native binaries before pushing BEAMs
     * `--no-restart`          — push BEAMs but don't restart the app
     * `-d`, `--device <id>`   — target a specific device; use `mix mob.devices` to find IDs
+    * `--all`                 — allow deploying to every reachable device. Required when
+                              two or more devices match the resolved platform set and no
+                              `--device` / `--ios-device` filter narrows the target. Single-
+                              device runs proceed without it. See MOB-182.
     * `--dist-port <N>`       — pin the BEAM dist listen port (default: auto-allocated per
                               device, `9100 + index`). Use to resolve EPMD collisions when
                               multiple sims/emulators are running the same app concurrently
@@ -139,12 +143,17 @@ defmodule Mix.Tasks.Mob.Deploy do
     * `mix mob.deploy --device NOPE` matching no device — exit 1.
     * `mix mob.deploy --android --native` that built the APK with no device
       attached — exit 0. The artifact is what was asked for.
+    * `mix mob.deploy` with two or more devices reachable and no `--device` /
+      `--ios-device` / `--all` — exit 1 before build (MOB-182). Refusing an
+      ambiguous fan-out is the safer default than silently deploying to a
+      teammate's phone; add `--all` when the fan-out is intended.
 
   `--native` fails the run when a platform you named built nothing at all, which
   is what a missing `sdk.dir` in `android/local.properties` produces.
   """
 
   alias MobDev.Device
+  alias MobDev.Discovery.{Android, IOS}
 
   @switches [
     native: :boolean,
@@ -157,6 +166,11 @@ defmodule Mix.Tasks.Mob.Deploy do
     android: :boolean,
     ios: :boolean,
     device: :string,
+    # `--all` opts into fanning out to every reachable device when the run
+    # would otherwise touch two or more of them. Without it, an ambiguous
+    # multi-device run is refused up front (MOB-182). Single-device runs
+    # ignore the flag.
+    all: :boolean,
     schedulers: :integer,
     beam_flags: :string,
     # Manual overrides for the BEAM-distribution surface — useful when
@@ -248,6 +262,32 @@ defmodule Mix.Tasks.Mob.Deploy do
         if native and :ios in platforms,
           do: MobDev.NativeBuild.detect_physical_ios()
 
+    # MOB-182 safety gate: refuse a fan-out to multiple devices unless the
+    # caller opted in with `--all` or narrowed with `--device` / `--ios-device`.
+    # The gate itself lives inside `MobDev.Deployer.deploy_all/1` so a device
+    # plugged in between here and the deploy loop can't sneak past it. That's
+    # the authoritative check.
+    #
+    # We ALSO run it here on a cheap pre-scan so the refusal lands before the
+    # compile / native-build tax rather than after. The task's `deploy_all`
+    # call re-verifies against fresh discovery — a device state that changes
+    # between the pre-scan and the deploy is caught there.
+    reachable_preview = discover_targeted_devices(platforms, device_id, effective_device_id)
+
+    case MobDev.Deployer.check_fanout_gate(reachable_preview,
+           device: device_id,
+           ios_device: effective_device_id,
+           all: opts[:all] == true
+         ) do
+      :ok ->
+        :ok
+
+      {:refuse, lines} ->
+        Enum.each(lines, &IO.puts/1)
+        emit_json(opts, [], [], [], "Refused: multiple devices without --device / --all")
+        Mix.raise("Refused ambiguous multi-device deploy")
+    end
+
     # Validate every targeted device against the project's enabled
     # features (Pythonx, etc.) BEFORE we waste time on a multi-minute
     # native build that the device couldn't have run anyway. See
@@ -321,7 +361,11 @@ defmodule Mix.Tasks.Mob.Deploy do
         # nil → auto-allocation (per-device port + auto-derived suffix).
         # Set → all targeted devices use these values verbatim.
         dist_port: opts[:dist_port],
-        node_suffix: opts[:node_suffix]
+        node_suffix: opts[:node_suffix],
+        # MOB-182: opt-in to the multi-device fan-out. `deploy_all` runs the
+        # authoritative refuse-if-ambiguous check on its own discovery — the
+        # pre-scan above is only an ergonomic early-refuse.
+        all: opts[:all] == true
       )
 
     Enum.each(format_summary(deployed, failed, skipped, restart: restart), &IO.puts/1)
@@ -432,6 +476,38 @@ defmodule Mix.Tasks.Mob.Deploy do
   end
 
   defp names(platforms), do: platforms |> Enum.map(&"--#{&1}") |> Enum.join(", ")
+
+  # MOB-182: shape the discovered device list the same way
+  # `MobDev.Deployer.deploy_all/1` does (drop unauthorized Android, apply
+  # any `--device` / `--ios-device` filter). Returning the exact set that
+  # `deploy_all` would target keeps the fan-out gate honest — a mismatch
+  # here would either let a genuinely-ambiguous run through or refuse one
+  # that would have narrowed to a single device inside the deployer.
+  defp discover_targeted_devices(platforms, device_id, ios_device_id) do
+    android =
+      if :android in platforms do
+        Android.list_devices()
+        |> Enum.reject(&(&1.status == :unauthorized))
+        |> filter_by_id(device_id)
+      else
+        []
+      end
+
+    ios =
+      if :ios in platforms do
+        IOS.list_devices() |> filter_by_id(ios_device_id || device_id)
+      else
+        []
+      end
+
+    android ++ ios
+  end
+
+  defp filter_by_id(devices, nil), do: devices
+
+  defp filter_by_id(devices, id) do
+    Enum.filter(devices, &Device.match_id?(&1, id))
+  end
 
   # Written to the REAL stdout, not the group leader — which under --json now
   # points at stderr so the progress prose gets out of the document's way.

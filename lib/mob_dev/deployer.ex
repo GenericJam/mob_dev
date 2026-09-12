@@ -84,6 +84,24 @@ defmodule MobDev.Deployer do
 
     all = android ++ ios
 
+    # MOB-182: authoritative fan-out gate. `mix mob.deploy` runs the same
+    # check up front on a pre-scan so the refusal lands before the compile
+    # tax, but a device plugged in between that pre-scan and this
+    # discovery would sneak past it. This is the check that closes that
+    # window. See `check_fanout_gate/2` for the decision matrix.
+    case check_fanout_gate(all,
+           device: device_id,
+           ios_device: ios_device_id,
+           all: Keyword.get(opts, :all, false)
+         ) do
+      :ok ->
+        :ok
+
+      {:refuse, lines} ->
+        Enum.each(lines, &IO.puts/1)
+        Mix.raise("Refused ambiguous multi-device deploy")
+    end
+
     if all == [] do
       IO.puts("  #{color(:yellow)}No devices found.#{color(:reset)}")
       {[], [], []}
@@ -198,6 +216,67 @@ defmodule MobDev.Deployer do
   @spec android_package_installed?(String.t(), String.t()) :: boolean()
   def android_package_installed?(pm_output, package_name) when is_binary(pm_output) do
     String.contains?(pm_output, "package:#{package_name}")
+  end
+
+  @doc """
+  Refuses an ambiguous multi-device deploy.
+
+  Fanning out to every reachable device is a safety hazard: a run that
+  meant to touch a laptop's own simulator can also reach a teammate's
+  connected phone, a spare emulator, or a Cellular-linked device the
+  author forgot was still paired. MOB-182 makes the ambiguity explicit
+  — a run with two or more reachable devices must either name one via
+  `--device` / `--ios-device` or opt in to the fan-out with `--all`.
+
+  Returns `:ok` when the run may proceed, or `{:refuse, lines}` where
+  `lines` is the human-readable multi-line explanation. Pure so the
+  matrix can be tested without discovery.
+  """
+  @spec check_fanout_gate([Device.t()], keyword()) :: :ok | {:refuse, [String.t()]}
+  def check_fanout_gate(devices, opts) do
+    device_id = opts[:device]
+    ios_device_id = opts[:ios_device]
+    all? = opts[:all] == true
+
+    cond do
+      # A caller who already named a device (either flag) has been
+      # explicit; deploy_all narrows to that device inside
+      # `filter_by_device_id`. Nothing to gate. An empty string doesn't
+      # count as narrowing — it's what a shell script produces from an
+      # unset variable, and passing it through as "filter set" would
+      # bypass the gate silently.
+      nonempty_string?(device_id) or nonempty_string?(ios_device_id) ->
+        :ok
+
+      all? ->
+        :ok
+
+      length(devices) <= 1 ->
+        :ok
+
+      true ->
+        {:refuse, refusal_lines(devices)}
+    end
+  end
+
+  defp nonempty_string?(s), do: is_binary(s) and s != ""
+
+  defp refusal_lines(devices) do
+    listing =
+      Enum.map(devices, fn %Device{} = d ->
+        "    - #{Device.summary(d)}"
+      end)
+
+    [
+      "Refusing to deploy: #{length(devices)} devices reachable and no --device / --ios-device filter set.",
+      "Reachable devices:"
+    ] ++
+      listing ++
+      [
+        "",
+        "Pass `--device <id>` (or `--ios-device <id>`) to target one, or `--all` to fan out.",
+        "Run `mix mob.devices` to see the full list."
+      ]
   end
 
   # ── Device filtering ─────────────────────────────────────────────────────────
