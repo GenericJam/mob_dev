@@ -40,7 +40,7 @@ defmodule MobDev.NativeBuild do
         do: narrow_platforms_for_device(platforms, device_id),
         else: platforms
 
-    Process.put(:mob_slim, slim)
+    __apply_slim_env__(slim)
 
     # Always regenerate the runtime plugin manifest from the CURRENT activated
     # plugins before bundling priv — like the driver_tab, it's derived state, not
@@ -5854,6 +5854,18 @@ defmodule MobDev.NativeBuild do
     {_, 0} =
       System.cmd("rsync", ["-a", "--delete", src, dst], stderr_to_stdout: true, into: IO.stream())
 
+    :ok
+  end
+
+  @doc false
+  # Publish the --slim flag into MOB_SLIM so `maybe_slim_otp_bundle/2` (which
+  # mirrors `release.ex`'s env-var gate) actually sees it. Before MOB-73 this
+  # went into `Process.put(:mob_slim, ...)` and nothing consulted it — so
+  # `mix mob.deploy --slim` was a silent no-op. Public-for-testing so the
+  # env-var contract is regression-guarded.
+  @spec __apply_slim_env__(boolean()) :: :ok
+  def __apply_slim_env__(slim) when is_boolean(slim) do
+    System.put_env("MOB_SLIM", if(slim, do: "1", else: "0"))
     :ok
   end
 

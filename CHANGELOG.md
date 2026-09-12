@@ -2,6 +2,16 @@
 
 ### Fixed
 
+- **`mix mob.deploy --slim` is no longer a silent no-op** (MOB-73).
+  `NativeBuild.build_all/1` stored `slim` in the process dict
+  (`Process.put(:mob_slim, slim)`) but the actual gate at
+  `maybe_slim_otp_bundle/2` reads `System.get_env("MOB_SLIM")` — so
+  `--slim` from the CLI never reached the strip pass. Only
+  `mix mob.release` produced a slim OTP bundle, because that path
+  explicitly sets the env var. Fixed by publishing `MOB_SLIM=1` / `=0`
+  in `__apply_slim_env__/1`, which the gate already knows how to read.
+  Two revert-verified tests lock the env-var contract.
+
 - **Plugin signature verification now runs before `Code.eval_file`** on the
   manifest (MOB-74). The v1 signature covered the eval'd manifest map, so
   verifiers needed the eval to run first to rebuild the payload — letting

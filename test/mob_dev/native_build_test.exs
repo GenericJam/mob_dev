@@ -10,6 +10,39 @@ defmodule MobDev.NativeBuildTest do
 
   alias MobDev.NativeBuild
 
+  describe "__apply_slim_env__/1 (MOB-73 --slim gate)" do
+    setup do
+      # Save/restore MOB_SLIM across the test since it's process-global.
+      previous = System.get_env("MOB_SLIM")
+
+      on_exit(fn ->
+        case previous do
+          nil -> System.delete_env("MOB_SLIM")
+          val -> System.put_env("MOB_SLIM", val)
+        end
+      end)
+
+      :ok
+    end
+
+    test "true publishes MOB_SLIM=1 so the slim gate actually fires" do
+      # Before MOB-73 this went through `Process.put(:mob_slim, true)` and
+      # `maybe_slim_otp_bundle/2` never consulted the dict — so `mix mob.deploy
+      # --slim` was a silent no-op. The env-var read at native_build.ex:5861
+      # is what the strip pass gates on; the helper's job is to set it. Revert
+      # to Process.put and this fails.
+      System.put_env("MOB_SLIM", "0")
+      :ok = NativeBuild.__apply_slim_env__(true)
+      assert System.get_env("MOB_SLIM") == "1"
+    end
+
+    test "false publishes MOB_SLIM=0 so --no-slim is explicit and observable" do
+      System.put_env("MOB_SLIM", "1")
+      :ok = NativeBuild.__apply_slim_env__(false)
+      assert System.get_env("MOB_SLIM") == "0"
+    end
+  end
+
   describe "build_zig_supports_abi?/2" do
     test "true when the build.zig declares the ABI as a quoted string literal" do
       src = ~s|
