@@ -417,6 +417,17 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
       assert Deploy.missing_device_message("emulator-5554", [], [], skipped) =~
                "was skipped — nothing was deployed"
     end
+
+    test "ANDROID_SERIAL has the same explicit-target exit semantics" do
+      skipped = [device("emulator-5554", "app not installed")]
+
+      assert Deploy.missing_device_message(
+               {:android_serial, "emulator-5554"},
+               [],
+               [],
+               skipped
+             ) =~ "ANDROID_SERIAL=emulator-5554 was skipped"
+    end
   end
 
   describe "json_result/4" do

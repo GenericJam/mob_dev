@@ -41,7 +41,7 @@ defmodule MobDev.Uninstaller do
   """
 
   alias MobDev.Discovery.{Android, IOS}
-  alias MobDev.Device
+  alias MobDev.{Device, TaskTargets}
 
   @type outcome :: :uninstalled | :skipped | :error
   @type result :: %{
@@ -58,12 +58,7 @@ defmodule MobDev.Uninstaller do
   @type plan :: [{Device.t(), [String.t()]}]
 
   @typedoc "Why `plan/1` couldn't build a matrix."
-  @type plan_error ::
-          :no_devices
-          | :ambiguous_devices
-          | :no_matching_devices
-          | :no_dev_devices
-          | :no_physical_devices
+  @type plan_error :: TaskTargets.selection_error()
 
   @doc """
   Build the (devices × apps) plan without executing it.
@@ -86,24 +81,10 @@ defmodule MobDev.Uninstaller do
   def plan(opts \\ []) do
     all = list_all_devices(opts)
     device_ids = opts[:device_ids] || []
-    selected = select_devices(all, device_ids, opts)
 
-    cond do
-      all == [] ->
-        {:error, :no_devices, %{detected: 0}}
-
-      device_ids != [] and selected == [] ->
-        {:error, :no_matching_devices, %{requested: device_ids, detected: length(all)}}
-
-      selected == [] ->
-        # Could mean: --all-devices was set but no emulators/sims
-        # connected (only physical), OR no flags + multiple devices
-        # connected, OR no flags + zero non-physical devices. Use
-        # the available counts to pick the right error.
-        ambiguous_or_only_physical_error(all, opts)
-
-      true ->
-        {:ok, build_plan(selected, opts)}
+    case TaskTargets.resolve(all, device_ids, opts) do
+      {:ok, selected} -> {:ok, build_plan(selected, opts)}
+      {:error, reason, context} -> {:error, reason, context}
     end
   end
 
@@ -126,64 +107,7 @@ defmodule MobDev.Uninstaller do
   Public for testing — the precedence ladder is the safety contract.
   """
   @spec select_devices([Device.t()], [String.t()], keyword()) :: [Device.t()]
-  def select_devices(all, device_ids, opts) do
-    # Coerce to explicit booleans — opts[:foo] is nil when the flag
-    # wasn't passed, and `nil and X` crashes under Elixir 1.20.
-    all_devices? = Keyword.get(opts, :all_devices, false) == true
-    all_physical? = Keyword.get(opts, :all_physical, false) == true
-
-    cond do
-      device_ids != [] ->
-        filter_devices_by_id(all, device_ids)
-
-      all_devices? and all_physical? ->
-        all
-
-      all_devices? ->
-        Enum.reject(all, &Device.physical?/1)
-
-      all_physical? ->
-        Enum.filter(all, &Device.physical?/1)
-
-      true ->
-        non_physical = Enum.reject(all, &Device.physical?/1)
-        if length(non_physical) == 1, do: non_physical, else: []
-    end
-  end
-
-  defp ambiguous_or_only_physical_error(all, opts) do
-    physical = Enum.filter(all, &Device.physical?/1)
-    non_physical = Enum.reject(all, &Device.physical?/1)
-    # Same boolean-coercion guard as in select_devices/3.
-    all_devices? = Keyword.get(opts, :all_devices, false) == true
-    all_physical? = Keyword.get(opts, :all_physical, false) == true
-
-    cond do
-      all_devices? and non_physical == [] ->
-        # --all-devices targets non-physical; user has only phones.
-        {:error, :no_dev_devices,
-         %{
-           physical_count: length(physical),
-           hint:
-             "Only physical devices connected. `--all-devices` targets " <>
-               "emulators/simulators only — use `--all-physical` to also " <>
-               "uninstall on physical devices, or `--device <id>` to " <>
-               "target one explicitly."
-         }}
-
-      all_physical? and physical == [] ->
-        {:error, :no_physical_devices, %{detected: length(all)}}
-
-      true ->
-        # No flags + ambiguous (>1 non-physical) OR no non-physical at all.
-        {:error, :ambiguous_devices,
-         %{
-           detected: length(all),
-           non_physical: length(non_physical),
-           physical: length(physical)
-         }}
-    end
-  end
+  defdelegate select_devices(all, device_ids, opts), to: TaskTargets, as: :select
 
   @doc """
   Execute a `plan/0` against the connected devices. Returns
@@ -251,13 +175,7 @@ defmodule MobDev.Uninstaller do
   Used by `resolve_devices/1` when the user passes `--device foo`.
   """
   @spec filter_devices_by_id([Device.t()], [String.t()]) :: [Device.t()]
-  def filter_devices_by_id(devices, []), do: devices
-
-  def filter_devices_by_id(devices, ids) do
-    Enum.filter(devices, fn d ->
-      Enum.any?(ids, &Device.match_id?(d, &1))
-    end)
-  end
+  defdelegate filter_devices_by_id(devices, ids), to: TaskTargets, as: :filter_by_id
 
   @doc """
   Parse `adb uninstall` output into an outcome.

@@ -98,10 +98,8 @@ defmodule MobDev.WiringTest do
     test "the catch clause returns it as skipped without override annotation" do
       # The copy never began, so nothing on the device was replaced and there
       # is no partial-override warning to attach.
-      body = region(@deployer, "    catch\n      # Not annotated", "\n    after")
-
-      assert body =~ "{:skipped, reason} ->"
-      refute body =~ "{:skipped, reason} ->\n        {:error,"
+      assert @deployer =~
+               "{:skipped, reason} ->\n        finalize_ios_override_result({:skipped, reason}, app)"
     end
   end
 
@@ -114,7 +112,7 @@ defmodule MobDev.WiringTest do
       body = region(@deploy_task, "Enum.each(format_summary(", "\n  end")
 
       assert body =~ "failure_message("
-      assert body =~ "missing_device_message(device_id, deployed, failed, skipped)"
+      assert body =~ "missing_device_message(target_reference, deployed, failed, skipped)"
       assert body =~ "message -> Mix.raise(message)"
 
       # Order matters: raising before the summary loses the per-device detail
@@ -122,7 +120,7 @@ defmodule MobDev.WiringTest do
       # against the whole file — anchoring the region ON the summary made this
       # `assert 0 < raise_at`, which cannot fail.
       assert index_of(@deploy_task, "Enum.each(format_summary(") <
-               index_of(@deploy_task, "Mix.raise(message)")
+               index_of(@deploy_task, "case message do")
     end
   end
 
@@ -135,7 +133,7 @@ defmodule MobDev.WiringTest do
     test "the task tells the build which platforms were asked for" do
       body = region(@deploy_task, "MobDev.NativeBuild.build_all(", "\n        )")
 
-      assert body =~ "requested: requested_platforms(opts)"
+      assert body =~ "requested: required_platforms"
     end
 
     test "the build reads that back and runs it through build_outcome/2" do

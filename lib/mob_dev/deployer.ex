@@ -69,20 +69,7 @@ defmodule MobDev.Deployer do
     beam_flags = Keyword.get(opts, :beam_flags, nil)
     beam_dirs = collect_beam_dirs()
 
-    android =
-      if :android in platforms,
-        do:
-          Android.list_devices()
-          |> Enum.reject(&(&1.status == :unauthorized))
-          |> filter_by_device_id(device_id),
-        else: []
-
-    ios =
-      if :ios in platforms,
-        do: IOS.list_devices() |> filter_by_device_id(ios_device_id || device_id),
-        else: []
-
-    all = android ++ ios
+    all = target_devices(opts, platforms, device_id, ios_device_id)
 
     if all == [] do
       IO.puts("  #{color(:yellow)}No devices found.#{color(:reset)}")
@@ -159,6 +146,34 @@ defmodule MobDev.Deployer do
         end)
 
       categorize_results(results)
+    end
+  end
+
+  @doc false
+  @spec target_devices(keyword(), [atom()], String.t() | nil, String.t() | nil) :: [Device.t()]
+  def target_devices(opts, platforms, device_id \\ nil, ios_device_id \\ nil) do
+    if Keyword.has_key?(opts, :devices) do
+      opts
+      |> Keyword.fetch!(:devices)
+      |> Enum.filter(&(&1.platform in platforms))
+    else
+      android_lister = Keyword.get(opts, :android_lister, &Android.list_devices/0)
+      ios_lister = Keyword.get(opts, :ios_lister, &IOS.list_devices/0)
+
+      android =
+        if :android in platforms,
+          do:
+            android_lister.()
+            |> Enum.reject(&(&1.status == :unauthorized))
+            |> filter_by_device_id(device_id),
+          else: []
+
+      ios =
+        if :ios in platforms,
+          do: ios_lister.() |> filter_by_device_id(ios_device_id || device_id),
+          else: []
+
+      android ++ ios
     end
   end
 
@@ -1236,18 +1251,24 @@ defmodule MobDev.Deployer do
       Process.delete(:mob_ios_override_replaced)
       {:ok, device}
     catch
-      # Not annotated with override state: the copy never started, so nothing
-      # on the device was replaced and there is no partial override to warn about.
       {:skipped, reason} ->
-        {:skipped, reason}
+        finalize_ios_override_result({:skipped, reason}, app)
 
       {:error, reason} ->
-        {:error, annotate_override_state(reason, app)}
+        finalize_ios_override_result({:error, reason}, app)
     after
       Process.delete(:mob_ios_override_replaced)
       File.rm_rf!(staging_parent)
     end
   end
+
+  @doc false
+  @spec finalize_ios_override_result({:skipped | :error, String.t()}, String.t()) ::
+          {:skipped | :error, String.t()}
+  def finalize_ios_override_result({:skipped, reason}, _app), do: {:skipped, reason}
+
+  def finalize_ios_override_result({:error, reason}, app),
+    do: {:error, annotate_override_state(reason, app)}
 
   # If the destructive copy had already begun, the device is now in a worse
   # state than we found it: Documents/otp/<app> exists but is incomplete, and

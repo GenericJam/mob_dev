@@ -219,7 +219,7 @@ you'll lose the ability to evolve the parsers safely.
 ## Destructive-task conventions
 
 Apply consistently to every Mix task that mutates device state
-(`mix mob.uninstall` today; `mix mob.deploy --all-devices`,
+(`mix mob.uninstall`, `mix mob.deploy`,
 `mix mob.connect`, future ones).
 
 **Emulator vs physical safety pattern (from `mix mob.uninstall`):**
@@ -237,18 +237,11 @@ Apply consistently to every Mix task that mutates device state
   flags → error with a hint pointing at `--all-physical` or
   `--device`.
 
-The predicate to route on is `MobDev.Device.physical?/1`. The
-selection logic lives in `MobDev.Uninstaller.select_devices/3`
-(public for testing); same shape should appear in any new task
-needing the same fan-out behavior. Pin the headline guarantee in
+The predicate to route on is `MobDev.Device.physical?/1`. Shared
+selection logic lives in `MobDev.TaskTargets`; task-specific planning
+and error messages wrap it. Pin the headline guarantee in
 each task's tests — "personal iPhone + dev emulators + `--all-devices`
 must leave the iPhone alone."
-
-**TODO:** apply this pattern to `mix mob.deploy` (today's `--all-devices`
-deploy can push BEAMs to a personal phone). When that fan-out exists
-or grows, factor `select_devices/3` plus the flag plumbing into a
-shared `MobDev.TaskTargets` (or similar) module so the rules don't
-drift between tasks.
 
 ## Naming gotcha: `mix mob.install` vs `mix mob.uninstall`
 

@@ -1,9 +1,44 @@
 defmodule MobDev.DeployerTest do
   use ExUnit.Case, async: true
 
-  alias MobDev.Deployer
+  alias MobDev.{Deployer, Device}
+
+  describe "frozen targets" do
+    test "an explicit device snapshot bypasses discovery and excludes unrelated devices" do
+      selected = %Device{platform: :android, serial: "emulator-5554", type: :emulator}
+
+      fail_if_called = fn -> flunk("device discovery must not run after targets are frozen") end
+
+      assert Deployer.target_devices(
+               [devices: [selected], android_lister: fail_if_called, ios_lister: fail_if_called],
+               [:android, :ios]
+             ) == [selected]
+    end
+  end
 
   describe "physical iOS override" do
+    test "app-not-installed skips never claim the override is incomplete" do
+      Process.put(:mob_ios_override_replaced, true)
+      on_exit(fn -> Process.delete(:mob_ios_override_replaced) end)
+
+      assert {:skipped, "App is not installed"} =
+               Deployer.finalize_ios_override_result(
+                 {:skipped, "App is not installed"},
+                 "sample_app"
+               )
+    end
+
+    test "real copy failures still explain an incomplete override" do
+      Process.put(:mob_ios_override_replaced, true)
+      on_exit(fn -> Process.delete(:mob_ios_override_replaced) end)
+
+      assert {:error, message} =
+               Deployer.finalize_ios_override_result({:error, "copy failed"}, "sample_app")
+
+      assert message =~ "copy failed"
+      assert message =~ "now incomplete"
+    end
+
     test "requires staged bootstrap bytes to match the active compile output" do
       root = Path.join(System.tmp_dir!(), "mob_ios_override_#{System.unique_integer()}")
       compile_path = Path.join(root, "compile")

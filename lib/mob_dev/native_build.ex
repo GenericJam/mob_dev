@@ -1,6 +1,5 @@
 defmodule MobDev.NativeBuild do
-  alias MobDev.Release
-  alias MobDev.Toolchain
+  alias MobDev.{Device, Release, Toolchain}
 
   @moduledoc """
   Builds native binaries (APK for Android, .app bundle for iOS simulator)
@@ -25,16 +24,22 @@ defmodule MobDev.NativeBuild do
   Runs Android Gradle build if `android/` dir exists.
   Runs the Mix-driven iOS pipeline (delegating native compile + link
   to `ios/build.zig` for sim, `ios/build_device.zig` for device) when
-  `ios/build.zig` exists. Selection between sim and device is driven
-  by the `device:` opt.
+  `ios/build.zig` exists. `devices:` supplies the frozen target snapshot used
+  by `mix mob.deploy`; older direct callers may still use `device:`.
   """
-  @spec build_all(keyword()) :: [:ok | {:error, term()}]
+  @spec build_all(keyword()) :: boolean()
   def build_all(opts \\ []) do
     cfg = load_config()
     platforms = Keyword.get(opts, :platforms, [:android, :ios])
     device_id = Keyword.get(opts, :device, nil)
+    devices = Keyword.get(opts, :devices, :discover)
     slim = Keyword.get(opts, :slim, true)
-    platforms = narrow_platforms_for_device(platforms, device_id)
+
+    platforms =
+      if devices == :discover,
+        do: narrow_platforms_for_device(platforms, device_id),
+        else: platforms
+
     Process.put(:mob_slim, slim)
 
     # Always regenerate the runtime plugin manifest from the CURRENT activated
@@ -92,46 +97,19 @@ defmodule MobDev.NativeBuild do
           results
 
         true ->
-          [build_android(cfg, device_id) | results]
+          android_targets =
+            case devices do
+              :discover -> device_id
+              selected -> for d <- selected, d.platform == :android, do: d.serial
+            end
+
+          [build_android(cfg, android_targets) | results]
       end
 
     results =
-      if :ios in platforms do
-        physical_udid =
-          cond do
-            is_binary(device_id) and ios_physical_udid?(device_id) ->
-              device_id
-
-            is_nil(device_id) ->
-              auto_detect_physical_ios()
-
-            true ->
-              nil
-          end
-
-        cond do
-          not ios_toolchain_available?() ->
-            warn_skipped_ios()
-            results
-
-          physical_udid ->
-            [build_ios_physical(cfg, physical_udid) | results]
-
-          File.exists?("ios/build.zig") ->
-            [build_ios(cfg, device_id) | results]
-
-          true ->
-            if :ios in Keyword.get(opts, :requested, []) do
-              IO.puts(
-                "  #{IO.ANSI.yellow()}⚠  Skipping iOS build — no ios/build.zig in this project#{IO.ANSI.reset()}"
-              )
-            end
-
-            results
-        end
-      else
-        results
-      end
+      if :ios in platforms,
+        do: build_ios_targets(results, cfg, devices, device_id, opts),
+        else: results
 
     if results == [] do
       IO.puts(
@@ -163,6 +141,65 @@ defmodule MobDev.NativeBuild do
       {:error, message} ->
         IO.puts("  #{IO.ANSI.red()}✗ #{message}#{IO.ANSI.reset()}")
         false
+    end
+  end
+
+  defp build_ios_targets(results, cfg, :discover, device_id, opts) do
+    physical_udid =
+      cond do
+        is_binary(device_id) and ios_physical_udid?(device_id) -> device_id
+        is_nil(device_id) -> auto_detect_physical_ios()
+        true -> nil
+      end
+
+    cond do
+      not ios_toolchain_available?() ->
+        warn_skipped_ios()
+        results
+
+      physical_udid ->
+        [build_ios_physical(cfg, physical_udid) | results]
+
+      File.exists?("ios/build.zig") ->
+        [build_ios(cfg, device_id) | results]
+
+      true ->
+        warn_missing_ios_scaffold(opts)
+        results
+    end
+  end
+
+  defp build_ios_targets(results, cfg, devices, _device_id, opts) when is_list(devices) do
+    physical_ids = for d <- devices, d.platform == :ios and Device.physical?(d), do: d.serial
+
+    simulator_ids =
+      for d <- devices, d.platform == :ios and not Device.physical?(d), do: d.serial
+
+    cond do
+      not ios_toolchain_available?() ->
+        warn_skipped_ios()
+        results
+
+      physical_ids == [] and simulator_ids == [] and devices != [] ->
+        results
+
+      true ->
+        results = Enum.reduce(physical_ids, results, &[build_ios_physical(cfg, &1) | &2])
+
+        if File.exists?("ios/build.zig") and (simulator_ids != [] or devices == []) do
+          [build_ios(cfg, simulator_ids) | results]
+        else
+          if simulator_ids != [], do: warn_missing_ios_scaffold(opts)
+          results
+        end
+    end
+  end
+
+  defp warn_missing_ios_scaffold(opts) do
+    if :ios in Keyword.get(opts, :requested, []) do
+      IO.puts(
+        "  #{IO.ANSI.yellow()}⚠  Skipping iOS build — no ios/build.zig in this project#{IO.ANSI.reset()}"
+      )
     end
   end
 
@@ -1343,71 +1380,72 @@ defmodule MobDev.NativeBuild do
   defp adb_install_all(apk, bundle_id, device_id) do
     case System.cmd("adb", ["devices"], stderr_to_stdout: true) do
       {output, 0} ->
-        serials =
+        available =
           output
           |> String.split("\n")
           |> Enum.drop(1)
           |> Enum.filter(&String.contains?(&1, "\tdevice"))
           |> Enum.map(&hd(String.split(&1, "\t")))
-          |> filter_serials(device_id)
 
-        Enum.each(serials, fn serial ->
-          IO.puts("  Installing APK on #{serial}...")
+        with {:ok, serials} <- resolve_frozen_adb_targets(available, device_id) do
+          Enum.each(serials, fn serial ->
+            IO.puts("  Installing APK on #{serial}...")
 
-          System.cmd("adb", ["-s", serial, "shell", "am", "force-stop", bundle_id],
-            stderr_to_stdout: true
-          )
-
-          # Try an in-place reinstall first (`install -r`): it preserves app data
-          # (on-device identity, screen stores) when the signing key matches —
-          # the common case once an app pins a committed debug keystore. Only
-          # when the package can't be updated in place (signature mismatch,
-          # version downgrade) do we uninstall + install, which clears app data.
-          {first_out, first_rc} =
-            System.cmd("adb", ["-s", serial, "install", "-r", apk], stderr_to_stdout: true)
-
-          {install_out, install_rc} =
-            if needs_clean_reinstall?(first_out, first_rc) do
-              # Distinguish a genuine package-state rejection (signature or
-              # version mismatch) from a transient adb error (e.g. device
-              # offline): a clean reinstall reliably clears app data only in the
-              # former case, so word the notice accordingly rather than always
-              # promising "app data will be cleared".
-              if String.contains?(first_out, "INSTALL_FAILED") do
-                IO.puts(
-                  "  #{IO.ANSI.yellow()}In-place update rejected (signature or version " <>
-                    "mismatch), reinstalling clean (app data will be cleared)#{IO.ANSI.reset()}"
-                )
-              else
-                IO.puts(
-                  "  #{IO.ANSI.yellow()}In-place update failed (adb exit #{first_rc}), " <>
-                    "retrying with a clean install#{IO.ANSI.reset()}"
-                )
-              end
-
-              System.cmd("adb", ["-s", serial, "uninstall", bundle_id], stderr_to_stdout: true)
-              System.cmd("adb", ["-s", serial, "install", apk], stderr_to_stdout: true)
-            else
-              {first_out, first_rc}
-            end
-
-          if install_rc != 0 or String.contains?(install_out, "INSTALL_FAILED") do
-            reason =
-              install_out
-              |> String.split("\n")
-              |> Enum.find(&String.contains?(&1, "INSTALL_FAILED")) || String.trim(install_out)
-
-            IO.puts(
-              "  #{IO.ANSI.yellow()}⚠  #{serial}: APK install failed — #{reason}#{IO.ANSI.reset()}"
+            System.cmd("adb", ["-s", serial, "shell", "am", "force-stop", bundle_id],
+              stderr_to_stdout: true
             )
 
-            IO.puts("     (OTP push will be skipped for this device)")
-          else
-            fix_erts_helper_labels(serial, bundle_id)
-          end
-        end)
+            # Try an in-place reinstall first (`install -r`): it preserves app data
+            # (on-device identity, screen stores) when the signing key matches —
+            # the common case once an app pins a committed debug keystore. Only
+            # when the package can't be updated in place (signature mismatch,
+            # version downgrade) do we uninstall + install, which clears app data.
+            {first_out, first_rc} =
+              System.cmd("adb", ["-s", serial, "install", "-r", apk], stderr_to_stdout: true)
 
-        :ok
+            {install_out, install_rc} =
+              if needs_clean_reinstall?(first_out, first_rc) do
+                # Distinguish a genuine package-state rejection (signature or
+                # version mismatch) from a transient adb error (e.g. device
+                # offline): a clean reinstall reliably clears app data only in the
+                # former case, so word the notice accordingly rather than always
+                # promising "app data will be cleared".
+                if String.contains?(first_out, "INSTALL_FAILED") do
+                  IO.puts(
+                    "  #{IO.ANSI.yellow()}In-place update rejected (signature or version " <>
+                      "mismatch), reinstalling clean (app data will be cleared)#{IO.ANSI.reset()}"
+                  )
+                else
+                  IO.puts(
+                    "  #{IO.ANSI.yellow()}In-place update failed (adb exit #{first_rc}), " <>
+                      "retrying with a clean install#{IO.ANSI.reset()}"
+                  )
+                end
+
+                System.cmd("adb", ["-s", serial, "uninstall", bundle_id], stderr_to_stdout: true)
+                System.cmd("adb", ["-s", serial, "install", apk], stderr_to_stdout: true)
+              else
+                {first_out, first_rc}
+              end
+
+            if install_rc != 0 or String.contains?(install_out, "INSTALL_FAILED") do
+              reason =
+                install_out
+                |> String.split("\n")
+                |> Enum.find(&String.contains?(&1, "INSTALL_FAILED")) || String.trim(install_out)
+
+              IO.puts(
+                "  #{IO.ANSI.yellow()}⚠  #{serial}: APK install failed — #{reason}#{IO.ANSI.reset()}"
+              )
+
+              IO.puts("     (OTP push will be skipped for this device)")
+            else
+              fix_erts_helper_labels(serial, bundle_id)
+            end
+          end)
+
+          :ok
+        end
 
       {out, _} ->
         {:error, "adb devices failed: #{out}"}
@@ -1460,24 +1498,26 @@ defmodule MobDev.NativeBuild do
 
     case System.cmd("adb", ["devices"], stderr_to_stdout: true) do
       {output, 0} ->
-        serials = parse_adb_serials(output) |> filter_serials(device_id)
-        if serials == [], do: IO.puts("  (no devices connected, skipping OTP push)")
+        with {:ok, serials} <-
+               output |> parse_adb_serials() |> resolve_frozen_adb_targets(device_id) do
+          if serials == [], do: IO.puts("  (no devices connected, skipping OTP push)")
 
-        Enum.reduce_while(serials, :ok, fn serial, _ ->
-          otp_dir = device_otp_dir(serial, otp_arm64, otp_arm32, otp_x86_64)
+          Enum.reduce_while(serials, :ok, fn serial, _ ->
+            otp_dir = device_otp_dir(serial, otp_arm64, otp_arm32, otp_x86_64)
 
-          result =
-            try do
-              push_otp_to_device(serial, bundle_id, app_data, otp_dir, elixir_lib)
-            catch
-              {:skip, _} -> :ok
+            result =
+              try do
+                push_otp_to_device(serial, bundle_id, app_data, otp_dir, elixir_lib)
+              catch
+                {:skip, _} -> :ok
+              end
+
+            case result do
+              :ok -> {:cont, :ok}
+              {:error, reason} -> {:halt, {:error, reason}}
             end
-
-          case result do
-            :ok -> {:cont, :ok}
-            {:error, reason} -> {:halt, {:error, reason}}
-          end
-        end)
+          end)
+        end
 
       {out, _} ->
         {:error, "adb devices failed: #{out}"}
@@ -1655,13 +1695,16 @@ defmodule MobDev.NativeBuild do
     |> Enum.map(&hd(String.split(&1, "\t")))
   end
 
-  # Filters a list of adb serials by `--device <id>`. The id is matched against
-  # the serial directly, against an `IP:port` form (auto-strip `:5555`), and
-  # against a bare IP for WiFi-adb devices. Returns all serials when device_id
-  # is nil. Returns empty + warning if device_id matches no connected serial.
+  # Filters adb serials by one legacy `--device <id>` value or by the exact list
+  # frozen at task start. An empty frozen list means no installation; it must
+  # never widen back to every device.
   @doc false
-  @spec filter_serials([String.t()], String.t() | nil) :: [String.t()]
+  @spec filter_serials([String.t()], String.t() | [String.t()] | nil) :: [String.t()]
   def filter_serials(serials, nil), do: serials
+
+  def filter_serials(serials, ids) when is_list(ids) do
+    Enum.filter(serials, &(&1 in ids))
+  end
 
   def filter_serials(serials, id) when is_binary(id) do
     matches =
@@ -1678,6 +1721,23 @@ defmodule MobDev.NativeBuild do
     matches
   end
 
+  @doc false
+  @spec resolve_frozen_adb_targets([String.t()], String.t() | [String.t()] | nil) ::
+          {:ok, [String.t()]} | {:error, String.t()}
+  def resolve_frozen_adb_targets(serials, ids) when is_list(ids) do
+    selected = filter_serials(serials, ids)
+    missing = ids -- selected
+
+    if missing == [] do
+      {:ok, selected}
+    else
+      {:error, "Selected Android device(s) disconnected: #{Enum.join(missing, ", ")}"}
+    end
+  end
+
+  def resolve_frozen_adb_targets(serials, device_id),
+    do: {:ok, filter_serials(serials, device_id)}
+
   defp strip_port(s) do
     case String.split(s, ":", parts: 2) do
       [host, _port] -> host
@@ -1687,7 +1747,7 @@ defmodule MobDev.NativeBuild do
 
   # ── iOS ──────────────────────────────────────────────────────────────────────
 
-  defp build_ios(cfg, device_id) do
+  defp build_ios(cfg, device_ids) do
     with :ok <- check_path(cfg[:mob_dir], "mob_dir"),
          :ok <- check_path(cfg[:elixir_lib], "elixir_lib"),
          {:ok, otp_root} <- MobDev.OtpDownloader.ensure_ios_sim(),
@@ -1736,7 +1796,7 @@ defmodule MobDev.NativeBuild do
                nxeigen_archive,
                tflite_build
              ),
-           {:ok, sim_id} <- pick_ios_sim(device_id),
+           {:ok, sim_ids} <- resolve_ios_sim_targets(device_ids),
            binary_path = "ios/zig-out/#{display_name}",
            :ok <- check_path(binary_path, "iOS binary"),
            {:ok, app_path} <- bundle_ios_app(binary_path, display_name, cfg),
@@ -1746,13 +1806,25 @@ defmodule MobDev.NativeBuild do
                "ios-arm64_x86_64-simulator",
                Path.join(app_path, "Frameworks")
              ),
-           :ok <- install_ios_sim(sim_id, app_path) do
+           :ok <- install_ios_sims(sim_ids, app_path) do
         {:ok, "iOS"}
       else
         {:error, reason} -> {:error, "iOS", reason}
       end
     else
       {:error, reason} -> {:error, "iOS", reason}
+    end
+  end
+
+  @doc false
+  @spec resolve_ios_sim_targets([String.t()] | String.t() | nil) ::
+          {:ok, [String.t()]} | {:error, String.t()}
+  def resolve_ios_sim_targets(ids) when is_list(ids), do: {:ok, ids}
+
+  def resolve_ios_sim_targets(device_id) do
+    case pick_ios_sim(device_id) do
+      {:ok, sim_id} -> {:ok, [sim_id]}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -4422,6 +4494,15 @@ defmodule MobDev.NativeBuild do
       {_, 0} -> :ok
       {_, _} -> {:error, "xcrun simctl install failed — check output above"}
     end
+  end
+
+  defp install_ios_sims(sim_ids, app_path) do
+    Enum.reduce_while(sim_ids, :ok, fn sim_id, :ok ->
+      case install_ios_sim(sim_id, app_path) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
   end
 
   # Physical iOS: compile for device SDK, bundle OTP, sign, install via devicectl.

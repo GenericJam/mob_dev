@@ -1,3 +1,33 @@
+## [Unreleased]
+
+### Changed
+
+- **`mix mob.deploy` now freezes an explicit target set before doing work**
+  (MOB-169). A bare deploy automatically targets exactly one emulator or
+  simulator and never a physical phone. `--device`, `--all-devices`, and
+  `--all-physical` provide explicit single, development-device, and physical
+  scopes; `ANDROID_SERIAL` acts as the Android single-device selector on
+  Android-only runs.
+
+  Compatibility checks, native installs, and the final BEAM push all consume
+  the same snapshot, so a device appearing during the build cannot join the
+  operation. On the iOS path, the diagnostic that annotates a mid-copy
+  failure is now extracted (`Deployer.finalize_ios_override_result/2`) so
+  a `:skipped` result stays `:skipped` and only real `:error` finalizations
+  can inherit the incomplete-override wording.
+
+  **Behaviour change** — a bare `mix mob.deploy` with **two or more emulators
+  or simulators running for parallel testing** used to fan out to both, and
+  now refuses with an ambiguity error demanding an explicit selection
+  (`--device <id>` or `--all-devices`). This is the loudest new failure mode:
+  scripts and shell aliases that relied on the fan-out will need one of the
+  new flags. Physical devices also no longer receive an implicit deploy —
+  name one with `--device` or pass `--all-physical` to include them.
+
+  See `decisions/2026-09-11-deploy-freezes-explicit-targets.md`.
+
+---
+
 ## [0.7.1] - 2026-09-11
 
 ### Added
