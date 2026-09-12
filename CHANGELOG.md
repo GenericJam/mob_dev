@@ -2,6 +2,18 @@
 
 ### Fixed
 
+- **`mix mob.connect --name` is now honored end-to-end** (MOB-69). The
+  option was parsed at the task layer, but `Connector.connect_all/1`
+  called `ensure_local_dist/1` which hardcoded `Node.start(:"mob_dev@127.0.0.1", ...)`.
+  By the time `start_iex/3` tried to honor `--name`, `Node.alive?/0` was
+  already true and the second `Node.start` was skipped — so the multi-
+  session workflow (one `--name mob_dev_N@127.0.0.1` per developer,
+  documented in the task's moduledoc) crashed with the wrong node name
+  registered in EPMD. Threaded `:name` through `connect_all/1` into a
+  new `ensure_local_dist/2`, backed by a public
+  `Connector.local_name_from_opts/1` helper so the option-plumbing is
+  unit-testable.
+
 - **`mix mob.deploy --slim` is no longer a silent no-op** (MOB-73).
   `NativeBuild.build_all/1` stored `slim` in the process dict
   (`Process.put(:mob_slim, slim)`) but the actual gate at

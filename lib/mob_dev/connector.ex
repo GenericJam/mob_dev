@@ -30,6 +30,14 @@ defmodule MobDev.Connector do
   @spec connect_all(keyword()) :: {[Device.t()], [Device.t()]}
   def connect_all(opts \\ []) do
     cookie = Keyword.get(opts, :cookie, :mob_secret)
+    # The `mob.connect --name` option is documented for the multi-session
+    # workflow (one IEx per developer, distinct EPMD names). Before MOB-69
+    # this arg was accepted at the Mix-task layer, but connect_all/1
+    # unconditionally started distribution under `mob_dev@127.0.0.1` — so
+    # by the time `start_iex/3` tried to honor `--name`, `Node.alive?/0`
+    # was already true and the Node.start was skipped. Threading the name
+    # here fixes it end-to-end.
+    local_name = local_name_from_opts(opts)
 
     only = opts |> Keyword.get(:only, []) |> List.wrap()
     platforms = opts |> Keyword.get(:platforms, [:android, :ios]) |> List.wrap()
@@ -64,7 +72,7 @@ defmodule MobDev.Connector do
       Enum.each(tunneled, &restart_app/1)
 
       # Start distribution on the Mac side
-      ensure_local_dist(cookie)
+      ensure_local_dist(local_name, cookie)
 
       # Activate accessibility on iOS simulators so ui_tree() returns elements.
       # SwiftUI lazily populates its a11y tree; this one-time activation persists
@@ -217,12 +225,30 @@ defmodule MobDev.Connector do
     IO.puts(" done")
   end
 
-  defp ensure_local_dist(cookie) do
+  @doc """
+  Reads the `:name` option from `connect_all/1`'s keyword list and returns
+  it as an atom. Falls back to `:"mob_dev@127.0.0.1"` when unset — the
+  historical default.
+
+  Public so the option-plumbing is unit-testable without needing to actually
+  call `Node.start/2` (which would mutate BEAM-global distribution state
+  and require an `async: false` test module). See MOB-69.
+  """
+  @spec local_name_from_opts(keyword()) :: node()
+  def local_name_from_opts(opts) when is_list(opts) do
+    case Keyword.get(opts, :name) do
+      nil -> :"mob_dev@127.0.0.1"
+      name when is_atom(name) -> name
+      name when is_binary(name) -> String.to_atom(name)
+    end
+  end
+
+  defp ensure_local_dist(local_name, cookie) do
     unless Node.alive?() do
       # On Nix and some Linux setups, EPMD is not started automatically.
       # Try to start it before Node.start so distribution can register.
       start_epmd()
-      handle_dist_start(Node.start(:"mob_dev@127.0.0.1", :longnames), cookie)
+      handle_dist_start(Node.start(local_name, :longnames), cookie)
     end
   end
 
