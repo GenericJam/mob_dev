@@ -68,6 +68,8 @@
 
 ### Changed
 
+- **`mix mob.add_nif --demo` notice names both home-screen shapes** (MOB-188). The generated default app is now the Mishka Chelekom showcase, whose home lists demos through `Kit.compact_button/2` in `demo_buttons/1`; the notice shows that form first and keeps the `nav_button/2` form for `--blank` apps.
+
 - **`mix mob.deploy` now freezes an explicit target set before doing work**
   (MOB-169). A bare deploy automatically targets exactly one emulator or
   simulator and never a physical phone. `--device`, `--all-devices`, and

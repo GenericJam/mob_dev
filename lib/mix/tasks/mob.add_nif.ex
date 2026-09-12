@@ -767,11 +767,16 @@ defmodule Mix.Tasks.Mob.AddNif do
        node = hd(Node.list())     # or use the printed node name
        :rpc.call(node, Mob.Test, :navigate, [#{inspect(screen)}])
 
-    2. Wire into your existing home screen — add to its render:
+    2. Wire into your existing home screen. In the default generated app
+       (the Mishka Chelekom showcase) add a button to `demo_buttons/1`:
+
+       Kit.compact_button("#{name} demo", :open_#{name}_demo)
+
+       In a `--blank` app add to the render instead:
 
        {nav_button("#{name} demo", :open_#{name}_demo)}
 
-       and a `handle_info({:tap, :open_#{name}_demo}, ...)` clause:
+       Either way, add a `handle_info({:tap, :open_#{name}_demo}, ...)` clause:
 
        def handle_info({:tap, :open_#{name}_demo}, socket) do
          {:noreply, Mob.Socket.push_screen(socket, #{inspect(screen)})}
