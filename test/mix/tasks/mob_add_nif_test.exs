@@ -448,6 +448,9 @@ defmodule Mix.Tasks.Mob.AddNifTest do
       # The three options the user can pick from.
       assert notice =~ "Quick test from IEx"
       assert notice =~ "Wire into your existing home screen"
+      # Both home-screen shapes mob_new generates: the Mishka showcase grid and --blank.
+      assert notice =~ ~s|Kit.compact_button("audio_engine demo", :open_audio_engine_demo)|
+      assert notice =~ ~s|nav_button("audio_engine demo", :open_audio_engine_demo)|
       assert notice =~ "root screen"
 
       # Mentions Logger so the user knows the IEx visibility path.
