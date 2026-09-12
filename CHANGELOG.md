@@ -19,9 +19,10 @@
 
   **v1 envelopes are refused** — accepting them silently reopens the
   bug. The error is a distinguished `:envelope_v1_unsupported` reason
-  and the `SignatureGate` message points at
-  `mix mob.plugin.sign` on mob_dev 0.7.2+ to re-sign. Every published
-  plugin with a mob_dev ≤ 0.7.1 signature must be re-signed.
+  and the `SignatureGate` message tells the author to re-sign with a
+  mob_dev that produces envelope v2 (`mix mob.plugin.sign`). Every
+  plugin signed with a mob_dev that predates this change must be
+  re-signed on the consumer's next build.
 
   Follow-up tickets on file for the walk to data-only manifests
   (safe-by-construction): **MOB-185** (`mix mob.plugin.lint`),

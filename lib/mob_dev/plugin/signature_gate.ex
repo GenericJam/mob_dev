@@ -172,6 +172,11 @@ defmodule MobDev.Plugin.SignatureGate do
 
   defp manifest_name(_dir, manifest) when is_map(manifest), do: manifest[:name]
 
+  # `String.to_atom` on unbounded input can exhaust the atom table, but the
+  # domain here is the deps-directory basename — one entry per Hex dep in
+  # `Mix.Project.deps_paths()`, a small set the consumer controls at
+  # dependency-declaration time. No attacker-controlled path reaches this
+  # helper.
   defp manifest_name(dir, nil) do
     dir |> Path.basename() |> String.to_atom()
   end
@@ -193,7 +198,19 @@ defmodule MobDev.Plugin.SignatureGate do
     end
   end
 
-  defp acknowledged_unsafe do
+  @doc """
+  The list of plugin names the consumer has opted into loading unsigned via
+  `:acknowledge_unsafe_plugins` (in `Application` env or `mob.exs`).
+
+  Exposed so `MobDev.Plugin.activated/0` can pass
+  `acknowledged_unsafe: true` into `Verify.load_verified/2` for these
+  plugins — otherwise a missing signature would silently strip the plugin
+  from the build (its manifest fields would never merge into the app),
+  producing "acknowledged" plugins that actually contribute nothing.
+  See MOB-74's pre-merge review.
+  """
+  @spec acknowledged_unsafe() :: [atom()]
+  def acknowledged_unsafe do
     Application.get_env(:mob, :acknowledge_unsafe_plugins, []) ++
       read_acknowledged_from_mob_exs()
   end
@@ -247,7 +264,7 @@ defmodule MobDev.Plugin.SignatureGate do
       "    v1 required evaluating the manifest before verifying it, which\n" <>
       "    let a malicious priv/mob_plugin.exs run arbitrary code at build\n" <>
       "    time. Refused by this mob_dev. Ask the plugin author to re-sign\n" <>
-      "    with mob_dev 0.7.2 or later (`mix mob.plugin.sign`)."
+      "    with a mob_dev that produces envelope v2 (`mix mob.plugin.sign`)."
   end
 
   defp format_error({:untrusted, name, actual_fp, nil}) do

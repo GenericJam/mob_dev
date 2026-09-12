@@ -180,21 +180,6 @@ defmodule MobDev.Plugin.VerifyTest do
       assert {:ok, nil} = Verify.load_verified(dir)
     end
 
-    test "REFUSES to eval when verification fails — this is the MOB-74 fix", %{dir: dir} do
-      # If a malicious plugin tampers with priv/mob_plugin.exs, load_verified
-      # must refuse before Code.eval_file runs. Revert-verify: swap the
-      # `verify_plugin/1` call in Verify.load_verified/1 for a bare
-      # `Manifest.load/1` and this test still passes because the eval'd
-      # manifest map returns fine — but the malicious side effects would
-      # have already run. So we can't test "side effects didn't happen"
-      # without a marker; the assertion here is the negative pre-condition
-      # (error return, not {:ok, manifest}).
-      original = File.read!(Path.join(dir, "priv/mob_plugin.exs"))
-      File.write!(Path.join(dir, "priv/mob_plugin.exs"), original <> "\n# tampered\n")
-
-      assert {:error, :invalid_signature} = Verify.load_verified(dir)
-    end
-
     test "refuses to eval a tampered manifest even if the side effect would run first",
          %{dir: dir} do
       # Stronger version: put a side-effect BEFORE the returning map. If
@@ -227,6 +212,36 @@ defmodule MobDev.Plugin.VerifyTest do
       {:ok, loaded_direct} = Manifest.load(dir)
       {:ok, loaded_verified} = Verify.load_verified(dir)
       assert loaded_direct == loaded_verified
+    end
+
+    test "acknowledged_unsafe: true loads an unsigned manifest (the escape hatch)",
+         %{dir: dir} do
+      # The documented :acknowledge_unsafe_plugins path. Without this,
+      # every acknowledged unsigned plugin's manifest map gets stripped
+      # out of the build silently (SignatureGate says :ok for the plugin
+      # but downstream Merge/AndroidBootstrap/RuntimeManifest filter on
+      # is_map(manifest) and skip the nil). See MOB-74 pre-merge review.
+      #
+      # Revert-verify: remove the `when acknowledged_unsafe?` clause in
+      # `Verify.load_verified/2` and this fails — an unsigned plugin
+      # would return `{:error, :missing_signature}` even with the opt.
+      File.rm!(Sign.signature_path(dir))
+
+      assert {:ok, manifest} = Verify.load_verified(dir, acknowledged_unsafe: true)
+      assert manifest[:name] == :mob_demo
+    end
+
+    test "acknowledged_unsafe: true does NOT bypass tamper detection", %{dir: dir} do
+      # The escape hatch is specifically for :missing_signature ("I know
+      # this isn't signed"). Invalid signatures — tampered files, wrong
+      # pubkey — must still refuse. The user opted into unsigned code,
+      # not into arbitrary attacker code passing itself off as the
+      # unsigned plugin.
+      original = File.read!(Path.join(dir, "priv/mob_plugin.exs"))
+      File.write!(Path.join(dir, "priv/mob_plugin.exs"), original <> "\n# tampered\n")
+
+      assert {:error, :invalid_signature} =
+               Verify.load_verified(dir, acknowledged_unsafe: true)
     end
   end
 end

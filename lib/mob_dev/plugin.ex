@@ -147,9 +147,26 @@ defmodule MobDev.Plugin do
   @spec activated_with_verify() :: [activated_entry()]
   def activated_with_verify do
     deps = Mix.Project.deps_paths()
+    acknowledged = MobDev.Plugin.SignatureGate.acknowledged_unsafe()
 
     for name <- activated_names(), dir = deps[name], not is_nil(dir) do
-      case MobDev.Plugin.Verify.load_verified(dir) do
+      # Threading acknowledged-unsafe here matters. Without it, an unsigned
+      # plugin the user has explicitly opted into via
+      # :acknowledge_unsafe_plugins would get :missing_signature from
+      # load_verified/2 and its manifest map would be dropped — silently
+      # stripping the plugin's NIFs, gradle deps, swift files, and
+      # permissions from the build. `SignatureGate.check_plugin/4` would
+      # still let it through as :ok (that's what "acknowledged" means),
+      # but downstream Merge/AndroidBootstrap/RuntimeManifest filter on
+      # is_map(manifest) and skip the nil. Result: a build that ships
+      # nothing from the plugin, no error message. See MOB-74 pre-merge
+      # review. Every OTHER verify failure (:invalid_signature,
+      # :missing_pubkey, :envelope_v1_unsupported) still refuses the eval
+      # — those are tamper/mis-key signals, not the "unsigned during dev"
+      # case.
+      opts = if name in acknowledged, do: [acknowledged_unsafe: true], else: []
+
+      case MobDev.Plugin.Verify.load_verified(dir, opts) do
         {:ok, nil} -> {dir, nil, :unsigned}
         {:ok, manifest} -> {dir, manifest, :ok}
         {:error, reason} -> {dir, nil, {:error, reason}}

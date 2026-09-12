@@ -81,6 +81,20 @@ Move to envelope v2, which flips the trust chain end-to-end:
   failed-verification tier-1 plugin now also has `manifest == nil` —
   distinguishing the two by manifest-file presence surfaces the
   friendly error for the failed case instead of silently skipping.
+- **`Verify.load_verified/2` accepts `acknowledged_unsafe: true`** as
+  the second-arg option, and `MobDev.Plugin.activated_with_verify/0`
+  passes it for plugins in `:acknowledge_unsafe_plugins`. Without
+  this, an acknowledged unsigned plugin's `{:error, :missing_signature}`
+  would strip its manifest map from the build even though
+  `SignatureGate.check_plugin/4` still lets the plugin through
+  (`if name in acknowledged, do: :ok`). Downstream `Merge`,
+  `AndroidBootstrap`, `RuntimeManifest` all filter on
+  `is_map(manifest)` — the acknowledged plugin would appear activated
+  but contribute nothing: no NIFs, no gradle deps, no permissions. The
+  opt-in escape hatch is scoped to `:missing_signature` only; every
+  other verify failure (`:invalid_signature`, `:missing_pubkey`,
+  `:envelope_v1_unsupported`) still refuses the eval because those
+  are tamper / mis-key / attack signals, not "unsigned during dev".
 - **UX regression when the manifest name isn't derivable from a nil
   manifest** — the gate falls back to `Path.basename(dir)` for the error
   label. In real deployments this equals the Hex package name; in tests

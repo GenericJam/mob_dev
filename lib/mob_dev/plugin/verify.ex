@@ -192,19 +192,45 @@ defmodule MobDev.Plugin.Verify do
   `Manifest.load/1` is never called and `Code.eval_file/1` on the
   potentially-malicious `priv/mob_plugin.exs` never runs.
 
+  ## Options
+
+  - `:acknowledged_unsafe` (default `false`) — when `true`, an
+    unsigned plugin (`{:error, :missing_signature}`) is loaded anyway.
+    This is the documented escape hatch for
+    `:acknowledge_unsafe_plugins` (see `SignatureGate.check_plugin/4`)
+    — the user has explicitly opted into running an unsigned plugin's
+    manifest, and the `SignatureGate` banner already warns them. Every
+    OTHER failure (`:invalid_signature`, `:missing_pubkey`,
+    `:envelope_v1_unsupported`) still refuses the eval — those are
+    the tamper / mis-key cases, not the "unsigned during dev" case.
+
   For plugins with no `priv/mob_plugin.exs` at all (tier-0 plugins),
-  returns `{:ok, nil}` without requiring a signature.
+  returns `{:ok, nil}` without requiring a signature — the
+  `acknowledged_unsafe` flag has no effect here (no manifest to load).
   """
-  @spec load_verified(Path.t()) :: {:ok, map() | nil} | {:error, verify_error() | String.t()}
-  def load_verified(plugin_dir) do
+  @spec load_verified(Path.t(), keyword()) ::
+          {:ok, map() | nil} | {:error, verify_error() | String.t()}
+  def load_verified(plugin_dir, opts \\ []) do
+    acknowledged_unsafe? = Keyword.get(opts, :acknowledged_unsafe, false)
+
     case Manifest.manifest_present?(plugin_dir) do
       false ->
         {:ok, nil}
 
       true ->
         case verify_plugin(plugin_dir) do
-          :ok -> Manifest.load(plugin_dir)
-          {:error, _} = err -> err
+          :ok ->
+            Manifest.load(plugin_dir)
+
+          {:error, :missing_signature} when acknowledged_unsafe? ->
+            # Documented escape hatch: user opted into an unsigned plugin
+            # via :acknowledge_unsafe_plugins. Signed but tampered / wrong
+            # pubkey / v1 envelope still refuse — they're the actual
+            # attack signals, not the "haven't signed yet during dev" one.
+            Manifest.load(plugin_dir)
+
+          {:error, _} = err ->
+            err
         end
     end
   end
