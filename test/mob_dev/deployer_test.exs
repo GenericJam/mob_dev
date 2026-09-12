@@ -367,4 +367,102 @@ defmodule MobDev.DeployerTest do
       assert Deployer.__sqlite_nif_target__(lines) == "/data/app/x/lib/arm/libsqlite3_nif.so"
     end
   end
+
+  # MOB-183: non-native mob.deploy used to report success on a device
+  # whose per-app OTP release directory was missing; the app then
+  # boot-crashed with "cannot get bootfile". The old check only verified
+  # ERTS binaries — this classifier verifies both ERTS and the release
+  # bootfile, and distinguishes the failure modes.
+  describe "classify_android_runtime_ls/3" do
+    @erts_glob "/data/data/com.example.demo/files/otp/erts-*/bin/erl_child_setup"
+    @boot_glob "/data/data/com.example.demo/files/otp/releases/*/start_clean.boot"
+
+    test "ok when both erts and bootfile exist" do
+      out = """
+      /data/data/com.example.demo/files/otp/erts-14.2.5/bin/erl_child_setup
+      /data/data/com.example.demo/files/otp/releases/29/start_clean.boot
+      """
+
+      assert Deployer.classify_android_runtime_ls(out, @erts_glob, @boot_glob) == :ok
+    end
+
+    test "run_as failure surfaces before glob checks" do
+      out = "run-as: unknown package: com.example.demo"
+
+      assert Deployer.classify_android_runtime_ls(out, @erts_glob, @boot_glob) ==
+               {:error, :run_as_unavailable}
+    end
+
+    test "erts missing when erts glob has no match" do
+      out = """
+      ls: #{@erts_glob}: No such file or directory
+      ls: #{@boot_glob}: No such file or directory
+      """
+
+      # Both missing prefers the ERTS tag — provisioning ERTS is the
+      # first thing --native does; there is no way to have the bootfile
+      # without ERTS in a real deploy, so reporting bootfile first would
+      # send the reader chasing the wrong file.
+      assert Deployer.classify_android_runtime_ls(out, @erts_glob, @boot_glob) ==
+               {:error, :erts_missing}
+    end
+
+    test "bootfile missing when only the boot glob has no match — MOB-183" do
+      out = """
+      /data/data/com.example.demo/files/otp/erts-14.2.5/bin/erl_child_setup
+      ls: #{@boot_glob}: No such file or directory
+      """
+
+      assert Deployer.classify_android_runtime_ls(out, @erts_glob, @boot_glob) ==
+               {:error, :bootfile_missing}
+    end
+
+    test "recognises the Toybox 'not found' variant of the missing-file message" do
+      # Some Android userland (Toybox `ls`) says "<path>: not found" rather
+      # than "ls: <path>: No such file or directory". The classifier must
+      # match either shape or the check silently passes on that userland.
+      out = "#{@erts_glob}: not found"
+
+      assert Deployer.classify_android_runtime_ls(out, @erts_glob, @boot_glob) ==
+               {:error, :erts_missing}
+    end
+
+    test "recognises the GNU coreutils 'cannot access' variant" do
+      out = "ls: cannot access '#{@boot_glob}': No such file or directory"
+
+      # This message doesn't contain the "ls: <glob>: No such file" prefix
+      # the primary branch looks for, so a naive substring on "No such file"
+      # would misfire between erts and bootfile in the both-missing case.
+      # Anchoring on the specific glob is the point of the classifier.
+      assert Deployer.classify_android_runtime_ls(out, @erts_glob, @boot_glob) ==
+               {:error, :bootfile_missing}
+    end
+
+    # The pre-review revision of the fix fell through to `:ok` whenever
+    # `run_adb` returned `{:error, out}` — which is exactly the arm that
+    # fires on the MOB-183 failure mode, because modern adb-shell (v2,
+    # default since Android 7) forwards the inner shell's non-zero exit as
+    # the session's own exit. `ensure_erts_on_device` now feeds `out` into
+    # the classifier regardless of the adb-shell status, so a real
+    # partial-runtime device reaches this classifier — the pathway must
+    # produce a verdict, not a silent pass. These fixtures are the exact
+    # `ls: ... No such file` strings adb-shell hands back on that arm.
+    test "MOB-183 regression: classifier fires on adb-shell error output" do
+      out = """
+      /data/data/com.example.demo/files/otp/erts-14.2.5/bin/erl_child_setup
+      ls: #{@boot_glob}: No such file or directory
+      """
+
+      assert Deployer.classify_android_runtime_ls(out, @erts_glob, @boot_glob) ==
+               {:error, :bootfile_missing}
+    end
+
+    test "empty output passes through as ok (adb transport failure fallback)" do
+      # A true adb transport failure (device disappeared, offline race) has
+      # no output to classify. Best-effort: let the deploy proceed and let
+      # the actual push failure surface the real problem.
+      assert Deployer.classify_android_runtime_ls("", @erts_glob, @boot_glob) == :ok
+      assert Deployer.classify_android_runtime_ls(nil, @erts_glob, @boot_glob) == :ok
+    end
+  end
 end

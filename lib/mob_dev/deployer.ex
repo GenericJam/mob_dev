@@ -282,39 +282,102 @@ defmodule MobDev.Deployer do
     end
   end
 
-  # Verify the OTP runtime (erts-X.Y/bin/erl_child_setup) is present on
-  # the device. Without this, the BEAM can't start — symlinks fail with
-  # ENOENT, the app crashes immediately. This typically happens when the
-  # device wasn't connected during a previous `mix mob.deploy --native`.
+  # Verify the OTP runtime (ERTS binary + release bootfile) is present on
+  # the device. Without both, the BEAM can't start:
   #
-  # Returns :ok if ERTS is present, {:error, message} with a helpful hint
-  # if missing.
+  # - Missing `erts-*/bin/erl_child_setup` — symlinks fail with ENOENT, the
+  #   app crashes at BEAM launch.
+  # - Missing `releases/*/start_clean.boot` — the OTP dir has ERTS but no
+  #   release, so `erl_child_setup` starts and the emulator loads, but
+  #   boot-time reports "cannot get bootfile" and the app dies (MOB-183 /
+  #   mob_dev#54). This is the state a device lands in when the APK ships
+  #   ERTS in jniLibs but the release dir was never pushed via
+  #   `mix mob.deploy --native`.
+  #
+  # This typically happens when the device wasn't connected during a
+  # previous `mix mob.deploy --native`. Returns :ok when both are present,
+  # {:error, message} otherwise.
   defp ensure_erts_on_device(serial, pkg) do
-    # The wildcard must be expanded *inside* the run-as sandbox — `run-as`
+    # The wildcards must be expanded *inside* the run-as sandbox — `run-as`
     # itself does not invoke a shell, and the outer adb-shell shell can't
     # see /data/data/<pkg>/, so a literal "erts-*" gets passed to ls if we
-    # don't wrap with `sh -c` here.
-    cmd =
-      "run-as #{pkg} sh -c 'ls /data/data/#{pkg}/files/otp/erts-*/bin/erl_child_setup' 2>&1"
+    # don't wrap with `sh -c` here. `run_adb` already sets
+    # `stderr_to_stdout: true`, so the ls diagnostic lines land in the
+    # `out` we classify either way.
+    erts_glob = "/data/data/#{pkg}/files/otp/erts-*/bin/erl_child_setup"
+    boot_glob = "/data/data/#{pkg}/files/otp/releases/*/start_clean.boot"
 
-    case run_adb(["-s", serial, "shell", cmd]) do
-      {:ok, out} ->
-        cond do
-          String.contains?(out, "run-as:") ->
-            {:error, run_as_unavailable_message(serial, pkg, out)}
+    cmd = "run-as #{pkg} sh -c 'ls #{erts_glob} #{boot_glob}'"
 
-          String.contains?(out, "No such file") or String.contains?(out, "not found") ->
-            {:error, erts_missing_message(serial, pkg)}
+    # The MOB-183 case sits on the `{:error, out}` arm: `ls` exits non-zero
+    # when a glob is missing, `run-as` propagates it, `sh -c` propagates
+    # it, and modern adb-shell (shell v2, default since Android 7) forwards
+    # it as the session exit code — so `run_adb` returns `{:error, out}`
+    # with the ls diagnostic lines still in `out`. We MUST classify that
+    # `out` too, or the exact bug this ticket fixes falls through silent.
+    # The classifier's own empty-output branch handles the true transport
+    # failure case (device disappeared between `list_devices` and here).
+    {_status, out} = run_adb(["-s", serial, "shell", cmd])
 
-          true ->
-            :ok
-        end
+    case classify_android_runtime_ls(out, erts_glob, boot_glob) do
+      :ok -> :ok
+      {:error, :run_as_unavailable} -> {:error, run_as_unavailable_message(serial, pkg, out)}
+      {:error, :erts_missing} -> {:error, erts_missing_message(serial, pkg)}
+      {:error, :bootfile_missing} -> {:error, bootfile_missing_message(serial, pkg)}
+    end
+  end
 
-      _ ->
-        # adb shell failed entirely — let the deploy proceed and fail later
-        # if needed; this check is best-effort.
+  @doc """
+  Classifies the output of the Android per-app runtime `ls` probe.
+
+  Returns `:ok` when both `erts_glob` and `boot_glob` resolve to a real
+  file. Returns one of the failure tags in preference order:
+
+  - `{:error, :run_as_unavailable}` — the shell couldn't `run-as` the
+    package (release build, non-debuggable APK). Nothing under
+    `/data/data/<pkg>/files/otp/` is reachable to `ls` at all.
+  - `{:error, :erts_missing}` — no `erts-*/bin/erl_child_setup`. The
+    BEAM can't launch; the app crashes at ERTS start.
+  - `{:error, :bootfile_missing}` — ERTS is present but no
+    `releases/*/start_clean.boot`. The emulator starts, then dies with
+    "cannot get bootfile". MOB-183.
+
+  Public so the classifier can be tested against captured adb output
+  without an emulator.
+  """
+  @spec classify_android_runtime_ls(String.t() | nil, String.t(), String.t()) ::
+          :ok | {:error, :run_as_unavailable | :erts_missing | :bootfile_missing}
+  def classify_android_runtime_ls(out, erts_glob, boot_glob) do
+    cond do
+      # No output to classify — a true adb transport failure (device
+      # disappeared between `list_devices` and this probe). Best-effort
+      # pass; downstream push failures still surface the real problem.
+      out in [nil, "", " "] ->
+        :ok
+
+      String.contains?(out, "run-as:") ->
+        {:error, :run_as_unavailable}
+
+      output_names_missing?(out, erts_glob) ->
+        {:error, :erts_missing}
+
+      output_names_missing?(out, boot_glob) ->
+        {:error, :bootfile_missing}
+
+      true ->
         :ok
     end
+  end
+
+  # A missing glob shows as an `ls: <path>: No such file or directory`
+  # (or "not found") line — the `<path>` in that message is verbatim the
+  # glob we passed since it never expanded. Match on the exact glob so
+  # ERTS-missing vs bootfile-missing don't confuse each other in the
+  # both-missing case.
+  defp output_names_missing?(out, glob) do
+    String.contains?(out, "ls: #{glob}: No such file") or
+      String.contains?(out, "#{glob}: not found") or
+      String.contains?(out, "ls: cannot access '#{glob}'")
   end
 
   # `run-as` fails silently downstream: every beams/priv/exqlite push shells
@@ -357,6 +420,33 @@ defmodule MobDev.Deployer do
       mix mob.deploy --native --device #{serial}
 
     That rebuilds the APK and pushes the right OTP for this device's ABI.
+    Subsequent `mix mob.deploy` runs (without --native) will work normally.
+    """
+  end
+
+  # MOB-183: separate the "release dir missing" case from the "ERTS
+  # missing" case. Both are provisioned by `mix mob.deploy --native` but
+  # a device in the bootfile-missing state has ERTS binaries and would
+  # otherwise pass a check that only looked for `erl_child_setup` — the
+  # bug the reporter hit was a green deploy that yielded an app
+  # crash-dumping at boot with "cannot get bootfile" because
+  # `otp/releases/*/start_clean.boot` was absent.
+  defp bootfile_missing_message(serial, pkg) do
+    """
+    OTP release missing on device #{serial}.
+
+    The ERTS binaries are present under /data/data/#{pkg}/files/otp/erts-*/
+    but the release directory is empty — no /data/data/#{pkg}/files/otp/releases/*/start_clean.boot.
+    The emulator will load but crash-dump at boot with "cannot get bootfile"
+    (see MOB-183 / mob_dev#54).
+
+    This is the state a device lands in when the APK was installed via
+    `adb install` without a matching `mix mob.deploy --native` — or when
+    a previous `--native` pushed ERTS but was interrupted before writing
+    the release tree. Provision the release now:
+
+      mix mob.deploy --native --device #{serial}
+
     Subsequent `mix mob.deploy` runs (without --native) will work normally.
     """
   end
