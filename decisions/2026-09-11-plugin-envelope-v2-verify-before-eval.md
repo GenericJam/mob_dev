@@ -68,13 +68,16 @@ Move to envelope v2, which flips the trust chain end-to-end:
   `MobDev.Plugin.Verify.load_verified/1` in the four places that
   matter to build- or activation-time: `MobDev.Plugin.activated/0`,
   `mix mob.plugins`, `mix mob.audit_plugins`, `MobDev.Plugin.Report`.
-- **Two paths still eval before verify** on purpose — `mix mob.plugin.sign`
-  and `mix mob.plugin.keygen` are author-side and operate on plugins
-  the author owns; there is no attack vector. `mix mob.plugin.trust` is
-  the first-trust decision by definition; the user is explicitly
-  reviewing a plugin they don't trust yet. Both are noted as separate
-  follow-ups (MOB-185/186/187 lay out the longer-term path to
-  data-only manifests, which closes the class entirely).
+- **Author-side paths still eval before verify** on purpose —
+  `mix mob.plugin.sign` and `mix mob.plugin.keygen` operate on plugins
+  the author owns and is about to sign; there is no attack vector.
+  `mix mob.plugin.trust` is the first-trust decision by definition;
+  the user is explicitly reviewing a plugin they don't trust yet.
+  `mix mob.validate_plugin` runs as an author-side lint pass
+  (`priv/mob_plugin.exs` shape checks against `Manifest.validate/1`);
+  no attack vector for the author's own plugin. All four are noted as
+  separate follow-ups (MOB-185/186/187 lay out the longer-term path
+  to data-only manifests, which closes the class entirely).
 - **`SignatureGate.check_activated/1` tier-0 detection** switched from
   "`is_map(manifest)`" (the old proxy) to
   "`Manifest.manifest_present?(dir)`". This is necessary because a

@@ -1,6 +1,6 @@
 ## [Unreleased]
 
-### Security
+### Fixed
 
 - **Plugin signature verification now runs before `Code.eval_file`** on the
   manifest (MOB-74). The v1 signature covered the eval'd manifest map, so
@@ -30,8 +30,6 @@
   **MOB-187** (static JSON/TOML manifest at 1.0).
 
   See `decisions/2026-09-11-plugin-envelope-v2-verify-before-eval.md`.
-
-### Fixed
 
 - **Play upload keystore no longer bakes a trailing newline into the stored
   password** (MOB-71). `Mix.shell().prompt/1` returns the whole input line

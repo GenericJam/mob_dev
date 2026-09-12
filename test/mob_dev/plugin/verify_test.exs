@@ -243,5 +243,32 @@ defmodule MobDev.Plugin.VerifyTest do
       assert {:error, :invalid_signature} =
                Verify.load_verified(dir, acknowledged_unsafe: true)
     end
+
+    test "acknowledged_unsafe: true does NOT bypass a missing pubkey", %{dir: dir} do
+      # A signed plugin whose pubkey file vanished shouldn't fall into the
+      # "unsigned during dev" bucket — something is off with the plugin's
+      # own artefacts (author error or partial upload). Refuse and surface
+      # the real reason.
+      File.rm!(Path.join(dir, "priv/mob_plugin.pub"))
+
+      assert {:error, :missing_pubkey} =
+               Verify.load_verified(dir, acknowledged_unsafe: true)
+    end
+
+    test "acknowledged_unsafe: true does NOT bypass an envelope_v1 refusal", %{dir: dir} do
+      # A plugin author who moved from unsigned → v1-signed shouldn't
+      # auto-upgrade to "loaded via escape hatch" — they need to re-sign
+      # with v2 (that's the whole point of the v1 refusal).
+      v1_bytes =
+        Crypto.canonical_encode(%{
+          signature: :binary.copy(<<0>>, 64),
+          envelope_version: 1
+        })
+
+      File.write!(Sign.signature_path(dir), v1_bytes)
+
+      assert {:error, :envelope_v1_unsupported} =
+               Verify.load_verified(dir, acknowledged_unsafe: true)
+    end
   end
 end
