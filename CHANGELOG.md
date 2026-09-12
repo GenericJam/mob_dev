@@ -11,8 +11,10 @@
 
   Compatibility checks, native installs, and the final BEAM push all consume
   the same snapshot, so a device appearing during the build cannot join the
-  operation. App-not-installed skips on physical iOS also no longer inherit
-  the incomplete-override warning used for real mid-copy failures.
+  operation. On the iOS path, the diagnostic that annotates a mid-copy
+  failure is now extracted (`Deployer.finalize_ios_override_result/2`) so
+  a `:skipped` result stays `:skipped` and only real `:error` finalizations
+  can inherit the incomplete-override wording.
 
   **Behaviour change** — a bare `mix mob.deploy` with **two or more emulators
   or simulators running for parallel testing** used to fan out to both, and

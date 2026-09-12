@@ -2,10 +2,12 @@ defmodule MobDev.TaskTargets do
   @moduledoc """
   Shared device-selection policy for tasks that can change device state.
 
-  A named device is always explicit. Broad selection keeps physical devices
-  behind `:all_physical`; `:all_devices` means development emulators and
-  simulators. With no scope flags, exactly one non-physical device may be
-  selected automatically.
+  A named device is always explicit. Broad selection keeps physical
+  devices behind `:all_physical`; `:all_devices` means development
+  emulators and simulators. **Combined `:all_devices` and
+  `:all_physical` selects every connected device.** With no scope
+  flags, exactly one non-physical device may be selected automatically;
+  multiple development devices are an ambiguity error.
   """
 
   alias MobDev.Device
