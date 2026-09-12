@@ -156,7 +156,12 @@ defmodule Mix.Tasks.Mob.Connect do
       end
 
     {connected, _failed} =
-      MobDev.Connector.connect_all(cookie: cookie, only: only, platforms: platforms)
+      MobDev.Connector.connect_all(
+        cookie: cookie,
+        only: only,
+        platforms: platforms,
+        name: local_name
+      )
 
     if connected == [] do
       IO.puts("\n#{IO.ANSI.yellow()}No nodes connected. Nothing to do.#{IO.ANSI.reset()}\n")
