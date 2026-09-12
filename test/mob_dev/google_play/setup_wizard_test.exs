@@ -9,6 +9,7 @@ defmodule MobDev.GooglePlay.SetupWizardTest do
 
   alias MobDev.GooglePlay.CloudSetup
   alias MobDev.GooglePlay.PlaySetup
+  alias MobDev.GooglePlay.SetupWizard
 
   # ── Key filename derivation ──────────────────────────────────────────────────
   # Mirrors the logic in SetupWizard.default_key_filename/1.
@@ -128,6 +129,44 @@ defmodule MobDev.GooglePlay.SetupWizardTest do
         else
           {:error, "Unknown project: #{input}"}
         end
+    end
+  end
+
+  # ── keystore.properties passphrase handling (MOB-71) ─────────────────────────
+
+  describe "keystore_properties_content/1" do
+    test "does NOT bake a trailing newline from Mix.shell().prompt/1 into the stored password" do
+      # `Mix.shell().prompt/1` returns the whole line including the trailing
+      # \n. Before MOB-71 that newline flowed straight into `-storepass` at
+      # keytool time AND into `keystore.properties`, so Gradle later signed
+      # every release with `secret\n` — a password nobody can retype on the
+      # next Play upload. Revert the `String.trim/1` in
+      # `keystore_properties_content/1` and this assertion fails: the file
+      # would contain `storePassword=secret\n\nkeyAlias=...`.
+      content = SetupWizard.keystore_properties_content("secret\n")
+
+      assert content =~ ~r/^storePassword=secret$/m
+      assert content =~ ~r/^keyPassword=secret$/m
+      refute content =~ "storePassword=secret\n\n"
+    end
+
+    test "strips leading/trailing whitespace so a pasted password does not carry surrounding blanks" do
+      # Password managers often add a leading space when auto-typing into a
+      # terminal prompt; users occasionally add a trailing space by habit.
+      # Either would produce a keystore Gradle can never open again.
+      content = SetupWizard.keystore_properties_content("  secret  ")
+
+      assert content =~ ~r/^storePassword=secret$/m
+      assert content =~ ~r/^keyPassword=secret$/m
+    end
+
+    test "leaves an already-clean passphrase alone" do
+      content = SetupWizard.keystore_properties_content("secret")
+
+      assert content =~ ~r/^storePassword=secret$/m
+      assert content =~ ~r/^keyPassword=secret$/m
+      assert content =~ ~r/^storeFile=upload_jks\.keystore$/m
+      assert content =~ ~r/^keyAlias=upload$/m
     end
   end
 end

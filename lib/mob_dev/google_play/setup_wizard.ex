@@ -122,9 +122,9 @@ defmodule MobDev.GooglePlay.SetupWizard do
 
   defp generate_keystore(shell, path) do
     shell.info("")
-    passphrase = shell.prompt("  Keystore passphrase (remember this — back it up!): ")
-    name = shell.prompt("  Your full name: ")
-    org = shell.prompt("  Organisation (or your name): ")
+    passphrase = prompt_trimmed(shell, "  Keystore passphrase (remember this — back it up!): ")
+    name = prompt_trimmed(shell, "  Your full name: ")
+    org = prompt_trimmed(shell, "  Organisation (or your name): ")
 
     args = [
       "-genkey",
@@ -169,13 +169,37 @@ defmodule MobDev.GooglePlay.SetupWizard do
 
   defp write_keystore_properties(path, passphrase) do
     unless File.exists?(path) do
-      File.write!(path, """
-      storeFile=upload_jks.keystore
-      storePassword=#{passphrase}
-      keyAlias=upload
-      keyPassword=#{passphrase}
-      """)
+      File.write!(path, keystore_properties_content(passphrase))
     end
+  end
+
+  @doc """
+  Render the `android/keystore.properties` file body for `passphrase`.
+
+  The passphrase is trimmed so a trailing newline from `Mix.shell().prompt/1`
+  (or leading/trailing whitespace pasted from a password manager) cannot be
+  baked into the stored password — Gradle's signing config reads the file
+  literally, so a `storePassword=secret\\n` line signs releases with a
+  password nobody can retype on the next upload. See MOB-71.
+  """
+  @spec keystore_properties_content(binary()) :: binary()
+  def keystore_properties_content(passphrase) when is_binary(passphrase) do
+    trimmed = String.trim(passphrase)
+
+    """
+    storeFile=upload_jks.keystore
+    storePassword=#{trimmed}
+    keyAlias=upload
+    keyPassword=#{trimmed}
+    """
+  end
+
+  # `Mix.shell().prompt/1` includes the trailing newline in its return value;
+  # a raw passphrase carries that newline everywhere it is used — the keytool
+  # `-storepass` arg, the `keystore.properties` file, the -dname CN/O fields.
+  # Trimming at the source is safer than fixing each call site downstream.
+  defp prompt_trimmed(shell, question) do
+    shell.prompt(question) |> String.trim()
   end
 
   defp step_manual_account_creation(shell, dry?) do
