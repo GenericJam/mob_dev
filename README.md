@@ -145,10 +145,12 @@ unloaded at any moment.
 - every selected device of a platform you **named** was skipped —
   `mix mob.deploy --ios --device <id>` where the target lacked the app;
 - you named `--device X` and nothing was deployed to it, or no device matched;
-- `--native` built nothing for a platform you **named** — a missing `sdk.dir`
-  in `android/local.properties` under `--android --native`, say. A plain
-  `mix mob.deploy --native` that skips a platform nobody asked for still
-  exits 0;
+- `--native` built nothing for a platform you **named**, directly or through
+  `--device` — a non-detectable Android SDK under either
+  `--android --native` or `--native --device <android-id>`, say. When the SDK
+  is detectable, deploy creates the gitignored `android/local.properties`
+  automatically. A plain `mix mob.deploy --native` that skips a platform
+  nobody asked for still exits 0;
 - you selected a broad scope and no device matched it. Naming a platform alone
   still permits a native artifact-only build with no attached device.
 

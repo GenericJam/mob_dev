@@ -2,6 +2,14 @@
 
 ### Fixed
 
+- **`mix mob.deploy --native --device <id>` can no longer report success after
+  skipping the named device's native build** (MOB-225). The selected device now
+  makes its platform a required build target even without a redundant
+  `--android` / `--ios` flag. Android native deploys also create the gitignored
+  `android/local.properties` when the SDK is detectable, sharing
+  `mix mob.install`'s path writer; when it is not detectable, the skipped
+  requested build exits non-zero.
+
 - **`mix mob.connect --name` is now honored end-to-end** (MOB-69). The
   option was parsed at the task layer, but `Connector.connect_all/1`
   called `ensure_local_dist/1` which hardcoded `Node.start(:"mob_dev@127.0.0.1", ...)`.

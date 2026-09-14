@@ -134,6 +134,20 @@ defmodule MobDev.WiringTest do
       body = region(@deploy_task, "MobDev.NativeBuild.build_all(", "\n        )")
 
       assert body =~ "requested: required_platforms"
+
+      assert @deploy_task =~
+               "required_platforms(opts, platforms, target_reference)"
+    end
+
+    test "the task prepares only Android local.properties before checking the toolchain" do
+      prepare_at = index_of(@deploy_task, "Mix.Tasks.Mob.Install.write_local_properties(")
+      build_at = index_of(@deploy_task, "MobDev.NativeBuild.build_all(")
+      native_build = region(@deploy_task, "native_ok =", "MobDev.NativeBuild.build_all(")
+
+      assert prepare_at < build_at
+      assert prepare_at > 0
+      assert native_build =~ "if :android in platforms do"
+      assert native_build =~ "Mix.Tasks.Mob.Install.write_local_properties("
     end
 
     test "the build reads that back and runs it through build_outcome/2" do
