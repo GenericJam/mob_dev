@@ -127,6 +127,12 @@ defmodule Mix.Tasks.Mob.Deploy do
       xcodebuild -scheme <app> -destination 'platform=iOS Simulator,...' build
       xcrun simctl install booted <app>.app
 
+  A named `--device` supplies the platform when `--native` is used, so
+  `mix mob.deploy --native --device <id>` does not also need `--android` or
+  `--ios`. Before an Android build, the task creates
+  `android/local.properties` when the SDK is detectable, just as
+  `mix mob.install` does during first-run setup.
+
   ## Exit status
 
   Every targeted device is attempted and the full summary printed, then the
@@ -148,8 +154,10 @@ defmodule Mix.Tasks.Mob.Deploy do
     * `mix mob.deploy --android --native` that built the APK with no device
       attached — exit 0. The artifact is what was asked for.
 
-  `--native` fails the run when a platform you named built nothing at all, which
-  is what a missing `sdk.dir` in `android/local.properties` produces.
+  `--native` fails the run when a platform you named — directly or through
+  `--device` — built nothing at all. If the Android SDK cannot be detected,
+  a missing `sdk.dir` therefore produces a non-zero exit instead of a warning
+  followed by success.
   """
 
   alias MobDev.{Device, TaskTargets}
@@ -256,7 +264,7 @@ defmodule Mix.Tasks.Mob.Deploy do
     # the build platforms to it when devices exist, then pass the same structs
     # through compatibility checks, native installation, and the final push.
     platforms = selected_platforms(platforms, devices)
-    required_platforms = required_platforms(opts, platforms)
+    required_platforms = required_platforms(opts, platforms, target_reference)
     beam_flags = resolve_beam_flags(opts)
 
     # Validate every targeted device against the project's enabled
@@ -300,6 +308,13 @@ defmodule Mix.Tasks.Mob.Deploy do
 
     native_ok =
       if native do
+        if :android in platforms do
+          Mix.Tasks.Mob.Install.write_local_properties(
+            File.cwd!(),
+            MobDev.Config.load_mob_config()
+          )
+        end
+
         MobDev.NativeBuild.build_all(
           platforms: platforms,
           devices: devices,
@@ -663,13 +678,27 @@ defmodule Mix.Tasks.Mob.Deploy do
   end
 
   @doc false
-  @spec required_platforms(keyword(), [:android | :ios]) :: [:android | :ios]
-  def required_platforms(opts, selected_platforms) do
+  @spec required_platforms(
+          keyword(),
+          [:android | :ios],
+          String.t() | {:device | :android_serial, String.t()} | nil
+        ) :: [:android | :ios]
+  def required_platforms(opts, selected_platforms, target_reference \\ nil) do
     requested = requested_platforms(opts)
 
-    if requested == [] and (opts[:all_devices] == true or opts[:all_physical] == true),
-      do: selected_platforms,
-      else: requested
+    cond do
+      requested != [] ->
+        requested
+
+      opts[:all_devices] == true or opts[:all_physical] == true ->
+        selected_platforms
+
+      opts[:native] == true and target_reference != nil ->
+        selected_platforms
+
+      true ->
+        []
+    end
   end
 
   @doc false

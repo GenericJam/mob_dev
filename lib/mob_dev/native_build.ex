@@ -210,14 +210,17 @@ defmodule MobDev.NativeBuild do
   `results` entries are `{:ok, label}` / `{:error, label, reason}` where label
   is the display name ("Android", "iOS", "iOS (device)").
 
-  `requested` is the platforms named by an explicit `--android` / `--ios`
-  flag — NOT the resolved platform list, which collapses "no flag given" into
-  every platform and would make an ordinary skip fatal.
+  `requested` is the platforms required by an explicit `--android` / `--ios`
+  flag, broad target scope, or named `--device` under `--native` — NOT the
+  complete resolved platform list, which collapses "no flag given" into every
+  platform and would make an ordinary skip fatal.
 
   The rule this exists for: `ok_count == length(results)` is `0 == 0` for a run
   that built nothing, so `mix mob.deploy --android --native` with no `sdk.dir`
-  printed a warning, built nothing, and reported success. A skip is fine when
-  nobody asked for that platform; it is a failure when they did.
+  printed a warning, built nothing, and reported success. The same failure
+  occurred for `--native --device <android-id>` because the device-resolved
+  platform was not considered requested. A skip is fine when nobody asked for
+  that platform; it is a failure when they did.
   """
   @spec build_outcome([{:ok, String.t()} | {:error, String.t(), term()}], [atom()]) ::
           :ok | {:error, String.t()}

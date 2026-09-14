@@ -102,8 +102,20 @@ defmodule Mix.Tasks.Mob.InstallTest do
       assert File.read!(props_path(dir)) == original
     end
 
-    test "does nothing when local.properties does not exist", %{dir: dir} do
-      Install.write_local_properties(dir, mob_dir: dir)
+    test "creates local.properties when the Android SDK is detectable", %{dir: dir} do
+      sdk = Path.join(dir, "android-sdk")
+      File.mkdir_p!(sdk)
+
+      Install.write_local_properties(dir, [mob_dir: dir], sdk)
+
+      content = File.read!(props_path(dir))
+      assert content =~ "sdk.dir=#{sdk}"
+      assert content =~ "mob.otp_release=#{OtpDownloader.android_otp_dir("arm64-v8a")}"
+      assert content =~ "mob.mob_dir=#{dir}"
+    end
+
+    test "does not create local.properties when no Android SDK is detectable", %{dir: dir} do
+      Install.write_local_properties(dir, [mob_dir: dir], nil)
       refute File.exists?(props_path(dir))
     end
   end

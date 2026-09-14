@@ -169,6 +169,24 @@ defmodule Mix.Tasks.Mob.DeployParsingTest do
       assert Deploy.required_platforms([ios: true], [:ios]) == [:ios]
       assert Deploy.required_platforms([], [:android]) == []
     end
+
+    test "--native makes the named device platform a required build" do
+      assert Deploy.required_platforms(
+               [native: true, device: "ZY22K6BSJM"],
+               [:android],
+               {:device, "ZY22K6BSJM"}
+             ) == [:android]
+
+      assert Deploy.required_platforms(
+               [native: true, device: "SIM-UDID"],
+               [:ios],
+               {:device, "SIM-UDID"}
+             ) == [:ios]
+    end
+
+    test "a bare --native artifact build does not require every scaffolded platform" do
+      assert Deploy.required_platforms([native: true], [:android, :ios], nil) == []
+    end
   end
 
   describe "what it still refuses" do

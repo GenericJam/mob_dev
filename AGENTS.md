@@ -250,7 +250,10 @@ should know:
 
 - **`mix mob.install`** — first-run **project setup**. Downloads the
   OTP runtime, generates icons, writes `mob.exs`. Per-project, runs
-  once. Doesn't touch any device.
+  once. Doesn't touch any device. A later `mix mob.deploy --native` also
+  repairs or creates `android/local.properties` when it can detect the SDK;
+  fresh worktrees therefore do not need another interactive install just to
+  restore that gitignored machine-local file.
 - **`mix mob.uninstall`** — per-**device** app removal. Sweeps
   connected devices and removes installed `.app` / `.apk` bundles.
   Doesn't undo `mix mob.install`'s project setup.
