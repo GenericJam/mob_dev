@@ -59,6 +59,23 @@
   the iOS discovery (which probes the LAN for physical iPhones, ~17 s) is
   skipped. `--no-restart --device emulator-5558` went from ~33 s to ~8 s.
 
+- **iOS native builds of apps that depend on `emlx` can download MLX**
+  (MOB-295). `MobDev.MLXDownloader` downloads
+  `libmlx-0.25.1-ios-{device,sim}.tar.gz` from the `mlx-0.25.1` release of
+  `GenericJam/mob`, which had never been published, so every such build
+  stopped at a curl 404. The release now exists, built with
+  `scripts/release/mlx/all_ios.sh` from MLX 0.25.1 and EMLX 0.2.0 against
+  the `otp-5c9c69fc` iOS runtimes. `mix mob.enable mlx` now adds
+  `{:emlx, "~> 0.2.0"}` instead of `~> 0.2`: the looser requirement resolves
+  to EMLX 0.4.x (MLX 0.31/0.32, a different NIF table), whose Elixir side
+  can't load the bundled 0.2.0 NIF. An iOS native build whose resolved EMLX
+  isn't 0.2.x now fails before downloading the bundle, with the migration
+  steps, instead of linking an app whose EMLX falls back to
+  `Nx.BinaryBackend` at runtime. To migrate an app enabled earlier, run
+  `mix mob.enable mlx --yes` (`--yes` now also answers the
+  replace-dependency prompt) or edit the requirement, then
+  `mix deps.update emlx`.
+
 - **A hot `mix mob.deploy` no longer breaks the app's next launch.** Over dist
   the deployer also persists the BEAMs to the device (restart off), but the
   SELinux relabel of the files pushed as root ran only before a restart, and

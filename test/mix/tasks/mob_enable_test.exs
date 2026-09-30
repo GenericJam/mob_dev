@@ -174,7 +174,43 @@ defmodule Mix.Tasks.Mob.EnableTest do
       assert content =~ "Nx.BinaryBackend"
     end
 
+    test "pins :emlx to the 0.2.x line the prebuilt MLX bundle is built from" do
+      igniter =
+        test_project()
+        |> Igniter.compose_task("mob.enable", ["mlx"])
+
+      mix_exs = Rewrite.Source.get(Rewrite.source!(igniter.rewrite, "mix.exs"), :content)
+      assert mix_exs =~ ~s({:emlx, "~> 0.2.0"})
+    end
+
     test "is idempotent — re-adding doesn't duplicate :emlx" do
+      mix_exs = """
+      defmodule Test.MixProject do
+        use Mix.Project
+
+        def project, do: [app: :test, deps: deps()]
+
+        defp deps do
+          [
+            {:nx, "~> 0.10"},
+            {:emlx, "~> 0.2.0"}
+          ]
+        end
+      end
+      """
+
+      igniter =
+        test_project(files: %{"mix.exs" => mix_exs})
+        |> Igniter.compose_task("mob.enable", ["mlx"])
+
+      patched = Rewrite.Source.get(Rewrite.source!(igniter.rewrite, "mix.exs"), :content)
+      # Each name should only appear once in the deps list (after the
+      # `:` separator). The `defmodule` doesn't count.
+      assert patched |> String.split(":emlx") |> length() == 2
+      assert patched |> String.split(":nx,") |> length() == 2
+    end
+
+    test "--yes replaces an older {:emlx, \"~> 0.2\"} without prompting" do
       mix_exs = """
       defmodule Test.MixProject do
         use Mix.Project
@@ -192,13 +228,11 @@ defmodule Mix.Tasks.Mob.EnableTest do
 
       igniter =
         test_project(files: %{"mix.exs" => mix_exs})
-        |> Igniter.compose_task("mob.enable", ["mlx"])
+        |> Igniter.compose_task("mob.enable", ["mlx", "--yes"])
 
       patched = Rewrite.Source.get(Rewrite.source!(igniter.rewrite, "mix.exs"), :content)
-      # Each name should only appear once in the deps list (after the
-      # `:` separator). The `defmodule` doesn't count.
-      assert patched |> String.split(":emlx") |> length() == 2
-      assert patched |> String.split(":nx,") |> length() == 2
+      assert patched =~ ~s({:emlx, "~> 0.2.0"})
+      refute patched =~ ~s({:emlx, "~> 0.2"})
     end
 
     test "adds a next-steps notice mentioning MLInit.configure" do

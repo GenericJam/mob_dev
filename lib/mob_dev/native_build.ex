@@ -6563,17 +6563,13 @@ defmodule MobDev.NativeBuild do
   # Downloads the cross-compiled MLX bundle iff EMLX is a dep, for the given
   # target slice. Returns `{:ok, nil}` for projects without EMLX so the
   # iOS-sim and iOS-device build paths can pattern-match the same shape.
-  defp maybe_ensure_mlx_dir(:ios_device) do
+  # Refuses an EMLX the bundle's libemlx.a wasn't built from: that app
+  # links, then EMLX.NIF fails to load on the device.
+  defp maybe_ensure_mlx_dir(target) do
     if emlx_in_project?() do
-      MobDev.MLXDownloader.ensure_ios_device()
-    else
-      {:ok, nil}
-    end
-  end
-
-  defp maybe_ensure_mlx_dir(:ios_sim) do
-    if emlx_in_project?() do
-      MobDev.MLXDownloader.ensure_ios_sim()
+      with :ok <- MobDev.MLXDownloader.check_emlx_version(detect_dep_version("emlx")) do
+        MobDev.MLXDownloader.ensure(target)
+      end
     else
       {:ok, nil}
     end
