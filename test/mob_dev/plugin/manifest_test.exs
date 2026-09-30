@@ -5,6 +5,25 @@ defmodule MobDev.Plugin.ManifestTest do
 
   @valid %{name: :mob_demo, mob_version: "~> 0.6", plugin_spec_version: 1}
 
+  # ExUnit.CaptureLog hears every process's log events while `fun` runs, and
+  # this module is async: a sibling test's "unknown key(s)" warning lands in
+  # the capture and trips a `refute` (MOB-290). Manifest.validate/1 logs from
+  # the caller's process, so only this test's events are formatted.
+  defmodule OwnProcessLog do
+    @moduledoc false
+    def format(%{meta: %{pid: pid}} = event, {pid, {formatter, config}}),
+      do: formatter.format(event, config)
+
+    def format(_event, _config), do: []
+  end
+
+  defp capture_own_log(fun) do
+    ExUnit.CaptureLog.capture_log(
+      [formatter: {OwnProcessLog, {self(), Logger.default_formatter()}}],
+      fun
+    )
+  end
+
   describe "load/1" do
     setup do
       dir =
@@ -120,7 +139,7 @@ defmodule MobDev.Plugin.ManifestTest do
     test "warns (but still validates) on an unknown top-level key" do
       m = Map.put(@valid, :styles, [%{name: :mob_theme_x, theme: ThemeX}])
 
-      log = ExUnit.CaptureLog.capture_log(fn -> assert {:ok, ^m} = Manifest.validate(m) end)
+      log = capture_own_log(fn -> assert {:ok, ^m} = Manifest.validate(m) end)
 
       assert log =~ "unknown key"
       assert log =~ "styles"
@@ -128,8 +147,7 @@ defmodule MobDev.Plugin.ManifestTest do
     end
 
     test "does not warn when every key is recognized" do
-      log =
-        ExUnit.CaptureLog.capture_log(fn -> assert {:ok, @valid} = Manifest.validate(@valid) end)
+      log = capture_own_log(fn -> assert {:ok, @valid} = Manifest.validate(@valid) end)
 
       refute log =~ "unknown key"
     end
@@ -137,7 +155,7 @@ defmodule MobDev.Plugin.ManifestTest do
     test "does not pile an unknown-key warning on top of an unsupported spec version" do
       m = @valid |> Map.put(:plugin_spec_version, 99) |> Map.put(:styles, [])
 
-      log = ExUnit.CaptureLog.capture_log(fn -> Manifest.validate(m) end)
+      log = capture_own_log(fn -> Manifest.validate(m) end)
 
       refute log =~ "unknown key"
     end
