@@ -194,4 +194,165 @@ defmodule MobDev.Discovery.IOSTest do
       assert {"SIMCTL_CHILD_MOB_NODE_SUFFIX", "alt"} in env
     end
   end
+
+  # ── EPMD node resolution (MOB-283) ───────────────────────────────────────────
+  # A phone's EPMD can list more than one Mob app; mob.connect must attach to
+  # this project's node, at the IP the node is actually named after.
+
+  # NAMES_REQ reply: 4-byte EPMD port (4369), then one line per node.
+  @two_apps <<0, 0, 17, 17>> <>
+              "name muster_app_ios at port 9102\nname scanner_sample_ios at port 9101\n"
+
+  describe "parse_epmd_names/1" do
+    test "returns every registered node, not just the first" do
+      assert IOS.parse_epmd_names(@two_apps) == [
+               {"muster_app_ios", 9102},
+               {"scanner_sample_ios", 9101}
+             ]
+    end
+
+    test "an EPMD with nothing registered yields no entries" do
+      assert IOS.parse_epmd_names(<<0, 0, 17, 17>>) == []
+    end
+  end
+
+  describe "select_ios_node/2" do
+    test "picks the project's node when another app's is listed first" do
+      entries = IOS.parse_epmd_names(@two_apps)
+      assert IOS.select_ios_node(entries, "scanner_sample_ios") == {"scanner_sample_ios", 9101}
+    end
+
+    test "another app's node alone is not the project's node" do
+      entries = [{"muster_app_ios", 9102}]
+      assert IOS.select_ios_node(entries, "scanner_sample_ios") == nil
+    end
+
+    test "an app whose name extends the project's is not a suffixed match" do
+      # project `scanner` → base `scanner_ios`; `scanner_sample` is a different app
+      assert IOS.select_ios_node([{"scanner_sample_ios", 9101}], "scanner_ios") == nil
+    end
+
+    test "accepts the MOB_NODE_SUFFIX form <app>_ios_<suffix>" do
+      entries = [{"muster_app_ios", 9102}, {"scanner_sample_ios_alt", 9103}]
+
+      assert IOS.select_ios_node(entries, "scanner_sample_ios") ==
+               {"scanner_sample_ios_alt", 9103}
+    end
+
+    test "the unsuffixed node wins over a suffixed one" do
+      entries = [{"scanner_sample_ios_alt", 9103}, {"scanner_sample_ios", 9101}]
+      assert IOS.select_ios_node(entries, "scanner_sample_ios") == {"scanner_sample_ios", 9101}
+    end
+
+    test "with no project app, falls back to the first *_ios node" do
+      entries = [{"mob_dev", 9000}, {"muster_app_ios", 9102}, {"scanner_sample_ios", 9101}]
+      assert IOS.select_ios_node(entries, nil) == {"muster_app_ios", 9102}
+    end
+
+    test "with no project app and no *_ios node, returns nil" do
+      assert IOS.select_ios_node([{"mob_dev", 9000}], nil) == nil
+    end
+  end
+
+  describe "choose_usb_node/2" do
+    # Second argument: EPMD probes of the cable-attached phone's own other
+    # addresses (its mDNS name's IPv4s), never arbitrary LAN hosts.
+    @wifi "10.0.0.121"
+    @link_local "169.254.1.100"
+    @app {:ok, "scanner_sample_ios", 9101}
+
+    test "same BEAM on WiFi and link-local → the WiFi IP it is named after" do
+      assert IOS.choose_usb_node({@link_local, @app}, [{@wifi, @app}]) ==
+               {:registered, @wifi, "scanner_sample_ios", 9101}
+    end
+
+    test "the other address lists the app at a different dist port → link-local" do
+      other = {@wifi, {:ok, "scanner_sample_ios", 9633}}
+
+      assert IOS.choose_usb_node({@link_local, @app}, [other]) ==
+               {:registered, @link_local, "scanner_sample_ios", 9101}
+    end
+
+    test "the other address lists a different node name → link-local" do
+      other = {@wifi, {:ok, "scanner_sample_ios_alt", 9101}}
+
+      assert IOS.choose_usb_node({@link_local, @app}, [other]) ==
+               {:registered, @link_local, "scanner_sample_ios", 9101}
+    end
+
+    test "two other addresses both agree → link-local, not a guess between them" do
+      probes = [{@wifi, @app}, {"100.101.102.103", @app}]
+
+      assert IOS.choose_usb_node({@link_local, @app}, probes) ==
+               {:registered, @link_local, "scanner_sample_ios", 9101}
+    end
+
+    test "link-local lists nothing → prediction, even if another address lists the app" do
+      assert IOS.choose_usb_node({@link_local, {:error, :not_ios_node}}, [{@wifi, @app}]) ==
+               {:predicted, @link_local}
+    end
+
+    test "nothing registered anywhere → link-local prediction" do
+      probes = [{@wifi, {:error, :not_ios_node}}]
+
+      assert IOS.choose_usb_node({@link_local, {:error, :not_ios_node}}, probes) ==
+               {:predicted, @link_local}
+    end
+
+    test "no link-local IP → :none, even if another address lists the app" do
+      assert IOS.choose_usb_node(nil, [{@wifi, @app}]) == :none
+    end
+  end
+
+  describe "epmd_names/3" do
+    # A local listener stands in for EPMD; the request bytes are ignored.
+    defp serve_once(fun) do
+      {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
+      {:ok, port} = :inet.port(listen)
+
+      spawn_link(fn ->
+        {:ok, s} = :gen_tcp.accept(listen)
+        fun.(s)
+      end)
+
+      port
+    end
+
+    test "reads a reply EPMD writes in pieces, up to close" do
+      port =
+        serve_once(fn s ->
+          :gen_tcp.send(s, <<0, 0, 17, 17>>)
+          Process.sleep(50)
+          :gen_tcp.send(s, "name scanner_sample_ios at port 9101\n")
+          :gen_tcp.close(s)
+        end)
+
+      assert IOS.epmd_names("127.0.0.1", port, 1_000) ==
+               {:ok, <<0, 0, 17, 17>> <> "name scanner_sample_ios at port 9101\n"}
+    end
+
+    test "a peer that trickles bytes and never closes is cut off at the deadline" do
+      # Stops once the client has closed (send fails), so nothing outlives the test.
+      trickle = fn trickle, s ->
+        with :ok <- :gen_tcp.send(s, "x") do
+          Process.sleep(50)
+          trickle.(trickle, s)
+        end
+      end
+
+      port = serve_once(&trickle.(trickle, &1))
+      task = Task.async(fn -> IOS.epmd_names("127.0.0.1", port, 300) end)
+
+      assert Task.yield(task, 1_500) == {:ok, {:error, :epmd_unreachable}}
+    end
+  end
+
+  describe "same_phone_ipv4s/3" do
+    test "a resolver that never answers yields no addresses, within the deadline" do
+      hang = fn _ip -> Process.sleep(:infinity) end
+      task = Task.async(fn -> IOS.same_phone_ipv4s("169.254.1.100", hang, 200) end)
+
+      assert Task.yield(task, 1_500) == {:ok, []}
+    end
+  end
 end

@@ -6,10 +6,12 @@ defmodule MobDev.Tunnel do
     adb reverse tcp:4369 tcp:4369     — Android BEAM registers in Mac's EPMD
     adb forward tcp:<dist> tcp:<dist> — Mac reaches the device's dist port (1:1)
 
-  Physical iOS (direct networking — USB preferred, WiFi/LAN fallback):
+  Physical iOS (direct networking — WiFi/LAN preferred, USB link-local fallback):
     mob_beam.m finds the device's own IP via getifaddrs() and starts the BEAM
-    as mob_qa_ios@<device-ip>. The in-process EPMD binds 0.0.0.0:4369 so Mac
-    can query it at <device-ip>:4369. The dist port is directly reachable.
+    as <app>_ios@<device-ip>. The in-process EPMD binds 0.0.0.0:4369 so Mac
+    can query it at any of the device's IPs. The dist port is directly reachable.
+    A USB-discovered device's node is read from EPMD, not predicted
+    (`MobDev.Discovery.IOS.resolve_usb_node/1`).
 
   iOS simulator:
     Shares Mac network stack — no tunnels needed.
@@ -29,6 +31,7 @@ defmodule MobDev.Tunnel do
   """
 
   alias MobDev.Device
+  alias MobDev.Discovery.IOS
 
   # EPMD port — shared across all devices (same Mac EPMD).
   @epmd_port 4369
@@ -63,16 +66,21 @@ defmodule MobDev.Tunnel do
   end
 
   def setup(%Device{platform: :ios, type: :physical, serial: udid} = device) do
-    # IP not yet known — device was discovered via USB. Find the USB link-local IP.
-    port = assign_dist_port(udid, ports_in_use(device.node))
+    # Discovered over USB, so no IP yet. The BEAM names itself after the WiFi
+    # IP when it has one, so the USB link-local IP is only the prediction for
+    # when EPMD lists nothing yet.
+    case IOS.resolve_usb_node(usb_link_local_ip()) do
+      {:registered, ip, name, dist_port} ->
+        {:ok,
+         %{device | host_ip: ip, node: :"#{name}@#{ip}", dist_port: dist_port, status: :tunneled}}
 
-    case device_usb_ip() do
-      {:ok, device_ip} ->
-        d = %{device | dist_port: port, host_ip: device_ip, status: :tunneled}
+      {:predicted, ip} ->
+        port = assign_dist_port(udid, ports_in_use(device.node))
+        d = %{device | dist_port: port, host_ip: ip, status: :tunneled}
         {:ok, %{d | node: Device.node_name(d)}}
 
-      {:error, reason} ->
-        {:error, "device usb ip: #{reason}"}
+      :none ->
+        {:error, "device usb ip: no device USB IP in ARP — is the device connected via USB?"}
     end
   end
 
@@ -215,20 +223,17 @@ defmodule MobDev.Tunnel do
   # We ping any incomplete 169.254 entries first, then re-read the ARP table.
   # The device's own EPMD binds 0.0.0.0:4369, making it directly reachable
   # from Mac at that IP — no iproxy needed.
-  defp device_usb_ip do
+  defp usb_link_local_ip do
     case read_resolved_usb_ip() do
-      {:ok, _} = ok ->
-        ok
+      {:ok, ip} ->
+        ip
 
       {:error, _} ->
         ping_incomplete_usb_ips()
 
         case read_resolved_usb_ip() do
-          {:ok, _} = ok ->
-            ok
-
-          {:error, _} ->
-            {:error, "no device USB IP in ARP — is the device connected via USB?"}
+          {:ok, ip} -> ip
+          {:error, _} -> nil
         end
     end
   end

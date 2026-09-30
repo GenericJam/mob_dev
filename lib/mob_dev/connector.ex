@@ -210,7 +210,7 @@ defmodule MobDev.Connector do
 
   defp restart_app(%Device{platform: :ios, type: :physical, serial: udid}) do
     IO.write("  Restarting app on #{udid}...")
-    # mob_beam.m discovers the USB link-local IP via getifaddrs() — no env vars needed.
+    # mob_beam.m picks its node IP via getifaddrs() (WiFi first) — no env vars needed.
     IOS.restart_app_physical(udid, ios_bundle_id())
     IO.puts(" done")
   end

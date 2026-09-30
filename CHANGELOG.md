@@ -38,6 +38,20 @@
   Alongside: `MobDev.Plugin.Verify` now refuses a v2 signature envelope with
   malformed `file_hashes` entries as corrupt instead of raising
   `FunctionClauseError` mid-verification.
+- **`mix mob.connect` attaches to this project's app on a physical iPhone, at
+  the IP it actually registered** (MOB-283). iOS discovery took the first
+  `*_ios` name in the phone's EPMD, so another Mob app on the same phone could
+  be connected instead; it now picks the project's `<app>_ios` node (any
+  `*_ios` only outside a Mix project) and reads every EPMD entry. A
+  USB-discovered iPhone no longer assumes its node is named after the USB
+  link-local IP: the link-local EPMD is queried, then the addresses registered
+  under the phone's `.local` mDNS name, and the WiFi address is used when its
+  EPMD lists the same node at the same dist port. Other LAN hosts are not
+  considered. The link-local name
+  remains the fallback when the app has not registered yet. EPMD replies are
+  read to close under an overall 2 s deadline, and the LAN scan reads
+  `arp -an`, skipping reverse-DNS lookups that took ~15 s per scan on a slow
+  resolver.
 
 - **`mix mob.deploy --native --device <id>` can no longer report success after
   skipping the named device's native build** (MOB-225). The selected device now

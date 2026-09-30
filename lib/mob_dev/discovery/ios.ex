@@ -22,9 +22,11 @@ defmodule MobDev.Discovery.IOS do
 
   Always runs both USB discovery (`ideviceinfo`) and a LAN EPMD scan in
   parallel. The LAN scan finds the device's actual node IP (which is
-  WiFi-first since mob_beam.m prefers a stable LAN address). The USB scan
-  provides the UDID and device name. Results are merged: one device with the
-  correct WiFi IP and full USB metadata.
+  WiFi-first since mob_beam.m prefers a stable LAN address) — only for the
+  current project's app (`select_ios_node/2`); another Mob app's node on the
+  same phone is not this project's device. The USB scan provides the UDID and
+  device name. Results are merged: one device with the correct WiFi IP and
+  full USB metadata.
 
   If only one path finds the device, that result is used directly — so this
   works on USB-only setups and WiFi-only setups equally. When USB finds a
@@ -180,14 +182,18 @@ defmodule MobDev.Discovery.IOS do
     list_simulators() ++ list_physical()
   end
 
+  @typedoc "What EPMD at one IP says about the project's iOS node."
+  @type epmd_probe :: {:ok, String.t(), pos_integer()} | {:error, atom()}
+
   @doc """
-  Queries EPMD at a specific IP for any `*_ios` node and returns a Device, or
-  nil if no iOS BEAM node is reachable there. Used for direct connection when
-  the IP is already known (e.g. from xcrun devicectl) and ARP may not be warm.
+  Queries EPMD at a specific IP for the current project's iOS node (see
+  `select_ios_node/2`) and returns a Device, or nil if that node is not
+  reachable there. Used for direct connection when the IP is already known
+  (e.g. from xcrun devicectl) and ARP may not be warm.
   """
   @spec find_physical_at(String.t()) :: Device.t() | nil
   def find_physical_at(ip) do
-    case query_ios_epmd(ip) do
+    case query_ios_epmd(ip, Device.ios_node_base()) do
       {:ok, short_name, dist_port} ->
         %Device{
           platform: :ios,
@@ -203,6 +209,131 @@ defmodule MobDev.Discovery.IOS do
       _ ->
         nil
     end
+  end
+
+  @doc """
+  Resolves where a USB-discovered iPhone's node is registered: probes EPMD on
+  `link_local_ip` (the phone's USB address, or nil if unknown) and on the
+  phone's other IPv4 addresses, then decides with `choose_usb_node/2`.
+
+  The other addresses are looked up from the phone, not collected from the
+  LAN: the link-local IP reverse-resolves to the phone's mDNS name
+  (`kevins-iphone.local`), which forward-resolves to the addresses registered
+  under that name, its WiFi IP included. Scanning ARP neighbours instead
+  finds any phone running this app, and every phone's BEAM listens on the same
+  dist port (mob_beam.m's 9101 default), so EPMD cannot tell them apart.
+
+  This narrows the candidates but does not prove they are the same phone. The
+  lookups are not scoped to the USB interface, and mDNS allows the same
+  `.local` name on different links (RFC 6762 §14). A known limitation: if two
+  phones share a `.local` name, one USB-only and one on the LAN running the
+  same app, the LAN phone's address can be taken for the USB phone's. Scoping
+  the lookups to the USB interface (`dns-sd -i <enN>`) would close that.
+
+  The lookups are native and synchronous, and each can take seconds, so they
+  share a deadline (`same_phone_ipv4s/3`); running out means no other
+  addresses, and the link-local IP is used.
+  """
+  @spec resolve_usb_node(String.t() | nil) ::
+          {:registered, String.t(), String.t(), pos_integer()} | {:predicted, String.t()} | :none
+  def resolve_usb_node(nil), do: choose_usb_node(nil, [])
+
+  def resolve_usb_node(link_local_ip) do
+    base = Device.ios_node_base()
+    same_phone = Enum.map(same_phone_ipv4s(link_local_ip), &{&1, query_ios_epmd(&1, base)})
+    choose_usb_node({link_local_ip, query_ios_epmd(link_local_ip, base)}, same_phone)
+  end
+
+  @doc false
+  @spec same_phone_ipv4s(String.t(), (String.t() -> [String.t()]), timeout()) :: [String.t()]
+  def same_phone_ipv4s(link_local_ip, resolve \\ &mdns_ipv4s/1, timeout_ms \\ 3_000) do
+    task = Task.async(fn -> resolve.(link_local_ip) end)
+
+    case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
+      {:ok, ips} -> List.delete(ips, link_local_ip)
+      _ -> []
+    end
+  end
+
+  defp mdns_ipv4s(link_local_ip) do
+    with {:ok, addr} <- :inet.parse_ipv4_address(String.to_charlist(link_local_ip)),
+         {:ok, {:hostent, name, _, _, _, _}} <- :inet.gethostbyaddr(addr),
+         {:ok, addrs} <- :inet.getaddrs(name, :inet) do
+      Enum.map(addrs, &(&1 |> :inet.ntoa() |> to_string()))
+    else
+      _ -> []
+    end
+  end
+
+  @doc """
+  Picks the IP a USB-attached iPhone's node is registered at, from EPMD
+  probes (`{ip, epmd_probe}`) of the phone's USB link-local IP and of the
+  phone's own other addresses (see `resolve_usb_node/1`).
+
+  mob_beam.m names the node after the phone's WiFi/LAN IP whenever it has one
+  and uses the link-local IP only without WiFi. The phone's EPMD binds
+  0.0.0.0, so the link-local probe lists the node even when its name carries
+  the WiFi IP. The link-local probe is the one that reached the phone on the
+  cable, so it is the reference: another address is taken only if its EPMD
+  lists the same node at the same dist port — the same BEAM, seen twice — and
+  it is the only such address. Anything else (another address's entry
+  disagrees, several agree, or the link-local EPMD lists nothing) keeps the
+  link-local IP, because nothing proves the other entry is this phone's.
+
+  Returns `{:registered, ip, name, dist_port}` from EPMD,
+  `{:predicted, link_local_ip}` when the link-local EPMD does not list the
+  node yet (the app is not running; `mix mob.connect` launches it after
+  tunnel setup), or `:none` without a link-local IP.
+  """
+  @spec choose_usb_node({String.t(), epmd_probe()} | nil, [{String.t(), epmd_probe()}]) ::
+          {:registered, String.t(), String.t(), pos_integer()} | {:predicted, String.t()} | :none
+  def choose_usb_node(nil, _same_phone_probes), do: :none
+
+  def choose_usb_node({link_local_ip, {:ok, name, port}}, same_phone_probes) do
+    case for({ip, {:ok, ^name, ^port}} <- same_phone_probes, do: ip) do
+      [ip] -> {:registered, ip, name, port}
+      _ -> {:registered, link_local_ip, name, port}
+    end
+  end
+
+  def choose_usb_node({link_local_ip, _not_registered}, _same_phone_probes),
+    do: {:predicted, link_local_ip}
+
+  @doc """
+  Every `{name, port}` in an EPMD `NAMES_REQ` reply — a 4-byte EPMD port, then
+  one `name <node> at port <port>` line per registered node — in EPMD order.
+  An iPhone's EPMD can list more than one Mob app, so all entries matter.
+  """
+  @spec parse_epmd_names(binary()) :: [{String.t(), pos_integer()}]
+  def parse_epmd_names(<<_epmd_port::32, names::binary>>) do
+    ~r/^name (\S+) at port (\d+)$/m
+    |> Regex.scan(names, capture: :all_but_first)
+    |> Enum.map(fn [name, port] -> {name, String.to_integer(port)} end)
+  end
+
+  def parse_epmd_names(_reply), do: []
+
+  @doc """
+  The EPMD entry that is the project's iOS node, or nil.
+
+  `base` is `Device.ios_node_base/0` (`<app>_ios`). The entry must be `base`
+  itself or `base_<suffix>` (mob_beam.m appends `MOB_NODE_SUFFIX` when set);
+  the unsuffixed name wins when both are listed. Another app's node on the
+  same EPMD never matches — taking the first `*_ios` entry attached
+  `mix mob.connect` to a different app on the same phone (MOB-283).
+
+  `base` is nil only outside a Mix project, where no app is known; then the
+  first `*_ios` entry is the only choice there is.
+  """
+  @spec select_ios_node([{String.t(), pos_integer()}], String.t() | nil) ::
+          {String.t(), pos_integer()} | nil
+  def select_ios_node(entries, nil) do
+    Enum.find(entries, fn {name, _port} -> Regex.match?(~r/^[a-z0-9_]+_ios/i, name) end)
+  end
+
+  def select_ios_node(entries, base) do
+    Enum.find(entries, fn {name, _port} -> name == base end) ||
+      Enum.find(entries, fn {name, _port} -> String.starts_with?(name, base <> "_") end)
   end
 
   defp do_list_simulators do
@@ -329,65 +460,48 @@ defmodule MobDev.Discovery.IOS do
     end
   end
 
-  # Scan the local ARP table for any host running an iOS EPMD node (*_ios).
-  # Builds a Device using the node name and IP directly from the EPMD response,
-  # so the app name in the Mix project running mob_dev is irrelevant.
+  # Every LAN ARP neighbour whose EPMD lists the current project's iOS node,
+  # as a Device carrying the node name and IP EPMD reported.
   defp scan_lan_for_physical do
-    own_ips = local_ipv4_addresses()
-
-    lan_ips =
-      case System.cmd("arp", ["-a"], stderr_to_stdout: true) do
-        {out, 0} ->
-          out
-          |> String.split("\n")
-          |> Enum.flat_map(fn line ->
-            case Regex.run(
-                   Regex.compile!("\\((\\d+\\.\\d+\\.\\d+\\.\\d+)\\) at [0-9a-f]{2}:[0-9a-f]{2}"),
-                   line
-                 ) do
-              [_, ip] ->
-                cond do
-                  String.starts_with?(ip, "169.254.") -> []
-                  ip in own_ips -> []
-                  true -> [ip]
-                end
-
-              _ ->
-                []
-            end
-          end)
-
-        _ ->
-          []
-      end
-
-    Enum.flat_map(lan_ips, fn ip ->
-      case query_ios_epmd(ip) do
-        {:ok, short_name, dist_port} ->
-          node = :"#{short_name}@#{ip}"
-
-          d = %Device{
-            platform: :ios,
-            type: :physical,
-            serial: ip,
-            name: "iPhone (#{ip})",
-            host_ip: ip,
-            dist_port: dist_port,
-            status: :discovered,
-            node: node
-          }
-
-          [d]
-
-        _ ->
-          []
-      end
-    end)
+    lan_ips()
+    |> Enum.map(&find_physical_at/1)
+    |> Enum.reject(&is_nil/1)
   end
 
-  # Query EPMD at ip:4369 for any *_ios node.
-  # Returns {:ok, short_name, dist_port} using the actual name from EPMD,
-  # so the result is independent of which Mix project is running mob_dev.
+  # Resolved IPv4 neighbours from the ARP table, minus link-local and the
+  # Mac's own addresses. `-n`: only the IPs are used, and `arp -a`'s
+  # reverse-DNS lookups took 15 s per scan on a LAN with a slow resolver.
+  defp lan_ips do
+    own_ips = local_ipv4_addresses()
+
+    case System.cmd("arp", ["-an"], stderr_to_stdout: true) do
+      {out, 0} ->
+        out
+        |> String.split("\n")
+        |> Enum.flat_map(fn line ->
+          case Regex.run(
+                 Regex.compile!("\\((\\d+\\.\\d+\\.\\d+\\.\\d+)\\) at [0-9a-f]{2}:[0-9a-f]{2}"),
+                 line
+               ) do
+            [_, ip] ->
+              cond do
+                String.starts_with?(ip, "169.254.") -> []
+                ip in own_ips -> []
+                true -> [ip]
+              end
+
+            _ ->
+              []
+          end
+        end)
+
+      _ ->
+        []
+    end
+  end
+
+  # Query EPMD at ip:4369 for the project's iOS node (`select_ios_node/2`).
+  # Returns {:ok, short_name, dist_port} with the name EPMD actually lists.
   #
   # Validates the dist port to avoid a phantom hit: an Android phone with
   # `adb reverse tcp:4369 tcp:4369` configured will forward LAN connections
@@ -395,27 +509,9 @@ defmodule MobDev.Discovery.IOS do
   # entries and think they live on the Android device. The simulator's dist
   # port isn't tunneled the same way, so probing it tells us whether the
   # EPMD entry actually corresponds to a reachable BEAM at this IP.
-  defp query_ios_epmd(ip) do
-    host = String.to_charlist(ip)
-
-    with {:ok, s} <- :gen_tcp.connect(host, 4369, [:binary, active: false], 1000),
-         :ok <- :gen_tcp.send(s, <<0, 1, ?n>>),
-         {:ok, <<_::32, names::binary>>} = recv <- :gen_tcp.recv(s, 0, 1000) do
-      :gen_tcp.close(s)
-
-      candidate =
-        names
-        |> String.split("\n")
-        |> Enum.find_value(fn line ->
-          case Regex.run(Regex.compile!("name ([a-z0-9_]+_ios[^\\s]*) at port (\\d+)", "i"), line) do
-            [_, short_name, port] -> {short_name, String.to_integer(port)}
-            _ -> nil
-          end
-        end)
-
-      _ = recv
-
-      case candidate do
+  defp query_ios_epmd(ip, base) do
+    with {:ok, reply} <- epmd_names(ip) do
+      case reply |> parse_epmd_names() |> select_ios_node(base) do
         nil ->
           {:error, :not_ios_node}
 
@@ -426,7 +522,43 @@ defmodule MobDev.Discovery.IOS do
             {:error, :dist_phantom}
           end
       end
+    end
+  end
+
+  # Whole NAMES_REQ exchange, not per read: a peer that trickles bytes would
+  # otherwise reset a per-recv timeout forever and hang discovery.
+  @epmd_reply_deadline_ms 2_000
+
+  @doc false
+  @spec epmd_names(String.t(), :inet.port_number(), pos_integer()) ::
+          {:ok, binary()} | {:error, term()}
+  def epmd_names(ip, port \\ 4369, deadline_ms \\ @epmd_reply_deadline_ms) do
+    case :gen_tcp.connect(String.to_charlist(ip), port, [:binary, active: false], 1000) do
+      {:ok, s} ->
+        deadline = System.monotonic_time(:millisecond) + deadline_ms
+
+        try do
+          with :ok <- :gen_tcp.send(s, <<0, 1, ?n>>), do: recv_until_closed(s, <<>>, deadline)
+        after
+          :gen_tcp.close(s)
+        end
+
+      {:error, _} ->
+        {:error, :epmd_unreachable}
+    end
+  end
+
+  # EPMD sends the 4-byte header and each name line as separate writes, then
+  # closes (erts/epmd/src/epmd_srv.c, EPMD_NAMES_REQ). One recv can return
+  # just the header, so read until close to see every registered node.
+  defp recv_until_closed(s, acc, deadline) do
+    remaining = deadline - System.monotonic_time(:millisecond)
+
+    with true <- remaining > 0,
+         {:ok, data} <- :gen_tcp.recv(s, 0, remaining) do
+      recv_until_closed(s, acc <> data, deadline)
     else
+      {:error, :closed} -> {:ok, acc}
       _ -> {:error, :epmd_unreachable}
     end
   end

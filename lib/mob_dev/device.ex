@@ -72,7 +72,9 @@ defmodule MobDev.Device do
     is required to avoid collisions when two phones run the same app)
   - iOS simulator: `<app>_ios_<8-char-udid>@127.0.0.1` (unique per simulator,
     matches the name mob_beam.m builds using SIMULATOR_UDID)
-  - iOS physical: `<app>_ios@<device-ip>` (mob_beam.m finds IP: USB > WiFi/LAN > Tailscale)
+  - iOS physical: `<app>_ios@<device-ip>` (mob_beam.m finds IP: WiFi/LAN/Tailscale >
+    USB link-local > 127.0.0.1). This is a prediction; when the node is already
+    registered, `MobDev.Discovery.IOS` reads the real name and IP from EPMD instead.
   """
   @spec node_name(t()) :: atom()
   def node_name(%__MODULE__{platform: :android, serial: serial}) when is_binary(serial) do
@@ -100,6 +102,19 @@ defmodule MobDev.Device do
   end
 
   defp app_name, do: Mix.Project.config()[:app]
+
+  @doc """
+  The name the current project's iOS BEAM registers in EPMD, before any
+  `_<suffix>`: `<app>_ios`. `nil` outside a Mix project, where there is no app
+  to match a node against.
+  """
+  @spec ios_node_base() :: String.t() | nil
+  def ios_node_base do
+    case app_name() do
+      nil -> nil
+      app -> "#{app}_ios"
+    end
+  end
 
   @doc """
   Returns the short ID shown in `mix mob.devices` and accepted by `--device`.
