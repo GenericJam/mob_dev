@@ -1870,6 +1870,11 @@ defmodule MobDev.NativeBuild do
     File.mkdir_p!(beams_dir)
     chmod_writable(beams_dir)
 
+    # The generated mob_app_config.beam (the project's config/*.exs for the
+    # device, see MobDev.AppConfig) lands in the app's own ebin, which the
+    # wildcard below copies with everything else.
+    MobDev.AppConfig.write!()
+
     # Glob every compiled dep's ebin dir — covers vanilla (mob + ecto +
     # ecto_sqlite3 + decimal + telemetry + jason + nimble_parsec) AND
     # LiveView (Phoenix + Plug + Bandit + thousand_island + websock + etc.)

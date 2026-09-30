@@ -7,15 +7,6 @@ defmodule MobDev.ConnectorTest do
   # ── filter_only/2 ────────────────────────────────────────────────────────────
 
   describe "local_name_from_opts/1 (MOB-69)" do
-    test "returns the historical default when :name is not set" do
-      # Preserves the pre-MOB-69 behaviour when a caller doesn't pass --name.
-      # If someone reverts this to hardcode `mob_dev@127.0.0.1` inside
-      # ensure_local_dist/2 (bypassing the opts), this test still passes
-      # because it exercises the helper alone. The next two assertions
-      # are the ones that flip on revert.
-      assert Connector.local_name_from_opts([]) == :"mob_dev@127.0.0.1"
-    end
-
     test "honors :name when passed as an atom (Mix task normalizes to atom first)" do
       # Revert-verify: change `local_name_from_opts(opts)` back to
       # `:"mob_dev@127.0.0.1"` and this fails.

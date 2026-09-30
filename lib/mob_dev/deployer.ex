@@ -128,7 +128,7 @@ defmodule MobDev.Deployer do
             {:ok, d} ->
               suffix = if method == :dist, do: " (dist, no restart)", else: ""
               IO.puts(" #{color(:green)}✓#{suffix}#{color(:reset)}")
-              {:ok, d}
+              {:ok, %{d | status: deployed_status(method, restart)}}
 
             {:skipped, reason} ->
               # Yellow dash, not a red x — this device wasn't a target.
@@ -148,6 +148,13 @@ defmodule MobDev.Deployer do
       categorize_results(results)
     end
   end
+
+  # How a deployed device got its code, so the summary reports what happened
+  # rather than what was requested: a dist hot load never restarts, whatever
+  # `restart` says.
+  defp deployed_status(:dist, _restart), do: :hot_loaded
+  defp deployed_status(:adb, true), do: :restarted
+  defp deployed_status(:adb, false), do: :pushed
 
   @doc false
   @spec target_devices(keyword(), [atom()], String.t() | nil, String.t() | nil) :: [Device.t()]
@@ -240,7 +247,7 @@ defmodule MobDev.Deployer do
   defp deploy_android(%Device{serial: serial} = device, beam_dirs, opts) do
     restart = Keyword.get(opts, :restart, true)
     dist_port = Keyword.get(opts, :dist_port, 9100)
-    node_suffix = Keyword.get(opts, :node_suffix)
+    node_suffix = Keyword.get(opts, :node_suffix) || Android.device_node_suffix(serial)
     beam_flags = Keyword.get(opts, :beam_flags, nil)
     pkg = android_package()
 
@@ -266,6 +273,14 @@ defmodule MobDev.Deployer do
               write_beam_flags_android(serial, beam_flags)
               setup_exqlite_android(serial)
               setup_app_priv_android(serial)
+              write_dist_identity_android(serial, node_suffix, dist_port)
+              # Last, after every write: a file pushed as root keeps root's
+              # SELinux categories and the app can't open it. This used to run
+              # only before a restart, so a hot (dist) deploy left the exqlite
+              # NIF symlink it had just recreated unreadable, and the next
+              # launch failed with `dlopen failed: library ".../sqlite3_nif.so"
+              # not found`.
+              relabel_otp_android(serial)
 
               if restart,
                 do: restart_android(serial, dist_port: dist_port, node_suffix: node_suffix)
@@ -610,19 +625,12 @@ defmodule MobDev.Deployer do
         end
 
       if rooted? do
-        pkg = android_package()
         :timer.sleep(600)
+        run_adb(["-s", serial, "shell", prune_other_versions_cmd(exqlite_lib, "exqlite")])
         run_adb(["-s", serial, "shell", "mkdir -p #{exqlite_lib}/ebin #{exqlite_lib}/priv"])
         run_adb(["-s", serial, "push", "#{Path.expand(exqlite_ebin)}/.", "#{exqlite_lib}/ebin/"])
-        # Read label from cache/ (has full s0:cXXX,cYYY MCS categories on Android 15),
-        # not files/ which carries a bare s0 label.
-        run_adb([
-          "-s",
-          serial,
-          "shell",
-          "chcon -hR $(stat -c %C /data/data/#{pkg}/cache) #{app_data}/otp/lib/exqlite-#{vsn}"
-        ])
-
+        # Labelled by deploy_android's final relabel_otp_android/1, which must
+        # come after the symlink below is created.
         create_exqlite_nif_symlink(serial, exqlite_lib, :rooted)
       else
         push_exqlite_runas(serial, exqlite_ebin, exqlite_lib)
@@ -631,6 +639,19 @@ defmodule MobDev.Deployer do
       # exqlite not present or version unknown — skip silently
       _ -> :ok
     end
+  end
+
+  @doc false
+  # Shell command removing every `<name>-*` sibling of `lib_dir` except
+  # `lib_dir` itself. The device's OTP lib/ also holds the exqlite the OTP
+  # tarball shipped; the code server resolves an application to the HIGHEST
+  # version present, and mob's launcher symlinks the NIF into only the first
+  # `exqlite-*` it finds, so a second version makes both depend on directory
+  # order (the iOS build prunes the same way; see prepare_otp_lib_dir!/3).
+  @spec prune_other_versions_cmd(String.t(), String.t()) :: String.t()
+  def prune_other_versions_cmd(lib_dir, name) do
+    glob = Path.join(Path.dirname(lib_dir), "#{name}-*")
+    "for d in #{glob}; do [ \"$d\" = \"#{lib_dir}\" ] || rm -rf \"$d\"; done"
   end
 
   # Push the app's priv/ directory to {beams_dir}/priv/ on the device so that
@@ -681,14 +702,6 @@ defmodule MobDev.Deployer do
         # drwxrwx--x; the app process (other) gets only --x → Path.wildcard returns
         # [] → migrations silently skipped. See comment above for the full story.
         run_adb(["-s", serial, "shell", "chmod -R 755 #{device_priv}"])
-        # Fix SELinux MCS categories so the app can actually open the files.
-        # Read label from cache/ (full s0:cXXX,cYYY) not files/ (bare s0 on Android 15).
-        run_adb([
-          "-s",
-          serial,
-          "shell",
-          "chcon -hR $(stat -c %C /data/data/#{android_package()}/cache) #{android_beams_dir()}"
-        ])
       else
         push_priv_android_runas(serial, local_priv, device_priv)
       end
@@ -771,7 +784,8 @@ defmodule MobDev.Deployer do
       end
 
       cmd =
-        "run-as #{android_package()} mkdir -p #{exqlite_lib}/ebin #{exqlite_lib}/priv && " <>
+        "run-as #{android_package()} sh -c '#{prune_other_versions_cmd(exqlite_lib, "exqlite")}'; " <>
+          "run-as #{android_package()} mkdir -p #{exqlite_lib}/ebin #{exqlite_lib}/priv && " <>
           "run-as #{android_package()} tar xf #{stage_device} -C #{exqlite_lib}/ 2>/dev/null; true"
 
       case run_adb(["-s", serial, "shell", cmd]) do
@@ -873,25 +887,13 @@ defmodule MobDev.Deployer do
       :timer.sleep(600)
       run_adb(["-s", serial, "shell", "mkdir -p #{android_beams_dir()}"])
 
-      result =
-        Enum.reduce_while(beam_dirs, :ok, fn dir, _ ->
-          case run_adb(["-s", serial, "push", "#{Path.expand(dir)}/.", "#{android_beams_dir()}/"]) do
-            {:ok, _} -> {:cont, :ok}
-            {:error, reason} -> {:halt, {:error, "push failed: #{reason}"}}
-          end
-        end)
-
-      # Fix SELinux MCS categories on pushed files. adb push (as root) labels
-      # files with root's categories; restorecon only fixes the type, not MCS.
-      # Read label from cache/ (full s0:cXXX,cYYY) not files/ (bare s0 on Android 15).
-      run_adb([
-        "-s",
-        serial,
-        "shell",
-        "chcon -hR $(stat -c %C /data/data/#{android_package()}/cache) #{android_app_data()}/otp"
-      ])
-
-      result
+      # Labelled by deploy_android's final relabel_otp_android/1.
+      Enum.reduce_while(beam_dirs, :ok, fn dir, _ ->
+        case run_adb(["-s", serial, "push", "#{Path.expand(dir)}/.", "#{android_beams_dir()}/"]) do
+          {:ok, _} -> {:cont, :ok}
+          {:error, reason} -> {:halt, {:error, "push failed: #{reason}"}}
+        end
+      end)
     else
       # Fall back to run-as tar (non-rooted physical devices).
       push_beams_android_runas(serial, beam_dirs)
@@ -956,19 +958,9 @@ defmodule MobDev.Deployer do
   end
 
   defp restart_android(serial, opts) do
-    dist_port = Keyword.get(opts, :dist_port, 9100)
-    node_suffix = Keyword.get(opts, :node_suffix) || Android.device_node_suffix(serial)
+    dist_port = Keyword.fetch!(opts, :dist_port)
+    node_suffix = Keyword.fetch!(opts, :node_suffix)
     run_adb(["-s", serial, "shell", "am", "force-stop", android_package()])
-    # Heal SELinux MCS category mismatch before start — APK reinstall changes
-    # the app's category but leaves OTP files with stale labels.
-    # Read label from cache/ (full s0:cXXX,cYYY) not files/ (bare s0 on Android 15).
-    run_adb([
-      "-s",
-      serial,
-      "shell",
-      "chcon -hR $(stat -c %C /data/data/#{android_package()}/cache) #{android_app_data()}/otp"
-    ])
-
     :timer.sleep(300)
 
     run_adb([
@@ -986,6 +978,43 @@ defmodule MobDev.Deployer do
       "mob_node_suffix",
       node_suffix
     ])
+
+    :ok
+  end
+
+  # Give everything under otp/ the app's own SELinux label. Files written as root
+  # (the `adb root` push paths) carry root's MCS categories, and an APK reinstall
+  # changes the app's categories while leaving earlier files alone; either way
+  # the app can't open them. Read the label from cache/ (full s0:cXXX,cYYY), not
+  # files/ (bare s0 on Android 15). Needs root; without it chcon fails and the
+  # run-as-written files already carry the right label.
+  defp relabel_otp_android(serial) do
+    run_adb([
+      "-s",
+      serial,
+      "shell",
+      "chcon -hR $(stat -c %C /data/data/#{android_package()}/cache) #{android_app_data()}/otp"
+    ])
+
+    :ok
+  end
+
+  # Records the node suffix and dist port this deploy launches the app with in
+  # `<beams_dir>/mob_dist`, so a start from the launcher (no intent extras)
+  # comes back under the same node name and port instead of the bare
+  # `<app>_android` on 9100 that tooling never looks for. mob 0.9.6+ reads it
+  # when MOB_NODE_SUFFIX / MOB_DIST_PORT are unset; older mob ignores it.
+  # Written with run-as so it carries the app's owner and label.
+  defp write_dist_identity_android(serial, node_suffix, dist_port) do
+    file = "#{android_beams_dir()}/mob_dist"
+
+    script =
+      "echo suffix=#{node_suffix} > #{file} && echo port=#{dist_port} >> #{file}"
+
+    case run_adb(["-s", serial, "shell", "run-as #{android_package()} sh -c '#{script}'"]) do
+      {:ok, _} -> :ok
+      {:error, reason} -> IO.puts("    (warning: could not record the dist identity: #{reason})")
+    end
 
     :ok
   end
@@ -1488,11 +1517,11 @@ defmodule MobDev.Deployer do
     _ -> []
   end
 
+  # A taken default name (another mob.connect or deploy on this Mac) falls back
+  # to a per-process one instead of leaving distribution off, which silently
+  # turned every deploy into a push-and-restart.
   defp ensure_local_dist do
-    unless Node.alive?() do
-      Node.start(:"mob_dev@127.0.0.1", :longnames)
-      Node.set_cookie(@cookie)
-    end
+    MobDev.NodeUtil.start_host_dist(nil, @cookie)
   end
 
   # Push all compiled BEAMs to a single dist-connected node, then trigger

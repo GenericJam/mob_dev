@@ -326,6 +326,21 @@ defmodule MobDev.Discovery.Android do
   @spec emulator_serial?(String.t()) :: boolean()
   def emulator_serial?(serial), do: String.starts_with?(serial, "EMULATOR")
 
+  @doc """
+  The first of `candidates` (node names without `@host`, in preference order)
+  that `registered` (EPMD's `{name, port}` pairs) lists, with its port, or nil.
+
+  An app started by `mix mob.deploy` registers `<app>_android_<suffix>` on the
+  port mob_dev chose; one started from the launcher, with no intent extras,
+  registers the bare `<app>_android` on 9100. Attaching has to find whichever
+  is running.
+  """
+  @spec pick_registered_node([{String.t(), pos_integer()}], [String.t()]) ::
+          {String.t(), pos_integer()} | nil
+  def pick_registered_node(registered, candidates) do
+    Enum.find_value(candidates, fn name -> List.keyfind(registered, name, 0) end)
+  end
+
   # Pure-Elixir timeout via Task — avoids depending on the GNU `timeout`
   # binary, which doesn't ship with macOS or BSD by default. Calls adb
   # directly via System.cmd/3 (no shell, no quoting concerns).

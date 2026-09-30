@@ -613,7 +613,9 @@ defmodule Mix.Tasks.Mob.Deploy do
   counting skipped-because-not-installed devices.
 
   Opts:
-    * `:restart` — boolean; controls the post-deploy IEx hint line
+    * `:restart` — boolean; the follow-up line for devices deployed by push
+      (a device the deployer marked `:hot_loaded` was updated over dist and
+      never restarted, whatever this says)
   """
   @spec format_summary([Device.t()], [Device.t()], [Device.t()], keyword()) :: [String.t()]
   def format_summary(deployed, failed, skipped, opts \\ []) do
@@ -637,19 +639,44 @@ defmodule Mix.Tasks.Mob.Deploy do
   defp append_deployed_block(acc, [], _restart?), do: acc
 
   defp append_deployed_block(acc, deployed, restart?) do
-    follow_up =
-      if restart? do
-        "Apps restarted. Run #{IO.ANSI.cyan()}mix mob.connect#{IO.ANSI.reset()} to open IEx."
-      else
-        "BEAMs pushed. In IEx: #{IO.ANSI.cyan()}nl(MyModule)#{IO.ANSI.reset()} to hot-load."
+    {hot, others} = Enum.split_with(deployed, &(&1.status == :hot_loaded))
+    mixed? = hot != [] and others != []
+
+    others_line =
+      cond do
+        others == [] ->
+          []
+
+        restart? ->
+          [
+            "Apps restarted#{on_devices(others, mixed?)}. Run " <>
+              "#{IO.ANSI.cyan()}mix mob.connect#{IO.ANSI.reset()} to open IEx."
+          ]
+
+        true ->
+          ["BEAMs pushed. In IEx: #{IO.ANSI.cyan()}nl(MyModule)#{IO.ANSI.reset()} to hot-load."]
       end
+
+    hot_line =
+      if hot == [],
+        do: [],
+        else: [
+          "Hot-loaded into the running app#{on_devices(hot, mixed?)} — not restarted. " <>
+            "Run #{IO.ANSI.cyan()}mix mob.connect --no-restart#{IO.ANSI.reset()} to attach " <>
+            "without restarting it."
+        ]
 
     acc ++
       [
-        "\n#{IO.ANSI.green()}Deployed to #{length(deployed)} device(s)#{IO.ANSI.reset()}",
-        follow_up
+        "\n#{IO.ANSI.green()}Deployed to #{length(deployed)} device(s)#{IO.ANSI.reset()}"
+        | others_line ++ hot_line
       ]
   end
+
+  defp on_devices(_devices, false), do: ""
+
+  defp on_devices(devices, true),
+    do: " on " <> Enum.map_join(devices, ", ", &(&1.name || &1.serial))
 
   defp append_skipped_block(acc, []), do: acc
 

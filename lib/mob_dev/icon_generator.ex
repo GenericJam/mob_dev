@@ -71,7 +71,7 @@ defmodule MobDev.IconGenerator do
   @doc """
   Generates a random robot avatar and writes platform icons into `output_dir`.
 
-  Creates:
+  Creates, for each platform the project has (`platforms/1`):
     - `output_dir/android/app/src/main/res/<bucket>/ic_launcher.png` for each Android bucket
     - `output_dir/ios/Assets.xcassets/AppIcon.appiconset/icon_<px>.png` for each iOS size
     - `output_dir/icon_source.png` — the 1024×1024 master
@@ -104,22 +104,56 @@ defmodule MobDev.IconGenerator do
   end
 
   @doc """
-  Copies the bundled Mob logo (pre-built PNGs) to all platform icon directories
-  in `output_dir`. Used as the default placeholder icon by `mix mob.install`.
-  No extra dependencies or system tools required.
+  Copies the bundled Mob logo (pre-built PNGs) to the icon directories of
+  `platforms` (default: every platform the project has, `platforms/1`). Used
+  as the default placeholder icon by `mix mob.install`. No extra dependencies
+  or system tools required.
 
   Returns `:ok`.
   """
-  @spec use_mob_logo(output_dir :: String.t()) :: :ok
-  def use_mob_logo(output_dir) do
-    write_android_icons_from_priv(output_dir)
-    write_ios_icons_from_priv(output_dir)
+  @spec use_mob_logo(output_dir :: String.t(), [:android | :ios]) :: :ok
+  def use_mob_logo(output_dir, platforms \\ nil) do
+    platforms = platforms || platforms(output_dir)
+    if :android in platforms, do: write_android_icons_from_priv(output_dir)
+    if :ios in platforms, do: write_ios_icons_from_priv(output_dir)
     :ok
   end
 
   @doc """
-  Resizes an existing image at `source_path` to all platform icon sizes,
-  writing them into `output_dir`.
+  The platforms whose native project exists in `project_dir` (`android/`,
+  `ios/`). Icons are written only for these, so an `--android` project never
+  grows an `ios/Assets.xcassets` tree (and vice versa).
+  """
+  @spec platforms(String.t()) :: [:android | :ios]
+  def platforms(project_dir) do
+    for platform <- [:android, :ios],
+        File.dir?(Path.join(project_dir, to_string(platform))),
+        do: platform
+  end
+
+  @doc """
+  The project's platforms that have no launcher icon yet. `mix mob.install`
+  writes its placeholder only to these, leaving existing (possibly custom)
+  icons alone.
+  """
+  @spec platforms_missing_icons(String.t()) :: [:android | :ios]
+  def platforms_missing_icons(project_dir) do
+    Enum.reject(platforms(project_dir), fn
+      :android ->
+        File.exists?(
+          Path.join(project_dir, "android/app/src/main/res/mipmap-mdpi/ic_launcher.png")
+        )
+
+      :ios ->
+        File.exists?(
+          Path.join(project_dir, "ios/Assets.xcassets/AppIcon.appiconset/Contents.json")
+        )
+    end)
+  end
+
+  @doc """
+  Resizes an existing image at `source_path` to the icon sizes of each
+  platform the project has (`platforms/1`), writing them into `output_dir`.
 
   ## Options
     * `:background_color` — hex string like `"#E8B53C"` used to flatten the
@@ -279,11 +313,12 @@ defmodule MobDev.IconGenerator do
 
   defp resize_for_platforms(source_png, output_dir, opts) do
     source = Image.open!(source_png)
+    platforms = platforms(output_dir)
     # Android keeps the source's transparency — adaptive-icon foregrounds and
     # legacy launcher icons rely on it, and a flat background renders badly on
     # some launchers. iOS is flattened opaque (see write_ios_icons).
-    write_android_icons(source, output_dir)
-    write_ios_icons(source, output_dir, opts)
+    if :android in platforms, do: write_android_icons(source, output_dir)
+    if :ios in platforms, do: write_ios_icons(source, output_dir, opts)
     :ok
   end
 

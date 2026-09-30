@@ -145,6 +145,19 @@ defmodule MobDev.Plugin.RuntimeManifestTest do
       assert RuntimeManifest.build([{"/p", base(%{name: :p})}]).nifs == []
     end
 
+    test "plugins names every activated plugin's OTP app, in activation order, whatever its tier" do
+      plugins = [
+        # NIF-only and component-only plugins have no lifecycle entry, so this
+        # key is the only thing that tells core to start their application.
+        {"/n", base(%{name: :nif_only, nifs: [%{module: :n_nif}]})},
+        {"/l", base(%{name: :with_lifecycle, lifecycle: %{on_start: {L, :start, []}}})},
+        {"/zero", nil},
+        {"/n2", base(%{name: :nif_only})}
+      ]
+
+      assert RuntimeManifest.build(plugins).plugins == [:nif_only, :with_lifecycle]
+    end
+
     test "a multi-tier plugin (screens_generator + tier-4 sections) keeps ALL its sections" do
       # Regression for a composition bug: a plugin carrying both a spec-v2
       # screens_generator AND tier-4 lifecycle/settings/notifications must not

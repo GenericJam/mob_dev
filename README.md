@@ -31,7 +31,7 @@ end
 | `mix mob.audit_otp` | Reachability audit of the bundled OTP runtime (find strip candidates) |
 | `mix mob.security_scan` | Scan for known CVEs across every surface — Hex, Gradle, Swift, bundled OpenSSL/OTP/SQLite, C/Kotlin/Swift source ([details](guides/security_scan.md)) |
 | `mix mob.security_scan.log` | Scheduled-run wrapper: writes `SECURITY_SCAN.md` + appends to `SECURITY_HISTORY.md` for cron / GitHub Actions ([details](guides/security_scan.md)) |
-| `mix mob.connect` | Tunnel + restart + open IEx connected to device nodes (`--name` for multiple sessions) |
+| `mix mob.connect` | Tunnel + restart + open IEx connected to device nodes (`--no-restart` to attach to a running app, `--name` for multiple sessions) |
 | `mix mob.watch` | Auto-push BEAMs on file save |
 | `mix mob.watch_stop` | Stop a running `mix mob.watch` |
 | `mix mob.devices` | List connected devices and their status |
@@ -821,14 +821,22 @@ Add a `CLAUDE.md` to your Mob project root to give an agent the context it needs
 ## Connecting to a running device
 
 ```bash
-mix mob.connect          # discover, tunnel, connect IEx
-mix mob.connect --no-iex # print node names without IEx
-mix mob.devices          # list connected devices
+mix mob.connect              # discover, tunnel, restart the app, connect IEx
+mix mob.connect --no-restart # attach to the running app, keeping its state
+mix mob.connect --no-iex     # print node names without IEx
+mix mob.devices              # list connected devices
 ```
 
 Node names:
-- iOS simulator:    `my_app_ios@127.0.0.1`
-- Android emulator: `my_app_android@127.0.0.1`
+- iOS simulator:    `my_app_ios_<udid prefix>@127.0.0.1`
+- Android: `my_app_android_<suffix>@127.0.0.1` (`emulator_5554`, or the phone's
+  serial), on a port derived from the serial. `mix mob.deploy` records both on
+  the device, so a start from the launcher comes back under the same name
+  (mob 0.9.6+; older mob registers the bare `my_app_android` on 9100, which
+  `--no-restart` also finds).
+
+When another process on the Mac already holds `mob_dev@127.0.0.1`, mob_dev
+uses `mob_dev_<os pid>@127.0.0.1` for itself.
 
 ## Inspecting and driving the running app
 
@@ -895,6 +903,19 @@ fail) about the two ways that happens:
   A BEAM-only `mix mob.deploy` or `mix mob.push` names any NIF plugin activated
   since — "installed app was built without it — run `mix mob.deploy --native`" —
   or, when there is no record for that platform yet, says it can't tell.
+
+### Application config on the device
+
+Mob apps don't boot as an OTP release, so nothing loads `config/*.exs` on the
+device. mob_dev evaluates `config/config.exs` (for the current `MIX_ENV` and
+target) plus `config/runtime.exs` on the host, drops `:mob_dev`, and ships the
+result as the generated module `mob_app_config` next to the app's BEAMs on every
+deploy and native build. mob 0.9.6+ applies it at app start, so
+`Application.get_env/3` works as on the host. Two differences: `runtime.exs` runs
+on your Mac at build time (its `System.get_env/1` reads your environment), and a
+key whose value is an anonymous function, pid, port or reference (a compiled
+regex is one) is left out with a warning. A config change reaches a running app
+at its next start.
 
 ## iOS push notifications (APNs)
 

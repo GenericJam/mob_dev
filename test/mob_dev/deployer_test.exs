@@ -465,4 +465,31 @@ defmodule MobDev.DeployerTest do
       assert Deployer.classify_android_runtime_ls(nil, @erts_glob, @boot_glob) == :ok
     end
   end
+
+  describe "prune_other_versions_cmd/2" do
+    # Runs the generated command with the host's sh against a fake OTP lib/,
+    # which is what the device's shell does with it.
+    @tag :tmp_dir
+    test "removes every other version of the app and nothing else", %{tmp_dir: dir} do
+      lib = Path.join(dir, "otp/lib")
+
+      for d <-
+            ~w(exqlite-0.36.0 exqlite-0.41.0 exqlite-0.42.0-rc.1 ecto_sqlite3-0.25.0 exqlitex-1.0),
+          do: File.mkdir_p!(Path.join([lib, d, "priv"]))
+
+      keep = Path.join(lib, "exqlite-0.41.0")
+      {_, 0} = System.cmd("sh", ["-c", Deployer.prune_other_versions_cmd(keep, "exqlite")])
+
+      assert lib |> File.ls!() |> Enum.sort() ==
+               ~w(ecto_sqlite3-0.25.0 exqlite-0.41.0 exqlitex-1.0)
+    end
+
+    @tag :tmp_dir
+    test "is a no-op when only the installed version is present", %{tmp_dir: dir} do
+      keep = Path.join(dir, "otp/lib/exqlite-0.41.0")
+      File.mkdir_p!(keep)
+      {_, 0} = System.cmd("sh", ["-c", Deployer.prune_other_versions_cmd(keep, "exqlite")])
+      assert File.dir?(keep)
+    end
+  end
 end

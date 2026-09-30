@@ -110,7 +110,7 @@ defmodule MobDev.HotPush do
 
     select_runtime_beam_paths(
       Mix.Project.build_path(),
-      active_compile_path(),
+      app_compile_path(),
       runtime,
       project_app
     )
@@ -127,7 +127,7 @@ defmodule MobDev.HotPush do
 
     select_runtime_beam_dirs(
       Mix.Project.build_path(),
-      active_compile_path(),
+      app_compile_path(),
       runtime,
       project_app
     )
@@ -170,7 +170,12 @@ defmodule MobDev.HotPush do
   # nothing. mob does not support umbrellas (MobDev.AdoptGuard refuses them
   # outright), so fail with that message rather than leaking Mix's internal
   # error out of a deploy.
-  defp active_compile_path do
+  #
+  # Every BEAM set that ships the app's own ebin (the filesystem and dist pushes
+  # of `mix mob.deploy`, `mix mob.watch`/`mob.push`, the Android release) comes
+  # through here, so this is where the generated `mob_app_config` module is
+  # (re)written next to <app>.beam: one hook instead of one per platform.
+  defp app_compile_path do
     if Mix.Project.umbrella?() do
       Mix.raise(
         "mob does not support umbrella applications — run mix mob.deploy from a " <>
@@ -178,7 +183,9 @@ defmodule MobDev.HotPush do
       )
     end
 
-    Mix.Project.compile_path()
+    compile_path = Mix.Project.compile_path()
+    MobDev.AppConfig.write!(compile_path)
+    compile_path
   end
 
   @doc """
@@ -371,9 +378,6 @@ defmodule MobDev.HotPush do
   end
 
   defp ensure_local_dist(cookie) do
-    unless Node.alive?() do
-      Node.start(:"mob_dev@127.0.0.1", :longnames)
-      Node.set_cookie(cookie)
-    end
+    MobDev.NodeUtil.start_host_dist(nil, cookie)
   end
 end

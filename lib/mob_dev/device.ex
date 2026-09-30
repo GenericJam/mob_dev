@@ -30,7 +30,8 @@ defmodule MobDev.Device do
     :node_suffix,
     # Device IP for physical iOS: USB link-local (169.254.x.x), WiFi LAN, or Tailscale
     :host_ip,
-    # :discovered | :unauthorized | :tunneled | :connected | :error
+    # :discovered | :unauthorized | :tunneled | :connected | :error, and after
+    # a deploy :hot_loaded (dist, no restart) | :restarted | :pushed | :skipped
     :status,
     # error message string if status == :error
     :error,

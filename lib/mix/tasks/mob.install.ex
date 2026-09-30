@@ -26,6 +26,8 @@ defmodule Mix.Tasks.Mob.Install do
 
   ## Icon output
 
+  Written only for the platforms the project has (`android/`, `ios/`):
+
     - `android/app/src/main/res/mipmap-*/ic_launcher.png`
     - `ios/Assets.xcassets/AppIcon.appiconset/icon_*.png` + `Contents.json`
 
@@ -441,33 +443,24 @@ defmodule Mix.Tasks.Mob.Install do
   # ── Icon setup ────────────────────────────────────────────────────────────────
 
   defp setup_icon(project_dir, nil) do
-    placeholder =
-      Path.join([
-        project_dir,
-        "android",
-        "app",
-        "src",
-        "main",
-        "res",
-        "mipmap-mdpi",
-        "ic_launcher.png"
-      ])
+    case MobDev.IconGenerator.platforms_missing_icons(project_dir) do
+      [] ->
+        Mix.shell().info([
+          :cyan,
+          "* icons already present — skipping (run `mix mob.icon` to replace)",
+          :reset
+        ])
 
-    if File.exists?(placeholder) do
-      Mix.shell().info([
-        :cyan,
-        "* icons already present — skipping (run `mix mob.icon` to replace)",
-        :reset
-      ])
-    else
-      Mix.shell().info("Writing Mob logo as placeholder icon...")
-      MobDev.IconGenerator.use_mob_logo(project_dir)
+      missing ->
+        Mix.shell().info("Writing Mob logo as placeholder icon...")
+        MobDev.IconGenerator.use_mob_logo(project_dir, missing)
 
-      Mix.shell().info([
-        :green,
-        "* placeholder icons written (run `mix mob.icon` to customise)",
-        :reset
-      ])
+        Mix.shell().info([
+          :green,
+          "* placeholder icons written for #{Enum.join(missing, " and ")} " <>
+            "(run `mix mob.icon` to customise)",
+          :reset
+        ])
     end
   end
 

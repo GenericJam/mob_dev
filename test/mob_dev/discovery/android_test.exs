@@ -215,4 +215,35 @@ defmodule MobDev.Discovery.AndroidTest do
     result = Android.list_devices()
     assert Enum.all?(result, &match?(%Device{}, &1))
   end
+
+  describe "pick_registered_node/2" do
+    @registered [
+      {"other_app_android", 9100},
+      {"my_app_android", 9100},
+      {"my_app_android_emulator_5558", 9764}
+    ]
+
+    test "prefers the deploy-time name when both are registered" do
+      assert Android.pick_registered_node(@registered, [
+               "my_app_android_emulator_5558",
+               "my_app_android"
+             ]) == {"my_app_android_emulator_5558", 9764}
+    end
+
+    test "finds a launcher-started app under the bare name and its port" do
+      registered = List.delete(@registered, {"my_app_android_emulator_5558", 9764})
+
+      assert Android.pick_registered_node(registered, [
+               "my_app_android_emulator_5558",
+               "my_app_android"
+             ]) == {"my_app_android", 9100}
+    end
+
+    test "never matches another app's node, and nil when nothing is registered" do
+      assert Android.pick_registered_node([{"other_app_android", 9100}], ["my_app_android"]) ==
+               nil
+
+      assert Android.pick_registered_node([], ["my_app_android"]) == nil
+    end
+  end
 end

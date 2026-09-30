@@ -38,6 +38,7 @@ defmodule MobDev.Plugin.RuntimeManifest do
     %{styles: styles, default_style: default_style} = MobDev.Style.runtime_entries!()
 
     %{
+      plugins: plugin_names(plugins),
       screens: Merge.screens(plugins) ++ generated_screens(plugins),
       lifecycle: Merge.lifecycle(plugins),
       settings: Merge.settings(plugins),
@@ -68,6 +69,21 @@ defmodule MobDev.Plugin.RuntimeManifest do
       [] ->
         nil
     end
+  end
+
+  # Every activated plugin's manifest `:name` — its OTP application — in
+  # activation order. Core starts each one (`Application.ensure_all_started/1`)
+  # before any plugin `on_start` runs, so a plugin's own supervision tree and
+  # its deps are up whatever tier it is: a NIF-only or component-only plugin
+  # has no lifecycle entry that would otherwise name it. Tier-0 (nil) manifests
+  # and nameless ones contribute nothing.
+  defp plugin_names(plugins) do
+    for {_dir, manifest} <- plugins,
+        is_map(manifest),
+        name = manifest[:name],
+        is_atom(name) and not is_nil(name),
+        uniq: true,
+        do: name
   end
 
   # Pure-Elixir composite components (the ui_components expand: form) — core

@@ -53,6 +53,12 @@ defmodule MobDev.Release do
       File.write!(script_path, release_device_sh())
       File.chmod!(script_path, 0o755)
 
+      # The script copies every `_build/dev/lib/*/ebin`; the app's own carries
+      # the generated mob_app_config.beam (see MobDev.AppConfig), evaluated for
+      # the Mix env this task runs in.
+      app = to_string(Mix.Project.config()[:app])
+      MobDev.AppConfig.write!(Path.join(["_build", "dev", "lib", app, "ebin"]))
+
       env = release_env(cfg, otp_root)
       output_dir = Path.expand("_build/mob_release")
       File.mkdir_p!(output_dir)

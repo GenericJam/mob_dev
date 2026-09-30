@@ -149,17 +149,55 @@ defmodule MobDev.Tunnel do
   defp epmd_ports(exclude_node) do
     exclude = exclude_node && exclude_node |> Atom.to_string() |> String.split("@") |> hd()
 
+    for {name, port} <- epmd_names(), name != exclude, into: MapSet.new(), do: port
+  end
+
+  @doc """
+  The `{name, port}` pairs registered in the Mac's EPMD, which every Android
+  device and iOS simulator registers into. Empty when EPMD isn't reachable.
+  """
+  @spec epmd_names() :: [{String.t(), pos_integer()}]
+  def epmd_names do
     case System.cmd("epmd", ["-names"], stderr_to_stdout: true) do
       {out, 0} ->
-        ~r/name (\S+) at port (\d+)/
-        |> Regex.scan(out)
-        |> Enum.reject(fn [_, name, _] -> name == exclude end)
-        |> Enum.map(fn [_, _, port] -> String.to_integer(port) end)
-        |> MapSet.new()
+        for [_, name, port] <- Regex.scan(Regex.compile!("name (\\S+) at port (\\d+)"), out),
+            do: {name, String.to_integer(port)}
 
       _ ->
-        MapSet.new()
+        []
     end
+  end
+
+  @doc """
+  Forwards host `port` to the same port on `serial`, to reach a node that is
+  already running there. Refuses (`{:error, _}`) when the host port already
+  forwards to a different device, rather than taking it from that session.
+  """
+  @spec attach_forward(String.t(), pos_integer()) :: :ok | {:error, String.t()}
+  def attach_forward(serial, port) do
+    owner =
+      case run_adb(["forward", "--list"]) do
+        {:ok, out} -> forward_owner(out, port)
+        _ -> nil
+      end
+
+    if owner in [nil, serial],
+      do: forward(serial, port, port),
+      else: {:error, "host port #{port} already forwards to #{owner}; not taking it over"}
+  end
+
+  @doc false
+  # The serial `adb forward --list` output forwards host tcp:`port` to, or nil.
+  @spec forward_owner(String.t(), pos_integer()) :: String.t() | nil
+  def forward_owner(forward_list, port) do
+    forward_list
+    |> String.split("\n", trim: true)
+    |> Enum.find_value(fn line ->
+      case String.split(line) do
+        [owner, "tcp:" <> host_port | _] -> if host_port == to_string(port), do: owner
+        _ -> nil
+      end
+    end)
   end
 
   defp forward_host_ports do

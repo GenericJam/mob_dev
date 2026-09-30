@@ -187,6 +187,28 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
       refute joined =~ "Apps restarted"
     end
 
+    # P11/P17c: a dist deploy printed "Apps restarted" while the app kept its pid.
+    test "a device hot-loaded over dist is never reported as restarted" do
+      hot = %{device("emulator-5558") | status: :hot_loaded}
+      lines = Deploy.format_summary([hot], [], [], restart: true)
+      joined = lines |> Enum.map(&strip_ansi/1) |> Enum.join("\n")
+
+      assert joined =~ "Deployed to 1 device(s)"
+      assert joined =~ "Hot-loaded into the running app — not restarted"
+      assert joined =~ "mix mob.connect --no-restart"
+      refute joined =~ "Apps restarted"
+    end
+
+    test "a mixed run names which devices restarted and which were hot-loaded" do
+      hot = %{device("emulator-5558") | status: :hot_loaded}
+      restarted = %{device("Pixel") | status: :restarted}
+      lines = Deploy.format_summary([hot, restarted], [], [], restart: true)
+      joined = lines |> Enum.map(&strip_ansi/1) |> Enum.join("\n")
+
+      assert joined =~ "Apps restarted on Pixel."
+      assert joined =~ "Hot-loaded into the running app on emulator-5558 — not restarted"
+    end
+
     test "only skipped → yellow informational, NOT counted as failed" do
       # Regression: this case used to print "Failed on 1 device(s)" in red.
       skip = device("emulator-5554", "com.example not installed on emulator-5554")

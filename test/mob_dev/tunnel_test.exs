@@ -50,4 +50,23 @@ defmodule MobDev.TunnelTest do
       assert assigned >= 9100 and assigned < 9900
     end
   end
+
+  describe "forward_owner/2" do
+    @list """
+    emulator-5554 tcp:9119 tcp:9119
+    emulator-5554 tcp:51340 localabstract:mobilecli-server
+    ZY22DP6HFL tcp:9721 tcp:9721
+    """
+
+    test "names the device a host port already forwards to" do
+      assert Tunnel.forward_owner(@list, 9119) == "emulator-5554"
+      assert Tunnel.forward_owner(@list, 9721) == "ZY22DP6HFL"
+    end
+
+    test "a port nobody forwards has no owner, even when another port contains its digits" do
+      assert Tunnel.forward_owner(@list, 911) == nil
+      assert Tunnel.forward_owner(@list, 9100) == nil
+      assert Tunnel.forward_owner("", 9100) == nil
+    end
+  end
 end

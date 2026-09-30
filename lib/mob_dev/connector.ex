@@ -1,6 +1,14 @@
 defmodule MobDev.Connector do
   @moduledoc """
   Orchestrates device discovery, tunnel setup, app restart, and node connection.
+
+  By default each app is restarted so it registers in the Mac's EPMD through
+  the tunnels just set up, under the node name and dist port mob_dev expects
+  (an app started before `adb reverse tcp:4369` existed never registered at
+  all). `restart: false` attaches to the running app instead and leaves its
+  state alone; on Android it looks the node up in EPMD under either the
+  deploy-time name or the bare `<app>_android` a launcher start uses, and
+  forwards the port that node actually registered.
   """
 
   alias MobDev.{Device, Tunnel}
@@ -15,6 +23,8 @@ defmodule MobDev.Connector do
   def ios_bundle_id, do: MobDev.Config.ios_bundle_id()
   # ms to wait for node to appear
   @connect_timeout 25_000
+  # ms to wait when attaching to an app that is already running
+  @attach_timeout 3_000
   # ms between polls
   @connect_interval 500
   # ms to let SwiftUI's accessibility tree rebuild after enable_accessibility's
@@ -22,8 +32,8 @@ defmodule MobDev.Connector do
   @ios_accessibility_settle_ms 500
 
   @doc """
-  Discovers all connected devices, sets up tunnels, restarts apps, and waits
-  for Erlang nodes to come online.
+  Discovers all connected devices, sets up tunnels, restarts apps (unless
+  `restart: false`), and waits for Erlang nodes to come online.
 
   Returns {connected, failed} lists of %Device{}.
   """
@@ -41,6 +51,7 @@ defmodule MobDev.Connector do
 
     only = opts |> Keyword.get(:only, []) |> List.wrap()
     platforms = opts |> Keyword.get(:platforms, [:android, :ios]) |> List.wrap()
+    restart = Keyword.get(opts, :restart, true)
 
     IO.puts("\n#{color(:cyan)}Scanning for devices...#{color(:reset)}\n")
 
@@ -64,12 +75,18 @@ defmodule MobDev.Connector do
       # Set up tunnels (assigns dist_port per device)
       {tunneled, failed_tunnel} = setup_tunnels(devices)
 
-      # Kill any stale simulator processes from previous sessions. A lingering
-      # BEAM holds its EPMD slot, blocking new instances from registering.
-      kill_stale_simulator_apps(tunneled)
+      tunneled =
+        if restart do
+          # Kill any stale simulator processes from previous sessions. A lingering
+          # BEAM holds its EPMD slot, blocking new instances from registering.
+          kill_stale_simulator_apps(tunneled)
 
-      # Restart apps so they pick up tunnels and use correct node names
-      Enum.each(tunneled, &restart_app/1)
+          # Restart apps so they pick up tunnels and use correct node names
+          Enum.each(tunneled, &restart_app/1)
+          tunneled
+        else
+          Enum.map(tunneled, &attach_target/1)
+        end
 
       # Start distribution on the Mac side
       ensure_local_dist(local_name, cookie)
@@ -89,9 +106,11 @@ defmodule MobDev.Connector do
       Enum.each(ios_sim_targets, fn d -> IOS.enable_accessibility(d.serial) end)
       if ios_sim_targets != [], do: Process.sleep(@ios_accessibility_settle_ms)
 
-      # Wait for nodes to come online
+      # Wait for nodes to come online. A running app is either registered or
+      # not, so attaching doesn't wait out a boot.
       IO.puts("\n  Waiting for nodes...")
-      {connected, failed_wait} = wait_for_nodes(tunneled, cookie)
+      timeout = if restart, do: @connect_timeout, else: @attach_timeout
+      {connected, failed_wait} = wait_for_nodes(tunneled, cookie, timeout)
 
       # Report failures
       all_failed = failed_tunnel ++ failed_wait
@@ -100,6 +119,13 @@ defmodule MobDev.Connector do
         IO.puts("  #{color(:red)}✗ #{d.name || d.serial}: #{d.error}#{color(:reset)}")
         print_fix_hint(d)
       end)
+
+      if not restart and all_failed != [] do
+        IO.puts(
+          "    → attaching needs the app to have registered in EPMD through these tunnels; " <>
+            "run without --no-restart to restart it"
+        )
+      end
 
       if connected != [] do
         IO.puts(
@@ -191,6 +217,28 @@ defmodule MobDev.Connector do
     :timer.sleep(300)
   end
 
+  # Attach mode: point the device at the node its running app registered —
+  # the deploy-time name, or the bare `<app>_android` of a launcher start
+  # (no intent extras, so no suffix and port 9100).
+  defp attach_target(%Device{platform: :android, serial: serial, node: node} = device) do
+    expected = node |> Atom.to_string() |> String.split("@") |> hd()
+    candidates = Enum.uniq([expected, "#{Mix.Project.config()[:app]}_android"])
+
+    with {name, port} <- Android.pick_registered_node(Tunnel.epmd_names(), candidates),
+         :ok <- Tunnel.attach_forward(serial, port) do
+      %{device | node: :"#{name}@127.0.0.1", dist_port: port}
+    else
+      nil ->
+        device
+
+      {:error, reason} ->
+        IO.puts("  #{color(:yellow)}#{serial}: #{reason}#{color(:reset)}")
+        device
+    end
+  end
+
+  defp attach_target(device), do: device
+
   defp restart_app(%Device{
          platform: :android,
          serial: serial,
@@ -227,28 +275,35 @@ defmodule MobDev.Connector do
 
   @doc """
   Reads the `:name` option from `connect_all/1`'s keyword list and returns
-  it as an atom. Falls back to `:"mob_dev@127.0.0.1"` when unset — the
-  historical default.
+  it as an atom, or nil when unset: the host node is then
+  `mob_dev@127.0.0.1`, or a per-process name when that one is taken (see
+  `MobDev.NodeUtil.start_host_dist/3`).
 
   Public so the option-plumbing is unit-testable without needing to actually
   call `Node.start/2` (which would mutate BEAM-global distribution state
   and require an `async: false` test module). See MOB-69.
   """
-  @spec local_name_from_opts(keyword()) :: node()
+  @spec local_name_from_opts(keyword()) :: node() | nil
   def local_name_from_opts(opts) when is_list(opts) do
     case Keyword.get(opts, :name) do
-      nil -> :"mob_dev@127.0.0.1"
+      nil -> nil
       name when is_atom(name) -> name
       name when is_binary(name) -> String.to_atom(name)
     end
   end
 
   defp ensure_local_dist(local_name, cookie) do
-    unless Node.alive?() do
-      # On Nix and some Linux setups, EPMD is not started automatically.
-      # Try to start it before Node.start so distribution can register.
-      start_epmd()
-      handle_dist_start(Node.start(local_name, :longnames), cookie)
+    # On Nix and some Linux setups, EPMD is not started automatically.
+    # Try to start it before Node.start so distribution can register.
+    unless Node.alive?(), do: start_epmd()
+
+    case MobDev.NodeUtil.start_host_dist(local_name, cookie) do
+      {:ok, node} ->
+        if local_name == nil and node != :"mob_dev@127.0.0.1",
+          do: IO.puts("  Local node: #{node} (mob_dev@127.0.0.1 is held by another process)")
+
+      {:error, reason} ->
+        handle_dist_start({:error, reason}, cookie)
     end
   end
 
@@ -288,7 +343,7 @@ defmodule MobDev.Connector do
     """)
   end
 
-  defp wait_for_nodes(devices, cookie) do
+  defp wait_for_nodes(devices, cookie, timeout) do
     # Start all connection attempts in parallel so slow starters (simulators
     # that need ~20s to boot their BEAM) don't consume the other devices' budget.
     # Total wall time = max(individual connect times), not sum.
@@ -296,13 +351,13 @@ defmodule MobDev.Connector do
       Enum.map(devices, fn device ->
         candidates = node_candidates(device)
 
-        {device, Task.async(fn -> wait_for_any_node(candidates, cookie, @connect_timeout) end)}
+        {device, Task.async(fn -> wait_for_any_node(candidates, cookie, timeout) end)}
       end)
 
     Enum.reduce(tasks, {[], []}, fn {device, task}, {ok, fail} ->
       IO.write("  #{device.node} ...")
 
-      case Task.await(task, @connect_timeout + 2_000) do
+      case Task.await(task, timeout + 2_000) do
         {:ok, connected_node} ->
           if connected_node == device.node do
             IO.puts("  #{color(:green)}✓#{color(:reset)}")

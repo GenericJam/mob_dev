@@ -62,7 +62,9 @@ defmodule MobDev.IconGeneratorTest do
   describe "generate_from_source/2" do
     setup do
       tmp = Path.join(System.tmp_dir!(), "icon_test_#{System.unique_integer([:positive])}")
-      File.mkdir_p!(tmp)
+      # A project with both native trees.
+      File.mkdir_p!(Path.join(tmp, "android"))
+      File.mkdir_p!(Path.join(tmp, "ios"))
       on_exit(fn -> File.rm_rf!(tmp) end)
       {:ok, tmp: tmp}
     end
@@ -176,12 +178,53 @@ defmodule MobDev.IconGeneratorTest do
     end
   end
 
+  # ── platform scoping (P16c) ────────────────────────────────────────────────────
+
+  describe "icons are written only for the platforms the project has" do
+    setup do
+      tmp = Path.join(System.tmp_dir!(), "icon_platforms_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(Path.join(tmp, "android"))
+      on_exit(fn -> File.rm_rf!(tmp) end)
+      {:ok, tmp: tmp}
+    end
+
+    test "an --android project gets the placeholder but no ios/ tree", %{tmp: tmp} do
+      assert :ok = IconGenerator.use_mob_logo(tmp)
+      assert File.exists?(Path.join(tmp, "android/app/src/main/res/mipmap-mdpi/ic_launcher.png"))
+      refute File.exists?(Path.join(tmp, "ios"))
+    end
+
+    test "an --android project's generated icons create no ios/ tree", %{tmp: tmp} do
+      IconGenerator.generate_from_source(write_test_png(tmp), tmp)
+      assert File.exists?(Path.join(tmp, "android/app/src/main/res/mipmap-mdpi/ic_launcher.png"))
+      refute File.exists?(Path.join(tmp, "ios"))
+    end
+
+    test "an --ios project creates no android/ tree", %{tmp: tmp} do
+      File.rm_rf!(Path.join(tmp, "android"))
+      File.mkdir_p!(Path.join(tmp, "ios"))
+
+      IconGenerator.use_mob_logo(tmp)
+      assert File.exists?(Path.join(tmp, "ios/Assets.xcassets/AppIcon.appiconset/Contents.json"))
+      refute File.exists?(Path.join(tmp, "android"))
+    end
+
+    test "platforms_missing_icons names only platforms without an icon yet", %{tmp: tmp} do
+      File.mkdir_p!(Path.join(tmp, "ios"))
+      assert IconGenerator.platforms_missing_icons(tmp) == [:android, :ios]
+
+      IconGenerator.use_mob_logo(tmp, [:ios])
+      assert IconGenerator.platforms_missing_icons(tmp) == [:android]
+      refute File.exists?(Path.join(tmp, "android/app"))
+    end
+  end
+
   # ── generate_random/1 (integration — requires Avatarz + libvips) ─────────────
 
   describe "generate_random/1" do
     setup do
       tmp = Path.join(System.tmp_dir!(), "icon_random_#{System.unique_integer([:positive])}")
-      File.mkdir_p!(tmp)
+      File.mkdir_p!(Path.join(tmp, "android"))
       on_exit(fn -> File.rm_rf!(tmp) end)
       {:ok, tmp: tmp}
     end

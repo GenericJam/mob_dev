@@ -98,6 +98,19 @@ Two rules that outrank the list:
   `Mix.Project.compile_path/0` for every application BEAM, including modules
   compiled from `erlc_paths`. Hard-coding `_build/dev` can push a stale,
   incomplete override that shadows the complete application bundle.
+- **App config ships as `mob_app_config.beam` in the app's compile path.**
+  `MobDev.AppConfig.write!/1` regenerates it from `config/config.exs` +
+  `runtime.exs` (minus `:mob_dev`) wherever the app's BEAMs are collected:
+  `HotPush`'s `app_compile_path/0` (every deploy/push/watch/Android release),
+  the iOS `copy_app_beams/2` (sim + device) and the iOS release script's
+  `_build/dev` copy. A new path that ships the app's ebin some other way must
+  call it too, or that platform boots with nil config. mob applies it at start.
+- **Android deploys relabel `otp/` once, last.** Anything written as root
+  (`adb root` push, `ln -s`) keeps root's SELinux categories until
+  `relabel_otp_android/1` in `deploy_android/3` runs. Add new device writes
+  before that call, never after: the dist (hot) path doesn't restart, so there
+  is no later relabel, and the app fails on its next launch (P11: exqlite's
+  NIF symlink, `dlopen ... not found`).
 - **Physical iOS BEAM overrides must be exact and self-verifying.** The app
   prefers `Documents/otp/<app>` over its complete signed bundle. Replace that
   directory rather than incrementally merging it, require `<app>.beam` before
@@ -238,6 +251,13 @@ narrowing functions). Don't make them private:
   `Plugin.Manifest.nif_for_platform?/2` (the one NIF platform rule — lives in
   `Manifest`, not `Merge`, because every public `Merge` function must be a
   classified gatherer; see `conflict_surface_test.exs`)
+- `MobDev.AppConfig.read/1` and `compile/2` (what config reaches the device)
+- `MobDev.NodeUtil.start_host_dist/3` (host node name, with the per-process
+  fallback when `mob_dev@127.0.0.1` is taken)
+- `Tunnel.forward_owner/2`, `Discovery.Android.pick_registered_node/2` (attach
+  mode of `mix mob.connect --no-restart`) and `Deployer.prune_other_versions_cmd/2`
+- `IconGenerator.platforms/1`, `platforms_missing_icons/1` (icons only for the
+  platforms the project has)
 
 If you make any of these private, every downstream test breaks loudly — but
 you'll lose the ability to evolve the parsers safely.

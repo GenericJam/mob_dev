@@ -1,3 +1,78 @@
+## [Unreleased]
+
+### Added
+
+- **The project's application config now reaches the device.** Mob apps
+  boot from `<app>:start()`, not a release, so `config/*.exs` never got there
+  and `Application.get_env/3` returned nil for everything but `compile_env`
+  values (mob_deliver's `:endpoint`, `:app` and `:channel`, for one). mob_dev
+  now evaluates `config/config.exs` with `Config.Reader` for the build's
+  `Mix.env()` and `Mix.target()`, merges `config/runtime.exs` on top when it
+  exists, drops `:mob_dev`, and compiles the result into the Erlang module
+  `mob_app_config` (`config/0` returns `[{app, [{key, value}]}]`).
+  `mob_app_config.beam` is written next to `<app>.beam` in the app's compile
+  path, so it ships wherever the app's BEAMs do: every `mix mob.deploy`
+  (filesystem push and dist hot load, Android and iOS), the iOS simulator and
+  device builds, and the Android and iOS release builds. mob 0.9.6 applies it
+  with `Application.put_all_env/2` at app start. `runtime.exs` is evaluated
+  **on the host at build time**, so `System.get_env/1` there reads the
+  developer's environment, not the phone's. Values are embedded with
+  `:erlang.term_to_binary/2`; a key whose value can't mean anything on
+  another VM (an anonymous function, pid, port or reference, which includes a
+  compiled regex) is left out with a warning. A config change reaches a
+  running app at its next start. See `MobDev.AppConfig`.
+
+- **`mix mob.connect --no-restart` attaches to the running app** instead of
+  restarting it, so it can inspect a live session. The restart stays the
+  default: it is what makes the app register in the Mac's EPMD through the
+  tunnels just set up. On Android the running node is looked up in EPMD under
+  either the deploy-time name (`<app>_android_<suffix>`) or the bare
+  `<app>_android` a launcher start registers, and the port it actually
+  registered is forwarded (never one another device already holds).
+
+- **The runtime plugin manifest lists every activated plugin** as `plugins:`
+  (manifest `:name`s, activation order). mob 0.9.6 starts each plugin's OTP
+  application before any plugin `on_start`, including NIF-only and
+  component-only plugins that have no lifecycle entry.
+
+### Fixed
+
+- **A hot `mix mob.deploy` no longer breaks the app's next launch.** Over dist
+  the deployer also persists the BEAMs to the device (restart off), but the
+  SELinux relabel of the files pushed as root ran only before a restart, and
+  the exqlite NIF symlink was recreated after the exqlite relabel. The next
+  launch from the launcher failed with `dlopen failed: library
+  ".../exqlite-<vsn>/priv/sqlite3_nif.so" not found`. All of `otp/` is now
+  relabelled once, after the last write, on every Android deploy. Other
+  `exqlite-*` versions on the device (the OTP tarball ships one) are removed
+  when the app's version is installed, as the iOS build already does.
+
+- **`mix mob.deploy` reports what happened to each device.** A dist hot load
+  printed "Apps restarted" although the app kept running with the same pid.
+  The summary now says which devices were hot-loaded without a restart (and
+  how to attach to them) and which were restarted.
+
+- **A launcher start comes back under the deploy-time node name and port.**
+  A deploy starts the app as `<app>_android_<suffix>` on the device's
+  serial-derived port, but a start from the launcher has no intent extras and
+  registered `<app>_android` on 9100, where no tooling looked. Every Android
+  deploy now records the suffix and port in `files/otp/<app>/mob_dist`, which
+  mob 0.9.6 reads when the intent carries none.
+
+- **A second host session no longer fails on a taken node name.** `mix
+  mob.connect`, `mix mob.deploy` and `mix mob.watch` start distribution as
+  `mob_dev@127.0.0.1`; when another process on the Mac already holds it they
+  now use `mob_dev_<os pid>@127.0.0.1` instead of failing with "the name
+  mob_dev@127.0.0.1 seems to be in use" (connect) or silently falling back to
+  push-and-restart (deploy). An explicit `--name` is still used as given.
+
+- **`mix mob.install` and `mix mob.icon` write icons only for the platforms
+  the project has.** An `--android` project got an `ios/Assets.xcassets` tree
+  right after "iOS OTP skipped — no ios/ in project". `mix mob.install` also
+  checked only the Android icon before writing its placeholder, so it could
+  overwrite a custom iOS icon; it now fills in only the platforms that have
+  none.
+
 ## [0.7.3] - 2026-09-30
 
 ### Security

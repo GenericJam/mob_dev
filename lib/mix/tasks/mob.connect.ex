@@ -10,10 +10,23 @@ defmodule Mix.Tasks.Mob.Connect do
 
       mix mob.connect
 
+  The restart is what makes a fresh session reliable: the app registers in the
+  Mac's EPMD through the tunnels just set up, under the node name and port
+  mob_dev expects. To inspect a session that is already running, attach
+  without restarting it:
+
+      mix mob.connect --no-restart
+
   ## Options
 
     * `--no-iex`   — set up connections but don't start IEx (print node names instead)
-    * `--name`     — local node name for this session (default: `mob_dev@127.0.0.1`)
+    * `--no-restart` — attach to the app that is already running instead of
+      restarting it, keeping its state. On Android the node is looked up in EPMD
+      under the deploy-time name or the bare `<app>_android` a launcher start
+      registers. The app must have started while the tunnels were up (it
+      registers in the Mac's EPMD through `adb reverse`); if it didn't, restart it.
+    * `--name`     — local node name for this session (default: `mob_dev@127.0.0.1`,
+      or `mob_dev_<os pid>@127.0.0.1` when another process on this Mac holds it)
     * `--cookie`   — Erlang cookie (default: `mob_secret`)
     * `--ios-only` / `--android-only` — restrict discovery to one platform. iOS-only
       development on a Mac with no Android platform-tools installed works without
@@ -135,6 +148,7 @@ defmodule Mix.Tasks.Mob.Connect do
       OptionParser.parse(args,
         switches: [
           iex: :boolean,
+          restart: :boolean,
           cookie: :string,
           name: :string,
           only: :keep,
@@ -147,7 +161,7 @@ defmodule Mix.Tasks.Mob.Connect do
 
     no_iex = Keyword.get(opts, :iex, true) == false
     cookie = opts |> Keyword.get(:cookie, "mob_secret") |> String.to_atom()
-    local_name = opts |> Keyword.get(:name, "mob_dev@127.0.0.1") |> String.to_atom()
+    local_name = opts |> Keyword.get(:name) |> then(&(&1 && String.to_atom(&1)))
     # --only / --device (repeatable) restrict to matching serials/udids. Without
     # it, connect attaches to every running device — handy for a cluster, but a
     # slow or locked device (e.g. a physical iPhone) can stall the whole run.
@@ -169,7 +183,8 @@ defmodule Mix.Tasks.Mob.Connect do
         cookie: cookie,
         only: only,
         platforms: platforms,
-        name: local_name
+        name: local_name,
+        restart: Keyword.get(opts, :restart, true)
       )
 
     if connected == [] do
@@ -180,7 +195,7 @@ defmodule Mix.Tasks.Mob.Connect do
         IO.puts("\nNodes ready:")
         Enum.each(connected, fn d -> IO.puts("  #{d.node}") end)
       else
-        start_iex(connected, cookie, local_name)
+        start_iex(connected, cookie)
       end
     end
   end
@@ -215,7 +230,7 @@ defmodule Mix.Tasks.Mob.Connect do
     end
   end
 
-  defp start_iex(connected, cookie, local_name) do
+  defp start_iex(connected, cookie) do
     IO.puts(
       "\n#{IO.ANSI.cyan()}Starting IEx (connected to #{length(connected)} device(s))...#{IO.ANSI.reset()}"
     )
@@ -224,12 +239,8 @@ defmodule Mix.Tasks.Mob.Connect do
     IO.puts("  nl(MyModule)      — hot-push code to all nodes")
     IO.puts("")
 
-    # Start distribution on the local node and connect to all devices.
-    unless Node.alive?() do
-      Node.start(local_name, :longnames)
-      Node.set_cookie(cookie)
-    end
-
+    # Distribution is already up: connect_all/1 started it (under --name, or
+    # the default with its fallback).
     Enum.each(connected, fn d ->
       Node.set_cookie(d.node, cookie)
       Node.connect(d.node)
