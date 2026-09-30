@@ -904,6 +904,23 @@ fail) about the two ways that happens:
   since — "installed app was built without it — run `mix mob.deploy --native`" —
   or, when there is no record for that platform yet, says it can't tell.
 
+An Android deploy that restarts the app first sets up `adb reverse tcp:4369`
+and the dist-port forward, so the app joins distribution even right after an
+emulator reboot, and `mix mob.connect --no-restart` can attach to it later.
+
+### Why dependencies recompile between `mix run` and `mix mob.deploy`
+
+They shouldn't, and with fixed dependencies they don't: alternating
+`mix run`, `mix compile` and `mix mob.deploy` on the same project compiles
+nothing (all three use the project's `MIX_ENV`, target and `config/config.exs`,
+and mob_dev sets no compile-time environment for an Android or hot deploy).
+What does trigger it is a `path:` dependency (`mob`, a plugin, `mob_deliver`)
+whose checkout changed in between, for example while you or another agent is
+editing it. Mix recompiles the changed dependency and every module in other
+dependencies that uses it at compile time, which for `mob` includes each
+plugin's `~MOB` screens and `use Mob.Screen` modules (mob_camera,
+mob_location, ...). That is Mix doing its job, not something mob_dev can skip.
+
 ### Application config on the device
 
 Mob apps don't boot as an OTP release, so nothing loads `config/*.exs` on the

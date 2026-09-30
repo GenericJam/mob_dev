@@ -55,7 +55,7 @@ defmodule MobDev.Connector do
 
     IO.puts("\n#{color(:cyan)}Scanning for devices...#{color(:reset)}\n")
 
-    devices = platforms |> discover_all() |> filter_only(only)
+    devices = platforms |> discover_all(only) |> filter_only(only)
 
     if devices == [] do
       if only != [] do
@@ -145,11 +145,27 @@ defmodule MobDev.Connector do
   # platform-tools) skips Android discovery entirely — both so it never shells
   # out to a missing `adb`, and so a plugged-in Android phone for some *other*
   # project isn't swept into this session.
-  defp discover_all(platforms) do
+  defp discover_all(platforms, only) do
     android = if :android in platforms, do: Android.list_devices(), else: []
-    ios = if :ios in platforms, do: IOS.list_devices(), else: []
+
+    ios =
+      if :ios in platforms and ios_scan_needed?(android, only),
+        do: IOS.list_devices(),
+        else: []
+
     android ++ ios
   end
+
+  @doc false
+  # Whether `--device`/`--only` can still match something only an iOS scan
+  # would find. The scan probes EPMD across the LAN for physical iPhones and
+  # took ~17 s of a ~33 s `mix mob.connect --device emulator-5556`; when every
+  # pattern already names an Android device there is nothing left for it to find.
+  @spec ios_scan_needed?([Device.t()], [String.t()]) :: boolean()
+  def ios_scan_needed?(_android, []), do: true
+
+  def ios_scan_needed?(android, patterns),
+    do: Enum.any?(patterns, &(filter_only(android, [&1]) == []))
 
   # Restrict the discovered set to devices whose serial/udid contains any of the
   # given substrings (case-insensitive). Empty list = no filter (connect to all).

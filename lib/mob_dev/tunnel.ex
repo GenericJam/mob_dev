@@ -169,6 +169,17 @@ defmodule MobDev.Tunnel do
   end
 
   @doc """
+  Makes sure an Android app started now can join distribution: `adb reverse`
+  for EPMD (so the device BEAM registers in the Mac's EPMD) and a forward of
+  the dist `port`. Both are gone after an emulator reboot or an adbd restart,
+  and an app launched without them gives up on dist after 10 s. Idempotent.
+  """
+  @spec ensure_android(String.t(), pos_integer()) :: :ok | {:error, String.t()}
+  def ensure_android(serial, port) do
+    with :ok <- reverse(serial, @epmd_port, @epmd_port), do: attach_forward(serial, port)
+  end
+
+  @doc """
   Forwards host `port` to the same port on `serial`, to reach a node that is
   already running there. Refuses (`{:error, _}`) when the host port already
   forwards to a different device, rather than taking it from that session.

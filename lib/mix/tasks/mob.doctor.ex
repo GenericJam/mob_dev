@@ -592,7 +592,8 @@ defmodule Mix.Tasks.Mob.Doctor do
         check_plugin_build_options(),
         check_inactive_nif_plugins(),
         check_component_event_jni(),
-        check_sheet_dismiss_wire_shape()
+        check_sheet_dismiss_wire_shape(),
+        check_app_lifecycle_hooks()
       ])
     else
       []
@@ -658,6 +659,27 @@ defmodule Mix.Tasks.Mob.Doctor do
 
     String.contains?(content, "external fun nativeDeliverComponentEvent") and
       not Regex.match?(fixed, content)
+  end
+
+  # ── Android app lifecycle hooks (mob 0.9.6) ───────────────────────────────
+  #
+  # MainActivity.kt and beam_jni.c are app-owned, so upgrading mob doesn't add
+  # the nativeNotifyAppLifecycle → mob_send_app_lifecycle hooks, and Mob.Device
+  # :app subscribers silently get nothing. Checked against the mob checkout the
+  # build uses, so an app on an older mob isn't told to add a call that won't link.
+  defp check_app_lifecycle_hooks do
+    mob_dir = if File.exists?("mob.exs"), do: MobDev.NativeBuild.__load_config__()[:mob_dir]
+
+    case MobDev.AppLifecycleHooks.check(File.cwd!(), mob_dir && Path.expand(mob_dir)) do
+      :ok ->
+        []
+
+      {:missing, files} ->
+        [
+          {:warn, "Android app lifecycle hooks (#{Enum.join(files, ", ")})",
+           MobDev.AppLifecycleHooks.problem(), MobDev.AppLifecycleHooks.fix()}
+        ]
+    end
   end
 
   # ── Sheet dismissal wire shape (MOB-104) ──────────────────────────────────
@@ -1099,7 +1121,7 @@ defmodule Mix.Tasks.Mob.Doctor do
         if(detail, do: " — #{detail}", else: "")
     )
 
-    if fix, do: IO.puts("      #{ansi(:yellow)}#{fix}#{ansi(:reset)}")
+    if fix, do: IO.puts("      #{ansi(:yellow)}#{indent_fix(fix)}#{ansi(:reset)}")
   end
 
   defp print_check(:fail, label, detail, fix) do
@@ -1108,8 +1130,11 @@ defmodule Mix.Tasks.Mob.Doctor do
         if(detail, do: " — #{detail}", else: "")
     )
 
-    if fix, do: IO.puts("      #{ansi(:red)}#{fix}#{ansi(:reset)}")
+    if fix, do: IO.puts("      #{ansi(:red)}#{indent_fix(fix)}#{ansi(:reset)}")
   end
+
+  # Continuation lines of a multi-line fix line up under its first line.
+  defp indent_fix(fix), do: String.replace(fix, "\n", "\n      ")
 
   # ── Helpers ──────────────────────────────────────────────────────────────────
 

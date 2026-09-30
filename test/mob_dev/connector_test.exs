@@ -23,6 +23,27 @@ defmodule MobDev.ConnectorTest do
     end
   end
 
+  describe "ios_scan_needed?/2" do
+    @android [
+      %Device{serial: "emulator-5558", platform: :android},
+      %Device{serial: "ZY22DP6HFL", platform: :android}
+    ]
+
+    test "no filter scans everything" do
+      assert Connector.ios_scan_needed?(@android, [])
+    end
+
+    test "a filter every pattern of which names an Android device skips the slow iOS scan" do
+      refute Connector.ios_scan_needed?(@android, ["emulator-5558"])
+      refute Connector.ios_scan_needed?(@android, ["5558", "zy22dp"])
+    end
+
+    test "any pattern no Android device matches still needs the iOS scan" do
+      assert Connector.ios_scan_needed?(@android, ["emulator-5558", "90E55910"])
+      assert Connector.ios_scan_needed?([], ["emulator-5558"])
+    end
+  end
+
   describe "filter_only/2" do
     setup do
       devices = [

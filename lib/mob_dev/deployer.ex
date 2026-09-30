@@ -961,6 +961,22 @@ defmodule MobDev.Deployer do
     dist_port = Keyword.fetch!(opts, :dist_port)
     node_suffix = Keyword.fetch!(opts, :node_suffix)
     run_adb(["-s", serial, "shell", "am", "force-stop", android_package()])
+
+    # Tunnels first: the app looks for EPMD through `adb reverse` once, 3 s
+    # after start, and runs without dist for the rest of its life if it isn't
+    # there (after an emulator reboot nothing else had set it up, so the node
+    # never registered and `mix mob.connect --no-restart` had nothing to find).
+    case Tunnel.ensure_android(serial, dist_port) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        IO.puts(
+          "\n    #{color(:yellow)}dist tunnel not set up (#{reason}); the app will start " <>
+            "without distribution — run `mix mob.connect` to restart it with one#{color(:reset)}"
+        )
+    end
+
     :timer.sleep(300)
 
     run_adb([

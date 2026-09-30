@@ -274,6 +274,7 @@ defmodule MobDev.NativeBuild do
     bundle_id = cfg[:bundle_id] || MobDev.Config.bundle_id()
     apk = "android/app/build/outputs/apk/debug/app-debug.apk"
     mob_dir = Path.expand(cfg[:mob_dir])
+    warn_missing_app_lifecycle_hooks(mob_dir)
 
     with {:ok, otp_arm64} <- MobDev.OtpDownloader.ensure_android("arm64-v8a"),
          {:ok, otp_arm32} <- MobDev.OtpDownloader.ensure_android("armeabi-v7a"),
@@ -305,6 +306,23 @@ defmodule MobDev.NativeBuild do
       {:ok, "Android"}
     else
       {:error, reason} -> {:error, "Android", reason}
+    end
+  end
+
+  # An app that upgraded mob but kept its pre-0.9.6 MainActivity.kt / beam_jni.c
+  # builds and runs fine and never gets a Mob.Device :app event. Say so where
+  # the upgrade is exercised, not only in `mix mob.doctor`.
+  defp warn_missing_app_lifecycle_hooks(mob_dir) do
+    case MobDev.AppLifecycleHooks.check(File.cwd!(), mob_dir) do
+      :ok ->
+        :ok
+
+      {:missing, files} ->
+        IO.puts(
+          "  #{IO.ANSI.yellow()}⚠  #{Enum.join(files, ", ")}: " <>
+            "#{MobDev.AppLifecycleHooks.problem()}.#{IO.ANSI.reset()}\n" <>
+            String.replace(MobDev.AppLifecycleHooks.fix(), Regex.compile!("^", "m"), "     ")
+        )
     end
   end
 

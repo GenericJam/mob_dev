@@ -35,7 +35,29 @@
   application before any plugin `on_start`, including NIF-only and
   component-only plugins that have no lifecycle entry.
 
+- **`mix mob.doctor` and Android native builds flag an app missing the
+  lifecycle hooks.** mob 0.9.6 delivers `Mob.Device` `:app` events on Android
+  only if the app-owned `MainActivity.kt` calls `nativeNotifyAppLifecycle` and
+  `beam_jni.c` forwards it to `mob_send_app_lifecycle`. An app generated
+  before mob_new 0.6.2 builds and runs without them and silently gets no
+  events. When the mob checkout exports `mob_send_app_lifecycle` and either
+  file lacks its half, both print which file and the exact code to add. An
+  app on an older mob isn't asked to add a call that wouldn't link.
+
 ### Fixed
+
+- **An Android deploy that restarts the app sets up the dist tunnels first.**
+  After an emulator reboot (or an adbd restart) nothing had re-created
+  `adb reverse tcp:4369`, so a restarted app logged `Mob.Dist: no EPMD on
+  port 4369 after 10s -- skipping dist`, never registered, and
+  `mix mob.connect --no-restart` had nothing to attach to. The deployer now
+  reverses EPMD and forwards the dist port before `am start`, and warns if it
+  can't.
+
+- **`mix mob.connect --device <android serial>` no longer scans for iOS
+  devices.** When every `--device`/`--only` pattern matches an Android device,
+  the iOS discovery (which probes the LAN for physical iPhones, ~17 s) is
+  skipped. `--no-restart --device emulator-5558` went from ~33 s to ~8 s.
 
 - **A hot `mix mob.deploy` no longer breaks the app's next launch.** Over dist
   the deployer also persists the BEAMs to the device (restart off), but the

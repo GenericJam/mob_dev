@@ -258,6 +258,9 @@ narrowing functions). Don't make them private:
   mode of `mix mob.connect --no-restart`) and `Deployer.prune_other_versions_cmd/2`
 - `IconGenerator.platforms/1`, `platforms_missing_icons/1` (icons only for the
   platforms the project has)
+- `MobDev.AppLifecycleHooks.check/2` (the mob 0.9.6 Android lifecycle-hook
+  check shared by `mix mob.doctor` and the Android native build) and
+  `Connector.ios_scan_needed?/2` (when `mob.connect` skips iOS discovery)
 
 If you make any of these private, every downstream test breaks loudly — but
 you'll lose the ability to evolve the parsers safely.
