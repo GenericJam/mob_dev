@@ -38,9 +38,30 @@ defmodule MobDev.Plugin.TrustStoreTest do
                mob_bar: "ed25519:def="
              }
     end
+
+    # MOB-280: a broken mob.exs used to read as "nothing trusted".
+    test "raises when mob.exs fails to evaluate", %{dir: dir} do
+      seed_mob_exs(dir, "import Config\nconfig :mob, :trusted_plugins, %{mob_foo: \"x\"\n")
+
+      assert_raise TokenMissingError, fn -> TrustStore.load_trusted_plugins(dir) end
+    end
   end
 
   describe "add_trust/3" do
+    # MOB-280: with the old "nothing trusted" fallback, the rewrite dropped
+    # every existing trusted entry.
+    test "refuses to rewrite a mob.exs it cannot evaluate", %{dir: dir} do
+      {_priv, pub} = Crypto.generate_keypair()
+
+      broken =
+        "import Config\nconfig :mob, :trusted_plugins, %{mob_old: \"ed25519:abc=\"}\nboom(\n"
+
+      seed_mob_exs(dir, broken)
+
+      assert_raise TokenMissingError, fn -> TrustStore.add_trust(:mob_foo, pub, dir) end
+      assert File.read!(Path.join(dir, "mob.exs")) == broken
+    end
+
     test "writes a new entry to a previously empty mob.exs", %{dir: dir} do
       {_priv, pub} = Crypto.generate_keypair()
       seed_mob_exs(dir, "import Config\n")

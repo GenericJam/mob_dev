@@ -80,6 +80,46 @@ defmodule MobDev.StyleTest do
     end
   end
 
+  describe "activated_names/1 + default_style/1 (mob.exs sourcing)" do
+    setup do
+      dir = Path.join(System.tmp_dir!(), "mob_style_cfg_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+      {:ok, dir: dir}
+    end
+
+    test "reads :styles and :default_style from mob.exs", %{dir: dir} do
+      File.write!(Path.join(dir, "mob.exs"), """
+      import Config
+      config :mob, styles: [:mob_theme_citrus], default_style: :mob_theme_citrus
+      """)
+
+      assert Style.activated_names(dir) == [:mob_theme_citrus]
+      assert Style.default_style(dir) == :mob_theme_citrus
+    end
+
+    test "falls back to the Application env when mob.exs is missing", %{dir: dir} do
+      Application.put_env(:mob, :styles, [:mob_theme_env])
+      Application.put_env(:mob, :default_style, :mob_theme_env)
+
+      on_exit(fn ->
+        Application.delete_env(:mob, :styles)
+        Application.delete_env(:mob, :default_style)
+      end)
+
+      assert Style.activated_names(dir) == [:mob_theme_env]
+      assert Style.default_style(dir) == :mob_theme_env
+    end
+
+    # MOB-280: a broken mob.exs used to read as "no styles".
+    test "raises when mob.exs fails to evaluate", %{dir: dir} do
+      File.write!(Path.join(dir, "mob.exs"), "import Config\nconfig :mob, styles: [:x\n")
+
+      assert_raise TokenMissingError, fn -> Style.activated_names(dir) end
+      assert_raise TokenMissingError, fn -> Style.default_style(dir) end
+    end
+  end
+
   # ── helpers ────────────────────────────────────────────────────────────────
 
   defp tmp_style!(contents) do

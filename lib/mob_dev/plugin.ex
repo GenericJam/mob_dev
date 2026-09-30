@@ -80,12 +80,15 @@ defmodule MobDev.Plugin do
   The activated plugin names — `config :mob, :plugins` from `mob.exs`.
 
   Activation is the second opt-in step (see `MOB_PLUGINS.md`): a plugin in
-  `deps` contributes nothing until it appears here. Falls back to the loaded
-  Application env, then `[]`.
+  `deps` contributes nothing until it appears here. When there is no
+  `mob.exs`, falls back to the loaded Application env, then `[]`. A
+  `mob.exs` that fails to evaluate raises the reader's error (MOB-280) —
+  treating it as "no plugins" would link no plugin NIFs and surface only as
+  `:nif_not_loaded` at runtime.
   """
-  @spec activated_names() :: [atom()]
-  def activated_names do
-    config_file = Path.join(File.cwd!(), "mob.exs")
+  @spec activated_names(Path.t()) :: [atom()]
+  def activated_names(project_dir \\ File.cwd!()) do
+    config_file = Path.join(project_dir, "mob.exs")
 
     if File.exists?(config_file) do
       config_file
@@ -95,8 +98,6 @@ defmodule MobDev.Plugin do
     else
       Application.get_env(:mob, :plugins, [])
     end
-  rescue
-    _ -> Application.get_env(:mob, :plugins, [])
   end
 
   @doc """

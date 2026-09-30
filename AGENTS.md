@@ -150,6 +150,13 @@ Two rules that outrank the list:
   reads `:static_nifs`, use `MobDev.Config.load_mob_config()` to stay
   consistent — using `Application.get_env(:mob_dev, :static_nifs, [])`
   silently misses the user's entries.
+- **A `mob.exs` that fails to evaluate must raise, never read as empty.**
+  Every `Config.Reader.read!("mob.exs")` caller falls back (to `[]`, `%{}`
+  or `Application.get_env`) only when the file is *missing*; no `rescue`
+  around the read. MOB-280: a blanket rescue in
+  `MobDev.Plugin.activated_names/1` turned a mob.exs syntax error into
+  "no plugins activated" — the build succeeded and every plugin call hit
+  `:nif_not_loaded` at runtime with nothing pointing at mob.exs.
 - **`mob.enable` is now Igniter-driven (Phase 4).** Per-feature
   handlers live in `MobDev.Enable.Igniter` and return
   `igniter -> igniter`. When adding a new feature: add a clause to

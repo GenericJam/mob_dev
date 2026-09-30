@@ -30,9 +30,11 @@ defmodule MobDev.Plugin.TrustStore do
   @doc """
   Reads `config :mob, :trusted_plugins` from `mob.exs` in the cwd.
 
-  Returns an empty map when the key is unset or the file is missing.
-  Pure: this function uses `Config.Reader.read!`, the same approach
-  used to read `config :mob, :plugins` (the activation list).
+  Returns an empty map when the key is unset or the file is missing. A
+  `mob.exs` that fails to evaluate raises the reader's error (MOB-280) —
+  reading it as "nothing trusted" would fail the signature gate with a
+  misleading "untrusted" error, and `add_trust/3` would rewrite the file
+  from an empty map.
   """
   @spec load_trusted_plugins() :: trust_map()
   def load_trusted_plugins do
@@ -52,8 +54,6 @@ defmodule MobDev.Plugin.TrustStore do
     else
       %{}
     end
-  rescue
-    _ -> %{}
   end
 
   @doc """
