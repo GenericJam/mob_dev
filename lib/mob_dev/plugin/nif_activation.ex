@@ -22,8 +22,9 @@ defmodule MobDev.Plugin.NifActivation do
       BEAM-only deploy or push compares the current activation against that
       record and names the plugins the installed app was built without.
 
-  All of it is advisory: warnings, never errors, and a failure to write the
-  record is itself only a warning. The record describes the last native
+  The checks themselves are advisory: warnings, never errors, and a failure to
+  write the record is itself only a warning. (A `mob.exs` that fails to load
+  still raises, as every `mob.exs` reader does — MOB-280.) The record describes the last native
   *build* on this machine for this `MIX_ENV`, not what a particular device has
   installed — a device last installed from another checkout or before a
   `mix clean` can still disagree with it. A missing record (a project built
