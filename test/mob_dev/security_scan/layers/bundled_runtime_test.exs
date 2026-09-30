@@ -125,6 +125,91 @@ defmodule MobDev.SecurityScan.Layers.BundledRuntimeTest do
     refute Enum.any?(result.findings, &(&1.id == "MOB-DRIFT-ios_sim-exqlite_beam"))
   end
 
+  # MOB-289: the iOS native build installs the project's exqlite into the
+  # cached OTP dir, which iOS tarballs don't otherwise ship (manifest nil).
+  # That copy is exempt only when it matches the project's mix.lock.
+  describe "deploy_installed_exqlite?/3" do
+    test "manifest ships none and cache matches the project's lock → exempt" do
+      assert BundledRuntime.deploy_installed_exqlite?(nil, "0.41.0", "0.41.0")
+    end
+
+    test "cache differs from the project's lock → not exempt" do
+      refute BundledRuntime.deploy_installed_exqlite?(nil, "0.40.0", "0.41.0")
+    end
+
+    test "project has no exqlite → not exempt" do
+      refute BundledRuntime.deploy_installed_exqlite?(nil, "0.41.0", nil)
+    end
+
+    test "manifest tracks exqlite for the platform → not exempt even when it matches the lock" do
+      refute BundledRuntime.deploy_installed_exqlite?("0.36.0", "0.41.0", "0.41.0")
+    end
+  end
+
+  defp write_lock(dir, exqlite_vsn) do
+    File.write!(
+      Path.join(dir, "mix.lock"),
+      ~s(%{\n  "exqlite": {:hex, :exqlite, "#{exqlite_vsn}", "abc", [:make], [], "hexpm", "def"},\n}\n)
+    )
+  end
+
+  defp ios_cache_with_exqlite(dir, exqlite_vsn) do
+    cache = Path.join(dir, "cache")
+    File.mkdir_p!(cache)
+    bundle = real_bundle()
+
+    for platform <- [:ios_sim, :ios_device] do
+      build_tarball(cache, platform, real_hash(),
+        openssl: bundle.openssl,
+        elixir: bundle.elixir,
+        exqlite: exqlite_vsn
+      )
+    end
+
+    cache
+  end
+
+  test "iOS exqlite matching the project's lock is reported, not flagged", %{tmp_dir: dir} do
+    write_lock(dir, "0.41.0")
+    cache = ios_cache_with_exqlite(dir, "0.41.0")
+
+    result = BundledRuntime.run(project_root: dir, cache_dir: cache)
+
+    assert result.findings == []
+
+    for platform <- ["ios_sim", "ios_device"] do
+      assert Enum.any?(
+               result.notes,
+               &(&1 =~ platform and &1 =~ "exqlite 0.41.0 (deploy-installed, not tracked)")
+             )
+    end
+  end
+
+  test "iOS exqlite differing from the project's lock stays HIGH drift", %{tmp_dir: dir} do
+    write_lock(dir, "0.41.0")
+    cache = ios_cache_with_exqlite(dir, "0.40.0")
+
+    result = BundledRuntime.run(project_root: dir, cache_dir: cache)
+
+    ids = result.findings |> Enum.map(& &1.id) |> Enum.sort()
+    assert ids == ["MOB-DRIFT-ios_device-exqlite_beam", "MOB-DRIFT-ios_sim-exqlite_beam"]
+    assert Enum.all?(result.findings, &(&1.severity == :high))
+
+    assert Enum.all?(
+             result.findings,
+             &(&1.title =~ "0.40.0 is not this project's exqlite (project locks 0.41.0)")
+           )
+  end
+
+  test "iOS exqlite in a project without exqlite stays HIGH drift", %{tmp_dir: dir} do
+    cache = ios_cache_with_exqlite(dir, "0.41.0")
+
+    result = BundledRuntime.run(project_root: dir, cache_dir: cache)
+
+    assert length(result.findings) == 2
+    assert Enum.all?(result.findings, &(&1.title =~ "project has no exqlite"))
+  end
+
   test "version pointers and SQLite note appear in notes when exqlite present", %{tmp_dir: dir} do
     cache = Path.join(dir, "cache")
     File.mkdir_p!(cache)
