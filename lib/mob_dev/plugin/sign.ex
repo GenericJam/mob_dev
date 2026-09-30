@@ -27,7 +27,8 @@ defmodule MobDev.Plugin.Sign do
     payload, so the eval had to run *before* verification could —
     letting a malicious `priv/mob_plugin.exs` execute arbitrary code
     at build time. Refused by `MobDev.Plugin.Verify` since mob_dev
-    0.7.2.
+    0.7.2, except for Hex plugins accepted under the MOB-287 transition
+    rule (`MobDev.Plugin.V1Transition`). Never produced any more.
   - **v2** (current) — payload is `%{file_hashes: [...],
     envelope_version: 2}`; `file_hashes` includes
     `priv/mob_plugin.exs`; envelope on disk embeds `file_hashes`
