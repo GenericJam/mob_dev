@@ -1049,13 +1049,12 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
   # current project's expected node-name prefix (`<app>_ios`) or nil. Stages
   # run only as far as needed; ARP/EPMD scan is the slowest so it's last.
   #
-  # The prefix filter matters because `MobDev.Discovery.IOS.list_physical/0`
-  # scans EPMD and ARP and can return false positives — e.g. an Android phone
-  # at 10.0.0.17 happens to have a stale `mob_qa_ios_*` EPMD entry tunneled
-  # via adb-reverse, which the iOS-name regex matches. Without filtering, the
-  # bench would happily try to connect to that and fail every retry. With the
-  # filter, we'll only accept nodes whose name actually corresponds to the
-  # app being benched.
+  # The prefix filter predates project-scoped discovery: `list_physical/0`
+  # used to take the first `*_ios` name in any EPMD it found — e.g. an Android
+  # phone at 10.0.0.17 with a stale `mob_qa_ios_*` entry tunneled via
+  # adb-reverse, or another Mob app on the same iPhone. Discovery now only
+  # returns the current project's `<app>_ios` node (MOB-283), so the filter
+  # is a second check on the same rule, not the only one.
   defp discover_ios_device(device_id, explicit_wifi_ip, expected_prefix) do
     explicit_match =
       if is_binary(explicit_wifi_ip),

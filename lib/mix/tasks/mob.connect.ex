@@ -73,6 +73,15 @@ defmodule Mix.Tasks.Mob.Connect do
   WiFi is available. The node only falls back to the USB link-local address when
   there is no WiFi at all.
 
+  `mix mob.connect` does not guess which of these the BEAM chose; it asks the
+  phone's EPMD for this project's `<app>_ios` node and connects to the name EPMD
+  reports, ignoring other Mob apps' nodes on the same phone. For a phone found
+  over USB it queries the USB link-local address, then the phone's other
+  addresses (its `.local` mDNS name's IPv4s). One of those is used only when
+  its EPMD lists the same node at the same dist port, i.e. the same BEAM. The
+  `<app>_ios@169.254.x.x` guess is used only when the link-local EPMD lists
+  nothing yet.
+
   **The node name is still fixed at app launch.** If distribution isn't working,
   force-quit the app on the iPhone and relaunch it so it picks up the current
   network state.
