@@ -71,6 +71,11 @@ defmodule MobDev.NativeBuild do
     # first feature use (a SecurityException with nothing pointing here).
     warn_host_requirements!()
 
+    # A dep that ships a NIF but isn't in `config :mob, :plugins` builds clean
+    # and boots clean — its on_load tolerates the missing NIF — and fails with
+    # :nif_not_loaded at the first call (MOB-281). Name it and the config line.
+    MobDev.Plugin.NifActivation.warn_inactive()
+
     results = []
 
     # Skip Android when its toolchain isn't installed instead of failing the
@@ -126,6 +131,17 @@ defmodule MobDev.NativeBuild do
           "  #{IO.ANSI.red()}✗ #{platform} native build failed: #{reason}#{IO.ANSI.reset()}"
         )
     end)
+
+    # Record which NIF plugins this build compiled in, per platform that built,
+    # so a later BEAM-only deploy/push can tell the installed app predates an
+    # activation (MOB-281). A failed platform keeps its previous record.
+    results
+    |> Enum.flat_map(fn
+      {:ok, label} -> List.wrap(label_platform(label))
+      _ -> []
+    end)
+    |> Enum.uniq()
+    |> MobDev.Plugin.NifActivation.record_native_build()
 
     # Intersect with the NARROWED platform list. `narrow_platforms_for_device/2`
     # above drops Android when the target is an iOS UDID — including one this

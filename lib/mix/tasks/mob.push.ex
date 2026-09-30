@@ -11,6 +11,10 @@ defmodule Mix.Tasks.Mob.Push do
   `mix mob.deploy` first). Modules are loaded into the live BEAM in place,
   equivalent to calling `nl(Module)` in IEx for each changed module.
 
+  Only BEAMs are pushed, never native code: if a plugin with a NIF was
+  activated since the last `mix mob.deploy --native`, it warns that the
+  installed app was built without it (see `MobDev.Plugin.NifActivation`).
+
   Options:
     --all      Push all modules, not just those changed since last compile
     --cookie   Erlang cookie (default: mob_secret)
@@ -59,6 +63,12 @@ defmodule Mix.Tasks.Mob.Push do
       IO.puts("Start apps first: mix mob.connect")
     else
       IO.puts("  Connected: #{Enum.map_join(nodes, ", ", &to_string/1)}")
+
+      # Hot-push can't add a NIF to the installed binary (MOB-281).
+      nodes
+      |> MobDev.Plugin.NifActivation.node_platforms(Mix.Project.config()[:app])
+      |> MobDev.Plugin.NifActivation.warn_stale_build()
+
       IO.puts("#{IO.ANSI.cyan()}Pushing modules...#{IO.ANSI.reset()}")
 
       {pushed, failed} =

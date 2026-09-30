@@ -99,7 +99,13 @@ defmodule MobDev.Plugin.Verify do
     case :erlang.binary_to_term(bytes, [:safe]) do
       %{signature: sig, file_hashes: fh, envelope_version: 2}
       when is_binary(sig) and byte_size(sig) == 64 and is_list(fh) ->
-        {:ok, %{signature: sig, file_hashes: fh, envelope_version: 2}}
+        # check_files_match/2 destructures every entry as {rel, hash} and joins
+        # rel onto the plugin dir; a malformed entry would raise there instead
+        # of refusing the plugin (MOB-281: every dep's envelope is now read by
+        # an advisory scan that must never abort a deploy).
+        if Enum.all?(fh, &match?({rel, hash} when is_binary(rel) and is_binary(hash), &1)),
+          do: {:ok, %{signature: sig, file_hashes: fh, envelope_version: 2}},
+          else: {:error, :corrupt}
 
       %{signature: sig, envelope_version: 1} when is_binary(sig) and byte_size(sig) == 64 ->
         {:error, :envelope_v1_unsupported}

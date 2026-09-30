@@ -68,6 +68,11 @@ Move to envelope v2, which flips the trust chain end-to-end:
   `MobDev.Plugin.Verify.load_verified/1` in the four places that
   matter to build- or activation-time: `MobDev.Plugin.activated/0`,
   `mix mob.plugins`, `mix mob.audit_plugins`, `MobDev.Plugin.Report`.
+  *(Correction, MOB-281: this list was exhaustive when written; a fifth
+  consumer now exists — `MobDev.Plugin.NifActivation.dep_manifests/0`, which
+  reads every dep's manifest to warn about installed-but-inactive NIF
+  plugins. It also goes through `load_verified/2`, so an unverifiable
+  inactive plugin is never eval'd and is simply not reported.)*
 - **Author-side paths still eval before verify** on purpose —
   `mix mob.plugin.sign` and `mix mob.plugin.keygen` operate on plugins
   the author owns and is about to sign; there is no attack vector.

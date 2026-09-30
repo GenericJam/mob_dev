@@ -21,6 +21,23 @@
   activation through `MobDev.Plugin.activated_names/0`. The Application-env /
   empty fallback still applies when `mob.exs` is missing. Each reader takes
   an optional `project_dir`.
+- **Plugin NIFs that never reached the installed app are now named, not left
+  to fail as `{:nif_not_loaded, ...}` at the first call** (MOB-281). A
+  plugin's `on_load` tolerates a missing NIF, so both silent failure modes
+  built and booted clean. `mix mob.deploy --native` and `mix mob.doctor` now
+  warn about every device-runtime dep (not `only: :dev` / `runtime: false`)
+  that ships a `priv/mob_plugin.exs` declaring `nifs:` but isn't in
+  `config :mob, :plugins`, printing the exact `config` line to set. Each
+  successful native build records, per platform, which activated plugins it
+  compiled NIFs for (`mob_native_plugins.txt` under
+  `Mix.Project.build_path/0`); a BEAM-only `mix mob.deploy` or `mix mob.push`
+  warns when a NIF plugin was activated since ("the installed app was built
+  without it — run `mix mob.deploy --native`"), or that it can't tell when
+  there is no record for that platform yet. Warnings only, including a
+  record that can't be written. Kernels live in `MobDev.Plugin.NifActivation`.
+  Alongside: `MobDev.Plugin.Verify` now refuses a v2 signature envelope with
+  malformed `file_hashes` entries as corrupt instead of raising
+  `FunctionClauseError` mid-verification.
 
 - **`mix mob.deploy --native --device <id>` can no longer report success after
   skipping the named device's native build** (MOB-225). The selected device now
