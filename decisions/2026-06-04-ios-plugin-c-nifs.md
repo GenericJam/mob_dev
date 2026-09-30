@@ -32,7 +32,9 @@ Two changes:
    non-empty like the Android path. `ios/build.zig` + `build_device.zig` (demo +
    mob_new templates) gain a `plugin_c_nifs` compile block that mirrors the
    existing `project_c_nifs` one: each absolute source path is compiled with
-   `-DSTATIC_ERLANG_NIF -DSTATIC_ERLANG_NIF_LIBNAME=<basename>` and linked.
+   `-DSTATIC_ERLANG_NIF_LIBNAME=<basename>` and linked. (2026-09-30, MOB-284:
+   originally paired with a bare `-DSTATIC_ERLANG_NIF`. Now only `_LIBNAME`
+   is passed, since `erl_nif.h` derives the bare define from it.)
    Scoped to **C** NIFs — Wave 2 is all ObjC/C; no plugin needs a zig NIF on
    iOS, so the zig-on-iOS path is deliberately deferred (and documented in the
    code) until one does.

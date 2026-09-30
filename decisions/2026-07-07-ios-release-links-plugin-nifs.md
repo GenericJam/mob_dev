@@ -41,11 +41,15 @@ env vars from `MobDev.Plugin.activated()`, via the pure, unit-tested
   (`Merge.ios_frameworks/1`).
 
 `release_device.sh` loops over the sources, compiling each with
-`-DSTATIC_ERLANG_NIF -DSTATIC_ERLANG_NIF_LIBNAME=<basename>` (so `ERL_NIF_INIT`
+`-DSTATIC_ERLANG_NIF_LIBNAME=<basename>` (so `ERL_NIF_INIT`
 emits `<basename>_nif_init`, matching the driver table) and `-fmodules` (Clang
 autolinks every framework the source `@import`s — a plugin often imports beyond its
 manifest's declared set, e.g. Accelerate). The compiled objects join the swiftc
 link line, and each declared framework is also passed explicitly.
+
+> **2026-09-30 (MOB-284):** Originally the script also passed a bare
+> `-DSTATIC_ERLANG_NIF`. Now it passes only `_LIBNAME`. `erl_nif.h` derives
+> the bare define from it, so passing both caused a macro-redefined warning.
 
 ## Consequences
 

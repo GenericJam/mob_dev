@@ -77,17 +77,22 @@ and the [User's Guide tutorial](https://www.erlang.org/doc/system/nif.html).
 ### How Mob handles it
 
 Mob compiles the same `.c` source as a regular `.o` file and links it
-straight into the app binary alongside `libbeam.a`. Two compile-time
-flags switch `<erl_nif.h>` from "dlopen mode" into "static mode":
+straight into the app binary alongside `libbeam.a`. One compile-time
+flag, `-DSTATIC_ERLANG_NIF_LIBNAME=<name>`, switches `<erl_nif.h>` from
+"dlopen mode" into "static mode" and names the init symbol
+`<name>_nif_init`:
 
-- `-DSTATIC_ERLANG_NIF` — selects the static-link dispatch path inside
-  `erl_nif.h`. Without it the `ERL_NIF_INIT` macro emits the dynamic
-  `nif_init` symbol, which collides across multiple NIFs.
-- `-DSTATIC_ERLANG_NIF_LIBNAME=<name>` — overrides the init symbol
-  to `<name>_nif_init`. The static table declares it by that exact
-  name, so they have to match. Without the override, the macro
-  mangles to `Elixir.<...>_nif_init`, which isn't a valid C
-  identifier and fails to compile.
+- `erl_nif.h` defines `STATIC_ERLANG_NIF` itself when `_LIBNAME` is set,
+  so `ERL_NIF_INIT` takes the static-link path instead of emitting the
+  dynamic `nif_init` symbol, which collides across multiple NIFs. Don't
+  pass `-DSTATIC_ERLANG_NIF` as well; that's a macro-redefined warning.
+- The static table declares `<name>_nif_init` by that exact name, so they
+  have to match. Without the override, the macro mangles to
+  `Elixir.<...>_nif_init`, which isn't a valid C identifier and fails to
+  compile.
+
+The bare `-DSTATIC_ERLANG_NIF` is only for units compiled without a
+`_LIBNAME` (Mob's own `mob_nif.m`, OTP's crypto NIF).
 
 That's all. The C code itself is identical to a portable NIF — no
 Mob-specific includes, no special prologue. You can prototype a NIF
