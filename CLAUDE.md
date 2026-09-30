@@ -40,14 +40,16 @@ but if in doubt, ask.
 ## Recurring gotchas — read these before debugging device issues
 
 **iOS sim launches, BEAM dies fast, sim returns to home screen.** Almost
-always a host-port collision with `adb`, not a BEAM bug. When an Android
-device is connected, `adb forward tcp:9100 tcp:9100` binds `127.0.0.1:9100`
-on the Mac. iOS sims share the Mac's network stack, so `MobDev.Tunnel.dist_port(0)
-= 9100` is already taken. The OTP boot exits cleanly on `eaddrinuse` and there
-is no crash report. First diagnostic:
+always a host-port collision with `adb`, not a BEAM bug. An Android
+device's `adb forward tcp:<port> tcp:<port>` binds `127.0.0.1:<port>` on
+the Mac, and iOS sims share the Mac's network stack. `mix mob.deploy`
+starts the sim's BEAM on `MobDev.Tunnel.serial_base_port(udid)` (crc32 into
+`9100..9899`) without bumping past ports already in use, so if a forward
+holds that port the sim can't bind it. The OTP boot exits cleanly on
+`eaddrinuse` and there is no crash report. First diagnostic:
 
 ```bash
-lsof -nP -iTCP:9100-9199 -sTCP:LISTEN | grep adb
+lsof -nP -iTCP:9100-9899 -sTCP:LISTEN | grep adb
 ```
 
 …and read `Documents/beam_stdout.log` inside the sim's app container — look
@@ -364,12 +366,12 @@ git config core.hooksPath .githooks
 
 **Always testable (pure functions, no hardware):**
 - `MobDev.Device` — `short_id/1`, `node_name/1`, `summary/1`
-- `MobDev.Tunnel` — `dist_port/1`
+- `MobDev.Tunnel` — `serial_base_port/1`, `assign_dist_port/2`
 - `MobDev.Discovery.Android.parse_devices_output/1`
 - `MobDev.Discovery.IOS.parse_simctl_json/1`, `parse_simctl_text/1`, `parse_runtime_version/1`
 - `MobDev.HotPush.snapshot_beams/0`, `push_changed/2`
-- `MobDev.ProjectGenerator.assigns/1`, `generate/2`
 - `MobDev.IconGenerator.android_sizes/0`, `ios_sizes/0`, `generate_from_source/2`
+- `MobDev.Toolchain.zig_status_from_result/1`
 
 **Hardware-dependent (skip gracefully when devices absent):**
 - `Discovery.Android.list_devices/0` — requires adb + connected device
@@ -401,7 +403,7 @@ updating the hash in `otp_downloader.ex`).
 ## Key files
 
 - `lib/mob_dev/device.ex` — device struct + `node_name/1`, `short_id/1`
-- `lib/mob_dev/tunnel.ex` — adb tunnel setup, `dist_port/1`
+- `lib/mob_dev/tunnel.ex` — adb tunnel setup, serial-derived dist ports (`serial_base_port/1`, `assign_dist_port/2`)
 - `lib/mob_dev/hot_push.ex` — BEAM snapshot + RPC push
 - `lib/mob_dev/deployer.ex` — full BEAM push + app restart
 - `lib/mob_dev/connector.ex` — discover → tunnel → restart → wait → connect
@@ -412,15 +414,13 @@ updating the hash in `otp_downloader.ex`).
 - `lib/mix/tasks/mob.watch.ex` — `mix mob.watch`
 - `lib/mix/tasks/mob.connect.ex` — `mix mob.connect`
 - `lib/mix/tasks/mob.devices.ex` — `mix mob.devices`
-- `lib/mob_dev/project_generator.ex` — EEx template rendering for `mix mob.new`
 - `lib/mob_dev/icon_generator.ex` — robot avatar generation + platform icon resizing
-- `lib/mix/tasks/mob.new.ex` — `mix mob.new APP_NAME`
 - `lib/mix/tasks/mob.icon.ex` — `mix mob.icon [--source PATH]`
 - `lib/mix/tasks/mob/adopt.ex` — `mix mob.adopt` orchestrator (install Mob into an existing Phoenix project)
 - `lib/mix/tasks/mob/adopt/` — the adopt sub-installers (`deps`, `bridge`, `screen`, `mob_app`, `mob_exs`, `native[/android,/ios]`, `finalize`)
 - `lib/mob_dev/adopt_guard.ex` — `MobDev.AdoptGuard`, the pre-1.0 detect-and-refuse for `mob.adopt`
 - `lib/mob_dev/adopt/patcher.ex` / `lib/mob_dev/adopt/generator.ex` — `MobDev.Adopt.{Patcher,Generator}`, the shared LV-bridge patches + EEx assigns/dep-resolution (duplicated from mob_new; see the adopt ADR)
-- `priv/templates/mob.new/` — EEx templates for generated project files
+- `lib/mob_dev/toolchain.ex` — `MobDev.Toolchain`, the exact Zig pin (lockstep with `.tool-versions` via `test/mob_dev/toolchain_test.exs`)
 
 ## Connecting an IEx session to a running mob app (Mac → device BEAM)
 

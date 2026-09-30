@@ -122,8 +122,10 @@ Two rules that outrank the list:
 - **The release scripts assume `~/code/otp` exists** with the right cross-compile
   output. The patches in `scripts/release/patches/` are applied automatically
   by `xcompile_ios_device.sh`, idempotently — re-running is safe.
-- **The application-build Zig version is exact.** `MobDev.Toolchain` embeds the
-  root `.tool-versions` pin and both native build preflight and `mob.doctor`
+- **The application-build Zig version is exact.** `MobDev.Toolchain` carries
+  its own copy of the pin (`@required_zig_version`; `test/mob_dev/toolchain_test.exs`
+  keeps it in lockstep with the root `.tool-versions`, which Hex omits) and both
+  native build preflight and `mob.doctor`
   reject any other version. `mob.adopt` deliberately does not rewrite an
   existing Phoenix project's toolchain file: it installs `build.zig`-bearing
   native trees, then the preflight reports a missing or conflicting pin with
