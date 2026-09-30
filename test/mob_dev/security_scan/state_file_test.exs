@@ -43,7 +43,7 @@ defmodule MobDev.SecurityScan.StateFileTest do
 
     assert loaded.version == state.version
     assert loaded.last_run_at == state.last_run_at
-    assert length(loaded.findings) == 1
+    assert [_] = loaded.findings
     [entry] = loaded.findings
     assert entry.id == "GHSA-1"
     assert entry.severity == :high
@@ -63,7 +63,7 @@ defmodule MobDev.SecurityScan.StateFileTest do
     assert {:ok, decoded} = Jason.decode(raw)
     assert decoded["version"] == 1
     assert decoded["last_run_at"] == "2026-05-07T12:00:00Z"
-    assert is_list(decoded["findings"]) and length(decoded["findings"]) == 1
+    assert [_] = decoded["findings"]
   end
 
   test "from_report/3 preserves first_seen_at for known findings", %{tmp_dir: _dir} do

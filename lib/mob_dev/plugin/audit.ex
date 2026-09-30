@@ -250,8 +250,7 @@ defmodule MobDev.Plugin.Audit do
   end
 
   # :erlang.binary_to_term/1 — :high (arity-2 with [:safe] is fine)
-  defp check_elixir_node({{:., _, [:erlang, :binary_to_term]}, meta, args}, file, plugin)
-       when length(args) == 1 do
+  defp check_elixir_node({{:., _, [:erlang, :binary_to_term]}, meta, [_arg]}, file, plugin) do
     [
       finding(
         :high,

@@ -123,7 +123,7 @@ defmodule MobDev.Release.OpenSSLTest do
 
     test "argv is non-empty and entirely strings" do
       args = OpenSSL.configure_args(OpenSSL.target_spec(:ios_sim), "/tmp/out")
-      assert length(args) > 0
+      assert [_ | _] = args
       assert Enum.all?(args, &is_binary/1)
     end
   end

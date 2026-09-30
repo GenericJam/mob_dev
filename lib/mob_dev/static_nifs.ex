@@ -538,7 +538,7 @@ defmodule MobDev.StaticNifs do
         rows_expr = zig_branch_rows(active)
         keyword = if idx == 0, do: "if", else: "} else if"
 
-        if length(active) == 0 do
+        if active == [] do
           "} else {\n        break :blk #{rows_expr};\n"
         else
           "#{keyword} (#{condition}) {\n        break :blk #{rows_expr};\n"

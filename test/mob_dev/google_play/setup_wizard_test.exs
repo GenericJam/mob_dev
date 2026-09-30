@@ -82,7 +82,7 @@ defmodule MobDev.GooglePlay.SetupWizardTest do
       decoded = Jason.decode!(json)
 
       assert decoded["grantee"] == "sa@proj.iam.gserviceaccount.com"
-      assert length(decoded["developerAccountPermissions"]) > 0
+      assert [_ | _] = decoded["developerAccountPermissions"]
     end
 
     test "app-level request is valid JSON with required fields" do
@@ -92,7 +92,7 @@ defmodule MobDev.GooglePlay.SetupWizardTest do
 
       assert decoded["grantee"] == "sa@proj.iam.gserviceaccount.com"
       assert decoded["packageName"] == "com.example.app"
-      assert length(decoded["appLevelPermissions"]) > 0
+      assert [_ | _] = decoded["appLevelPermissions"]
     end
   end
 

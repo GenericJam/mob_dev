@@ -13,7 +13,7 @@ defmodule MobDev.GooglePlay.PlaySetupTest do
 
     test "includes developerAccountPermissions" do
       req = PlaySetup.build_grant_request("email@example.com", nil)
-      assert length(req["developerAccountPermissions"]) > 0
+      assert [_ | _] = req["developerAccountPermissions"]
     end
 
     test "does not include packageName for account-level grant" do
@@ -45,7 +45,7 @@ defmodule MobDev.GooglePlay.PlaySetupTest do
 
     test "includes appLevelPermissions for app-level grant" do
       req = PlaySetup.build_grant_request("email@example.com", "com.example.app")
-      assert length(req["appLevelPermissions"]) > 0
+      assert [_ | _] = req["appLevelPermissions"]
     end
 
     test "does not include developerAccountPermissions for app-level grant" do
@@ -59,7 +59,7 @@ defmodule MobDev.GooglePlay.PlaySetupTest do
   describe "release_manager_permissions/0" do
     test "returns a non-empty list of strings" do
       perms = PlaySetup.release_manager_permissions()
-      assert length(perms) > 0
+      assert [_ | _] = perms
       assert Enum.all?(perms, &is_binary/1)
     end
 

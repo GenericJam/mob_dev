@@ -81,7 +81,7 @@ defmodule MobDev.NativeBuildTest do
       |
 
       assert {:patched, out} = NativeBuild.inject_page_size_flag(src)
-      assert length(String.split(out, "max-page-size=16384")) == 3
+      assert [_, _, _] = String.split(out, "max-page-size=16384")
     end
 
     test "idempotent — already-aligned build.zig is left unchanged" do
@@ -178,7 +178,7 @@ defmodule MobDev.NativeBuildTest do
       once = NativeBuild.__merge_android_manifest_components__(@manifest, [snippet])
       twice = NativeBuild.__merge_android_manifest_components__(once, [snippet])
       assert once == twice
-      assert length(String.split(once, "MobNfcApduService")) == 2
+      assert [_, _] = String.split(once, "MobNfcApduService")
     end
 
     test "removing the plugin (empty set) strips the previously-injected region" do
@@ -499,11 +499,11 @@ defmodule MobDev.NativeBuildTest do
 
       # One register() + one handOff() per class, no per-plugin branching, and
       # exactly one shared helper holding the single cast.
-      assert length(Regex.scan(~r/\.register\(\)/, src)) == 2
-      assert length(Regex.scan(~r/handOff\([\w.]+, activity\)/, src)) == 2
-      assert length(Regex.scan(~r/collectPermissionProvider\([\w.]+\)/, src)) == 2
-      assert length(Regex.scan(~r/as\? MobActivityAware/, src)) == 1
-      assert length(Regex.scan(~r/as\? MobPermissionProvider/, src)) == 1
+      assert [_, _] = Regex.scan(~r/\.register\(\)/, src)
+      assert [_, _] = Regex.scan(~r/handOff\([\w.]+, activity\)/, src)
+      assert [_, _] = Regex.scan(~r/collectPermissionProvider\([\w.]+\)/, src)
+      assert [_] = Regex.scan(~r/as\? MobActivityAware/, src)
+      assert [_] = Regex.scan(~r/as\? MobPermissionProvider/, src)
     end
 
     test "__bootstrap_kotlin__ emits an empty registerAll body and no register helpers when no bridges" do
@@ -668,7 +668,7 @@ defmodule MobDev.NativeBuildTest do
         ])
 
       # CAMERA already declared by hand → not added again
-      assert length(String.split(out, ~s(android:name="android.permission.CAMERA"))) == 2
+      assert [_, _] = String.split(out, ~s(android:name="android.permission.CAMERA"))
     end
 
     test "forward-only: an existing UNFENCED entry is treated as host-authored" do
@@ -711,7 +711,7 @@ defmodule MobDev.NativeBuildTest do
       tags = Regex.scan(~r/<uses-permission android:name="([^"]+)"/, result)
       names = Enum.map(tags, fn [_, name] -> name end)
 
-      assert length(names) == 6
+      assert [_, _, _, _, _, _] = names
       assert Enum.uniq(names) == names
 
       assert "android.permission.BLUETOOTH_CONNECT" in names

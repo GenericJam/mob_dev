@@ -348,7 +348,7 @@ defmodule MobDev.NxEigenNifTest do
 
       assert info.target == :ios_device
       assert info.archive == "/fake/out/libnx_eigen.a"
-      assert length(info.objects) == 2
+      assert [_, _] = info.objects
     end
   end
 

@@ -222,7 +222,7 @@ defmodule MobDev.Release.PublishTest do
         calls_made()
         |> Enum.filter(&match?(["gh", "release", "delete-asset" | _], &1))
 
-      assert length(deletes) == 2
+      assert [_, _] = deletes
 
       assert Enum.any?(deletes, fn argv -> "otp-android-abc12345.tar.gz" in argv end)
       assert Enum.any?(deletes, fn argv -> "otp-ios-sim-abc12345.tar.gz" in argv end)

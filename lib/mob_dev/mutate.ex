@@ -165,7 +165,7 @@ defmodule MobDev.Mutate do
     do: Enum.any?(@type_attributes, &String.starts_with?(trimmed, &1 <> " "))
 
   defp bracket_delta(line) do
-    counts = fn char -> line |> String.graphemes() |> Enum.count(&(&1 == char)) end
+    counts = fn char -> line |> :binary.matches(char) |> length() end
     counts.("(") - counts.(")") + counts.("{") - counts.("}") + counts.("[") - counts.("]")
   end
 

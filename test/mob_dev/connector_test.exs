@@ -58,7 +58,7 @@ defmodule MobDev.ConnectorTest do
     test "partial substrings match", %{devices: devices} do
       # both Motos share the ZY22 prefix
       result = Connector.filter_only(devices, ["ZY22"])
-      assert length(result) == 2
+      assert [_, _] = result
     end
 
     test "multiple patterns union their matches", %{devices: devices} do

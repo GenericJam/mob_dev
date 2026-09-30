@@ -94,7 +94,7 @@ defmodule Mix.Tasks.Mob.CacheTest do
         targets = Cache.sim_runtime_targets()
         paths = Enum.map(targets, & &1.path)
         # Default + legacy, no duplicate of default.
-        assert length(paths) == 2
+        assert [_, _] = paths
         assert default in paths
         assert MobDev.Paths.legacy_tmp_path() in paths
       after

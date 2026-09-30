@@ -35,7 +35,7 @@ defmodule MobDev.Plugin.ManagedBlockTest do
       twice = ManagedBlock.upsert(once, @markers, "  <svc/>", place(@doc_anchor))
       assert once == twice
       # exactly one region
-      assert length(String.split(once, "<!-- BEGIN -->")) == 2
+      assert [_, _] = String.split(once, "<!-- BEGIN -->")
     end
 
     test "a changed body replaces the region (old contents gone)" do
@@ -43,7 +43,7 @@ defmodule MobDev.Plugin.ManagedBlockTest do
       v2 = ManagedBlock.upsert(v1, @markers, "  <new/>", place(@doc_anchor))
       assert v2 =~ "<new/>"
       refute v2 =~ "<old/>"
-      assert length(String.split(v2, "<!-- BEGIN -->")) == 2
+      assert [_, _] = String.split(v2, "<!-- BEGIN -->")
     end
 
     test "an empty body REMOVES an existing region (the reversibility property)" do

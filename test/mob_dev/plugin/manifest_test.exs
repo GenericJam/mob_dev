@@ -162,7 +162,7 @@ defmodule MobDev.Plugin.ManifestTest do
 
     test "reports every problem at once, not just the first" do
       assert {:error, errs} = Manifest.validate(%{plugin_spec_version: "nope"})
-      assert length(errs) == 3
+      assert [_, _, _] = errs
       assert Enum.any?(errs, &(&1 =~ ":name"))
       assert Enum.any?(errs, &(&1 =~ ":mob_version"))
       assert Enum.any?(errs, &(&1 =~ "plugin_spec_version"))

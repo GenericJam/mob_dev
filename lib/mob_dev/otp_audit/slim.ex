@@ -336,7 +336,7 @@ defmodule MobDev.OtpAudit.Slim do
         dir |> Path.basename() |> String.replace(~r/-[\d.]+$/, "")
       end)
       |> Enum.each(fn {_name, dirs} ->
-        if length(dirs) > 1 do
+        if match?([_, _ | _], dirs) do
           latest = Enum.max_by(dirs, &Path.basename/1)
           dirs |> Enum.reject(&(&1 == latest)) |> Enum.each(&File.rm_rf!/1)
         end

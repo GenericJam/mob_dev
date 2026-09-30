@@ -66,7 +66,7 @@ defmodule MobDev.Discovery.AndroidTest do
       """
 
       devices = Android.parse_devices_output(output)
-      assert length(devices) == 2
+      assert [_, _] = devices
       serials = Enum.map(devices, & &1.serial)
       assert "emulator-5554" in serials
       assert "R5CW3089HVB" in serials

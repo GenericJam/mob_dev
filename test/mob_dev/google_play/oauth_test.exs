@@ -104,7 +104,7 @@ defmodule MobDev.GooglePlay.OAuthTest do
 
     test "returns a non-empty list of strings" do
       scopes = OAuth.setup_scopes()
-      assert length(scopes) > 0
+      assert [_ | _] = scopes
       assert Enum.all?(scopes, &is_binary/1)
     end
   end

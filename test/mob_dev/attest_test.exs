@@ -126,7 +126,7 @@ defmodule MobDev.AttestTest do
       # exactly 6 parts whether the cap was 5 or 6, because the last name is
       # glued to the trailing sentence — so the cap test did not test the cap,
       # which a review demonstrated by mutating take(5) to take(6).
-      assert length(Regex.scan(~r/:Mod\d+/, message)) == 5
+      assert [_, _, _, _, _] = Regex.scan(~r/:Mod\d+/, message)
     end
   end
 

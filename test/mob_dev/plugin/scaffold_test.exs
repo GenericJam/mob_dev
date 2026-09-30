@@ -124,7 +124,7 @@ defmodule MobDev.Plugin.ScaffoldTest do
       paths = paths(files)
       assert "mix.exs" in paths
       assert "lib/mob_demo_widget.ex" in paths
-      assert length(files) == 4
+      assert [_, _, _, _] = files
     end
 
     test "mix.exs has the right module + app names", %{files: files} do
@@ -152,7 +152,7 @@ defmodule MobDev.Plugin.ScaffoldTest do
       assert "src/mob_demo_widget_nif.erl" in paths
       assert "priv/mob_plugin.exs" in paths
       assert "priv/native/jni/mob_demo_widget_nif.c" in paths
-      assert length(files) == 7
+      assert [_, _, _, _, _, _, _] = files
     end
 
     test "manifest's nif :module is the C-token name (not the Elixir module)", %{files: files} do
@@ -205,7 +205,7 @@ defmodule MobDev.Plugin.ScaffoldTest do
       assert "priv/mob_plugin.exs" in paths
       assert "priv/native/android/MobDemoWidget.kt" in paths
       assert "priv/native/ios/MobDemoWidgetView.swift" in paths
-      assert length(files) == 8
+      assert [_, _, _, _, _, _, _, _] = files
     end
 
     test "manifest's registry name matches Mob.Component's module-name encoding", %{files: files} do
@@ -259,7 +259,7 @@ defmodule MobDev.Plugin.ScaffoldTest do
       assert "lib/mob_demo_widget/detail_screen.ex" in paths
       assert "priv/mob_plugin.exs" in paths
       assert "priv/repo/migrations/20260101000000_create_mob_demo_widget_items.exs" in paths
-      assert length(files) == 7
+      assert [_, _, _, _, _, _, _] = files
     end
 
     test "manifest declares two screen routes + a namespaced migration", %{files: files} do
@@ -312,7 +312,7 @@ defmodule MobDev.Plugin.ScaffoldTest do
       assert "lib/mob_demo_widget/notifications.ex" in paths
       assert "lib/mob_demo_widget/settings_screen.ex" in paths
       assert "priv/mob_plugin.exs" in paths
-      assert length(files) == 8
+      assert [_, _, _, _, _, _, _, _] = files
     end
 
     test "manifest wires lifecycle + settings + notifications", %{files: files} do

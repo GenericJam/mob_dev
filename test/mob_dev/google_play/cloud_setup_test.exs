@@ -36,7 +36,7 @@ defmodule MobDev.GooglePlay.CloudSetupTest do
       }
 
       result = CloudSetup.parse_projects_response(resp)
-      assert length(result) == 2
+      assert [_, _] = result
       assert Enum.any?(result, &(&1["projectId"] == "project-a"))
     end
 

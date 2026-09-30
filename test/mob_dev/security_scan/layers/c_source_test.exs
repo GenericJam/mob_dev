@@ -85,7 +85,7 @@ defmodule MobDev.SecurityScan.Layers.CSourceTest do
           flawfinder_runner: fn _t -> {:ok, flawfinder_csv} end
         )
 
-      assert length(result.findings) == 2
+      assert [_, _] = result.findings
       sources = Enum.map(result.findings, & &1.source) |> Enum.sort()
       assert sources == [:flawfinder, :semgrep]
     end

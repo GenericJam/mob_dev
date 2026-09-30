@@ -36,7 +36,7 @@ defmodule MobDev.IconGeneratorTest do
 
   describe "ios_sizes/0" do
     test "returns a non-empty list" do
-      assert length(IconGenerator.ios_sizes()) >= 4
+      assert [_, _, _, _ | _] = IconGenerator.ios_sizes()
     end
 
     test "includes 1024px (App Store)" do
@@ -111,7 +111,7 @@ defmodule MobDev.IconGeneratorTest do
       IconGenerator.generate_from_source(source, tmp)
       json_path = Path.join(tmp, "ios/Assets.xcassets/AppIcon.appiconset/Contents.json")
       {:ok, parsed} = Jason.decode(File.read!(json_path))
-      assert length(parsed["images"]) > 0
+      assert [_ | _] = parsed["images"]
     end
 
     test "Android icons are square (not squashed)", %{tmp: tmp} do

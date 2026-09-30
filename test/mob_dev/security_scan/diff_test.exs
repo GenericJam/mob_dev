@@ -43,7 +43,7 @@ defmodule MobDev.SecurityScan.DiffTest do
   test "first run: every finding is :new" do
     diff = Diff.compute(StateFile.empty(), report([finding(id: "X")]), @now)
 
-    assert length(diff.new) == 1
+    assert [_] = diff.new
     assert diff.resolved == []
     assert diff.still_present == []
   end
@@ -59,7 +59,7 @@ defmodule MobDev.SecurityScan.DiffTest do
 
     assert diff.new == []
     assert diff.resolved == []
-    assert length(diff.still_present) == 1
+    assert [_] = diff.still_present
   end
 
   test "vanished finding is :resolved" do
@@ -119,8 +119,8 @@ defmodule MobDev.SecurityScan.DiffTest do
 
     diff = Diff.compute(state, report([finding(id: "X", version: "1.11.0")]), @now)
 
-    assert length(diff.resolved) == 1
-    assert length(diff.new) == 1
+    assert [_] = diff.resolved
+    assert [_] = diff.new
     assert diff.still_present == []
   end
 end

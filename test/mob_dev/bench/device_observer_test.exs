@@ -73,7 +73,7 @@ defmodule MobDev.Bench.DeviceObserverTest do
           DeviceObserver.apply_event(acc, :memory_warning, nil)
         end)
 
-      assert length(final.events) <= 100
+      assert Enum.count_until(final.events, 101) <= 100
     end
   end
 

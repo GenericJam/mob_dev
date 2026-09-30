@@ -22,7 +22,7 @@ defmodule MobDev.SecurityScan.ReportTest do
           %LayerResult{name: :b, findings: [finding(:critical)]}
         ])
 
-      assert length(Report.all_findings(r)) == 3
+      assert [_, _, _] = Report.all_findings(r)
     end
 
     test "returns empty list when no layers" do

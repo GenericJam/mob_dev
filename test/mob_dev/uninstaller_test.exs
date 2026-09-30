@@ -50,7 +50,7 @@ defmodule MobDev.UninstallerTest do
       {u, f, s} = Uninstaller.categorize_results(skips)
       assert u == []
       assert f == []
-      assert length(s) == 5
+      assert [_, _, _, _, _] = s
     end
   end
 
@@ -373,7 +373,7 @@ defmodule MobDev.UninstallerTest do
         )
 
       refute personal_phone in result
-      assert length(result) == 3
+      assert [_, _, _] = result
       assert Enum.all?(result, &(&1 in dev_emulators))
     end
   end

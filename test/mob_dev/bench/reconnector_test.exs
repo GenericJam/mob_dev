@@ -151,7 +151,7 @@ defmodule MobDev.Bench.ReconnectorTest do
       # Attempts should be at: 0, 2000, 6000, 14000, 30000 (cumulative wait
       # between attempts: 0, 2, 4, 8, 16).
       # Allowing some slack since our simulated polls are in 1 s steps:
-      assert length(attempts_made) >= 4
+      assert [_, _, _, _ | _] = attempts_made
       assert final_r.attempts >= 4
     end
 

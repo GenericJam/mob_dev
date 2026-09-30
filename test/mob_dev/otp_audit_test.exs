@@ -103,7 +103,7 @@ defmodule MobDev.OtpAuditTest do
       report = OtpAudit.audit(root)
       pk = Enum.find(report.libs, &(&1.name == "public_key"))
       assert pk.version == "1.20.3"
-      assert length(report.duplicates["public_key"]) == 2
+      assert [_, _] = report.duplicates["public_key"]
     end
   end
 
@@ -116,7 +116,7 @@ defmodule MobDev.OtpAuditTest do
 
       report = OtpAudit.audit(root, app_name: :my_app)
       assert foreign in report.foreign_apps
-      assert length(report.foreign_apps) == 2
+      assert [_, _] = report.foreign_apps
     end
 
     test "does not flag the app under test as foreign", %{root: root} do
@@ -298,7 +298,7 @@ defmodule MobDev.OtpAuditTest do
       assert stale2 in report.foreign_apps
       assert stale3 in report.foreign_apps
       assert stale4 in report.foreign_apps
-      assert length(report.foreign_apps) == 4
+      assert [_, _, _, _] = report.foreign_apps
 
       # Pigeon (the app) and exqlite (a real dep) are NOT foreign.
       lib_names = Enum.map(report.libs, & &1.name)

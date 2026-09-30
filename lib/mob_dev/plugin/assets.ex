@@ -41,7 +41,7 @@ defmodule MobDev.Plugin.Assets do
     dups =
       copies
       |> Enum.group_by(fn {_src, dest} -> dest end)
-      |> Enum.filter(fn {_dest, list} -> length(list) > 1 end)
+      |> Enum.filter(fn {_dest, list} -> match?([_, _ | _], list) end)
 
     unless dups == [] do
       detail =
@@ -127,7 +127,7 @@ defmodule MobDev.Plugin.Assets do
     collision =
       copies
       |> Enum.group_by(fn {_src, dest} -> dest end)
-      |> Enum.find(fn {_dest, list} -> length(list) > 1 end)
+      |> Enum.find(fn {_dest, list} -> match?([_, _ | _], list) end)
 
     case collision do
       nil -> {:ok, copies}

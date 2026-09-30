@@ -90,7 +90,7 @@ defmodule MobDev.Bench.LoggerTest do
       Logger.close(log)
 
       rows = Logger.read(path)
-      assert length(rows) == 3
+      assert [_, _, _] = rows
       assert Enum.map(rows, & &1.ts_ms) == [0, 1_000, 5_000]
       assert Enum.map(rows, & &1.elapsed_sec) == [0.0, 1.0, 5.0]
       assert Enum.map(rows, & &1.battery_pct) == [100, 99, 95]
@@ -164,7 +164,7 @@ defmodule MobDev.Bench.LoggerTest do
       Logger.close(log)
 
       rows = Logger.read(path)
-      assert length(rows) == 5
+      assert [_, _, _, _, _] = rows
 
       assert Enum.map(rows, & &1.reachability) == [
                :alive_rpc,

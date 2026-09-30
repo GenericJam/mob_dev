@@ -54,7 +54,7 @@ defmodule MobDev.Plugin.AssetsTest do
         |> Enum.map(fn {_src, dest} -> Path.basename(dest) end)
 
       assert dests == ["20260101_kv_kv_create.exs", "20260101_kv_create.exs"]
-      assert length(Enum.uniq(dests)) == 2
+      assert [_, _] = Enum.uniq(dests)
     end
 
     test "raises a clear error if two distinct sources collide on one destination" do
@@ -106,7 +106,7 @@ defmodule MobDev.Plugin.AssetsTest do
       assert {:error, {:font_resource_collision, "inter_regular.ttf", srcs}} =
                Assets.plan_android_font_copies(["/p/Inter-Regular.ttf", "/q/Inter_Regular.ttf"])
 
-      assert length(srcs) == 2
+      assert [_, _] = srcs
     end
   end
 

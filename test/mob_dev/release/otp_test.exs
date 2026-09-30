@@ -454,7 +454,7 @@ defmodule MobDev.Release.OTPTest do
       OTP.build_all(otp_src: otp_src, ndk_root: "/fake/ndk")
 
       calls = :ets.tab2list(configure_calls)
-      assert length(calls) == 5
+      assert [_, _, _, _, _] = calls
 
       flat = List.flatten(for {:configure, argv} <- calls, do: argv)
       assert Enum.any?(flat, &(&1 == "--with-ssl=/tmp/openssl-android-arm64"))

@@ -93,7 +93,7 @@ defmodule MobDev.Release.Shell.System do
   alias MobDev.Release.Errors
 
   @impl true
-  def cmd(argv, opts \\ []) when is_list(argv) and length(argv) >= 1 do
+  def cmd([_ | _] = argv, opts \\ []) do
     [exe | args] = argv
     cmd_opts = Keyword.merge([stderr_to_stdout: true], Keyword.take(opts, [:cd, :env, :into]))
 

@@ -191,7 +191,7 @@ defmodule MobDev.Release.HelpersTest do
     test "copies elixir + logger + eex ebins into stage/lib/<app>/ebin", %{stage: stage, lib: lib} do
       assert {:ok, dirs} = Helpers.bundle_elixir_stdlib(stage, lib)
 
-      assert length(dirs) == 3
+      assert [_, _, _] = dirs
 
       for app <- ~w(elixir logger eex) do
         dst = Path.join([stage, "lib", app, "ebin"])

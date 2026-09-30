@@ -21,7 +21,7 @@ defmodule MobDev.Release.OpenSSL.CryptoNifTest do
   describe "sources/0" do
     test "includes the 31 crypto NIF C files we ship" do
       srcs = CryptoNif.sources()
-      assert length(srcs) == 31
+      assert Enum.count(srcs) == 31
 
       # Spot-check representative entries from each crypto family.
       assert "aes.c" in srcs
@@ -256,7 +256,7 @@ defmodule MobDev.Release.OpenSSL.CryptoNifTest do
         assert hd(argv) =~ "llvm-ar"
         assert "rcs" in argv
         # All 31 object paths are in the argv after "rcs <archive>"
-        assert length(argv) >= 31
+        assert Enum.count(argv) >= 31
         {:ok, ""}
       end)
 
@@ -281,7 +281,7 @@ defmodule MobDev.Release.OpenSSL.CryptoNifTest do
 
       assert info.target == :android_arm64
       assert info.archive =~ "aarch64-unknown-linux-android/crypto.a"
-      assert length(info.objects) == 31
+      assert Enum.count(info.objects) == 31
     end
   end
 

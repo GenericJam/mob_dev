@@ -38,7 +38,7 @@ defmodule MobDev.Discovery.IOSTest do
         })
 
       devices = IOS.parse_simctl_json(json)
-      assert length(devices) == 1
+      assert [_] = devices
       assert hd(devices).serial == "DEF-456"
     end
 
@@ -61,7 +61,7 @@ defmodule MobDev.Discovery.IOSTest do
         })
 
       devices = IOS.parse_simctl_json(json)
-      assert length(devices) == 2
+      assert [_, _] = devices
       serials = Enum.map(devices, & &1.serial)
       assert "A1" in serials
       assert "B2" in serials
@@ -115,7 +115,7 @@ defmodule MobDev.Discovery.IOSTest do
       """
 
       devices = IOS.parse_simctl_text(text)
-      assert length(devices) == 2
+      assert [_, _] = devices
     end
   end
 

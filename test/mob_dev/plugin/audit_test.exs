@@ -55,7 +55,7 @@ defmodule MobDev.Plugin.AuditTest do
       """)
 
       assert %{findings: findings} = Audit.audit_plugin(dir, %{name: :x})
-      assert length(findings) == 2
+      assert [_, _] = findings
       assert Enum.all?(findings, &(&1.rule == :code_eval))
     end
 
@@ -68,7 +68,7 @@ defmodule MobDev.Plugin.AuditTest do
       """)
 
       assert %{findings: findings} = Audit.audit_plugin(dir, %{name: :x})
-      assert length(findings) == 2
+      assert [_, _] = findings
       assert Enum.all?(findings, &(&1.severity == :high and &1.rule == :code_eval))
     end
   end
@@ -157,7 +157,7 @@ defmodule MobDev.Plugin.AuditTest do
       """)
 
       assert %{findings: findings} = Audit.audit_plugin(dir, %{name: :x})
-      assert length(findings) == 3
+      assert [_, _, _] = findings
       assert Enum.all?(findings, &(&1.severity == :medium and &1.rule == :file_io))
     end
 
@@ -170,7 +170,7 @@ defmodule MobDev.Plugin.AuditTest do
       """)
 
       assert %{findings: findings} = Audit.audit_plugin(dir, %{name: :x})
-      assert length(findings) == 2
+      assert [_, _] = findings
       assert Enum.all?(findings, &(&1.rule == :process_spawn))
     end
 
@@ -211,7 +211,7 @@ defmodule MobDev.Plugin.AuditTest do
       """)
 
       assert %{findings: findings} = Audit.audit_plugin(dir, %{name: :x})
-      assert length(findings) == 3
+      assert [_, _, _] = findings
       assert Enum.all?(findings, &(&1.severity == :high and &1.rule == :process_spawn))
     end
 

@@ -191,7 +191,7 @@ defmodule MobDev.EnableTest do
       result = Enable.inject_mob_bridge_element(input)
       assert result == input
       # should not have a second mob-bridge
-      assert length(:binary.matches(result, "mob-bridge")) == 1
+      assert [_] = :binary.matches(result, "mob-bridge")
     end
 
     test "works with a body tag with no attributes" do
@@ -285,13 +285,13 @@ defmodule MobDev.EnableTest do
 
       result = Enable.inject_android_network_security_config(input)
       assert result == input
-      assert length(:binary.matches(result, "networkSecurityConfig")) == 1
+      assert [_] = :binary.matches(result, "networkSecurityConfig")
     end
 
     test "only patches the first <application> tag" do
       input = "<application>\n<application>"
       result = Enable.inject_android_network_security_config(input)
-      assert length(:binary.matches(result, "networkSecurityConfig")) == 1
+      assert [_] = :binary.matches(result, "networkSecurityConfig")
     end
   end
 

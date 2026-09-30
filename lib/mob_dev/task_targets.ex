@@ -68,7 +68,7 @@ defmodule MobDev.TaskTargets do
 
       true ->
         non_physical = Enum.reject(all, &Device.physical?/1)
-        if length(non_physical) == 1, do: non_physical, else: []
+        if match?([_], non_physical), do: non_physical, else: []
     end
   end
 

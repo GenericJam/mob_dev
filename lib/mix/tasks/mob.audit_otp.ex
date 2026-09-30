@@ -75,7 +75,7 @@ defmodule Mix.Tasks.Mob.AuditOtp do
       do:
         Mix.shell().info(
           "Trace input: #{MapSet.size(trace_input)} unique modules observed across " <>
-            "#{length(trace_paths)} trace#{if length(trace_paths) == 1, do: "", else: "s"}"
+            "#{length(trace_paths)} trace#{if match?([_], trace_paths), do: "", else: "s"}"
         ),
       else: :ok
 

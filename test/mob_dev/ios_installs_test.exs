@@ -33,7 +33,7 @@ defmodule MobDev.IOSInstallsTest do
     :ok = IOSInstalls.record("UDID-1", "com.example.demo", "Demo")
     :ok = IOSInstalls.record("UDID-1", "com.example.demo", "Demo")
 
-    assert length(IOSInstalls.installed("UDID-1")) == 1
+    assert [_] = IOSInstalls.installed("UDID-1")
   end
 
   test "a renamed bundle replaces its entry rather than accumulating" do

@@ -125,7 +125,7 @@ defmodule Mix.Tasks.Mob.VerifyStrip do
           Mix.shell().error("    #{inspect(mod)}  — #{inspect(reason)}")
         end
 
-        if length(failures) > 20 do
+        if Enum.count_until(failures, 21) > 20 do
           Mix.shell().error("    … and #{length(failures) - 20} more")
         end
     end

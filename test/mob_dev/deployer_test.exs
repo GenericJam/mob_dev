@@ -304,7 +304,7 @@ defmodule MobDev.DeployerTest do
       {deployed, failed, skipped} = Deployer.categorize_results(results)
       assert deployed == [iphone]
       assert failed == []
-      assert length(skipped) == 5
+      assert [_, _, _, _, _] = skipped
     end
   end
 

@@ -206,7 +206,7 @@ defmodule MobDev.SecurityScan.Layers.BundledRuntimeTest do
 
     result = BundledRuntime.run(project_root: dir, cache_dir: cache)
 
-    assert length(result.findings) == 2
+    assert [_, _] = result.findings
     assert Enum.all?(result.findings, &(&1.title =~ "project has no exqlite"))
   end
 

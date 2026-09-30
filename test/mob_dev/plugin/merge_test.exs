@@ -233,7 +233,7 @@ defmodule MobDev.Plugin.MergeTest do
 
       assert Enum.map(Merge.static_archives(plugins, :android), & &1.module) == [:both]
       assert Enum.map(Merge.static_archives(plugins, :ios), & &1.module) == [:ios_only, :both]
-      assert length(Merge.static_archives(plugins, :all)) == 2
+      assert [_, _] = Merge.static_archives(plugins, :all)
     end
 
     test "carries base + per-platform cxxflags through" do
@@ -346,8 +346,8 @@ defmodule MobDev.Plugin.MergeTest do
     end
 
     test ":all (arity-1) keeps every entry", %{plugins: p} do
-      assert length(Merge.nif_sources(p)) == 2
-      assert length(Merge.zig_nif_sources(p)) == 1
+      assert [_, _] = Merge.nif_sources(p)
+      assert [_] = Merge.zig_nif_sources(p)
     end
 
     test "lang: :objc routes through the C path with a .m extension" do

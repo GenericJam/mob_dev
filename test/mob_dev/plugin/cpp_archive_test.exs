@@ -173,7 +173,7 @@ defmodule MobDev.Plugin.CppArchiveTest do
 
       assert info.module == :nx_eigen_nif
       assert info.archive == "/fake/out/libnx_eigen_nif.a"
-      assert length(info.objects) == 2
+      assert [_, _] = info.objects
     end
   end
 

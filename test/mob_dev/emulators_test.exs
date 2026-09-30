@@ -38,7 +38,7 @@ defmodule MobDev.EmulatorsTest do
     test "extracts each sim with name + udid + booted state" do
       sims = Emulators.parse_simctl_json(@sample_json)
 
-      assert length(sims) == 3
+      assert [_, _, _] = sims
 
       booted = Enum.find(sims, & &1.running)
       assert booted.name == "iPhone 17"

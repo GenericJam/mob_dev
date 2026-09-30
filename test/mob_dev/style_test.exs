@@ -18,7 +18,7 @@ defmodule MobDev.StyleTest do
 
     test "reports every missing field at once" do
       assert {:error, errs} = Style.validate(%{})
-      assert length(errs) == 4
+      assert [_, _, _, _] = errs
       assert Enum.any?(errs, &(&1 =~ ":name"))
       assert Enum.any?(errs, &(&1 =~ ":mob_version"))
       assert Enum.any?(errs, &(&1 =~ ":style_spec_version"))
