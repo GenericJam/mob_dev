@@ -2,6 +2,12 @@
 
 ### Fixed
 
+- **iOS release builds no longer warn "STATIC_ERLANG_NIF macro redefined" on
+  every plugin NIF compile** (MOB-284). The release script passed
+  `-DSTATIC_ERLANG_NIF` alongside `-DSTATIC_ERLANG_NIF_LIBNAME=<name>`, but
+  `erl_nif.h` derives the former from the latter. Only `_LIBNAME` is passed
+  now; the `mix mob.add_nif` build guidance and plugin scaffold comment match.
+
 - **iOS physical-device native builds of apps without `emlx` no longer try to
   download MLX** (MOB-282). Bundling `mlx.metallib` into the `.app` called
   `MLXDownloader.ensure_ios_device/0` unconditionally, printing

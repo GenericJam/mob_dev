@@ -164,7 +164,14 @@ defmodule MobDev.ReleaseScriptTest do
       # basename minus extension → STATIC_ERLANG_NIF_LIBNAME, so ERL_NIF_INIT
       # emits <name>_nif_init matching the driver table.
       assert sh =~ ~s|NAME=$(basename "$SRC"); NAME="${NAME%.*}"|
-      assert sh =~ ~s|-DSTATIC_ERLANG_NIF -DSTATIC_ERLANG_NIF_LIBNAME="$NAME"|
+      assert sh =~ ~s|-DSTATIC_ERLANG_NIF_LIBNAME="$NAME"|
+    end
+
+    test "plugin NIF compile does not pair bare -DSTATIC_ERLANG_NIF with LIBNAME", %{sh: sh} do
+      # erl_nif.h derives STATIC_ERLANG_NIF from _LIBNAME; passing both is a
+      # macro-redefined warning on every NIF compile (MOB-284).
+      refute sh =~ ~r/-DSTATIC_ERLANG_NIF\s+-DSTATIC_ERLANG_NIF_LIBNAME/
+      refute sh =~ ~r/-DSTATIC_ERLANG_NIF_LIBNAME\S*\s+-DSTATIC_ERLANG_NIF\s/
     end
 
     test "compiles ObjC (.m) sources with -fobjc-arc and always -fmodules", %{sh: sh} do

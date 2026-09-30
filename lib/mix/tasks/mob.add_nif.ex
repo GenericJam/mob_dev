@@ -566,23 +566,18 @@ defmodule Mix.Tasks.Mob.AddNif do
      *           .target = target,
      *           .optimize = optimize,
      *           .c_flags = c_flags_base ++ &[_][]const u8{
-     *               "-DSTATIC_ERLANG_NIF",
      *               "-DSTATIC_ERLANG_NIF_LIBNAME=#{name}",
      *           },
      *           // ... mob_dir/otp_root/erts_vsn/sdkroot ...
      *       }), "#{name}.o");
      *
-     * The two -D flags are mandatory:
-     *   -DSTATIC_ERLANG_NIF                  selects the static-link
-     *                                         dispatch path in erl_nif.h.
-     *   -DSTATIC_ERLANG_NIF_LIBNAME=#{name}  overrides the init symbol
-     *                                         name to `#{name}_nif_init`
-     *                                         (matches driver_tab's
-     *                                         declaration). Without it,
-     *                                         the symbol would mangle to
-     *                                         `Elixir.<...>_nif_init`
-     *                                         which is invalid C and
-     *                                         won't compile.
+     * -DSTATIC_ERLANG_NIF_LIBNAME=#{name} is mandatory: it selects the
+     * static-link dispatch path in erl_nif.h (which derives
+     * STATIC_ERLANG_NIF from it — don't also pass -DSTATIC_ERLANG_NIF,
+     * that's a macro-redefined warning) and names the init symbol
+     * `#{name}_nif_init` (matching driver_tab's declaration). Without
+     * it the symbol would mangle to `Elixir.<...>_nif_init`, which is
+     * invalid C and won't compile.
      */
 
     #include <erl_nif.h>

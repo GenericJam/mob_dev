@@ -659,7 +659,8 @@ defmodule MobDev.Release do
     # lang: :objc). The dev build compiles these via build.zig -Dplugin_c_nifs; the
     # release build must do the same or the final link dies with "Undefined
     # symbols: _<module>_nif_init". The source basename is the NIF libname →
-    # -DSTATIC_ERLANG_NIF_LIBNAME=<name> makes ERL_NIF_INIT emit <name>_nif_init.
+    # -DSTATIC_ERLANG_NIF_LIBNAME=<name> makes ERL_NIF_INIT emit <name>_nif_init
+    # (erl_nif.h derives STATIC_ERLANG_NIF from it; passing both redefines it).
     # -fmodules lets Clang autolink every framework the source @imports (a plugin
     # may import frameworks beyond its manifest's declared set, e.g. Accelerate).
     PLUGIN_OBJS=""
@@ -671,7 +672,7 @@ defmodule MobDev.Release do
         esac
         echo "  plugin NIF: $NAME  ($SRC)"
         $CC $ARC -fmodules $IFLAGS \
-            -DSTATIC_ERLANG_NIF -DSTATIC_ERLANG_NIF_LIBNAME="$NAME" \
+            -DSTATIC_ERLANG_NIF_LIBNAME="$NAME" \
             -c "$SRC" -o "$BUILD_DIR/$NAME.o"
         PLUGIN_OBJS="$PLUGIN_OBJS $BUILD_DIR/$NAME.o"
     done
