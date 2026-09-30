@@ -432,12 +432,10 @@ defmodule MobDev.Enable.Igniter do
     |> Igniter.create_or_update_file("mob.exs", "import Config\n\n#{line}\n", fn source ->
       content = Rewrite.Source.get(source, :content)
 
-      cond do
-        String.contains?(content, "liveview_port") ->
-          {:ok, source}
-
-        true ->
-          {:ok, Rewrite.Source.update(source, :content, content <> "\n#{line}\n")}
+      if String.contains?(content, "liveview_port") do
+        source
+      else
+        Rewrite.Source.update(source, :content, MobDev.MobExs.insert_config(content, line))
       end
     end)
   end

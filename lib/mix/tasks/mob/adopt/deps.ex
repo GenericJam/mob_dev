@@ -65,7 +65,7 @@ defmodule Mix.Tasks.Mob.Adopt.Deps do
   end
 
   defp inject(igniter, opts) do
-    {mob_dep_str, mob_dev_dep_str, _, _} = Generator.resolve_deps(opts)
+    {mob_dep_str, mob_dev_dep_str, _mob_local_dir} = Generator.resolve_deps(opts)
     live_view? = Keyword.get(opts, :live_view, true)
 
     # Not `Igniter.Project.Deps.add_dep/3`: 0.8.1 renders 3-tuples with

@@ -67,8 +67,9 @@ defmodule Mix.Tasks.Mob.Adopt do
 
   - `--no-ios` — skip the iOS native tree
   - `--no-android` — skip the Android native tree
-  - `--local` — `path:` deps for `:mob`/`:mob_dev`; pre-fill `mob.exs`
-    paths from `MOB_DIR` / `MOB_DEV_DIR`. For Mob framework contributors.
+  - `--local` — `path:` deps for `:mob`/`:mob_dev` from `MOB_DIR` /
+    `MOB_DEV_DIR`; the local `mob_dir` goes in the gitignored
+    `mob.local.exs`, never `mob.exs`. For Mob framework contributors.
   - `--python` — iOS-only: pre-configure embedded CPython via Pythonx
   - `--host-url URL` — write `config :mob, host_url: URL` so the
     generated `MobScreen` opens `URL` instead of the default
@@ -88,8 +89,9 @@ defmodule Mix.Tasks.Mob.Adopt do
   - `:mob` + `:mob_dev` deps in `mix.exs`
   - `lib/<app>/mob_screen.ex` — `Mob.Screen` opening a WebView at
     `Application.get_env(:mob, :host_url)` (default localhost)
-  - `mob.exs` — build-environment config
-  - `.gitignore` updated to ignore `mob.exs`
+  - `mob.exs` — project config (commit it); its last statement imports
+    `mob.local.exs` for machine-local overrides
+  - `.gitignore` updated to ignore `mob.local.exs`
   - `android/` and/or `ios/` native trees (gated by platform flags)
   - `lib/<app>/mob_app.ex` + `src/<app>.erl` for on-device BEAM entry
   - `erlc_paths`/`erlc_options` added to `mix.exs`
@@ -112,7 +114,7 @@ defmodule Mix.Tasks.Mob.Adopt do
       mix mob.adopt.bridge        # just patch app.js + root.html.heex
       mix mob.adopt.screen        # just generate mob_screen.ex
       mix mob.adopt.mob_app       # just generate mob_app.ex + .erl bootstrap
-      mix mob.adopt.mob_exs       # just write mob.exs + .gitignore
+      mix mob.adopt.mob_exs       # just write mob.exs + .gitignore (mob.local.exs)
       mix mob.adopt.native        # both native trees
       mix mob.adopt.native.android
       mix mob.adopt.native.ios

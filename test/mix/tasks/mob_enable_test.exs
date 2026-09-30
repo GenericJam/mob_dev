@@ -267,6 +267,35 @@ defmodule Mix.Tasks.Mob.EnableTest do
     end
   end
 
+  describe "liveview feature — mob.exs" do
+    # MOB-286: generated mob.exs files end by importing mob.local.exs.
+    test "adds liveview_port above a trailing mob.local.exs import" do
+      mob_exs = """
+      import Config
+
+      config :mob, :plugins, [:mob_camera]
+
+      #{MobDev.MobExs.local_import()}
+      """
+
+      igniter =
+        test_project(files: %{"mob.exs" => mob_exs})
+        |> Igniter.compose_task("mob.enable", ["liveview"])
+
+      content = igniter.rewrite |> Rewrite.source!("mob.exs") |> Rewrite.Source.get(:content)
+      assert content |> String.trim_trailing() |> String.ends_with?(MobDev.MobExs.local_import())
+
+      dir = Path.join(System.tmp_dir!(), "mob_enable_lv_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+      File.write!(Path.join(dir, "mob.exs"), content)
+
+      config = Config.Reader.read!(Path.join(dir, "mob.exs"))
+      assert config[:mob][:liveview_port] == 4000
+      assert config[:mob][:plugins] == [:mob_camera]
+    end
+  end
+
   describe "missing platform dirs" do
     test "no ios/ → adds a notice instead of failing" do
       igniter =

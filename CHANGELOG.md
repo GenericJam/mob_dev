@@ -68,6 +68,22 @@
   project has no exqlite or locks a different version, the cached copy is still
   HIGH drift, and the finding now says it is not the project's exqlite.
   Android exqlite and all other fields are checked as before.
+- **`mob.exs` is committed project config; machine paths go in the
+  gitignored `mob.local.exs`** (MOB-286). `mob.exs` carries plugin
+  activation (`config :mob, :plugins`), trust and styles, but
+  `mix mob.adopt.mob_exs` gitignored it — a clone activated no plugins and
+  hit `:nif_not_loaded` at runtime — and `mix mob.install` rewrote the whole
+  file as `config :mob_dev, mob_dir: <abs>`, dropping all of it. Now
+  `mob.install` writes the prompted `mob_dir` to `mob.local.exs` (keeping
+  anything else there), gitignores `mob.local.exs` if needed, and only adds
+  the conditional `import_config("mob.local.exs")` line to `mob.exs` when
+  it doesn't already import that file in any form; `mob.adopt.mob_exs`
+  writes mob_new's portable `mob.exs`, gitignores `mob.local.exs`, and under
+  `--local` puts the checkout path in `mob.local.exs`. `mob.plugin.trust`,
+  `mob.deploy --beam-flags` and `mob.enable liveview` insert their stanza
+  above that import, so `mob.local.exs` values still win. Projects adopted
+  earlier must un-ignore and commit `mob.exs` by hand. See
+  `decisions/2026-09-30-mob-local-exs-overrides.md`.
 
 - **`mix mob.deploy --native --device <id>` can no longer report success after
   skipping the named device's native build** (MOB-225). The selected device now

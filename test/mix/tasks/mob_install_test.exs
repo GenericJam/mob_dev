@@ -120,6 +120,71 @@ defmodule Mix.Tasks.Mob.InstallTest do
     end
   end
 
+  # ── configure_paths/1 — MOB-286 ──────────────────────────────────────────────
+  #
+  # mob.exs is committed project config (:plugins activation, trust, styles).
+  # Rewriting it wholesale to record a machine path dropped all of that — a
+  # project installed this way activated no plugins.
+
+  describe "configure_paths/1" do
+    setup do
+      dir =
+        Path.join(System.tmp_dir!(), "mob_install_paths_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(dir)
+      Mix.shell(Mix.Shell.Process)
+
+      on_exit(fn ->
+        Mix.shell(Mix.Shell.IO)
+        File.rm_rf!(dir)
+      end)
+
+      {:ok, dir: dir}
+    end
+
+    test "writes the prompted mob_dir to mob.local.exs and keeps mob.exs's plugins", %{dir: dir} do
+      mob_exs = """
+      import Config
+
+      config :mob_dev, mob_dir: "/path/to/mob"
+      config :mob, :plugins, [:mob_camera, :mob_location]
+      """
+
+      File.write!(Path.join(dir, "mob.exs"), mob_exs)
+      send(self(), {:mix_shell_input, :prompt, "/Users/me/code/mob\n"})
+
+      Install.configure_paths(dir)
+
+      committed = File.read!(Path.join(dir, "mob.exs"))
+      assert String.starts_with?(committed, mob_exs)
+      refute committed =~ "/Users/me/code/mob"
+      assert File.read!(Path.join(dir, "mob.local.exs")) =~ ~s(mob_dir: "/Users/me/code/mob")
+
+      config = Config.Reader.read!(Path.join(dir, "mob.exs"))
+      assert config[:mob][:plugins] == [:mob_camera, :mob_location]
+      assert config[:mob_dev][:mob_dir] == "/Users/me/code/mob"
+    end
+
+    # Projects from before MOB-286 ignore mob.exs, not mob.local.exs — the
+    # machine paths written here must not become committable. Un-ignoring
+    # mob.exs stays a manual step.
+    test "gitignores the mob.local.exs it writes, leaving an old mob.exs entry", %{dir: dir} do
+      File.write!(
+        Path.join(dir, "mob.exs"),
+        ~s(import Config\nconfig :mob_dev, mob_dir: "/path/to/mob"\n)
+      )
+
+      File.write!(Path.join(dir, ".gitignore"), "/_build\n# Mob local config\nmob.exs\n")
+      send(self(), {:mix_shell_input, :prompt, "/Users/me/code/mob\n"})
+
+      Install.configure_paths(dir)
+
+      lines = Path.join(dir, ".gitignore") |> File.read!() |> String.split("\n")
+      assert "mob.local.exs" in lines
+      assert "mob.exs" in lines
+    end
+  end
+
   # ── has_active_sdk_dir?/1 ────────────────────────────────────────────────────
 
   describe "has_active_sdk_dir?/1" do

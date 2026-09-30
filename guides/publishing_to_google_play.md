@@ -310,16 +310,17 @@ Both paths must be completed. Doing only one results in HTTP 403
 "The caller does not have permission" when uploading. Service accounts
 auto-accept invitations — permissions are active within a few minutes.
 
-#### 1.4.5 Configure `mob.exs`
+#### 1.4.5 Configure `mob.local.exs`
 
-Add the Google Play config block to your `mob.exs`:
+The service-account path is specific to your machine, so add the Google
+Play config block to `mob.local.exs` — the gitignored override file that
+`mob.exs` imports as its last statement — rather than the committed
+`mob.exs`:
 
 ```elixir
 import Config
 
 config :mob_dev,
-  # ... your existing config ...
-
   google_play: [
     package_name:         "com.example.myapp",          # your applicationId
     service_account_json: "~/.google_play/my-service-account.json",
@@ -327,8 +328,10 @@ config :mob_dev,
   ]
 ```
 
-`mob.exs` is per-machine and should be in your `.gitignore`. The JSON
-key file should also never be committed.
+If your `mob.exs` doesn't end with
+`if File.exists?(Path.join(__DIR__, "mob.local.exs")), do: import_config("mob.local.exs")`,
+add that line (and `mob.local.exs` to `.gitignore`). The JSON key file
+should never be committed.
 
 The `track` field controls which Play track the AAB lands on:
 

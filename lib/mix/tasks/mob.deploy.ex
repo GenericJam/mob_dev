@@ -947,7 +947,7 @@ defmodule Mix.Tasks.Mob.Deploy do
         "  beam_flags: #{value}"
       )
     else
-      String.trim_trailing(content) <> "\nconfig :mob_dev, beam_flags: #{value}\n"
+      MobDev.MobExs.insert_config(content, "config :mob_dev, beam_flags: #{value}")
     end
   end
 end

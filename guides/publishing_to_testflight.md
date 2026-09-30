@@ -381,16 +381,16 @@ mv ~/Downloads/AuthKey_*.p8 ~/.appstoreconnect/
 chmod 600 ~/.appstoreconnect/AuthKey_*.p8     # owner read/write only
 ```
 
-### 1.11 Configure `mob.exs`
+### 1.11 Configure `mob.local.exs`
 
-Add the API key block to your `mob.exs`:
+The key path is specific to your machine, so add the API key block to
+`mob.local.exs` — the gitignored override file that `mob.exs` imports as
+its last statement — rather than the committed `mob.exs`:
 
 ```elixir
 import Config
 
 config :mob_dev,
-  # ... your existing config ...
-
   app_store_connect: [
     key_id:    "ABC123XYZ4",                            # 10-char Key ID
     issuer_id: "69a6de76-aaaa-bbbb-cccc-1234567890ab",  # team Issuer ID
@@ -398,9 +398,10 @@ config :mob_dev,
   ]
 ```
 
-`mob.exs` is per-machine and should be in your `.gitignore` (the file
-itself says so at the top). Don't commit the `.p8` either — treat it
-like an SSH private key.
+If your `mob.exs` doesn't end with
+`if File.exists?(Path.join(__DIR__, "mob.local.exs")), do: import_config("mob.local.exs")`,
+add that line (and `mob.local.exs` to `.gitignore`). Don't commit the
+`.p8` — treat it like an SSH private key.
 
 That's the one-time setup. Everything below is the per-release flow.
 

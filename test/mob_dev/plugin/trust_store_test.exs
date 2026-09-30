@@ -132,6 +132,29 @@ defmodule MobDev.Plugin.TrustStoreTest do
       trust = TrustStore.load_trusted_plugins(dir)
       assert Map.keys(trust) |> Enum.sort() == [:mob_bar, :mob_foo]
     end
+
+    # MOB-286: mob.exs ends by importing mob.local.exs so machine-local values
+    # win. A trust stanza appended after that import would beat them.
+    test "adds the entry above a trailing mob.local.exs import", %{dir: dir} do
+      {_priv, pub} = Crypto.generate_keypair()
+
+      seed_mob_exs(dir, """
+      import Config
+
+      config :mob, :plugins, [:mob_foo]
+
+      #{MobDev.MobExs.local_import()}
+      """)
+
+      :ok = TrustStore.add_trust(:mob_foo, pub, dir)
+
+      contents = File.read!(Path.join(dir, "mob.exs"))
+      assert contents |> String.trim_trailing() |> String.ends_with?(MobDev.MobExs.local_import())
+
+      config = Config.Reader.read!(Path.join(dir, "mob.exs"))
+      assert config[:mob][:trusted_plugins] == %{mob_foo: Crypto.fingerprint(pub)}
+      assert config[:mob][:plugins] == [:mob_foo]
+    end
   end
 
   describe "remove_trust/2" do
