@@ -2,6 +2,17 @@
 
 ### Fixed
 
+- **Plugin manifests no longer warn "unknown key(s) [:description]"**
+  (MOB-291). The unknown-top-level-key warning in
+  `MobDev.Plugin.Manifest.validate/1` did not recognize the keys it has no
+  validation for, so every `mix mob.new_plugin` scaffold (which writes
+  `description:`) logged a false "silently ignored" warning on every
+  validate. `:description`, `:version`, `:tags`, `:host_config_keys` and
+  `:setup` are recognized now: `mix mob.plugin.trust` prints `:version`,
+  mob's `~MOB` sigil reads `:tags`, the generator host-config audit reads
+  `:host_config_keys`, and `MOB_PLUGINS.md` documents `:description` and
+  `:setup`.
+
 - **iOS release builds no longer warn "STATIC_ERLANG_NIF macro redefined" on
   every plugin NIF compile** (MOB-284). The release script passed
   `-DSTATIC_ERLANG_NIF` alongside `-DSTATIC_ERLANG_NIF_LIBNAME=<name>`, but
