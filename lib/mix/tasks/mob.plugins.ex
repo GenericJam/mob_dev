@@ -67,25 +67,9 @@ defmodule Mix.Tasks.Mob.Plugins do
     end)
   end
 
-  # Reads `config :mob, :plugins` from mob.exs (the build config). Falls back
-  # to the loaded Application env, then an empty list.
-  defp activated_plugins do
-    config_file = Path.join(File.cwd!(), "mob.exs")
-
-    raw =
-      if File.exists?(config_file) do
-        config_file
-        |> Config.Reader.read!()
-        |> Keyword.get(:mob, [])
-        |> Keyword.get(:plugins, [])
-      else
-        Application.get_env(:mob, :plugins, [])
-      end
-
-    normalize_activated(raw)
-  rescue
-    _ -> normalize_activated(Application.get_env(:mob, :plugins, []))
-  end
+  # `config :mob, :plugins`, read exactly as the build reads it — a broken
+  # mob.exs raises instead of listing every plugin as inactive (MOB-280).
+  defp activated_plugins, do: normalize_activated(MobDev.Plugin.activated_names())
 
   @doc false
   # Pure kernel: coerces a `config :mob, :plugins` value into a clean list of

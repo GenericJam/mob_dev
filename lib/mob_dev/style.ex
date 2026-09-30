@@ -72,14 +72,18 @@ defmodule MobDev.Style do
 
   @doc """
   Activated style names from `mob.exs`'s `config :mob, :styles` (Application
-  env fallback, mirroring `MobDev.Plugin.activated_names/0`).
+  env fallback when there is no `mob.exs`, mirroring
+  `MobDev.Plugin.activated_names/1`). A `mob.exs` that fails to evaluate
+  raises.
   """
-  @spec activated_names() :: [atom()]
-  def activated_names, do: read_mob_config(:styles, [])
+  @spec activated_names(Path.t()) :: [atom()]
+  def activated_names(project_dir \\ File.cwd!()),
+    do: read_mob_config(project_dir, :styles, [])
 
-  @doc "The configured `:default_style` name (or nil)."
-  @spec default_style() :: atom() | nil
-  def default_style, do: read_mob_config(:default_style, nil)
+  @doc "The configured `:default_style` name (or nil). Same sourcing as `activated_names/1`."
+  @spec default_style(Path.t()) :: atom() | nil
+  def default_style(project_dir \\ File.cwd!()),
+    do: read_mob_config(project_dir, :default_style, nil)
 
   @doc """
   The activated styles as `{style_dir, manifest}` pairs. Names that don't
@@ -160,8 +164,10 @@ defmodule MobDev.Style do
   defp check_spec_version(errors, _),
     do: [":style_spec_version is required and must be an integer" | errors]
 
-  defp read_mob_config(key, default) do
-    config_file = Path.join(File.cwd!(), "mob.exs")
+  # A mob.exs that fails to evaluate raises (MOB-280); only a missing file
+  # falls back to the Application env.
+  defp read_mob_config(project_dir, key, default) do
+    config_file = Path.join(project_dir, "mob.exs")
 
     if File.exists?(config_file) do
       config_file
@@ -171,7 +177,5 @@ defmodule MobDev.Style do
     else
       Application.get_env(:mob, key, default)
     end
-  rescue
-    _ -> Application.get_env(:mob, key, default)
   end
 end

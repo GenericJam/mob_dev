@@ -207,16 +207,17 @@ defmodule MobDev.Plugin.SignatureGate do
   plugins — otherwise a missing signature would silently strip the plugin
   from the build (its manifest fields would never merge into the app),
   producing "acknowledged" plugins that actually contribute nothing.
-  See MOB-74's pre-merge review.
+  See MOB-74's pre-merge review. A `mob.exs` that fails to evaluate raises
+  rather than reading as "nothing acknowledged" (MOB-280).
   """
-  @spec acknowledged_unsafe() :: [atom()]
-  def acknowledged_unsafe do
+  @spec acknowledged_unsafe(Path.t()) :: [atom()]
+  def acknowledged_unsafe(project_dir \\ File.cwd!()) do
     Application.get_env(:mob, :acknowledge_unsafe_plugins, []) ++
-      read_acknowledged_from_mob_exs()
+      read_acknowledged_from_mob_exs(project_dir)
   end
 
-  defp read_acknowledged_from_mob_exs do
-    config_file = Path.join(File.cwd!(), "mob.exs")
+  defp read_acknowledged_from_mob_exs(project_dir) do
+    config_file = Path.join(project_dir, "mob.exs")
 
     if File.exists?(config_file) do
       config_file
@@ -226,8 +227,6 @@ defmodule MobDev.Plugin.SignatureGate do
     else
       []
     end
-  rescue
-    _ -> []
   end
 
   # ── error formatting ──────────────────────────────────────────────────────

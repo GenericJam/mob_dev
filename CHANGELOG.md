@@ -7,6 +7,20 @@
   `MLXDownloader.ensure_ios_device/0` unconditionally, printing
   `Downloading MLX 0.25.1 (ios_device)...` and a curl 404 on every build. The
   copy is now gated on `emlx` being a project dep, like the MLX link step.
+- **A `mob.exs` that fails to evaluate now fails loudly instead of reading as
+  empty** (MOB-280). `MobDev.Plugin.activated_names/0` wrapped
+  `Config.Reader.read!` in a blanket `rescue`, so a syntax error (or a
+  raising expression) in `mob.exs` became "no plugins activated": the native
+  build linked no plugin NIFs, succeeded, and every plugin call raised
+  `:nif_not_loaded` at runtime with nothing pointing at `mob.exs`. The same
+  swallow is gone from `MobDev.Style.activated_names/0` / `default_style/0`,
+  `MobDev.Plugin.SignatureGate.acknowledged_unsafe/0`,
+  `MobDev.Plugin.TrustStore.load_trusted_plugins/1` (where `mix
+  mob.plugin.trust` would otherwise rewrite the trust entry from an empty
+  map, dropping existing entries) and `mix mob.plugins`, which now reads
+  activation through `MobDev.Plugin.activated_names/0`. The Application-env /
+  empty fallback still applies when `mob.exs` is missing. Each reader takes
+  an optional `project_dir`.
 
 - **`mix mob.deploy --native --device <id>` can no longer report success after
   skipping the named device's native build** (MOB-225). The selected device now
