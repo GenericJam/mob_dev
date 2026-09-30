@@ -469,10 +469,17 @@ defmodule MobDev.Enable.Igniter do
 
   # ── mlx: helpers ──────────────────────────────────────────────────────────
 
+  # EMLX is pinned to the line MobDev.MLXDownloader's prebuilt libemlx.a is
+  # compiled from (EMLX 0.2.x, MLX 0.25.1). EMLX 0.3+ targets MLX 0.31+ and
+  # changed its NIF table, so a looser `~> 0.2` (→ 0.4.x today) links a NIF
+  # its EMLX.NIF can't load. `yes?` carries `--yes` into Igniter's
+  # replace-existing-dep prompt, which is how an older `~> 0.2` gets fixed.
   defp inject_mlx_deps(igniter) do
+    yes? = igniter.args.options[:yes] == true
+
     igniter
-    |> Igniter.Project.Deps.add_dep({:nx, "~> 0.10"})
-    |> Igniter.Project.Deps.add_dep({:emlx, "~> 0.2"})
+    |> Igniter.Project.Deps.add_dep({:nx, "~> 0.10"}, yes?: yes?)
+    |> Igniter.Project.Deps.add_dep({:emlx, MobDev.MLXDownloader.emlx_requirement()}, yes?: yes?)
   end
 
   # ── nxeigen: helpers ──────────────────────────────────────────────────────

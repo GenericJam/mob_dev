@@ -13,6 +13,8 @@
 #   OUT_DIR       — where the tarballs live (default: /tmp)
 #   GH_REPO       — repo to publish into (default: GenericJam/mob)
 #   DRY_RUN       — non-empty to print what would happen without uploading
+#   EMLX_SRC      — the EMLX checkout the NIFs were built from; its version
+#                   goes into the release notes (default: _lib.sh's fallback)
 #
 # Tarballs uploaded (must match MobDev.MLXDownloader.@release_tag /
 # @base_url):
@@ -52,6 +54,10 @@ for asset in "${ASSETS[@]}"; do
     [ -f "$asset" ] || fail "missing $asset — run all_ios.sh (or the per-target ios_{device,sim}.sh + tarball_mlx_*.sh) first"
 done
 
+require_emlx_src
+EMLX_VSN=$(sed -n 's/^  @version "\(.*\)"$/\1/p' "$EMLX_SRC/mix.exs" | head -1)
+[ -n "$EMLX_VSN" ] || fail "couldn't read @version from $EMLX_SRC/mix.exs"
+
 # Build release notes from the VERSION files inside the tarballs. Captures
 # variant + MLX upstream version + iOS deployment target in one place.
 cat > "$NOTES_FILE" <<EOF
@@ -72,7 +78,7 @@ then links \`libmlx.a\` + \`libemlx.a\` statically into the app binary.
 ## Build provenance
 
 - MLX upstream: https://github.com/ml-explore/mlx tag v${MLX_VERSION}
-- EMLX upstream: ~/code/test_emlx/deps/emlx (Hex 0.2.x)
+- EMLX NIF (libemlx.a): emlx ${EMLX_VSN} \`c_src/emlx_nif.cpp\`, compiled against $(basename "$(otp_ios_device_dir)") / $(basename "$(otp_ios_sim_dir)")
 - Mob iOS deployment target: ${IOS_DEPLOYMENT_TARGET:-17.0}
 - Built with: scripts/release/mlx/all_ios.sh
 
@@ -106,9 +112,12 @@ if gh release view "$TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
     gh release upload "$TAG" "${ASSETS[@]}" --repo "$GH_REPO" --clobber
 else
     log "creating release $TAG"
+    # --latest=false: this is an asset-hosting release, not a Mob version;
+    # it must not displace the repo's "Latest" release.
     gh release create "$TAG" "${ASSETS[@]}" \
         --repo "$GH_REPO" \
         --title "$TITLE" \
+        --latest=false \
         --notes-file "$NOTES_FILE"
 fi
 

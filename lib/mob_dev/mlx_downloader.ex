@@ -33,18 +33,25 @@ defmodule MobDev.MLXDownloader do
   # scripts/release/mlx/_lib.sh.
   @mlx_version "0.25.1"
 
+  # The EMLX line the bundle's libemlx.a is compiled from
+  # (scripts/release/mlx/build_emlx_nif_ios_*.sh against emlx 0.2.0's
+  # c_src). The project's EMLX BEAMs must come from the same line: EMLX
+  # 0.3+ changed the NIF function table, so a newer EMLX.NIF can't load
+  # this NIF. `mix mob.enable mlx` writes this requirement into mix.exs.
+  @emlx_requirement "~> 0.2.0"
+
   # Distinct release tag from the OTP tarballs so MLX can move independently.
   # Repo-hosted on the same `GenericJam/mob` release surface OtpDownloader uses.
   #
-  # TODO(2026-05-17): switch `@base_url` to `cocoa-xu/mlx-build/releases/...`
-  # once that repo publishes iOS assets. The iOS build workflow merged
-  # upstream in cocoa-xu/mlx-build#2 (GenericJam:ios-metal-builds, merged
-  # 2026-05-17), but the latest release (v0.31.2) predates the workflow
-  # and has no iOS assets yet. Next upstream release that triggers
-  # `ios.yml` should produce `mlx-arm64-apple-ios-*.tar.gz` +
-  # `mlx-arm64-apple-iossimulator-*.tar.gz` assets we can consume
-  # directly, retiring our own iOS cross-compile in
-  # scripts/release/mlx/. Until then we keep self-hosting.
+  # TODO: switch the libmlx.a half to `cocoa-xu/mlx-build/releases/...`
+  # once that repo publishes iOS assets. Its `ios.yml` workflow merged
+  # in cocoa-xu/mlx-build#2 (2026-05-17), but as of 2026-09-30 no release
+  # (latest v0.32.0) carries `mlx-arm64-apple-ios*` assets, and it never
+  # built v0.25.1, the MLX EMLX 0.2.0 needs. Upstream can't replace the
+  # whole bundle anyway: libemlx.a is EMLX's NIF compiled against Mob's
+  # iOS OTP, so scripts/release/mlx/ keeps producing that part. Until
+  # then we self-host both, built by scripts/release/mlx/all_ios.sh and
+  # uploaded by publish.sh.
   @release_tag "mlx-#{@mlx_version}"
   @base_url "https://github.com/GenericJam/mob/releases/download/#{@release_tag}"
 
@@ -141,6 +148,48 @@ defmodule MobDev.MLXDownloader do
   @doc "GitHub release tag this downloader targets."
   @spec release_tag() :: String.t()
   def release_tag, do: @release_tag
+
+  @doc """
+  The `:emlx` dependency requirement this bundle's `libemlx.a` matches
+  (e.g. `"~> 0.2.0"`).
+  """
+  @spec emlx_requirement() :: String.t()
+  def emlx_requirement, do: @emlx_requirement
+
+  @doc """
+  Checks a project's resolved EMLX version against the bundle's
+  `libemlx.a`. Returns `{:error, message}` with the migration steps when
+  they don't match, because the app would link but `EMLX.NIF` would fail
+  to load at runtime. `nil` (version couldn't be determined) passes.
+  """
+  @spec check_emlx_version(String.t() | nil) :: :ok | {:error, String.t()}
+  def check_emlx_version(nil), do: :ok
+
+  def check_emlx_version(vsn) when is_binary(vsn) do
+    case Version.parse(vsn) do
+      {:ok, version} ->
+        if Version.match?(version, @emlx_requirement),
+          do: :ok,
+          else: {:error, emlx_mismatch_message(vsn)}
+
+      :error ->
+        {:error, "Couldn't parse the project's EMLX version #{inspect(vsn)}."}
+    end
+  end
+
+  defp emlx_mismatch_message(vsn) do
+    """
+    EMLX #{vsn} can't use Mob's prebuilt MLX #{@mlx_version} bundle, whose
+           EMLX NIF (libemlx.a) is built from EMLX #{@emlx_requirement}. The app
+           would link, but EMLX.NIF would fail to load on the device.
+
+           Pin EMLX to the bundle's line:
+             1. In mix.exs set {:emlx, "#{@emlx_requirement}"}
+                (or re-run `mix mob.enable mlx --yes`).
+             2. mix deps.update emlx
+             3. mix mob.deploy --native\
+    """
+  end
 
   # ── Private ─────────────────────────────────────────────────────────────────
 

@@ -152,7 +152,9 @@ defmodule Mix.Tasks.Mob.Enable do
 
   What it does:
 
-    - Adds `{:nx, "~> 0.10"}` and `{:emlx, "~> 0.2"}` to `mix.exs` deps.
+    - Adds `{:nx, "~> 0.10"}` and `{:emlx, "~> 0.2.0"}` to `mix.exs` deps
+      (EMLX 0.2.x is what the prebuilt MLX 0.25.1 bundle's `libemlx.a`
+      is compiled from; re-running offers to replace an older `~> 0.2`).
     - Generates `lib/<app>/ml_init.ex` — a one-call helper that sets
       `EMLX.Backend` as Nx's global default, with a clean
       `Nx.BinaryBackend` fallback if the NIF can't load.

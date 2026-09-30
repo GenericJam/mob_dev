@@ -79,6 +79,35 @@ defmodule MobDev.MLXDownloaderTest do
     end
   end
 
+  describe "check_emlx_version/1" do
+    test "accepts the EMLX line the bundle's libemlx.a is built from" do
+      assert MLXDownloader.check_emlx_version("0.2.0") == :ok
+      assert MLXDownloader.check_emlx_version("0.2.9") == :ok
+    end
+
+    test "rejects a newer EMLX whose NIF table differs, with the migration steps" do
+      for vsn <- ["0.3.0", "0.4.2", "0.5.0"] do
+        assert {:error, msg} = MLXDownloader.check_emlx_version(vsn)
+        assert msg =~ "EMLX #{vsn}"
+        assert msg =~ ~s({:emlx, "~> 0.2.0"})
+        assert msg =~ "mix deps.update emlx"
+      end
+    end
+
+    test "rejects an older EMLX" do
+      assert {:error, _} = MLXDownloader.check_emlx_version("0.1.0")
+    end
+
+    test "passes when the version couldn't be determined" do
+      assert MLXDownloader.check_emlx_version(nil) == :ok
+    end
+
+    test "errors on an unparseable version" do
+      assert {:error, msg} = MLXDownloader.check_emlx_version("main")
+      assert msg =~ ~s("main")
+    end
+  end
+
   # ── valid_dir?/1 ────────────────────────────────────────────────────────────
 
   describe "valid_dir?/1" do
