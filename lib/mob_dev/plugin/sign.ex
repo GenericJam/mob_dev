@@ -5,9 +5,9 @@ defmodule MobDev.Plugin.Sign do
   Produces `priv/mob_plugin.sig` for a plugin directory by:
 
   1. Loading the manifest (`priv/mob_plugin.exs`).
-  2. Computing SHA-256 hashes for every file the manifest references
-     (Swift sources, Android bridge/JNI sources, NIF native_dir contents,
-     **and the manifest bytes themselves**).
+  2. Computing SHA-256 hashes for every file the native build reads from
+     the plugin (`build_inputs/2`), **including the manifest bytes
+     themselves**, plus the build-input coverage marker (see below).
   3. Building the canonical payload (sorted file hashes + envelope
      version).
   4. Signing the canonical encoding of the payload via `Crypto.sign/2`.
@@ -16,8 +16,9 @@ defmodule MobDev.Plugin.Sign do
      integrity without needing to `Code.eval_file` the manifest first
      (see MOB-74).
 
-  Pure helpers are exposed for tests: `compute_file_hashes/2` and
-  `build_payload/1` are deterministic given their inputs.
+  `build_inputs/2`, `compute_file_hashes/2` and `build_payload/1` are
+  exposed for tests and for `Verify`; they are deterministic given their
+  inputs and the plugin directory's contents.
 
   ## Envelope versions
 
@@ -35,19 +36,37 @@ defmodule MobDev.Plugin.Sign do
     alongside the signature. Verifiers can check every on-disk file
     against the signed hashes without touching the manifest map, so
     verification is safe to run before eval.
+
+  ## Build-input coverage (MOB-297)
+
+  Signatures made before MOB-297 listed only some of the files the build
+  reads (a `native_dir` was filtered to `.c`/`.h`/`.cpp`/`.zig`, so every
+  iOS `.m` NIF was unsigned, and `cpp_archive` sources were skipped), and
+  the verifier checked only listed files. A signature now lists every
+  `build_inputs/2` file **and** a coverage marker entry — a `file_hashes`
+  entry for a path that never exists, hashed as empty bytes. Because the
+  marker is inside the signed list it cannot be stripped, and a verifier
+  that sees it also requires every build input to be listed. mob_dev 0.7.2
+  rehashes the marker path, finds nothing, gets the empty-bytes hash and
+  accepts it, so hosts that have not upgraded still verify new signatures.
+  See decisions/2026-09-30-plugin-signature-coverage.md.
   """
 
-  alias MobDev.Plugin.{Crypto, Manifest}
+  alias MobDev.Plugin.{Crypto, Manifest, Merge}
 
   @envelope_version 2
 
   @signature_file "priv/mob_plugin.sig"
   @manifest_file "priv/mob_plugin.exs"
 
-  # File extensions to include when a manifest entry points at a
-  # `:native_dir` (NIF C/C++/Zig sources + headers). The set is fixed
-  # because the build pipeline only ever compiles these extensions.
-  @nif_extensions [".c", ".h", ".cpp", ".zig"]
+  # Build-input coverage marker (see the moduledoc). A path no plugin ships,
+  # hashed as empty bytes: exactly what `sha256!/1` yields for a missing file,
+  # which is how mob_dev 0.7.2 passes it without knowing what it means. The
+  # `-2` is the coverage rule's version; a verifier must recompute the set with
+  # the rule the signer used, so a future change to `build_inputs/2` that
+  # would reject existing signatures ships as a new marker.
+  @coverage_marker "priv/mob_plugin.coverage-2"
+  @empty_sha256 :crypto.hash(:sha256, <<>>)
 
   @typedoc "Relative path inside the plugin directory."
   @type rel_path :: String.t()
@@ -59,39 +78,99 @@ defmodule MobDev.Plugin.Sign do
   @type file_hashes :: [{rel_path(), file_hash()}]
 
   @doc """
-  Returns the relative-path-sorted list of `{relative_path, sha256}`
-  tuples for every file the manifest references.
+  Returns the relative-path-sorted `{relative_path, sha256}` list a new
+  signature carries: every `build_inputs/2` file plus the coverage marker.
 
-  Pure given the plugin dir + manifest. The set covers:
-
-  - `manifest.ios.swift_files` — single files (list of paths).
-  - `manifest.android.bridge_kt` and `manifest.android.jni_source` —
-    single paths each.
-  - `manifest.android.res_files` — the resource files copied verbatim
-    into the app `res/` tree (list of paths).
-  - `manifest.nifs[].native_dir` — recursive over `.c`, `.h`, `.cpp`,
-    `.zig` files inside. This is the only case where a directory is
-    expanded.
-
-  Other manifest fields are either name-only (component atoms,
-  `swift_struct`) or pure data (plist keys, permission strings,
-  framework names) and are covered by the manifest term itself being
-  part of the signed payload.
-
-  Missing files are skipped silently — `Validator.validate_plugin/3`
-  is responsible for refusing to publish a plugin with missing
-  declared paths, so the signing surface assumes paths that exist.
+  Missing files hash as empty bytes (see `sha256!/1`) —
+  `Validator.validate_plugin/3` refuses to publish a plugin with missing
+  declared paths, and a missing file that later appears no longer matches.
   """
   @spec compute_file_hashes(Path.t(), map() | nil) :: file_hashes()
   def compute_file_hashes(_plugin_dir, nil), do: []
 
   def compute_file_hashes(plugin_dir, manifest) when is_map(manifest) do
-    manifest
-    |> referenced_files(plugin_dir)
+    hashes =
+      for rel <- build_inputs(plugin_dir, manifest),
+          do: {rel, sha256!(Path.join(plugin_dir, rel))}
+
+    Enum.sort([{@coverage_marker, @empty_sha256} | hashes])
+  end
+
+  @doc """
+  Plugin-relative paths of every file the native build reads from the
+  plugin, sorted. The signer lists all of them; a verifier seeing the
+  coverage marker refuses a signature that omits any.
+
+  Derived from the same `MobDev.Plugin.Merge` gatherers the build uses,
+  called with an empty plugin dir so they return the declared relative
+  paths:
+
+  - `priv/mob_plugin.exs` itself (evaluated by every consumer).
+  - `ios.swift_files`, `android.bridge_kt`, `android.res_files`.
+  - Every compiled C-family source: each C / ObjC / Zig NIF's primary
+    source (`<native_dir>/<module>.<ext>`, default `native_dir` applied),
+    `android.jni_source`, and `lang: :cpp_archive` `sources:` — **and every
+    file under each one's directory**, whatever its extension, because a
+    quoted `#include`/`@import` resolves there first.
+  - `migrations.migrations_dir/*.exs` (copied into the host and run on
+    device), `assets.fonts`, `assets.images`, `default_font.file`.
+
+  Not covered: `{:dep, app, path}` entries (another package's files) and
+  `cpp_archive` `includes:` roots. An include root can be provisioned on
+  the host at build time rather than shipped — mob_nx_eigen's
+  `eigen-3.4.0` is downloaded into the plugin's own tree by its Mix
+  compiler — so its contents cannot be signed, and requiring them listed
+  would refuse the plugin on every host that has compiled it. Headers a
+  plugin ships belong beside its sources, where they are covered.
+
+  Directory expansion skips dotfiles: they are editor/OS litter
+  (`.DS_Store` appears on hosts that browse `deps/` in Finder), and
+  requiring them listed would fail verification for a harmless file.
+  A symlink is listed as an entry and never followed. `priv/mob_plugin.sig`
+  is never an input.
+  """
+  @spec build_inputs(Path.t(), map() | nil) :: [rel_path()]
+  def build_inputs(_plugin_dir, nil), do: []
+
+  def build_inputs(plugin_dir, manifest) when is_map(manifest) do
+    # Plugin dir "" makes each gatherer's Path.join/2 return the declared
+    # relative path unchanged.
+    plugins = [{"", manifest}]
+    archive_sources = Enum.flat_map(Merge.static_archives(plugins), &own_paths(&1.sources))
+
+    compiled =
+      Merge.nif_sources(plugins) ++
+        Merge.zig_nif_sources(plugins) ++
+        Merge.jni_sources(plugins) ++
+        archive_sources
+
+    files =
+      Merge.swift_files(plugins) ++
+        Merge.bridge_kt_sources(plugins) ++
+        Enum.map(Merge.android_res_files(plugins), & &1.src) ++
+        compiled ++
+        Enum.flat_map(Merge.assets(plugins), &(&1.fonts ++ &1.images)) ++
+        Enum.map(Merge.default_font(plugins), & &1.file)
+
+    expanded =
+      Enum.flat_map(compiled, &files_under(plugin_dir, Path.dirname(&1))) ++
+        Enum.flat_map(Merge.migrations(plugins), &migration_files(plugin_dir, &1.migrations_dir))
+
+    sig = Path.expand(@signature_file, plugin_dir)
+
+    [@manifest_file | files ++ expanded]
+    |> Enum.reject(&(Path.expand(&1, plugin_dir) == sig))
     |> Enum.uniq()
     |> Enum.sort()
-    |> Enum.map(fn rel -> {rel, sha256!(Path.join(plugin_dir, rel))} end)
   end
+
+  @doc """
+  True when a signed `file_hashes` list carries the build-input coverage
+  marker, i.e. the signer listed every `build_inputs/2` file.
+  """
+  @spec declares_build_input_coverage?(file_hashes()) :: boolean()
+  def declares_build_input_coverage?(file_hashes),
+    do: List.keymember?(file_hashes, @coverage_marker, 0)
 
   @doc """
   Builds the canonical payload term that gets signed.
@@ -180,58 +259,48 @@ defmodule MobDev.Plugin.Sign do
 
   defp refuse_if_no_manifest(_manifest, _plugin_dir), do: :ok
 
-  # ── referenced-file collection ────────────────────────────────────────────
+  # ── build-input collection ────────────────────────────────────────────────
 
-  defp referenced_files(manifest, plugin_dir) do
-    swift = list_of_strings(get_in(manifest, [:ios, :swift_files]))
+  # cpp_archive entries: plugin-relative strings are ours; `{:dep, …}` tokens
+  # point into another package.
+  defp own_paths(entries), do: Enum.filter(entries, &is_binary/1)
 
-    android =
-      [
-        get_in(manifest, [:android, :bridge_kt]),
-        get_in(manifest, [:android, :jni_source])
-      ]
-      |> Enum.filter(&is_binary/1)
+  # Every non-dot entry under `rel` that is not itself a directory, recursing
+  # into real directories only (a symlink is listed, never followed, so a link
+  # loop can't hang verification). Built on `rel` so the paths match what the
+  # manifest declares. Lists with File.ls rather than Path.wildcard: a `[` or
+  # `{` in the plugin's absolute path would be read as glob syntax and silently
+  # list nothing, making signer and verifier disagree.
+  defp files_under(plugin_dir, rel), do: list_tree(Path.join(plugin_dir, rel), rel)
 
-    # res_files are copied verbatim into the app res/ tree, so their bytes must
-    # be tamper-evident too (same as bridge_kt / jni_source).
-    res = list_of_strings(get_in(manifest, [:android, :res_files]))
+  defp list_tree(abs, rel) do
+    for name <- visible_entries(abs), reduce: [] do
+      acc ->
+        path = Path.join(abs, name)
 
-    nifs = nif_files(manifest, plugin_dir)
-
-    # The manifest itself MUST be signed — otherwise `Verify` has no way to
-    # detect a tampered `priv/mob_plugin.exs` without eval'ing it first,
-    # which is the whole class of bug MOB-74 closes. Always included, always
-    # at a stable relative path so `Verify` can look it up by name.
-    [@manifest_file | swift ++ android ++ res ++ nifs]
-  end
-
-  defp nif_files(manifest, plugin_dir) do
-    for nif <- Map.get(manifest, :nifs, []) || [],
-        is_map(nif),
-        rel = nif[:native_dir],
-        is_binary(rel),
-        path <- expand_native_dir(plugin_dir, rel) do
-      path
+        case File.lstat(path) do
+          {:ok, %File.Stat{type: :directory}} -> list_tree(path, Path.join(rel, name)) ++ acc
+          {:ok, _} -> [Path.join(rel, name) | acc]
+          {:error, _} -> acc
+        end
     end
   end
 
-  defp expand_native_dir(plugin_dir, rel_dir) do
-    abs_dir = Path.join(plugin_dir, rel_dir)
+  # The `*.exs` files `NativeBuild.apply_plugin_migrations!/0` copies.
+  defp migration_files(plugin_dir, rel_dir) do
+    abs = Path.join(plugin_dir, rel_dir)
 
-    if File.dir?(abs_dir) do
-      abs_dir
-      |> Path.join("**/*")
-      |> Path.wildcard()
-      |> Enum.filter(&File.regular?/1)
-      |> Enum.filter(fn p -> Path.extname(p) in @nif_extensions end)
-      |> Enum.map(&Path.relative_to(&1, plugin_dir))
-    else
-      []
-    end
+    for name <- visible_entries(abs),
+        Path.extname(name) == ".exs",
+        File.regular?(Path.join(abs, name)),
+        do: Path.join(rel_dir, name)
   end
 
-  defp list_of_strings(value) do
-    for s <- List.wrap(value), is_binary(s), do: s
+  defp visible_entries(abs) do
+    case File.ls(abs) do
+      {:ok, names} -> Enum.reject(names, &String.starts_with?(&1, "."))
+      {:error, _} -> []
+    end
   end
 
   @doc false

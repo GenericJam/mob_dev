@@ -59,6 +59,13 @@ The code is kept in one place so it is easy to delete:
 - `MobDev.Plugin.V1Transition` holds the rule. It restores the pre-MOB-74
   payload rebuild (commit `137fe20^`, `Verify.verify_plugin/2`), and
   nothing else from the old code.
+
+  *(Correction, MOB-297: "nothing else" stopped being true. MOB-297 changed
+  the signer's file selection for new signatures, and v1 payloads need the
+  old one. The pre-MOB-297 rule, which hashes only `.c`/`.h`/`.cpp`/`.zig`
+  from a `native_dir`, now lives in this module as `v1_referenced_files/2`
+  and is deleted with it. See
+  [2026-09-30-plugin-signature-coverage.md](2026-09-30-plugin-signature-coverage.md).)*
 - `Verify.load_verified/2` calls it for the eval path.
   `activated/0`, `mix mob.plugins`, `mix mob.audit_plugins` and `Report`
   all go through this function. So will `NifActivation` from MOB-281, via

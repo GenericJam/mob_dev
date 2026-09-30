@@ -77,6 +77,13 @@ Two rules that outrank the list:
 - **Compile-time regex literals are unsafe** on Elixir 1.19 / OTP 28.0. Use
   `Regex.compile!("...", "flags")` for runtime compilation. Already swept in
   0.3.17 — don't reintroduce.
+- **Plugin signatures cover `Sign.build_inputs/2`, nothing else.** A new
+  `Merge` gatherer (or build step) that reads a file from the plugin directory
+  must be added there, or the file is unsigned. A change that would make
+  `build_inputs/2` demand files existing marked signatures do not list rejects
+  published plugins, so it needs a new coverage marker. Signed envelopes must
+  stay decodable by mob_dev 0.7.2: no new atoms, no new payload keys. See
+  `decisions/2026-09-30-plugin-signature-coverage.md` (MOB-297).
 - **Hex packages omit repository-root dotfiles by default.** Code under `lib/`
   must not compile-time read `.tool-versions` or another root-only file. Keep a
   packaged authority in source, enforce exact lockstep with the root file in a

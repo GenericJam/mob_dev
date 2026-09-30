@@ -147,7 +147,7 @@ defmodule MobDev.Plugin.VerifyTest do
       # the .exs bytes shifts the hash and fails verification.
       #
       # Revert-verify: remove the @manifest_file prefix from
-      # `Sign.referenced_files/2` and this fails (verification would pass
+      # `Sign.build_inputs/2` and this fails (verification would pass
       # because the tampered map, if it eval'd to the same shape, wouldn't
       # be caught).
       original = File.read!(Path.join(dir, "priv/mob_plugin.exs"))
@@ -287,5 +287,159 @@ defmodule MobDev.Plugin.VerifyTest do
       assert {:error, :envelope_v1_unsupported} =
                Verify.load_verified(dir, acknowledged_unsafe: true)
     end
+  end
+
+  describe "build-input coverage (MOB-297)" do
+    setup do
+      dir = Path.join(System.tmp_dir!(), "mob_verify_cov_#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      manifest = %{
+        name: :mob_cov,
+        mob_version: "~> 0.6",
+        plugin_spec_version: 1,
+        nifs: [
+          %{module: :mob_cov_nif, native_dir: "priv/native/ios", lang: :objc, platform: :ios},
+          %{
+            module: :mob_cov_fft,
+            lang: :cpp_archive,
+            nm_symbol: "mob_cov_fft_nif_init",
+            sources: ["c_src/fft.cpp"],
+            # Provisioned on the host at build time (mob_nx_eigen's eigen-3.4.0)
+            includes: ["eigen"]
+          }
+        ]
+      }
+
+      write!(dir, "priv/mob_plugin.exs", inspect(manifest, limit: :infinity))
+      write!(dir, "priv/native/ios/mob_cov_nif.m", "#import <Foundation/Foundation.h>\n")
+      write!(dir, "c_src/fft.cpp", "#include \"fft.hpp\"\n")
+      write!(dir, "c_src/include/fft.hpp", "#pragma once\n")
+
+      {priv, pub} = Crypto.generate_keypair()
+      write!(dir, "priv/mob_plugin.pub", Base.encode64(pub) <> "\n")
+      :ok = Sign.sign_plugin(dir, priv)
+
+      {:ok, dir: dir, pub: pub}
+    end
+
+    test "a fresh signature verifies and load_verified returns the manifest", %{dir: dir} do
+      assert :ok = Verify.verify_plugin(dir)
+      assert {:ok, %{name: :mob_cov}} = Verify.load_verified(dir)
+    end
+
+    test "detects a tampered ObjC NIF source (.m)", %{dir: dir} do
+      write!(dir, "priv/native/ios/mob_cov_nif.m", "// EVIL\n")
+      assert {:error, :invalid_signature} = Verify.verify_plugin(dir)
+    end
+
+    test "detects a tampered cpp_archive source", %{dir: dir} do
+      write!(dir, "c_src/fft.cpp", "// EVIL\n")
+      assert {:error, :invalid_signature} = Verify.verify_plugin(dir)
+    end
+
+    test "detects a tampered header beside a cpp_archive source", %{dir: dir} do
+      write!(dir, "c_src/include/fft.hpp", "// EVIL\n")
+      assert {:error, :invalid_signature} = Verify.verify_plugin(dir)
+    end
+
+    test "refuses a native file added after signing", %{dir: dir} do
+      # Every listed file still matches, so only the completeness check sees it.
+      write!(dir, "priv/native/ios/extra.h", "#define EVIL 1\n")
+      assert {:error, :invalid_signature} = Verify.verify_plugin(dir)
+      assert {:error, :invalid_signature} = Verify.load_verified(dir)
+    end
+
+    test "refuses a header added beside a cpp_archive source after signing", %{dir: dir} do
+      write!(dir, "c_src/shadow.h", "#define EVIL 1\n")
+      assert {:error, :invalid_signature} = Verify.verify_plugin(dir)
+    end
+
+    test "tolerates an include root the host provisions after signing", %{dir: dir} do
+      # mob_nx_eigen's Mix compiler downloads Eigen into the plugin's own tree
+      # on every host; the author can't sign it, so it must not be demanded.
+      write!(dir, "eigen/Eigen/Core", "// downloaded\n")
+      assert :ok = Verify.verify_plugin(dir)
+    end
+
+    test "the coverage marker is signed: stripping it breaks the signature", %{dir: dir} do
+      {:ok, envelope} = Verify.load_envelope(dir)
+      assert Sign.declares_build_input_coverage?(envelope.file_hashes)
+
+      stripped = List.keydelete(envelope.file_hashes, "priv/mob_plugin.coverage-2", 0)
+      refute Sign.declares_build_input_coverage?(stripped)
+
+      File.write!(
+        Sign.signature_path(dir),
+        Crypto.canonical_encode(%{envelope | file_hashes: stripped})
+      )
+
+      assert {:error, :invalid_signature} = Verify.verify_plugin(dir)
+    end
+
+    # `@envelope_atoms` in mob_dev 0.7.2's Verify.
+    @atoms_072 [:signature, :envelope_version, :file_hashes]
+
+    test "mob_dev 0.7.2's verifier accepts the new envelope", %{dir: dir, pub: pub} do
+      bytes = File.read!(Sign.signature_path(dir))
+
+      # 0.7.2 decodes with :safe, so every atom must be one it interns. A new
+      # envelope key would decode as :corrupt there whenever nothing else had
+      # created that atom yet (decisions/2026-05-31-verify-safe-atom-intern.md).
+      assert atoms_in(:erlang.binary_to_term(bytes)) -- @atoms_072 == []
+
+      assert :ok = verify_as_072(dir, bytes, pub)
+    end
+  end
+
+  describe "v2 envelopes signed before MOB-297" do
+    # mob_scanner 0.1.4 as published on Hex (priv/ only). Its envelope lists
+    # the manifest, the .kt bridge and the .zig NIF but not the iOS .m NIF —
+    # the gap MOB-297 closes for new signatures.
+    @published Path.expand("../../fixtures/plugins/mob_scanner_v2", __DIR__)
+
+    test "still verify, without being held to the build-input set" do
+      {:ok, envelope} = Verify.load_envelope(@published)
+      refute Sign.declares_build_input_coverage?(envelope.file_hashes)
+
+      {:ok, manifest} = Manifest.load(@published)
+      listed = Enum.map(envelope.file_hashes, &elem(&1, 0))
+
+      assert Sign.build_inputs(@published, manifest) -- listed == [
+               "priv/native/ios/mob_scanner_nif.m"
+             ]
+
+      assert :ok = Verify.verify_plugin(@published)
+      assert {:ok, %{name: :mob_scanner}} = Verify.load_verified(@published)
+    end
+  end
+
+  # mob_dev 0.7.2's verification, copied from its lib/mob_dev/plugin/verify.ex
+  # (`decode_envelope/1`, `check_files_match/2`) and sign.ex (`build_payload/1`
+  # inlined as the literal payload). Hosts that have not upgraded run exactly
+  # this against plugins signed by newer mob_dev.
+  defp verify_as_072(plugin_dir, bytes, pub) do
+    with %{signature: sig, file_hashes: fh, envelope_version: 2}
+         when is_binary(sig) and byte_size(sig) == 64 and is_list(fh) <-
+           :erlang.binary_to_term(bytes, [:safe]),
+         true <- Enum.all?(fh, &match?({rel, hash} when is_binary(rel) and is_binary(hash), &1)),
+         nil <-
+           Enum.find(fh, fn {rel, expected} ->
+             Sign.sha256!(Path.join(plugin_dir, rel)) != expected
+           end) do
+      Crypto.verify(%{file_hashes: fh, envelope_version: 2}, sig, pub)
+    end
+  end
+
+  defp atoms_in(term) when is_atom(term), do: [term]
+  defp atoms_in(term) when is_map(term), do: atoms_in(Map.to_list(term))
+  defp atoms_in(term) when is_tuple(term), do: atoms_in(Tuple.to_list(term))
+  defp atoms_in(term) when is_list(term), do: Enum.flat_map(term, &atoms_in/1)
+  defp atoms_in(_term), do: []
+
+  defp write!(dir, rel, contents) do
+    path = Path.join(dir, rel)
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, contents)
   end
 end

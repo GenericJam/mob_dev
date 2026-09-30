@@ -1,7 +1,7 @@
 # Plugin envelope v2 — verify signature before eval
 
 - Date: 2026-09-11
-- Status: accepted; point 5 amended by [2026-09-30-v1-envelope-transition.md](2026-09-30-v1-envelope-transition.md) (MOB-287)
+- Status: accepted; point 5 amended by [2026-09-30-v1-envelope-transition.md](2026-09-30-v1-envelope-transition.md) (MOB-287); points 1 and 3 amended by [2026-09-30-plugin-signature-coverage.md](2026-09-30-plugin-signature-coverage.md) (MOB-297)
 
 ## Context
 
@@ -35,6 +35,13 @@ Move to envelope v2, which flips the trust chain end-to-end:
    now always prepends `priv/mob_plugin.exs` — the file that used to be
    trusted implicitly is now cryptographically covered like every other
    source.
+
+   **Correction (2026-09-30, MOB-297):** "cryptographically covered like every
+   other source" overstated it. `referenced_files/2` hashed only
+   `.c`/`.h`/`.cpp`/`.zig` inside a `native_dir`, so every iOS `.m` NIF was
+   unsigned, and `cpp_archive` sources were skipped. `Sign.build_inputs/2`
+   replaces it for new signatures, which also carry a signed coverage marker.
+   See [2026-09-30-plugin-signature-coverage.md](2026-09-30-plugin-signature-coverage.md).
 2. **The v2 envelope on disk carries the file_hashes list alongside the
    signature.** Payload signed = `%{file_hashes: [...], envelope_version: 2}`.
    The eval'd manifest map is no longer part of the payload — its
@@ -45,6 +52,14 @@ Move to envelope v2, which flips the trust chain end-to-end:
    (proving the author signed *this* list of files), then re-hashes each
    listed file on disk (proving the disk hasn't been tampered with since
    signing). Neither step calls `Code.eval_file/1`.
+
+   **Correction (2026-09-30, MOB-297):** "Neither step calls `Code.eval_file/1`"
+   no longer holds for new signatures. When the envelope carries the coverage
+   marker, `verify_plugin/1` evaluates the manifest *after* both steps pass,
+   to check that every build input is listed. The bytes it evaluates have
+   already matched their signed hash, so verification still runs before any
+   evaluation of unverified bytes. Envelopes without the marker still never
+   evaluate. See [2026-09-30-plugin-signature-coverage.md](2026-09-30-plugin-signature-coverage.md).
 4. **`Verify.load_verified/1`** is the new consumer entry point. Verifies
    first; only calls `Manifest.load/1` (which does the eval) after
    verification passes. This is the actual MOB-74 close: a plugin that

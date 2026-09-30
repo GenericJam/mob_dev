@@ -33,7 +33,11 @@ defmodule MobDev.Plugin.V1Transition do
   alias MobDev.Plugin.{Crypto, Manifest, Sign, TrustStore, Verify}
 
   @signature_file "priv/mob_plugin.sig"
-  @manifest_file "priv/mob_plugin.exs"
+
+  # The only native_dir extensions the pre-MOB-297 signer hashed. v1
+  # signatures were made with that rule, so rebuilding a v1 payload needs it
+  # verbatim; new signatures use `Sign.build_inputs/2`.
+  @v1_nif_extensions [".c", ".h", ".cpp", ".zig"]
 
   @typedoc """
   Provenance inputs. Each defaults to the current Mix project's value:
@@ -153,14 +157,57 @@ defmodule MobDev.Plugin.V1Transition do
   defp verify_signature(plugin_dir, manifest, pub) do
     with {:ok, signature} <- v1_signature(plugin_dir) do
       file_hashes =
-        plugin_dir
-        |> Sign.compute_file_hashes(manifest)
-        |> List.keydelete(@manifest_file, 0)
+        manifest
+        |> v1_referenced_files(plugin_dir)
+        |> Enum.uniq()
+        |> Enum.sort()
+        |> Enum.map(fn rel -> {rel, Sign.sha256!(Path.join(plugin_dir, rel))} end)
 
       payload = %{manifest: manifest, file_hashes: file_hashes, envelope_version: 1}
       Crypto.verify(payload, signature, pub)
     end
   end
+
+  # The file set v1 signatures cover — the signer's rule before MOB-297, kept
+  # here because v1 envelopes were made with it (and missed every `.m` NIF,
+  # which this transition accepts; see the MOB-287 record).
+  defp v1_referenced_files(manifest, plugin_dir) do
+    swift = strings(get_in(manifest, [:ios, :swift_files]))
+
+    android =
+      Enum.filter(
+        [get_in(manifest, [:android, :bridge_kt]), get_in(manifest, [:android, :jni_source])],
+        &is_binary/1
+      )
+
+    res = strings(get_in(manifest, [:android, :res_files]))
+
+    nifs =
+      for nif <- Map.get(manifest, :nifs, []) || [],
+          is_map(nif),
+          rel = nif[:native_dir],
+          is_binary(rel),
+          path <- v1_native_dir_files(plugin_dir, rel),
+          do: path
+
+    swift ++ android ++ res ++ nifs
+  end
+
+  defp v1_native_dir_files(plugin_dir, rel_dir) do
+    abs_dir = Path.join(plugin_dir, rel_dir)
+
+    if File.dir?(abs_dir) do
+      abs_dir
+      |> Path.join("**/*")
+      |> Path.wildcard()
+      |> Enum.filter(&(File.regular?(&1) and Path.extname(&1) in @v1_nif_extensions))
+      |> Enum.map(&Path.relative_to(&1, plugin_dir))
+    else
+      []
+    end
+  end
+
+  defp strings(value), do: for(s <- List.wrap(value), is_binary(s), do: s)
 
   # `Verify` interns :signature and :envelope_version, which a :safe decode of
   # a v1 envelope needs (see decisions/2026-05-31-verify-safe-atom-intern.md).
