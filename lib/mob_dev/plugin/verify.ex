@@ -12,21 +12,28 @@ defmodule MobDev.Plugin.Verify do
   4. Re-hashes each file the envelope declares and compares against the
      signed hash — proving the on-disk state has not been tampered with
      since the author signed it.
+  5. When the signed list carries the build-input coverage marker
+     (MOB-297, see `Sign`), evaluates the now-verified manifest and
+     requires every `Sign.build_inputs/2` file to be listed — proving no
+     file the build reads was added outside the signature. Envelopes
+     without the marker (signed before MOB-297) skip this step.
 
   Because the envelope carries `file_hashes` on disk (v2, see
-  `Sign` moduledoc for the version history), verification does not
-  require the eval'd manifest map — so the safe order is
-  **verify → then eval**. This closes the MOB-74 class of bug where a
-  malicious `priv/mob_plugin.exs` could execute arbitrary code during
-  plugin activation because the eval ran before the signature check.
+  `Sign` moduledoc for the version history), steps 1–4 do not need the
+  eval'd manifest map — so the safe order is **verify → then eval**, and
+  step 5's eval runs only on manifest bytes that already matched their
+  signed hash. This closes the MOB-74 class of bug where a malicious
+  `priv/mob_plugin.exs` could execute arbitrary code during plugin
+  activation because the eval ran before the signature check.
 
   Failure modes are distinguished:
 
   - `:missing_signature` — no `priv/mob_plugin.sig`.
   - `:missing_pubkey` — no `priv/mob_plugin.pub`.
   - `:invalid_signature` — sig present but doesn't verify, or on-disk
-    files no longer match the signed hashes (tamper detected), or the
-    envelope is malformed.
+    files no longer match the signed hashes (tamper detected), or a
+    build input is missing from a coverage-marked signature (or its
+    manifest cannot be evaluated to check), or the envelope is malformed.
   - `:envelope_v1_unsupported` — a legacy v1 envelope was found. v1
     verification required the eval'd manifest to rebuild the payload,
     which is the very bug we are closing. `verify_plugin/1` always
@@ -171,12 +178,17 @@ defmodule MobDev.Plugin.Verify do
   Verifies that the plugin in `plugin_dir` has a valid v2 signature and
   that the on-disk files match what the author signed.
 
-  The check runs entirely off the envelope's embedded `file_hashes` list
-  — the manifest is one of those files, and rehashing its bytes on disk
-  detects tampering without any `Code.eval_file` call. That is the
-  MOB-74 fix: verification is now safe to run *before* eval, closing the
-  RCE window where a malicious `priv/mob_plugin.exs` could execute
-  arbitrary code during plugin activation.
+  Steps 1–4 (see the moduledoc) run entirely off the envelope's embedded
+  `file_hashes` list — the manifest is one of those files, and rehashing
+  its bytes on disk detects tampering without any `Code.eval_file` call.
+  That is the MOB-74 fix: verification is safe to run *before* eval,
+  closing the RCE window where a malicious `priv/mob_plugin.exs` could
+  execute arbitrary code during plugin activation.
+
+  For a signature carrying the build-input coverage marker (MOB-297),
+  step 5 then evaluates the manifest — only after its bytes matched the
+  signed hash and the signature verified — to recompute
+  `Sign.build_inputs/2` and refuse any build input the signature omits.
 
   Returns `:ok` on success or one of the distinguished error reasons
   (see `t:verify_error/0`). The caller is responsible for any trust
@@ -185,12 +197,24 @@ defmodule MobDev.Plugin.Verify do
   """
   @spec verify_plugin(Path.t()) :: :ok | {:error, verify_error()}
   def verify_plugin(plugin_dir) do
+    case verify(plugin_dir) do
+      :ok -> :ok
+      {:ok, _manifest} -> :ok
+      {:error, reason} when is_binary(reason) -> {:error, :invalid_signature}
+      {:error, _} = err -> err
+    end
+  end
+
+  # `:ok`, or `{:ok, manifest}` when step 5 had to evaluate the verified
+  # manifest (so `load_verified/2` does not evaluate it a second time). A
+  # manifest that fails to evaluate returns `Manifest.load/1`'s message.
+  defp verify(plugin_dir) do
     with {:ok, envelope} <- normalise_envelope_error(load_envelope(plugin_dir)),
          {:ok, pub} <- normalise_pubkey_error(load_pubkey(plugin_dir)),
          :ok <- check_files_match(plugin_dir, envelope.file_hashes),
          payload = Sign.build_payload(envelope.file_hashes),
          :ok <- normalise_verify(Crypto.verify(payload, envelope.signature, pub)) do
-      :ok
+      check_build_input_coverage(plugin_dir, envelope.file_hashes)
     end
   end
 
@@ -235,9 +259,12 @@ defmodule MobDev.Plugin.Verify do
         {:ok, nil}
 
       true ->
-        case verify_plugin(plugin_dir) do
+        case verify(plugin_dir) do
           :ok ->
             Manifest.load(plugin_dir)
+
+          {:ok, manifest} ->
+            {:ok, manifest}
 
           {:error, :missing_signature} when acknowledged_unsafe? ->
             # Documented escape hatch: user opted into an unsigned plugin
@@ -268,6 +295,25 @@ defmodule MobDev.Plugin.Verify do
       end)
 
     if mismatch, do: {:error, :invalid_signature}, else: :ok
+  end
+
+  # Step 5. Runs only after every listed file (the manifest included) matched
+  # its signed hash and the signature verified, so `Manifest.load/1` evaluates
+  # bytes the author signed — the same order `load_verified/2` has always used.
+  # A signature without the marker predates MOB-297 and listed a narrower set;
+  # holding it to `build_inputs/2` would refuse every plugin published before.
+  defp check_build_input_coverage(plugin_dir, file_hashes) do
+    if Sign.declares_build_input_coverage?(file_hashes) do
+      with {:ok, manifest} <- Manifest.load(plugin_dir) do
+        listed = MapSet.new(file_hashes, &elem(&1, 0))
+
+        if Enum.all?(Sign.build_inputs(plugin_dir, manifest), &MapSet.member?(listed, &1)),
+          do: {:ok, manifest},
+          else: {:error, :invalid_signature}
+      end
+    else
+      :ok
+    end
   end
 
   # Envelope errors that mean "no sig file at all" map to :missing_signature.

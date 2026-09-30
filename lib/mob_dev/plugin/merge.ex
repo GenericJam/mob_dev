@@ -12,6 +12,10 @@ defmodule MobDev.Plugin.Merge do
 
   Discovery (deps → activated → load manifest) is the caller's job; this module
   is the testable transform once the manifests are in hand.
+
+  A gatherer that hands the build a file from the plugin directory must also be
+  consulted by `MobDev.Plugin.Sign.build_inputs/2`, or that file is unsigned
+  (MOB-297, decisions/2026-09-30-plugin-signature-coverage.md).
   """
 
   alias MobDev.Plugin.Manifest

@@ -1,3 +1,29 @@
+## [Unreleased]
+
+### Security
+
+- **Plugin signatures now cover the files the native build reads from a
+  plugin** (MOB-297). The signer hashed only `.c`/`.h`/`.cpp`/`.zig` inside a
+  NIF's `native_dir`, so every iOS Objective-C NIF (`.m`) was unsigned. It
+  also skipped `cpp_archive` sources, NIFs relying on the default
+  `native_dir`, and plugin migrations, fonts and images. The verifier
+  checked only the files the signature listed. `mix mob.plugin.sign` now
+  lists everything `MobDev.Plugin.Sign.build_inputs/2` derives from the
+  build's own `Merge` gatherers: every compiled source and every file in its
+  directory, plus the copied files. It also adds a signed coverage marker
+  entry. `cpp_archive` `includes:` roots stay unsigned because a host can
+  provision them (mob_nx_eigen downloads Eigen). A host seeing the marker
+  refuses the plugin (`:invalid_signature`) if any build input is unlisted,
+  e.g. a header dropped into a NIF directory after
+  signing. Signatures made before this change carry no marker and verify
+  exactly as before (the published mob_scanner 0.1.4 is a test fixture).
+  New signatures still verify on mob_dev 0.7.2: the marker is a
+  `file_hashes` entry for a path that never exists, so there is no new
+  envelope key or atom for 0.7.2's `:safe` decode to reject, and 0.7.2
+  hashes the missing path as empty bytes, which matches. Only the
+  completeness check needs the upgrade. Plugin authors should re-sign. See
+  `decisions/2026-09-30-plugin-signature-coverage.md`.
+
 ## [0.7.2] - 2026-09-30
 
 ### Fixed

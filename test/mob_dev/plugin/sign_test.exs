@@ -28,16 +28,19 @@ defmodule MobDev.Plugin.SignTest do
       assert Sign.compute_file_hashes(dir, nil) == []
     end
 
-    test "returns [priv/mob_plugin.exs] for a manifest with no other referenced files",
+    test "lists the manifest and the coverage marker for a manifest with no other inputs",
          %{dir: dir} do
       # After MOB-74 the manifest bytes themselves are always in the signed
       # file_hashes list — even a manifest that declares no sources still
-      # has ONE hashed file (itself). Revert-verify: remove the
-      # @manifest_file prefix in `Sign.referenced_files/2` and this fails.
+      # has ONE hashed input (itself). Revert-verify: drop @manifest_file
+      # from `Sign.build_inputs/2` and this fails.
       manifest = %{name: :mob_x, mob_version: "~> 0.6", plugin_spec_version: 1}
       write_manifest(dir, manifest)
+      assert Sign.build_inputs(dir, manifest) == ["priv/mob_plugin.exs"]
+
       hashes = Sign.compute_file_hashes(dir, manifest)
-      assert Enum.map(hashes, &elem(&1, 0)) == ["priv/mob_plugin.exs"]
+      assert List.keymember?(hashes, "priv/mob_plugin.exs", 0)
+      assert Sign.declares_build_input_coverage?(hashes)
     end
 
     test "hashes ios.swift_files and android paths, sorted by path, plus the manifest",
@@ -56,8 +59,7 @@ defmodule MobDev.Plugin.SignTest do
       }
 
       write_manifest(dir, manifest)
-      hashes = Sign.compute_file_hashes(dir, manifest)
-      paths = Enum.map(hashes, &elem(&1, 0))
+      paths = Sign.build_inputs(dir, manifest)
       assert paths == Enum.sort(paths)
 
       assert paths == [
@@ -107,25 +109,154 @@ defmodule MobDev.Plugin.SignTest do
       assert Sign.compute_file_hashes(dir, m1) == Sign.compute_file_hashes(dir, m2)
     end
 
-    test "recursively hashes .c/.h/.cpp/.zig files inside nifs.native_dir", %{dir: dir} do
-      write_file(dir, "priv/native/n.c", "c source")
-      write_file(dir, "priv/native/nested/n.h", "header")
-      write_file(dir, "priv/native/skip.txt", "should be skipped")
-      write_file(dir, "priv/native/build.zig", "zig source")
+    test "hashes every file under a NIF's native_dir, whatever its extension", %{dir: dir} do
+      # MOB-297: the old rule kept only .c/.h/.cpp/.zig, so an iOS ObjC NIF's
+      # .m (and any .mm/.hpp/.inc it includes) was never signed.
+      write_file(dir, "priv/native/ios/mob_x_nif.m", "objc source")
+      write_file(dir, "priv/native/ios/bridge.mm", "objc++")
+      write_file(dir, "priv/native/ios/nested/util.hpp", "header")
+      write_file(dir, "priv/native/ios/table.inc", "data")
+      write_file(dir, "priv/native/ios/.DS_Store", "finder litter")
 
       manifest = %{
         name: :mob_x,
         mob_version: "~> 0.6",
         plugin_spec_version: 1,
-        nifs: [%{module: :mob_x_nif, native_dir: "priv/native"}]
+        nifs: [%{module: :mob_x_nif, native_dir: "priv/native/ios", lang: :objc}]
       }
 
       write_manifest(dir, manifest)
-      paths = manifest |> (&Sign.compute_file_hashes(dir, &1)).() |> Enum.map(&elem(&1, 0))
-      assert "priv/native/n.c" in paths
-      assert "priv/native/nested/n.h" in paths
-      assert "priv/native/build.zig" in paths
-      refute "priv/native/skip.txt" in paths
+
+      assert Sign.build_inputs(dir, manifest) == [
+               "priv/mob_plugin.exs",
+               "priv/native/ios/bridge.mm",
+               "priv/native/ios/mob_x_nif.m",
+               "priv/native/ios/nested/util.hpp",
+               "priv/native/ios/table.inc"
+             ]
+    end
+
+    test "applies the default native_dir to a NIF that declares none", %{dir: dir} do
+      write_file(dir, "priv/native/jni/mob_x_nif.zig", "zig source")
+
+      manifest = %{
+        name: :mob_x,
+        mob_version: "~> 0.6",
+        plugin_spec_version: 1,
+        nifs: [%{module: :mob_x_nif, lang: :zig}]
+      }
+
+      write_manifest(dir, manifest)
+      assert "priv/native/jni/mob_x_nif.zig" in Sign.build_inputs(dir, manifest)
+    end
+
+    test "covers cpp_archive sources and their directory trees, not {:dep, …} or include roots",
+         %{dir: dir} do
+      write_file(dir, "c_src/nif.cpp", "cpp")
+      write_file(dir, "c_src/fft.hpp", "hpp")
+      write_file(dir, "c_src/detail/impl.inl", "inl")
+      # Host-provisioned include root (mob_nx_eigen downloads Eigen here at
+      # compile time): not shipped, so not signable.
+      write_file(dir, "eigen-3.4.0/Eigen/Core", "eigen")
+
+      manifest = %{
+        name: :mob_x,
+        mob_version: "~> 0.6",
+        plugin_spec_version: 1,
+        nifs: [
+          %{
+            module: :mob_x_nif,
+            lang: :cpp_archive,
+            nm_symbol: "mob_x_nif_nif_init",
+            sources: ["c_src/nif.cpp", {:dep, :nx_eigen, "c_src/nx_eigen.cpp"}],
+            includes: ["eigen-3.4.0", {:dep, :eigen, "include"}]
+          }
+        ]
+      }
+
+      write_manifest(dir, manifest)
+
+      assert Sign.build_inputs(dir, manifest) == [
+               "c_src/detail/impl.inl",
+               "c_src/fft.hpp",
+               "c_src/nif.cpp",
+               "priv/mob_plugin.exs"
+             ]
+    end
+
+    test "expands directories literally when the plugin path contains glob characters" do
+      # `mix mob.plugin.sign` passes the absolute cwd; a `[` or `{` in it must
+      # not be read as a pattern, or the signer lists no headers while every
+      # host lists them all.
+      dir = Path.join(System.tmp_dir!(), "mob_sign [wip]{#{System.unique_integer([:positive])}}")
+      on_exit(fn -> File.rm_rf!(dir) end)
+      write_file(dir, "priv/native/jni/mob_x_nif.c", "c")
+      write_file(dir, "priv/native/jni/util.h", "h")
+      write_file(dir, "priv/migrations/1_create.exs", "migration")
+
+      manifest = %{
+        name: :mob_x,
+        mob_version: "~> 0.6",
+        plugin_spec_version: 1,
+        nifs: [%{module: :mob_x_nif}],
+        migrations: %{migrations_dir: "priv/migrations", repo_namespace: :mob_x}
+      }
+
+      write_manifest(dir, manifest)
+
+      assert Sign.build_inputs(dir, manifest) == [
+               "priv/migrations/1_create.exs",
+               "priv/mob_plugin.exs",
+               "priv/native/jni/mob_x_nif.c",
+               "priv/native/jni/util.h"
+             ]
+    end
+
+    test "covers plugin migrations, fonts and images the build copies", %{dir: dir} do
+      write_file(dir, "priv/migrations/20260101_create.exs", "migration")
+      write_file(dir, "priv/migrations/README.md", "not copied")
+      write_file(dir, "priv/fonts/Inter.ttf", "font")
+      write_file(dir, "priv/images/logo.png", "png")
+
+      manifest = %{
+        name: :mob_x,
+        mob_version: "~> 0.6",
+        plugin_spec_version: 1,
+        migrations: %{migrations_dir: "priv/migrations", repo_namespace: :mob_x},
+        assets: %{fonts: ["priv/fonts/Inter.ttf"], images: ["priv/images/logo.png"]},
+        default_font: %{family: "Inter", file: "priv/fonts/Inter.ttf"}
+      }
+
+      write_manifest(dir, manifest)
+
+      assert Sign.build_inputs(dir, manifest) == [
+               "priv/fonts/Inter.ttf",
+               "priv/images/logo.png",
+               "priv/migrations/20260101_create.exs",
+               "priv/mob_plugin.exs"
+             ]
+    end
+
+    test "never lists priv/mob_plugin.sig, even when a NIF's native_dir is priv/",
+         %{dir: dir} do
+      # Hashing the signature into itself would make every signature stale
+      # the moment it is written.
+      write_file(dir, "priv/mob_x_nif.c", "c")
+
+      manifest = %{
+        name: :mob_x,
+        mob_version: "~> 0.6",
+        plugin_spec_version: 1,
+        nifs: [%{module: :mob_x_nif, native_dir: "priv"}]
+      }
+
+      write_manifest(dir, manifest)
+      {priv, pub} = Crypto.generate_keypair()
+      File.write!(Path.join(dir, "priv/mob_plugin.pub"), Base.encode64(pub) <> "\n")
+      :ok = Sign.sign_plugin(dir, priv)
+
+      refute "priv/mob_plugin.sig" in Sign.build_inputs(dir, manifest)
+      assert :ok = Verify.verify_plugin(dir)
     end
 
     test "different file contents produce different hashes", %{dir: dir} do
@@ -158,10 +289,14 @@ defmodule MobDev.Plugin.SignTest do
       manifest = %{name: :mob_x, mob_version: "~> 0.6", plugin_spec_version: 1}
 
       File.write!(Path.join(dir, "priv/mob_plugin.exs"), "# original\n" <> inspect(manifest))
-      [{_, hash_a}] = Sign.compute_file_hashes(dir, manifest)
+
+      {_, hash_a} =
+        List.keyfind(Sign.compute_file_hashes(dir, manifest), "priv/mob_plugin.exs", 0)
 
       File.write!(Path.join(dir, "priv/mob_plugin.exs"), "# tampered\n" <> inspect(manifest))
-      [{_, hash_b}] = Sign.compute_file_hashes(dir, manifest)
+
+      {_, hash_b} =
+        List.keyfind(Sign.compute_file_hashes(dir, manifest), "priv/mob_plugin.exs", 0)
 
       assert hash_a != hash_b
     end
