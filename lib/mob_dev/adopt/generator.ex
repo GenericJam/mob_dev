@@ -130,7 +130,7 @@ defmodule MobDev.Adopt.Generator do
       |> String.replace("_", "_1")
       |> String.replace(".", "_")
 
-    {mob_dep, mob_dev_dep, mob_exs_mob_dir, mob_exs_elixir_lib} = resolve_deps(opts)
+    {mob_dep, mob_dev_dep, _mob_local_dir} = resolve_deps(opts)
 
     %{
       app_name: app_name,
@@ -143,8 +143,6 @@ defmodule MobDev.Adopt.Generator do
       java_path: java_path,
       mob_dep: mob_dep,
       mob_dev_dep: mob_dev_dep,
-      mob_exs_mob_dir: mob_exs_mob_dir,
-      mob_exs_elixir_lib: mob_exs_elixir_lib,
       ndk_version: NdkVersion.recommended(),
       python: Keyword.get(opts, :python, false),
       blank: Keyword.get(opts, :blank, false)
@@ -354,13 +352,16 @@ defmodule MobDev.Adopt.Generator do
 
   # ── Dep resolution ────────────────────────────────────────────────────────────
 
-  @doc false
-  @spec resolve_deps(keyword()) :: {String.t(), String.t(), String.t(), String.t()}
+  @doc """
+  Returns `{mob_dep, mob_dev_dep, mob_local_dir}`. `mob_local_dir` is the
+  absolute `mob` checkout under `--local` (it belongs in the gitignored
+  `mob.local.exs`, never the committed `mob.exs`), otherwise `nil`.
+  """
+  @spec resolve_deps(keyword()) :: {String.t(), String.t(), String.t() | nil}
   def resolve_deps(opts) do
     if opts[:local] do
       mob_dir = resolve_local_path("MOB_DIR", "mob")
       mob_dev_dir = resolve_local_path("MOB_DEV_DIR", "mob_dev")
-      elixir_lib = :code.lib_dir(:elixir) |> to_string() |> Path.dirname() |> Path.expand()
 
       # override: true so the local checkout satisfies the `mob ~> 0.7`
       # requirement that the Hex showcase plugins (mob_camera, mob_themes, …)
@@ -368,22 +369,13 @@ defmodule MobDev.Adopt.Generator do
       # sub-dependency requirement.
       mob_dep = ~s({:mob,     path: "#{mob_dir}", override: true})
       mob_dev_dep = ~s({:mob_dev, path: "#{mob_dev_dir}", only: :dev, runtime: false})
-      mob_exs_mob_dir = inspect(mob_dir)
-      mob_exs_elixir_lib = inspect(elixir_lib)
 
-      {mob_dep, mob_dev_dep, mob_exs_mob_dir, mob_exs_elixir_lib}
+      {mob_dep, mob_dev_dep, mob_dir}
     else
       mob_dep = ~s({:mob,     "~> 0.7"})
       mob_dev_dep = ~s({:mob_dev, "~> 0.6", only: :dev, runtime: false})
-      mob_exs_mob_dir = "Path.join(File.cwd!(), \"deps/mob\")"
 
-      # Default to the running Elixir's actual lib dir — `:code.lib_dir(:elixir)`
-      # returns ".../lib/elixir", so `Path.dirname/1` yields the parent that
-      # holds elixir/, logger/, eex/, etc. that build.sh's stdlib copy needs.
-      mob_exs_elixir_lib =
-        "System.get_env(\"MOB_ELIXIR_LIB\", :code.lib_dir(:elixir) |> to_string() |> Path.dirname())"
-
-      {mob_dep, mob_dev_dep, mob_exs_mob_dir, mob_exs_elixir_lib}
+      {mob_dep, mob_dev_dep, nil}
     end
   end
 

@@ -20,6 +20,7 @@ defmodule MobDev.Plugin.TrustStore do
   reader in `MobDev.Plugin.activated_names/0`.
   """
 
+  alias MobDev.MobExs
   alias MobDev.Plugin.Crypto
 
   @config_file "mob.exs"
@@ -148,20 +149,16 @@ defmodule MobDev.Plugin.TrustStore do
 
   # If the file already declares `config :mob, :trusted_plugins, ...` (any
   # arity, possibly multi-line) we replace the whole stanza; otherwise we
-  # append a fresh line. The map shape is pretty-printed via `inspect/2`
-  # with sorted keys for stable diffs.
+  # add a fresh line above the `mob.local.exs` import, so a local trust map
+  # still overrides the committed one. The map shape is pretty-printed via
+  # `inspect/2` with sorted keys for stable diffs.
   defp replace_or_append_trust_line(source, new_map) do
     new_line = "config :mob, :trusted_plugins, " <> inspect_trust_map(new_map)
 
-    cond do
-      Regex.match?(trust_stanza_pattern(), source) ->
-        Regex.replace(trust_stanza_pattern(), source, fn _ -> new_line end, global: false)
-
-      String.ends_with?(source, "\n") ->
-        source <> new_line <> "\n"
-
-      true ->
-        source <> "\n" <> new_line <> "\n"
+    if Regex.match?(trust_stanza_pattern(), source) do
+      Regex.replace(trust_stanza_pattern(), source, fn _ -> new_line end, global: false)
+    else
+      MobExs.insert_config(source, new_line)
     end
   end
 

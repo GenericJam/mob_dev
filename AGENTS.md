@@ -268,7 +268,8 @@ These look like inverses but aren't. Future agents touching either
 should know:
 
 - **`mix mob.install`** — first-run **project setup**. Downloads the
-  OTP runtime, generates icons, writes `mob.exs`. Per-project, runs
+  OTP runtime, generates icons, writes machine paths to the gitignored
+  `mob.local.exs` (never rewrites the committed `mob.exs`). Per-project, runs
   once. Doesn't touch any device. A later `mix mob.deploy --native` also
   repairs or creates `android/local.properties` when it can detect the SDK;
   fresh worktrees therefore do not need another interactive install just to

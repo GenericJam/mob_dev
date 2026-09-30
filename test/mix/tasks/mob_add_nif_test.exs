@@ -137,6 +137,36 @@ defmodule Mix.Tasks.Mob.AddNifTest do
       # Exactly one occurrence — re-running shouldn't append another row.
       assert content |> String.split("module: :audio_engine") |> length() == 2
     end
+
+    # MOB-286: generated mob.exs files end by importing mob.local.exs.
+    test "result still reads back with mob.local.exs imported last" do
+      mob_exs = """
+      import Config
+
+      config :mob_dev,
+        mob_dir: Path.join(File.cwd!(), "deps/mob")
+
+      config :mob, :plugins, [:mob_camera]
+
+      #{MobDev.MobExs.local_import()}
+      """
+
+      igniter =
+        test_project(files: %{"mob.exs" => mob_exs})
+        |> Igniter.compose_task("mob.add_nif", ["audio_engine"])
+
+      content = igniter.rewrite |> Rewrite.source!("mob.exs") |> Rewrite.Source.get(:content)
+      assert content |> String.trim_trailing() |> String.ends_with?(MobDev.MobExs.local_import())
+
+      dir = Path.join(System.tmp_dir!(), "mob_add_nif_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+      File.write!(Path.join(dir, "mob.exs"), content)
+
+      config = Config.Reader.read!(Path.join(dir, "mob.exs"))
+      assert config[:mob_dev][:static_nifs] == [%{module: :audio_engine, archs: [:all]}]
+      assert config[:mob][:plugins] == [:mob_camera]
+    end
   end
 
   describe "C skeleton (--type c)" do

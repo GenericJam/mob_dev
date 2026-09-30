@@ -6966,7 +6966,7 @@ defmodule MobDev.NativeBuild do
         A mismatched bundled stdlib causes on-device `undef` crashes when the app \
     compiles .exs at runtime (e.g. Ecto migrations: :elixir_quote.validate_quote/1).
         Bundling the toolchain's stdlib instead: #{detected}
-        Update mob.exs `elixir_lib` to silence this warning.
+        Update `elixir_lib` (a machine path, so in mob.local.exs) to silence this warning.
     """
   end
 

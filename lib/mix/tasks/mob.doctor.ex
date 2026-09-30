@@ -560,7 +560,7 @@ defmodule Mix.Tasks.Mob.Doctor do
 
       is_binary(val) and not File.exists?(Path.expand(val)) ->
         {:fail, to_string(key), "path not found: #{val}",
-         "Update mob.exs — the path must exist on this machine"}
+         "Set it in mob.local.exs (gitignored) — the path must exist on this machine"}
 
       true ->
         {:ok, to_string(key), Path.expand(val), nil}

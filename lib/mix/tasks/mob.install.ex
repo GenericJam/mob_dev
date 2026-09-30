@@ -14,8 +14,9 @@ defmodule Mix.Tasks.Mob.Install do
 
   ## What it does
 
-    1. Prompts for machine-specific paths (`mob_dir`, `elixir_lib`) and writes them
-       to `mob.exs` (gitignored) and `android/local.properties`
+    1. Prompts for machine-specific paths (`mob_dir`) and writes them to the
+       gitignored `mob.local.exs` (imported by the committed `mob.exs`) and
+       `android/local.properties`
     2. Downloads and caches the pre-built OTP runtime tarballs for Android and iOS
     3. Writes the Mob logo as a placeholder app icon (if no icon exists yet)
 
@@ -37,10 +38,12 @@ defmodule Mix.Tasks.Mob.Install do
 
   `mix mob.install` does three things that would otherwise require manual steps:
 
-  **1. Path configuration** — reads `mob.exs`, detects sensible defaults, prompts
-  for missing values, and writes them back. Equivalent to:
+  **1. Path configuration** — reads `mob.exs` (plus the `mob.local.exs` it
+  imports), detects sensible defaults, prompts for missing values, and writes
+  them to `mob.local.exs`. `mob.exs` is project config you commit; only the
+  import line is added to it if missing. Equivalent to:
 
-      # mob.exs (gitignored, machine-specific)
+      # mob.local.exs (gitignored, machine-specific)
       config :mob_dev,
         mob_dir: "/Users/me/code/mob"
 
@@ -197,7 +200,9 @@ defmodule Mix.Tasks.Mob.Install do
   # elixir_lib is no longer prompted — it's always auto-detected from the running BEAM.
   @required_keys [:mob_dir]
 
-  defp configure_paths(project_dir) do
+  @doc false
+  @spec configure_paths(Path.t()) :: :ok | nil
+  def configure_paths(project_dir) do
     mob_exs = Path.join(project_dir, "mob.exs")
 
     cfg =
@@ -218,8 +223,8 @@ defmodule Mix.Tasks.Mob.Install do
 
       Mix.shell().info("""
 
-      Configure your local build paths in mob.exs.
-      These are machine-specific and gitignored.
+      Configure your local build paths in mob.local.exs.
+      These are machine-specific and gitignored; mob.exs keeps your project config.
       Press Enter to accept a detected value [ ], or type a new path.
       """)
 
@@ -228,13 +233,12 @@ defmodule Mix.Tasks.Mob.Install do
           {key, prompt_path(key, defaults[key])}
         end)
 
-      new_cfg = Keyword.merge(cfg, updates)
-      write_mob_exs(mob_exs, new_cfg)
-      write_local_properties(project_dir, new_cfg)
+      MobDev.MobExs.put_local_config(project_dir, updates)
+      write_local_properties(project_dir, Keyword.merge(cfg, updates))
 
-      Mix.shell().info([:green, "* mob.exs configured", :reset])
+      Mix.shell().info([:green, "* mob.local.exs configured", :reset])
     else
-      # mob.exs already has all required paths (e.g. generated with --local).
+      # mob.exs (with any mob.local.exs overrides) already has every required path.
       # Still sync local.properties if it has placeholder values.
       write_local_properties(project_dir, cfg)
     end
@@ -280,17 +284,6 @@ defmodule Mix.Tasks.Mob.Install do
 
   defp prompt_label(:mob_dir), do: "mob library path"
   defp prompt_label(:elixir_lib), do: "Elixir lib path"
-
-  defp write_mob_exs(path, cfg) do
-    content = """
-    import Config
-
-    config :mob_dev,
-      mob_dir: #{inspect(cfg[:mob_dir])}
-    """
-
-    File.write!(path, content)
-  end
 
   @doc false
   @spec write_local_properties(String.t(), keyword()) :: :ok | nil

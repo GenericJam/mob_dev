@@ -59,7 +59,8 @@ defmodule Mix.Tasks.Mob.Adopt.Finalize do
     Mob installed.
 
     #{flavour_line}#{host_line}
-    1. Edit mob.exs with your local paths (mob_dir, elixir_lib).
+    1. Commit mob.exs (project config). Put machine-specific overrides
+       (e.g. a custom mob_dir) in mob.local.exs, which is gitignored.
     2. Edit android/local.properties with your Android SDK path.
     3. First-time setup (icon generation, OTP runtime, signing):
 

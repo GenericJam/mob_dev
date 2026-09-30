@@ -65,11 +65,34 @@ defmodule Mix.Tasks.Mob.Adopt.MobExsTest do
       assert content =~ "elixir_lib:"
     end
 
+    test "mob.exs ends by importing mob.local.exs" do
+      igniter =
+        blessed_project()
+        |> Igniter.compose_task("mob.adopt.mob_exs")
+
+      content = igniter.rewrite |> Rewrite.source!("mob.exs") |> Rewrite.Source.get(:content)
+
+      assert content |> String.trim_trailing() |> String.ends_with?(MobDev.MobExs.local_import())
+    end
+
+    test "an existing mob.exs keeps its config and gains the mob.local.exs import" do
+      existing = "import Config\n\nconfig :mob, :plugins, [:mob_camera]\n"
+
+      igniter =
+        blessed_project(%{"mob.exs" => existing})
+        |> Igniter.compose_task("mob.adopt.mob_exs")
+
+      content = igniter.rewrite |> Rewrite.source!("mob.exs") |> Rewrite.Source.get(:content)
+
+      assert content =~ "config :mob, :plugins, [:mob_camera]"
+      assert content =~ MobDev.MobExs.local_import()
+    end
+
     # `igniter.assigns[:test_files]` is the Igniter test struct, not a
     # Phoenix LiveView socket — `:plug_test` opts these out of the
     # `AvoidSocketAssignsInTest` LiveView check.
     @tag :plug_test
-    test "patches .gitignore to ignore mob.exs" do
+    test "gitignores mob.local.exs, not the committed mob.exs" do
       igniter =
         blessed_project(%{".gitignore" => "/_build\n/deps\n"})
         |> Igniter.compose_task("mob.adopt.mob_exs")
@@ -78,8 +101,29 @@ defmodule Mix.Tasks.Mob.Adopt.MobExsTest do
       # Dotfiles are filtered out by the post-apply `**/*.*` include_glob
       # in `Igniter.Test.simulate_write/1`, so they only live in
       # `assigns[:test_files]` after apply. Read from there.
-      content = igniter.assigns[:test_files][".gitignore"]
-      assert content =~ "mob.exs"
+      lines =
+        igniter.assigns[:test_files][".gitignore"]
+        |> String.split("\n")
+        |> Enum.map(&String.trim/1)
+
+      assert "mob.local.exs" in lines
+      refute "mob.exs" in lines
+    end
+
+    @tag :plug_test
+    test "creates a .gitignore ignoring only mob.local.exs when there is none" do
+      igniter =
+        blessed_project()
+        |> Igniter.compose_task("mob.adopt.mob_exs")
+        |> apply_igniter!()
+
+      lines =
+        igniter.assigns[:test_files][".gitignore"]
+        |> String.split("\n")
+        |> Enum.map(&String.trim/1)
+
+      assert "mob.local.exs" in lines
+      refute "mob.exs" in lines
     end
 
     @tag :plug_test

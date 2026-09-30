@@ -103,6 +103,37 @@ defmodule Mix.Tasks.Mob.DeployBeamFlagsTest do
       updated = Deploy.update_beam_flags_in_config("config :mob_dev,\n  x: 1\n", "-S 2:2 -A 4")
       assert updated =~ ~s(beam_flags: "-S 2:2 -A 4")
     end
+
+    # MOB-286: mob.local.exs overrides must still win after the flags are saved.
+    test "adds beam_flags above a trailing mob.local.exs import" do
+      dir = Path.join(System.tmp_dir!(), "mob_beam_flags_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      File.write!(
+        Path.join(dir, "mob.local.exs"),
+        ~s(import Config\nconfig :mob_dev, mob_dir: "/local"\n)
+      )
+
+      content = """
+      import Config
+
+      config :mob_dev, mob_dir: "/committed"
+      config :mob, :plugins, [:mob_camera]
+
+      #{MobDev.MobExs.local_import()}
+      """
+
+      updated = Deploy.update_beam_flags_in_config(content, "-S 2:2")
+      File.write!(Path.join(dir, "mob.exs"), updated)
+
+      assert updated |> String.trim_trailing() |> String.ends_with?(MobDev.MobExs.local_import())
+
+      config = Config.Reader.read!(Path.join(dir, "mob.exs"))
+      assert config[:mob_dev][:beam_flags] == "-S 2:2"
+      assert config[:mob_dev][:mob_dir] == "/local"
+      assert config[:mob][:plugins] == [:mob_camera]
+    end
   end
 
   # ── format_summary/4 — deploy report rendering ────────────────────────────────
