@@ -78,6 +78,36 @@ defmodule MobDev.Plugin.Manifest do
     File.exists?(Path.join(plugin_dir, @manifest_path))
   end
 
+  @doc """
+  The language of a `nifs:` entry. Defaults to `:c` so existing (haptic)
+  plugins are unaffected; `lang: :zig` etc. opt into other compile paths.
+  """
+  @spec nif_lang(map()) :: atom()
+  def nif_lang(nif), do: nif[:lang] || :c
+
+  @doc """
+  Whether the native build compiles this `nifs:` entry for `platform`
+  (`:android`, `:ios`, or `:all`) — the one platform rule every NIF consumer
+  shares: the build args, the driver_tab, and the MOB-281 native-build record.
+
+  An entry with no `:platform` is compiled on every platform; one tagged
+  `:ios`/`:android` only on that platform. `lang: :objc` is implicitly
+  Apple-only: Objective-C has no Android runtime, so an objc NIF authored
+  without an explicit `platform: :ios` must still be excluded from the Android
+  build args + driver_tab (otherwise zig tries to compile a `.m` source Android
+  cannot build).
+  """
+  @spec nif_for_platform?(map(), :android | :ios | :all) :: boolean()
+  def nif_for_platform?(_nif, :all), do: true
+
+  def nif_for_platform?(nif, platform) do
+    if nif_lang(nif) == :objc and platform != :ios do
+      false
+    else
+      nif[:platform] in [nil, platform]
+    end
+  end
+
   defp eval(path) do
     case Code.eval_file(path) do
       {map, _bindings} when is_map(map) ->

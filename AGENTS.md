@@ -221,6 +221,16 @@ narrowing functions). Don't make them private:
 - `Provision.diagnose_xcodebuild_failure/1`
 - `Mix.Tasks.Mob.Deploy.failure_message/3` (which bucket makes a deploy exit non-zero)
 - `Uninstaller.resolve_apps_for_device/3` (which id gets uninstalled, per platform)
+- `Mix.Tasks.Mob.Doctor.__inactive_nif_plugins_check__/2`, and the documented
+  pure kernels of `MobDev.Plugin.NifActivation` (`inactive_nif_plugins/3`,
+  `nif_plugins_by_platform/2`, `drift/3`, `parse_record/1`, `node_platforms/2`,
+  `record_native_build/3`) — the MOB-281 inactive-NIF-plugin and
+  stale-native-build warnings
+- `HotPush.runtime_lib_names/0` (which deps ship to the device — the push set,
+  and the scope of the MOB-281 inactive-plugin warning) and
+  `Plugin.Manifest.nif_for_platform?/2` (the one NIF platform rule — lives in
+  `Manifest`, not `Merge`, because every public `Merge` function must be a
+  classified gatherer; see `conflict_surface_test.exs`)
 
 If you make any of these private, every downstream test breaks loudly — but
 you'll lose the ability to evolve the parsers safely.

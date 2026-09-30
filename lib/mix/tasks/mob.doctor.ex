@@ -18,7 +18,8 @@ defmodule Mix.Tasks.Mob.Doctor do
 
     1. **Tools**   — adb, xcrun (macOS), Java, Android SDK, iOS build tools
     2. **Project** — mob.exs present, required keys set, paths valid
-    3. **Build**   — Elixir deps fetched, project compiled, native build tools present
+    3. **Build**   — Elixir deps fetched, project compiled, native build tools present,
+       installed plugins that ship NIFs but aren't activated
     4. **OTP cache** — pre-built runtimes downloaded and structurally valid
     5. **Devices** — authorized Android devices and booted iOS simulators
 
@@ -589,6 +590,7 @@ defmodule Mix.Tasks.Mob.Doctor do
         check_compiled(),
         check_driver_tab(),
         check_plugin_build_options(),
+        check_inactive_nif_plugins(),
         check_component_event_jni(),
         check_sheet_dismiss_wire_shape()
       ])
@@ -767,6 +769,38 @@ defmodule Mix.Tasks.Mob.Doctor do
   @spec __missing_plugin_options__(String.t(), [String.t()]) :: [String.t()]
   def __missing_plugin_options__(content, required) do
     Enum.reject(required, &String.contains?(content, "\"#{&1}\""))
+  end
+
+  # ── Installed-but-inactive NIF plugins (MOB-281) ─────────────────────────────
+  #
+  # Same check `mix mob.deploy --native` prints: a dep shipping a NIF that isn't
+  # in `config :mob, :plugins` never gets its NIF built in, and its on_load
+  # tolerates that — the first signal is :nif_not_loaded at the first call.
+
+  defp check_inactive_nif_plugins do
+    activated = MobDev.Plugin.NifActivation.activated()
+
+    activated
+    |> MobDev.Plugin.NifActivation.inactive_nif_plugins()
+    |> __inactive_nif_plugins_check__(activated)
+  end
+
+  @doc false
+  # Pure kernel: the doctor row for the inactive NIF plugins (none → no row).
+  # Public for tests.
+  @spec __inactive_nif_plugins_check__([atom()], [atom()]) :: [tuple()]
+  def __inactive_nif_plugins_check__([], _activated), do: []
+
+  def __inactive_nif_plugins_check__(inactive, activated) do
+    names = Enum.map_join(inactive, ", ", &to_string/1)
+    config_line = MobDev.Plugin.NifActivation.config_line(activated, inactive)
+
+    [
+      {:warn, "plugin activation",
+       "installed but not activated, though they ship NIFs: #{names} — their " <>
+         "native code is not built in, so their NIF calls fail with :nif_not_loaded",
+       "Set in mob.exs:  #{config_line}  — then run:  mix mob.deploy --native"}
+    ]
   end
 
   # ── Driver_tab manifest drift ────────────────────────────────────────────────

@@ -51,6 +51,23 @@ defmodule MobDev.Plugin.VerifyTest do
       assert {:error, :corrupt} = Verify.load_envelope(dir)
     end
 
+    test "returns :corrupt when a v2 file_hashes entry isn't a {path, hash} pair", %{dir: dir} do
+      # These used to decode fine and then raise FunctionClauseError /
+      # ArgumentError in verify_plugin/1's file check, instead of refusing.
+      for bad <- [[:bogus], [{"priv/mob_plugin.exs"}], [{123, <<0>>}], [{"a", :not_a_hash}]] do
+        bytes =
+          Crypto.canonical_encode(%{
+            signature: :binary.copy(<<0>>, 64),
+            file_hashes: bad,
+            envelope_version: 2
+          })
+
+        File.write!(Sign.signature_path(dir), bytes)
+        assert {:error, :corrupt} = Verify.load_envelope(dir), inspect(bad)
+        assert {:error, :invalid_signature} = Verify.load_verified(dir), inspect(bad)
+      end
+    end
+
     test "refuses a v1 envelope with :envelope_v1_unsupported so the caller can print a re-sign hint",
          %{dir: dir} do
       # A v1 envelope on disk carried only {signature, envelope_version: 1}.

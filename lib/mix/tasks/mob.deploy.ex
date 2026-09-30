@@ -19,6 +19,12 @@ defmodule Mix.Tasks.Mob.Deploy do
 
       mix mob.deploy --native
 
+  Plugin NIFs only reach the device through a native build. `--native` warns
+  about deps that ship a NIF but aren't in `config :mob, :plugins`, and records
+  which NIF plugins it built in; a fast deploy warns when a NIF plugin was
+  activated since that record (see `MobDev.Plugin.NifActivation`). Both are
+  warnings — otherwise the first sign is `:nif_not_loaded` at the first call.
+
   Device selection is resolved once before any build or push starts. With no
   selection flag, one emulator or simulator is selected automatically; physical
   devices always require an explicit `--device` or `--all-physical`. The
@@ -335,6 +341,11 @@ defmodule Mix.Tasks.Mob.Deploy do
       emit_json(opts, [], [], [], "Native build failed")
       Mix.raise("Native build failed")
     end
+
+    # A BEAM-only deploy can't add a NIF to the installed binary. If a NIF
+    # plugin was activated since the last native build, say so now rather than
+    # leave the user a :nif_not_loaded at first call (MOB-281).
+    unless native, do: MobDev.Plugin.NifActivation.warn_stale_build(platforms)
 
     {deployed, failed, skipped} =
       MobDev.Deployer.deploy_all(

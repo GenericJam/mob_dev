@@ -47,6 +47,20 @@ defmodule Mix.Tasks.Mob.DoctorTest do
     end
   end
 
+  describe "__inactive_nif_plugins_check__/2 (MOB-281)" do
+    test "no row when every NIF plugin is activated" do
+      assert Mix.Tasks.Mob.Doctor.__inactive_nif_plugins_check__([], [:mob_scanner]) == []
+    end
+
+    test "warns, naming the plugin and the config line to set" do
+      assert [{:warn, "plugin activation", detail, fix}] =
+               Mix.Tasks.Mob.Doctor.__inactive_nif_plugins_check__([:mob_scanner], [:mob_camera])
+
+      assert detail =~ "not activated, though they ship NIFs: mob_scanner"
+      assert fix =~ "config :mob, :plugins, [:mob_camera, :mob_scanner]"
+    end
+  end
+
   describe "__missing_plugin_options__/2 (pre-plugin build.zig detection)" do
     # The real declaration shape every template uses.
     @declared """

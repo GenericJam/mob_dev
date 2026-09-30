@@ -186,7 +186,7 @@ defmodule MobDev.HotPushTest do
     # regression inside it stayed green. Driven here against mob_dev's own
     # project, which has both real runtime deps and only: :dev ones.
     test "keeps runtime deps and excludes dev-only ones" do
-      libs = MobDev.HotPush.__runtime_lib_names__()
+      libs = MobDev.HotPush.runtime_lib_names()
 
       assert MapSet.member?(libs, "mob_dev")
 
@@ -203,7 +203,7 @@ defmodule MobDev.HotPushTest do
       # documented idiom for opting a build-time dep back into the runtime
       # application list — is silently never pushed. The app then boots and
       # dies with undef on first use.
-      libs = MobDev.HotPush.__runtime_lib_names__()
+      libs = MobDev.HotPush.runtime_lib_names()
 
       extra =
         Mix.Project.get().application()

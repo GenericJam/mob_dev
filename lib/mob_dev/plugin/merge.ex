@@ -14,6 +14,8 @@ defmodule MobDev.Plugin.Merge do
   is the testable transform once the manifests are in hand.
   """
 
+  alias MobDev.Plugin.Manifest
+
   @type plugin :: {Path.t(), map() | nil}
 
   @doc """
@@ -175,9 +177,9 @@ defmodule MobDev.Plugin.Merge do
         is_map(nif),
         name = nif[:module],
         is_atom(name),
-        nif_lang(nif) in [:c, :objc],
-        nif_for_platform?(nif, platform) do
-      ext = if nif_lang(nif) == :objc, do: "m", else: "c"
+        Manifest.nif_lang(nif) in [:c, :objc],
+        Manifest.nif_for_platform?(nif, platform) do
+      ext = if Manifest.nif_lang(nif) == :objc, do: "m", else: "c"
       native_dir = nif[:native_dir] || "priv/native/jni"
       Path.join([dir, native_dir, "#{name}.#{ext}"])
     end
@@ -207,31 +209,10 @@ defmodule MobDev.Plugin.Merge do
         is_map(nif),
         name = nif[:module],
         is_atom(name),
-        nif_lang(nif) == lang,
-        nif_for_platform?(nif, platform) do
+        Manifest.nif_lang(nif) == lang,
+        Manifest.nif_for_platform?(nif, platform) do
       native_dir = nif[:native_dir] || "priv/native/jni"
       Path.join([dir, native_dir, "#{name}.#{ext}"])
-    end
-  end
-
-  # A NIF manifest entry defaults to C so existing (haptic) plugins are
-  # unaffected; `lang: :zig` opts into the zig compile path.
-  defp nif_lang(nif), do: nif[:lang] || :c
-
-  # An entry with no `:platform` is compiled on every platform; one tagged
-  # `:ios`/`:android` only on that platform. `:all` keeps everything.
-  #
-  # `lang: :objc` is implicitly Apple-only: Objective-C has no Android runtime,
-  # so an objc NIF authored without an explicit `platform: :ios` must still be
-  # excluded from the Android build args + driver_tab (otherwise zig tries to
-  # compile a `.m` source Android cannot build).
-  defp nif_for_platform?(_nif, :all), do: true
-
-  defp nif_for_platform?(nif, platform) do
-    if nif_lang(nif) == :objc and platform != :ios do
-      false
-    else
-      nif[:platform] in [nil, platform]
     end
   end
 
@@ -257,9 +238,9 @@ defmodule MobDev.Plugin.Merge do
     for {dir, manifest} <- with_manifests(plugins),
         nif <- Map.get(manifest, :nifs, []),
         is_map(nif),
-        nif_lang(nif) == :cpp_archive,
+        Manifest.nif_lang(nif) == :cpp_archive,
         is_atom(nif[:module]),
-        nif_for_platform?(nif, platform) do
+        Manifest.nif_for_platform?(nif, platform) do
       %{
         module: nif[:module],
         sources: resolve_paths(dir, List.wrap(nif[:sources])),

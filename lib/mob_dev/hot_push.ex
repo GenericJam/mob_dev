@@ -181,15 +181,15 @@ defmodule MobDev.HotPush do
     Mix.Project.compile_path()
   end
 
-  @doc false
-  # Test seam. runtime_lib_names/0 reads Mix.Project.config() and is the
-  # function that actually decides what gets pushed, but being private it had
-  # no coverage — the tests all hand-built the MapSet it produces and so could
-  # not catch a regression in it. Exposed so a fixture project can drive it.
-  @spec __runtime_lib_names__() :: MapSet.t(String.t())
-  def __runtime_lib_names__, do: runtime_lib_names()
-
-  defp runtime_lib_names do
+  @doc """
+  Names of the libs that ship to the device: the project's runtime deps and
+  their transitive applications, minus deps marked `only: :dev` or
+  `runtime: false` (unless re-declared in `extra_applications`). Decides what
+  gets pushed, and which deps `MobDev.Plugin.NifActivation` treats as device
+  plugins.
+  """
+  @spec runtime_lib_names() :: MapSet.t(String.t())
+  def runtime_lib_names do
     config = Mix.Project.config()
     project_app = to_string(config[:app])
 

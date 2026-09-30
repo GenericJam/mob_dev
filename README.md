@@ -881,6 +881,21 @@ mix mob.deploy          # push changed BEAMs, restart
 mix mob.deploy --native # full native rebuild + install
 ```
 
+Plugin NIFs only reach the device through a native build, and a plugin's
+`on_load` tolerates a missing NIF — so a mistake here shows up only as
+`{:nif_not_loaded, ...}` at the first call. Both deploy paths warn (never
+fail) about the two ways that happens:
+
+- `mix mob.deploy --native` (and `mix mob.doctor`) name every device-runtime
+  dep (not `only: :dev` / `runtime: false`) that ships a `priv/mob_plugin.exs`
+  declaring `nifs:` but isn't in `config :mob, :plugins`, with the exact
+  `config` line to set.
+- Each successful native build records, per platform, which activated plugins
+  it compiled NIFs for (`mob_native_plugins.txt` under `Mix.Project.build_path/0`).
+  A BEAM-only `mix mob.deploy` or `mix mob.push` names any NIF plugin activated
+  since — "installed app was built without it — run `mix mob.deploy --native`" —
+  or, when there is no record for that platform yet, says it can't tell.
+
 ## iOS push notifications (APNs)
 
 For APNs push tokens to be delivered, the app binary must have `aps-environment`
