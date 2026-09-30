@@ -1859,7 +1859,7 @@ defmodule MobDev.NativeBuildTest do
   # find it next to the running binary. No-op when the cached bundle is
   # CPU-only (no metallib in the staged tarball).
 
-  describe "maybe_bundle_mlx_metallib/1" do
+  describe "maybe_bundle_mlx_metallib/2" do
     setup do
       tmp =
         Path.join(System.tmp_dir!(), "mob_metallib_test_#{System.unique_integer([:positive])}")
@@ -1884,7 +1884,7 @@ defmodule MobDev.NativeBuildTest do
 
       stage_mlx_cache(tmp, with_metallib: true)
 
-      assert :ok = NativeBuild.maybe_bundle_mlx_metallib(app_path)
+      assert :ok = NativeBuild.maybe_bundle_mlx_metallib(app_path, true)
       copied = Path.join(app_path, "mlx.metallib")
       assert File.regular?(copied)
       assert File.read!(copied) == "stub-metallib-bytes"
@@ -1896,7 +1896,20 @@ defmodule MobDev.NativeBuildTest do
 
       stage_mlx_cache(tmp, with_metallib: false)
 
-      assert :ok = NativeBuild.maybe_bundle_mlx_metallib(app_path)
+      assert :ok = NativeBuild.maybe_bundle_mlx_metallib(app_path, true)
+      refute File.exists?(Path.join(app_path, "mlx.metallib"))
+    end
+
+    test "no-op without emlx: never reads the MLX cache, even one that ships a metallib",
+         %{tmp: tmp} do
+      # MOB-282: apps without emlx must not trigger an MLX download. A staged
+      # cache with a metallib would be copied if ensure_ios_device/0 ran.
+      app_path = Path.join(tmp, "Test.app")
+      File.mkdir_p!(app_path)
+
+      stage_mlx_cache(tmp, with_metallib: true)
+
+      assert :ok = NativeBuild.maybe_bundle_mlx_metallib(app_path, false)
       refute File.exists?(Path.join(app_path, "mlx.metallib"))
     end
   end

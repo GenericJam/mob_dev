@@ -2,6 +2,12 @@
 
 ### Fixed
 
+- **iOS physical-device native builds of apps without `emlx` no longer try to
+  download MLX** (MOB-282). Bundling `mlx.metallib` into the `.app` called
+  `MLXDownloader.ensure_ios_device/0` unconditionally, printing
+  `Downloading MLX 0.25.1 (ios_device)...` and a curl 404 on every build. The
+  copy is now gated on `emlx` being a project dep, like the MLX link step.
+
 - **`mix mob.deploy --native --device <id>` can no longer report success after
   skipping the named device's native build** (MOB-225). The selected device now
   makes its platform a required build target even without a redundant
