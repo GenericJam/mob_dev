@@ -52,6 +52,16 @@
   read to close under an overall 2 s deadline, and the LAN scan reads
   `arp -an`, skipping reverse-DNS lookups that took ~15 s per scan on a slow
   resolver.
+- **`mix mob.security_scan --strict` no longer reports HIGH
+  `MOB-DRIFT-ios_*-exqlite_beam` for the exqlite an iOS native build installs**
+  (MOB-289). iOS tarballs don't ship exqlite (manifest `nil`); the native build
+  installs the project's own exqlite into the cached OTP dir, and the
+  `:hex_deps` layer audits it. When the cached version equals the exqlite in the
+  scanned project's `mix.lock`, the scan now shows it as
+  `exqlite <vsn> (deploy-installed, not tracked)` instead of flagging it. If the
+  project has no exqlite or locks a different version, the cached copy is still
+  HIGH drift, and the finding now says it is not the project's exqlite.
+  Android exqlite and all other fields are checked as before.
 
 - **`mix mob.deploy --native --device <id>` can no longer report success after
   skipping the named device's native build** (MOB-225). The selected device now
