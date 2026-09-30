@@ -1,6 +1,16 @@
-## [Unreleased]
+## [0.7.2] - 2026-09-30
 
 ### Fixed
+
+- **Android `mix mob.deploy` refuses a device whose OTP runtime is only
+  half-installed** (MOB-183). The per-app runtime probe checked for ERTS
+  (`otp/erts-*/bin/erl_child_setup`) but not the release bootfile
+  (`otp/releases/*/start_clean.boot`), so a device installed via `adb install`
+  without `mix mob.deploy --native` (or an interrupted native deploy) showed
+  "Deployed / Apps restarted" and then crashed at boot with
+  `cannot get bootfile`. The probe now checks both and prints which one is
+  missing before pushing; run `mix mob.deploy --native` to fix the device. See
+  `decisions/2026-09-11-android-runtime-check-covers-bootfile.md`.
 
 - **Plugin manifests no longer warn "unknown key(s) [:description]"**
   (MOB-291). The unknown-top-level-key warning in
