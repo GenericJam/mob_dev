@@ -133,9 +133,8 @@
   **v1 envelopes are refused** — accepting them silently reopens the
   bug. The error is a distinguished `:envelope_v1_unsupported` reason
   and the `SignatureGate` message tells the author to re-sign with a
-  mob_dev that produces envelope v2 (`mix mob.plugin.sign`). Every
-  plugin signed with a mob_dev that predates this change must be
-  re-signed on the consumer's next build.
+  mob_dev that produces envelope v2 (`mix mob.plugin.sign`). The one
+  exception is the MOB-287 transition rule, described in the next entry.
 
   Follow-up tickets on file for the walk to data-only manifests
   (safe-by-construction): **MOB-185** (`mix mob.plugin.lint`),
@@ -143,6 +142,31 @@
   **MOB-187** (static JSON/TOML manifest at 1.0).
 
   See `decisions/2026-09-11-plugin-envelope-v2-verify-before-eval.md`.
+
+- **Published first-party plugins keep building during the v2 transition**
+  (MOB-287). Every first-party plugin on Hex (for example mob_scanner 0.1.3
+  and mob_camera 0.1.8) is v1-signed, because plugin CI signs with the Hex
+  mob_dev. Refusing all v1 envelopes would therefore break the next native
+  build of every app that activates one. For this release window a v1
+  envelope is accepted only when all of these hold:
+  - Mix resolves the plugin through Hex, and `mix.lock` pins it as a Hex
+    package from public `hexpm`.
+  - The plugin directory is that package's checkout in `deps/`. Path and git
+    deps don't qualify, including a path override that points into `deps/`.
+  - The fingerprint of its `priv/mob_plugin.pub` is trusted for that name in
+    `config :mob, :trusted_plugins`.
+  - Its v1 signature verifies.
+
+  The first three checks run before the manifest is evaluated, so a plugin
+  that fails them never has its `priv/mob_plugin.exs` run. Any other v1
+  envelope is still refused, and the `SignatureGate` error now states the
+  rule. Each plugin accepted this way prints one line per build:
+  `<plugin> <vsn> uses a legacy v1 signature, accepted during the v2
+  transition (MOB-287); it will be refused once re-signed releases ship`.
+  `mix mob.plugin.sign` still produces v2 only. The rule lives in
+  `MobDev.Plugin.V1Transition` and will be removed once every first-party
+  plugin has been republished with a v2 signature. See
+  `decisions/2026-09-30-v1-envelope-transition.md`.
 
 - **Play upload keystore no longer bakes a trailing newline into the stored
   password** (MOB-71). `Mix.shell().prompt/1` returns the whole input line

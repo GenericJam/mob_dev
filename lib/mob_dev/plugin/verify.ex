@@ -29,8 +29,11 @@ defmodule MobDev.Plugin.Verify do
     envelope is malformed.
   - `:envelope_v1_unsupported` — a legacy v1 envelope was found. v1
     verification required the eval'd manifest to rebuild the payload,
-    which is the very bug we are closing. Author must re-sign with
-    `mix mob.plugin.sign` on mob_dev 0.7.2 or later.
+    which is the very bug we are closing. `verify_plugin/1` always
+    reports it; `load_verified/2` hands it to
+    `MobDev.Plugin.V1Transition`, which accepts it only under the
+    MOB-287 transition rule and otherwise keeps this refusal. Authors
+    re-sign with `mix mob.plugin.sign` on mob_dev 0.7.2 or later.
 
   Trust (mapping a verified public key to "the host operator approved
   it") lives in `TrustStore` and is layered on top of this module.
@@ -209,6 +212,14 @@ defmodule MobDev.Plugin.Verify do
     OTHER failure (`:invalid_signature`, `:missing_pubkey`,
     `:envelope_v1_unsupported`) still refuses the eval — those are
     the tamper / mis-key cases, not the "unsigned during dev" case.
+  - `:scms`, `:lock`, `:deps_path`, `:trust_map` — provenance inputs for the
+    transitional v1 rule (see `MobDev.Plugin.V1Transition`); default to
+    the current Mix project's values.
+
+  A v1 envelope is handed to `MobDev.Plugin.V1Transition.load/2`, which
+  evaluates the manifest only for a `hexpm` Hex dependency whose public key
+  is trusted, then verifies the v1 signature (MOB-287). Every other v1
+  envelope is refused unevaluated with `:envelope_v1_unsupported`.
 
   For plugins with no `priv/mob_plugin.exs` at all (tier-0 plugins),
   returns `{:ok, nil}` without requiring a signature — the
@@ -234,6 +245,9 @@ defmodule MobDev.Plugin.Verify do
             # pubkey / v1 envelope still refuse — they're the actual
             # attack signals, not the "haven't signed yet during dev" one.
             Manifest.load(plugin_dir)
+
+          {:error, :envelope_v1_unsupported} ->
+            MobDev.Plugin.V1Transition.load(plugin_dir, opts)
 
           {:error, _} = err ->
             err

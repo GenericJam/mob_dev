@@ -1,7 +1,7 @@
 # Plugin envelope v2 — verify signature before eval
 
 - Date: 2026-09-11
-- Status: accepted
+- Status: accepted; point 5 amended by [2026-09-30-v1-envelope-transition.md](2026-09-30-v1-envelope-transition.md) (MOB-287)
 
 ## Context
 
@@ -55,6 +55,18 @@ Move to envelope v2, which flips the trust chain end-to-end:
    the CVE. The refusal is a distinguished `:envelope_v1_unsupported`
    error with an actionable re-sign hint.
 
+   **Correction (2026-09-30, MOB-287):** this point is no longer unconditional.
+   It assumed first-party plugins would be re-signed before any release that
+   refuses v1. They could not be: plugin CI signs with the Hex mob_dev, which
+   predates this change, so every published first-party plugin is v1-signed.
+   For one transition window, a v1 envelope is accepted when Mix resolves the
+   plugin through Hex, mix.lock pins it as a `hexpm` package in the deps
+   directory, **and** its
+   `priv/mob_plugin.pub` fingerprint is trusted in `:trusted_plugins`. Both
+   checks run before any eval. The v1 signature must then verify against the
+   evaluated manifest. Every other v1 envelope still gets this refusal. See
+   [2026-09-30-v1-envelope-transition.md](2026-09-30-v1-envelope-transition.md).
+
 ## Consequences
 
 - **Breaking change for signed plugins.** Every plugin published with a
@@ -64,6 +76,11 @@ Move to envelope v2, which flips the trust chain end-to-end:
   of the 0.7.2 release; third-party authors will see the
   `:envelope_v1_unsupported` error and follow the re-sign hint in the
   message. See [`MOB_PLUGIN_SECURITY.md`](../MOB_PLUGIN_SECURITY.md).
+
+  **Correction (2026-09-30, MOB-287):** "First-party plugins get re-signed as
+  part of the 0.7.2 release" did not happen, and "there is no fallback path" is
+  suspended for one release window. See point 5's correction and
+  [2026-09-30-v1-envelope-transition.md](2026-09-30-v1-envelope-transition.md).
 - **Consumer paths that eval a manifest** now go through
   `MobDev.Plugin.Verify.load_verified/1` in the four places that
   matter to build- or activation-time: `MobDev.Plugin.activated/0`,
