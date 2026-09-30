@@ -20,15 +20,18 @@ defmodule MobDev.Plugin.Manifest do
   # breaking schema change; old plugins keep validating against old specs.
   @supported_spec_versions [1, 2]
 
-  # Every top-level key either spec version 1 or 2 recognizes — see the
-  # check_* pipeline in validate/1 below, one clause per key here. Keep this
-  # in lockstep with that pipeline: adding a check_* clause for a new key
-  # means adding the key here too, or check_unknown_keys/2 will warn on it.
+  # Every top-level key either spec version 1 or 2 recognizes. Most have a
+  # check_* clause in validate/1 below: adding one for a new key means adding
+  # the key here too, or warn_unknown_keys/1 will warn on it. The rest have
+  # nothing here to validate: `description` (MOB_PLUGINS.md; carried into the
+  # `mix mob.plugins` report rows), `version` (printed by `mix
+  # mob.plugin.trust`), `tags` (mob's `~MOB` sigil), `host_config_keys` (the
+  # generator host-config audit) and `setup` (MOB_PLUGINS.md; no consumer yet).
   @known_keys ~w(
     name mob_version plugin_spec_version permissions android ios nifs
     nifs_generator screens screens_generator migrations assets default_font
     lifecycle settings notifications ui_components ui_components_generator
-    host_requirements
+    host_requirements description version tags host_config_keys setup
   )a
 
   @native_sections [

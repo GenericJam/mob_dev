@@ -160,6 +160,21 @@ defmodule MobDev.Plugin.ManifestTest do
       refute log =~ "unknown key"
     end
 
+    test "does not warn on recognized keys that validate/1 has no check for" do
+      m =
+        Map.merge(@valid, %{
+          description: "Haptics",
+          version: "0.1.0",
+          tags: ~w(MishkaChip),
+          host_config_keys: [:ash_domains],
+          setup: []
+        })
+
+      log = capture_own_log(fn -> assert {:ok, ^m} = Manifest.validate(m) end)
+
+      refute log =~ "unknown key"
+    end
+
     test "reports every problem at once, not just the first" do
       assert {:error, errs} = Manifest.validate(%{plugin_spec_version: "nope"})
       assert [_, _, _] = errs
