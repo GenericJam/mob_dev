@@ -12,7 +12,10 @@ defmodule Mix.Tasks.Mob.Plugin.Keygen do
     32-byte public key.
 
   The public key file ships with the plugin (committed to source
-  control); the private key never leaves the author's machine.
+  control). The private key never goes into the repository: keep it on
+  the author's machine and, for the release workflow `mix mob.new_plugin`
+  generates, store its exact file contents as the `MOB_PLUGIN_SIGN_KEY`
+  repository secret (`gh secret set MOB_PLUGIN_SIGN_KEY < ~/.mob/keys/<name>.priv`).
 
       mix mob.plugin.keygen [--plugin <dir>] [--force]
 

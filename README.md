@@ -367,6 +367,36 @@ transient — see [`guides/nifs.md`](guides/nifs.md). Read it before
 filing a "my NIF builds host-dev but not on device" issue; it
 probably answers the question.
 
+## Writing a plugin (`mix mob.new_plugin`)
+
+```bash
+mix mob.new_plugin my_plugin --tier 1     # 0 pure Elixir … 4 embedded sub-app
+```
+
+Tiers 1–4 ship a manifest (`priv/mob_plugin.exs`), and a host's native build
+verifies it: `priv/mob_plugin.sig` must be a v2 signature over every file the
+build reads from the plugin, made with the key in `priv/mob_plugin.pub`, and the
+host must trust that key. The scaffold sets up the release side of that:
+
+| File | Role |
+|------|------|
+| `.gitignore` | ignores `priv/mob_plugin.sig`; `priv/mob_plugin.pub` is committed |
+| `mix.exs` | `package files:` ship all of `priv/`; dev-only `:mob_dev` for the signing tasks; set `@source_url` |
+| `.github/workflows/release.yml` | on a `version:` bump: tag, GitHub Release, check that `MOB_PLUGIN_SIGN_KEY` derives the committed public key, `mix mob.validate_plugin`, `mix mob.plugin.sign`, `mix hex.publish`. Refuses to publish without the key |
+
+One-time setup in the plugin directory:
+
+```bash
+mix deps.get
+mix mob.plugin.keygen                                      # priv/mob_plugin.pub + ~/.mob/keys/my_plugin.priv
+gh secret set MOB_PLUGIN_SIGN_KEY < ~/.mob/keys/my_plugin.priv
+gh secret set HEX_API_KEY
+```
+
+`mix mob.plugin.sign && mix mob.validate_plugin` signs and checks locally
+(re-sign after every edit). A host app records trust once with
+`mix mob.plugin.trust my_plugin`. Tier 0 has no manifest and nothing to sign.
+
 ## Navigation validation (`mix mob.routes`)
 
 Validates all `push_screen`, `reset_to`, and `pop_to` destinations across `lib/**/*.ex` via AST analysis. Module destinations are verified with `Code.ensure_loaded/1`.

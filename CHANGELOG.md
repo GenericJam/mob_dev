@@ -37,6 +37,26 @@
   mobile-mcp gets a hint naming the `pkill` that clears it. See
   `decisions/2026-09-30-mob-smoke-replays-agent-device-flows.md`.
 
+- **`mix mob.new_plugin` scaffolds the signing release setup for tiers 1–4.**
+  A plugin with a manifest is verified by every host, but the scaffold said
+  nothing about signing, and its `mix.exs` had no `:mob_dev`, so
+  `mix mob.plugin.keygen`/`mix mob.plugin.sign`/`mix mob.validate_plugin`
+  were not even available in the plugin. Tiers 1–4 now get: a `.gitignore`
+  that ignores `priv/mob_plugin.sig` (the committed key is
+  `priv/mob_plugin.pub`); a `mix.exs` with a dev-only `:mob_dev` dep and
+  `package files:` that ship all of `priv/`; and
+  `.github/workflows/release.yml`, modelled on the first-party plugins'. On a
+  `version:` bump in `mix.exs` it tags, creates the GitHub Release, checks that
+  the `MOB_PLUGIN_SIGN_KEY` secret (the contents of
+  `~/.mob/keys/<name>.priv`) derives the committed public key, runs
+  `mix mob.validate_plugin` and `mix mob.plugin.sign`, then
+  `mix hex.publish`, so the package always carries a fresh v2 signature over
+  exactly what ships. Unlike the first-party workflow it refuses to publish
+  when the signing key secret is missing instead of shipping an unsigned
+  plugin. The printed next steps cover keygen, the secret, local signing and
+  `mix mob.plugin.trust`; tier 0 (no manifest) has nothing to sign. The
+  tier-4 hint now names `Mob.Plugins.get_setting/2` / `put_setting/3`.
+
 ## [0.7.5] - 2026-09-30
 
 ### Fixed

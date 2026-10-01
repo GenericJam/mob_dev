@@ -25,6 +25,13 @@ defmodule MobDev.Plugin.Scaffold do
   # test pins it so it can't silently lag a mob release (see issue #21).
   @fallback_mob_requirement "~> 0.7"
 
+  # mob_dev requirement for the plugin's dev-only `:mob_dev` dep, which
+  # supplies `mix mob.plugin.keygen` / `mix mob.plugin.sign` /
+  # `mix mob.validate_plugin`. The floor is the first release that writes v2
+  # signatures covering every build input (MOB-297);
+  # `detect_mob_dev_requirement/0` prefers the running mob_dev's version.
+  @fallback_mob_dev_requirement "~> 0.7.3"
+
   # Names that pass the snake_case regex but produce a broken or non-buildable
   # plugin project. `nil`/`true`/`false` are the killers: the scaffold emits
   # `app: :<name>` in mix.exs, and Mix treats `:nil`/`:false` as "no app name"
@@ -118,6 +125,30 @@ defmodule MobDev.Plugin.Scaffold do
   end
 
   @doc """
+  Builds the `"~> MAJOR.MINOR.PATCH"` requirement for a scaffolded plugin's
+  `:mob_dev` dep from a concrete version: at least the mob_dev that scaffolded
+  it (whose signing the generated release workflow relies on), within its
+  minor. `nil` yields the compiled fallback.
+  """
+  @spec mob_dev_requirement(String.t() | Version.t() | nil) :: String.t()
+  def mob_dev_requirement(nil), do: @fallback_mob_dev_requirement
+
+  def mob_dev_requirement(%Version{major: major, minor: minor, patch: patch}),
+    do: "~> #{major}.#{minor}.#{patch}"
+
+  def mob_dev_requirement(version) when is_binary(version),
+    do: mob_dev_requirement(Version.parse!(version))
+
+  @doc "`mob_dev_requirement/1` for the running mob_dev. Impure, like `detect_mob_requirement/0`."
+  @spec detect_mob_dev_requirement() :: String.t()
+  def detect_mob_dev_requirement do
+    case Application.spec(:mob_dev, :vsn) do
+      nil -> mob_dev_requirement(nil)
+      vsn -> mob_dev_requirement(List.to_string(vsn))
+    end
+  end
+
+  @doc """
   Returns the file list for a given tier + name. Each entry is
   `{relative_path, content}`. `relative_path` is relative to the plugin's
   root directory.
@@ -125,12 +156,25 @@ defmodule MobDev.Plugin.Scaffold do
   `mob_req` is the `mob` version requirement to embed in the generated
   `mix.exs` and manifest; defaults to `@fallback_mob_requirement`. The Mix
   task passes `detect_mob_requirement/0` so a scaffolded plugin pins the mob
-  it's being generated against.
-  """
-  @spec files_for(tier(), String.t(), String.t()) :: [file()]
-  def files_for(tier, name, mob_req \\ @fallback_mob_requirement)
+  it's being generated against. `mob_dev_req` is the same for the dev-only
+  `:mob_dev` dep of a manifest-bearing plugin.
 
-  def files_for(0, name, mob_req) do
+  Tiers 1–4 ship a manifest, so hosts verify a signature over it. Those also
+  get the signing release setup (`signing_files/1`): a `.gitignore` that keeps
+  `priv/mob_plugin.sig` out of git, `package files:` that ship all of `priv/`,
+  and `.github/workflows/release.yml`, which signs in CI right before
+  `mix hex.publish`, so the published package carries a fresh v2 signature
+  over exactly what ships. Tier 0 has nothing to sign.
+  """
+  @spec files_for(tier(), String.t(), String.t(), String.t()) :: [file()]
+  def files_for(
+        tier,
+        name,
+        mob_req \\ @fallback_mob_requirement,
+        mob_dev_req \\ @fallback_mob_dev_requirement
+      )
+
+  def files_for(0, name, mob_req, _mob_dev_req) do
     [
       {"mix.exs", mix_exs(name, mob_req)},
       {"lib/#{name}.ex", tier0_lib(name)},
@@ -139,11 +183,16 @@ defmodule MobDev.Plugin.Scaffold do
     ]
   end
 
-  def files_for(1, name, mob_req) do
+  def files_for(tier, name, mob_req, mob_dev_req) when tier in 1..4 do
+    files = tier_files(tier, name, mob_req)
+    mix_exs = signed_mix_exs(name, mob_req, mob_dev_req, package_files(files))
+    [{"mix.exs", mix_exs} | files] ++ signing_files(name)
+  end
+
+  defp tier_files(1, name, mob_req) do
     nif_name = "#{name}_nif"
 
     [
-      {"mix.exs", mix_exs(name, mob_req)},
       {"lib/#{name}.ex", tier1_lib(name, nif_name)},
       {"src/#{nif_name}.erl", tier1_erl_stub(nif_name)},
       {"priv/mob_plugin.exs", tier1_manifest(name, nif_name, mob_req)},
@@ -153,12 +202,11 @@ defmodule MobDev.Plugin.Scaffold do
     ]
   end
 
-  def files_for(2, name, mob_req) do
+  defp tier_files(2, name, mob_req) do
     mod = module_name(name)
     registry_name = "#{mod}_View"
 
     [
-      {"mix.exs", mix_exs(name, mob_req)},
       {"lib/#{name}.ex", tier2_lib(name, mod)},
       {"lib/#{name}/view.ex", tier2_view(mod)},
       {"priv/mob_plugin.exs", tier2_manifest(name, mod, registry_name, mob_req)},
@@ -169,11 +217,10 @@ defmodule MobDev.Plugin.Scaffold do
     ]
   end
 
-  def files_for(3, name, mob_req) do
+  defp tier_files(3, name, mob_req) do
     mod = module_name(name)
 
     [
-      {"mix.exs", mix_exs(name, mob_req)},
       {"lib/#{name}/list_screen.ex", tier3_list_screen(mod)},
       {"lib/#{name}/detail_screen.ex", tier3_detail_screen(mod)},
       {"priv/mob_plugin.exs", tier3_manifest(name, mod, mob_req)},
@@ -183,11 +230,10 @@ defmodule MobDev.Plugin.Scaffold do
     ]
   end
 
-  def files_for(4, name, mob_req) do
+  defp tier_files(4, name, mob_req) do
     mod = module_name(name)
 
     [
-      {"mix.exs", mix_exs(name, mob_req)},
       {"lib/#{name}.ex", tier4_lib(mod)},
       {"lib/#{name}/worker.ex", tier4_worker(mod)},
       {"lib/#{name}/notifications.ex", tier4_notifications(mod)},
@@ -198,7 +244,280 @@ defmodule MobDev.Plugin.Scaffold do
     ]
   end
 
-  # ── mix.exs (same for all tiers) ──────────────────────────────────────────
+  # ── Signing + release (tiers 1–4) ─────────────────────────────────────────
+
+  @doc "Name of the GitHub repo secret the release workflow signs with."
+  @spec sign_key_secret() :: String.t()
+  def sign_key_secret, do: "MOB_PLUGIN_SIGN_KEY"
+
+  defp signing_files(name) do
+    [
+      {"README.md", readme(name)},
+      {"CHANGELOG.md", changelog()},
+      {".gitignore", gitignore(name)},
+      {".github/workflows/release.yml", release_workflow()}
+    ]
+  end
+
+  # What `package files:` lists: the top-level directories the tier actually
+  # has (so Hex never stops on a pattern that matches nothing), minus test/.
+  defp package_files(tier_files) do
+    dirs =
+      for {rel, _} <- tier_files,
+          [top, _ | _] <- [Path.split(rel)],
+          top != "test",
+          uniq: true,
+          do: top
+
+    Enum.sort(dirs) ++ ~w(mix.exs README.md CHANGELOG.md)
+  end
+
+  defp readme(name) do
+    """
+    # #{name}
+
+    A [Mob](https://hexdocs.pm/mob) plugin.
+
+    ## Installation
+
+    ```elixir
+    # mix.exs
+    {:#{name}, "~> 0.1"}
+
+    # mob.exs
+    config :mob, :plugins, [:#{name}]
+    ```
+
+    The package is signed; record trust in its key once per host app:
+
+    ```sh
+    mix deps.get
+    mix mob.plugin.trust #{name}
+    ```
+    """
+  end
+
+  defp changelog do
+    """
+    # Changelog
+
+    ## [0.1.0]
+
+    - Initial release.
+    """
+  end
+
+  defp gitignore(name) do
+    """
+    /_build/
+    /cover/
+    /deps/
+    /doc/
+    erl_crash.dump
+    *.ez
+    #{name}-*.tar
+    /tmp/
+
+    # The signature is made fresh by .github/workflows/release.yml on every
+    # release, over exactly what ships, so it is never committed and can't go
+    # stale. priv/mob_plugin.pub IS committed.
+    priv/mob_plugin.sig
+    """
+  end
+
+  # Modelled on the first-party plugins' (mob_wake) workflow. The package name
+  # is read from mix.exs `app:` (which the scaffold makes the manifest `:name`
+  # too, so it is also the key file name `mix mob.plugin.sign` reads). Unlike
+  # the original it refuses to publish without MOB_PLUGIN_SIGN_KEY rather than
+  # shipping an unsigned plugin every host's build would reject.
+  defp release_workflow do
+    ~S"""
+    name: release
+
+    # mix.exs is the source of truth for the version. Bump `version: "X.Y.Z"`,
+    # commit, push: this workflow tags it, creates the GitHub Release, signs the
+    # plugin and publishes it to Hex. Re-run from the Actions tab
+    # (workflow_dispatch) to finish a release that stopped part way: each step
+    # skips what is already done (tag, release, version on Hex).
+    #
+    # Repository secrets (Settings → Secrets and variables → Actions):
+    #   HEX_API_KEY          — `mix hex.user key generate`
+    #   MOB_PLUGIN_SIGN_KEY  — the exact contents of ~/.mob/keys/<app>.priv
+    #                          written by `mix mob.plugin.keygen` (one line,
+    #                          base64 of the raw 32-byte Ed25519 private key)
+    on:
+      push:
+        branches: [main, master]
+        paths: ['mix.exs']
+      workflow_dispatch:
+
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: false
+
+    permissions:
+      contents: write   # create the GitHub Release and push the tag
+
+    jobs:
+      release:
+        name: Release from mix.exs
+        runs-on: ubuntu-latest
+        env:
+          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+          MOB_PLUGIN_SIGN_KEY: ${{ secrets.MOB_PLUGIN_SIGN_KEY }}
+        steps:
+          - uses: actions/checkout@v4
+            with:
+              fetch-depth: 0
+
+          - name: Configure git identity (for the tag push)
+            run: |
+              git config user.name "github-actions[bot]"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          - name: Read version and package name from mix.exs
+            id: version
+            run: |
+              version=$(grep -E '^\s*version:\s*"' mix.exs | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
+              if [ -z "$version" ]; then
+                version=$(grep -E '^\s*@version\s+"' mix.exs | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
+              fi
+              pkg=$(grep -E '^\s*app:\s*:' mix.exs | head -1 | sed 's/.*app:\s*:\([a-z_][a-z0-9_]*\).*/\1/')
+              if [ -z "$version" ] || [ -z "$pkg" ]; then
+                echo "::error::Could not read version / app from mix.exs"
+                exit 1
+              fi
+              echo "version=$version" >> "$GITHUB_OUTPUT"
+              echo "package=$pkg" >> "$GITHUB_OUTPUT"
+              echo "Detected $pkg $version"
+
+          - name: Create + push tag (if missing)
+            run: |
+              tag="${{ steps.version.outputs.version }}"
+              if git rev-parse "refs/tags/$tag" >/dev/null 2>&1; then
+                echo "::notice::Tag $tag already exists — skipping"
+              else
+                git tag "$tag"
+                git push origin "$tag"
+              fi
+
+          - name: Check if GitHub Release exists
+            id: release_check
+            env:
+              GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            run: |
+              tag="${{ steps.version.outputs.version }}"
+              if gh release view "$tag" -R "${{ github.repository }}" >/dev/null 2>&1; then
+                echo "exists=true" >> "$GITHUB_OUTPUT"
+                echo "::notice::GitHub Release $tag already exists — skipping"
+              else
+                echo "exists=false" >> "$GITHUB_OUTPUT"
+              fi
+
+          - name: Extract CHANGELOG section
+            if: steps.release_check.outputs.exists == 'false'
+            id: changelog
+            run: |
+              if [ -f CHANGELOG.md ]; then
+                awk -v tag="${{ steps.version.outputs.version }}" '
+                  $0 ~ "^## \\[" tag "\\]" || $0 ~ "^## " tag "( |$)" { in_section=1; next }
+                  in_section && /^## / { exit }
+                  in_section { print }
+                ' CHANGELOG.md > /tmp/release-body.md
+              fi
+              if [ -s /tmp/release-body.md ]; then
+                echo "has_body=true" >> "$GITHUB_OUTPUT"
+              else
+                echo "has_body=false" >> "$GITHUB_OUTPUT"
+              fi
+
+          - name: Create GitHub Release
+            if: steps.release_check.outputs.exists == 'false'
+            uses: softprops/action-gh-release@v2
+            with:
+              tag_name: ${{ steps.version.outputs.version }}
+              name: ${{ steps.version.outputs.version }}
+              body_path: ${{ steps.changelog.outputs.has_body == 'true' && '/tmp/release-body.md' || '' }}
+              generate_release_notes: ${{ steps.changelog.outputs.has_body != 'true' }}
+
+          - name: Set up BEAM
+            if: env.HEX_API_KEY != ''
+            uses: erlef/setup-beam@v1
+            with:
+              elixir-version: '1.19'
+              otp-version: '28'
+
+          - name: Check if version is already on Hex
+            if: env.HEX_API_KEY != ''
+            id: hex_check
+            run: |
+              pkg="${{ steps.version.outputs.package }}"
+              vsn="${{ steps.version.outputs.version }}"
+              if mix hex.info "$pkg" "$vsn" 2>/dev/null | grep -q "Config:"; then
+                echo "exists=true" >> "$GITHUB_OUTPUT"
+                echo "::notice::$pkg $vsn is already on Hex — skipping publish"
+              else
+                echo "exists=false" >> "$GITHUB_OUTPUT"
+              fi
+
+          - name: Require a real @source_url in mix.exs
+            if: env.HEX_API_KEY != '' && steps.hex_check.outputs.exists == 'false'
+            run: |
+              if grep -q 'github.com/OWNER/' mix.exs; then
+                echo "::error::mix.exs still has the scaffold's @source_url (github.com/OWNER/...). Set it to this repository: https://github.com/${{ github.repository }}"
+                exit 1
+              fi
+
+          # Hosts refuse an unsigned plugin, so never publish one.
+          - name: Require the signing key
+            if: env.HEX_API_KEY != '' && steps.hex_check.outputs.exists == 'false' && env.MOB_PLUGIN_SIGN_KEY == ''
+            run: |
+              echo "::error::MOB_PLUGIN_SIGN_KEY is not set: refusing to publish an unsigned plugin. Set it to the contents of ~/.mob/keys/${{ steps.version.outputs.package }}.priv (from mix mob.plugin.keygen)."
+              exit 1
+
+          # A wrong secret would publish a signature no host can verify against
+          # the committed public key.
+          - name: Verify the signing key matches priv/mob_plugin.pub
+            if: env.HEX_API_KEY != '' && steps.hex_check.outputs.exists == 'false'
+            run: |
+              elixir -e '
+                priv = System.fetch_env!("MOB_PLUGIN_SIGN_KEY") |> String.trim() |> Base.decode64!()
+                {pub, _} = :crypto.generate_key(:eddsa, :ed25519, priv)
+                committed = "priv/mob_plugin.pub" |> File.read!() |> String.trim() |> Base.decode64!()
+                if pub != committed do
+                  IO.puts(:stderr, "::error::MOB_PLUGIN_SIGN_KEY does not derive the committed priv/mob_plugin.pub. Refusing to publish.")
+                  System.halt(1)
+                end
+                IO.puts("signing key matches priv/mob_plugin.pub")
+              '
+
+          - name: Validate, then sign what ships
+            if: env.HEX_API_KEY != '' && steps.hex_check.outputs.exists == 'false'
+            run: |
+              pkg="${{ steps.version.outputs.package }}"
+              mix deps.get
+              mix mob.validate_plugin
+              mkdir -p ~/.mob/keys
+              printf '%s' "$MOB_PLUGIN_SIGN_KEY" > ~/.mob/keys/"$pkg".priv
+              chmod 600 ~/.mob/keys/"$pkg".priv
+              mix mob.plugin.sign
+              rm -f ~/.mob/keys/"$pkg".priv
+
+          - name: mix hex.publish
+            if: env.HEX_API_KEY != '' && steps.hex_check.outputs.exists == 'false'
+            run: mix hex.publish --yes
+
+          - name: Skip Hex publish notice (no API key)
+            if: env.HEX_API_KEY == ''
+            run: |
+              echo "::notice::HEX_API_KEY is not set; skipping the Hex publish. Add it at"
+              echo "::notice::https://github.com/${{ github.repository }}/settings/secrets/actions"
+              echo "::notice::and re-run this workflow (Actions tab → Run workflow)."
+    """
+  end
+
+  # ── mix.exs ───────────────────────────────────────────────────────────────
+  # Tier 0: a plain package. Tiers 1–4 use signed_mix_exs/3 below.
 
   defp mix_exs(name, mob_req) do
     mod = module_name(name)
@@ -223,6 +542,59 @@ defmodule MobDev.Plugin.Scaffold do
       defp deps do
         [
           {:mob, "#{mob_req}"}
+        ]
+      end
+    end
+    """
+  end
+
+  # Tiers 1–4: Hex package metadata (priv/ must ship whole) and the dev-only
+  # mob_dev that provides the signing tasks the release workflow runs.
+  defp signed_mix_exs(name, mob_req, mob_dev_req, package_files) do
+    mod = module_name(name)
+
+    """
+    defmodule #{mod}.MixProject do
+      use Mix.Project
+
+      # The plugin's repository. `mix hex.publish` requires a link, and the
+      # release workflow refuses to publish while this is still the template.
+      @source_url "https://github.com/OWNER/#{name}"
+
+      def project do
+        [
+          app: :#{name},
+          version: "0.1.0",
+          elixir: "~> 1.17",
+          description: "A Mob plugin.",
+          source_url: @source_url,
+          package: package(),
+          deps: deps()
+        ]
+      end
+
+      def application do
+        [extra_applications: [:logger]]
+      end
+
+      defp deps do
+        [
+          {:mob, "#{mob_req}"},
+          # mix mob.plugin.keygen / mob.plugin.sign / mob.validate_plugin.
+          # Dev-only: never part of a host's dependency tree.
+          {:mob_dev, "#{mob_dev_req}", only: :dev, runtime: false}
+        ]
+      end
+
+      # priv/ ships whole: the manifest, priv/mob_plugin.pub, the
+      # priv/mob_plugin.sig the release workflow writes, and every native
+      # source the host's build reads. The signature lists those files, so a
+      # file left out of the package fails verification on every host.
+      defp package do
+        [
+          licenses: ["MIT"],
+          links: %{"GitHub" => @source_url},
+          files: ~w(#{Enum.join(package_files, " ")})
         ]
       end
     end
@@ -751,7 +1123,7 @@ defmodule MobDev.Plugin.Scaffold do
       },
 
       # Typed, per-plugin-namespaced settings (read/written via Mob.Plugins
-      # get_setting/3 + put_setting/4, validated against :type). editor_screen
+      # get_setting/2 + put_setting/3, validated against :type). editor_screen
       # is the screen the host pushes to let the user change them.
       settings: %{
         schema: [%{key: :enabled, type: :boolean, default: true}],

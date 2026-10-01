@@ -24,21 +24,41 @@ defmodule Mix.Tasks.Mob.NewPlugin do
     `:notifications`; ships a lifecycle module, a supervised worker, a
     notification handler, and a settings editor screen.
 
+  ## Signing (tiers 1–4)
+
+  A plugin with a manifest is verified by every host before its native build
+  uses it: `priv/mob_plugin.sig` must be a v2 signature over every file the
+  build reads (`MobDev.Plugin.Sign.build_inputs/2`), made with the key whose
+  public half is `priv/mob_plugin.pub`, and the host must trust that key. So
+  tiers 1–4 also get:
+
+  - `.gitignore` ignoring `priv/mob_plugin.sig` (`priv/mob_plugin.pub` is
+    committed);
+  - `mix.exs` with Hex package metadata (`package files:` ship all of
+    `priv/`; set `@source_url` to the plugin's repository) and a dev-only
+    `:mob_dev` dep for the signing tasks, plus a `README.md` and the
+    `CHANGELOG.md` the release notes are taken from;
+  - `.github/workflows/release.yml`: on a `version:` bump in `mix.exs` it tags,
+    creates the GitHub Release, checks that the `MOB_PLUGIN_SIGN_KEY` secret
+    derives the committed public key, runs `mix mob.validate_plugin` and
+    `mix mob.plugin.sign`, then `mix hex.publish`. The published package
+    therefore carries a fresh signature over exactly what ships.
+
+  One-time setup, in the plugin directory:
+
+      mix deps.get
+      mix mob.plugin.keygen      # priv/mob_plugin.pub + ~/.mob/keys/<name>.priv
+      gh secret set MOB_PLUGIN_SIGN_KEY < ~/.mob/keys/<name>.priv
+      gh secret set HEX_API_KEY
+
+  `mix mob.plugin.sign` signs locally for testing; a host records trust with
+  `mix mob.plugin.trust <name>`. Tier 0 has no manifest and nothing to sign.
+
   ## Options
 
     * `--tier <0|1|2|3|4>` — plugin tier; defaults to `0`.
     * `--dest <DIR>` — destination directory; defaults to `plugins/<name>`
       relative to the current working directory.
-
-  ## Activating
-
-  After scaffolding:
-
-      # mix.exs
-      defp deps, do: [{:<name>, path: "plugins/<name>"} | …]
-
-      # mob.exs
-      config :mob, :plugins, [:<name>]
   """
 
   alias MobDev.Plugin.Scaffold
@@ -57,15 +77,24 @@ defmodule Mix.Tasks.Mob.NewPlugin do
          :ok <- Scaffold.validate_tier(tier) do
       dest = opts[:dest] || Path.join([File.cwd!(), "plugins", name])
       refuse_if_exists!(dest)
-      write_files!(dest, Scaffold.files_for(tier, name, Scaffold.detect_mob_requirement()))
-      print_next_steps(name, tier)
+
+      files =
+        Scaffold.files_for(
+          tier,
+          name,
+          Scaffold.detect_mob_requirement(),
+          Scaffold.detect_mob_dev_requirement()
+        )
+
+      write_files!(dest, files)
+      Mix.shell().info(next_steps(name, tier, Path.relative_to_cwd(dest)))
     else
       {:error, reason} -> Mix.raise(reason)
     end
   end
 
   defp parse_name!([name | _]) when is_binary(name) and name != "", do: name
-  defp parse_name!(_), do: Mix.raise("usage: mix mob.new_plugin <name> [--tier 0|1|2]")
+  defp parse_name!(_), do: Mix.raise("usage: mix mob.new_plugin <name> [--tier 0|1|2|3|4]")
 
   # OptionParser's third element holds switches it could not parse: an unknown
   # flag, or a bad value for a typed switch (e.g. `--tier abc` for an :integer).
@@ -113,18 +142,49 @@ defmodule Mix.Tasks.Mob.NewPlugin do
     end)
   end
 
-  defp print_next_steps(name, tier) do
-    Mix.shell().info([
-      :cyan,
-      "\nNext steps:\n",
-      :reset,
-      "  1. Add the plugin to your host's deps in `mix.exs`:\n",
-      "       {:#{name}, path: \"plugins/#{name}\"}\n",
-      "  2. Activate it in `mob.exs`:\n",
-      "       config :mob, :plugins, [:#{name}]\n",
-      "  3. Run `mix deps.get && mix mob.plugins` to verify.\n",
-      tier_specific_hint(tier, name)
-    ])
+  @doc false
+  # The text printed after scaffolding. Pure; `dest` is the plugin directory
+  # as the user would `cd` to it.
+  @spec next_steps(String.t(), 0..4, String.t()) :: String.t()
+  def next_steps(name, tier, dest) do
+    """
+
+    Next steps:
+      1. Add the plugin to your host's deps in `mix.exs`:
+           {:#{name}, path: "#{dest}"}
+      2. Activate it in `mob.exs`:
+           config :mob, :plugins, [:#{name}]
+      3. Run `mix deps.get && mix mob.plugins` to verify.
+    #{tier_specific_hint(tier, name)}#{signing_steps(tier, name, dest)}\
+    """
+  end
+
+  defp signing_steps(0, _name, _dest) do
+    """
+
+    Tier 0 has no manifest, so there is nothing to sign: publish it like any
+    Hex package.
+    """
+  end
+
+  defp signing_steps(_tier, name, dest) do
+    key = "~/.mob/keys/#{name}.priv"
+
+    """
+
+    Signing (hosts verify the manifest-bearing tiers before building them):
+      5. In #{dest}: `mix deps.get && mix mob.plugin.keygen`. Commit
+         priv/mob_plugin.pub; the private key is #{key}. Never commit it.
+      6. Releases sign themselves (.github/workflows/release.yml, on a version
+         bump in mix.exs). Set @source_url in mix.exs to the plugin's GitHub
+         repo, and add the repo secrets the workflow reads:
+           gh secret set #{Scaffold.sign_key_secret()} < #{key}
+           gh secret set HEX_API_KEY
+      7. Local testing: `mix mob.plugin.sign && mix mob.validate_plugin`
+         (priv/mob_plugin.sig is gitignored; re-sign after every edit, since
+         an edited build input fails verification).
+      8. A host trusts the key once: `mix mob.plugin.trust #{name}`.
+    """
   end
 
   defp tier_specific_hint(1, name) do
@@ -132,7 +192,7 @@ defmodule Mix.Tasks.Mob.NewPlugin do
 
     "  4. Tier 1: the C NIF in priv/native/jni/#{nif}.c compiles + links via\n" <>
       "     mob_dev's plugin merge engine. Run `mix mob.deploy --native` to\n" <>
-      "     pick it up; verify with `mix mob.validate_plugin` from the plugin dir.\n"
+      "     pick it up.\n"
   end
 
   defp tier_specific_hint(2, name) do
@@ -155,7 +215,7 @@ defmodule Mix.Tasks.Mob.NewPlugin do
     "  4. Tier 4: flesh out lib/#{name}.ex (lifecycle), the supervised Worker,\n" <>
       "     the Notifications handler, and the settings schema. on_start +\n" <>
       "     supervised children run at boot under the host's plugin supervisor;\n" <>
-      "     settings round-trip via Mob.Plugins get_setting/3 + put_setting/4.\n"
+      "     settings round-trip via Mob.Plugins.get_setting/2 + put_setting/3.\n"
   end
 
   defp tier_specific_hint(_, _), do: ""
