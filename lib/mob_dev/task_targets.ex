@@ -8,9 +8,14 @@ defmodule MobDev.TaskTargets do
   `:all_physical` selects every connected device.** With no scope
   flags, exactly one non-physical device may be selected automatically;
   multiple development devices are an ambiguity error.
+
+  `resolve/3` honours agent-device leases passed as `:leases`
+  (`MobDev.DeviceLeases`): every selection the user did not name skips
+  devices another session has claimed, and a named device that is claimed
+  is used with a warning. A device chosen automatically is always printed.
   """
 
-  alias MobDev.Device
+  alias MobDev.{Device, DeviceLeases}
 
   @type selection_error ::
           :no_devices
@@ -18,27 +23,74 @@ defmodule MobDev.TaskTargets do
           | :no_matching_devices
           | :no_dev_devices
           | :no_physical_devices
+          | :all_claimed
 
   @doc """
   Resolve a device snapshot into the exact targets for one task run.
+
+  `opts[:leases]` is the `MobDev.DeviceLeases` snapshot to honour (default:
+  no claims). Skipped, warned-about and auto-selected devices are printed.
   """
   @spec resolve([Device.t()], [String.t()], keyword()) ::
           {:ok, [Device.t()]} | {:error, selection_error(), map()}
   def resolve(all, device_ids, opts) do
-    selected = select(all, device_ids, opts)
+    leases = Keyword.get(opts, :leases, %DeviceLeases{})
 
-    cond do
-      all == [] ->
-        {:error, :no_devices, %{detected: 0}}
+    if device_ids == [] do
+      resolve_unnamed(all, leases, opts)
+    else
+      resolve_named(all, device_ids, leases)
+    end
+  end
 
-      device_ids != [] and selected == [] ->
+  defp resolve_named([], _device_ids, _leases), do: {:error, :no_devices, %{detected: 0}}
+
+  defp resolve_named(all, device_ids, leases) do
+    case filter_by_id(all, device_ids) do
+      [] ->
         {:error, :no_matching_devices, %{requested: device_ids, detected: length(all)}}
 
-      selected == [] ->
-        empty_selection_error(all, opts)
+      selected ->
+        {:ok, DeviceLeases.warn_claimed(selected, leases)}
+    end
+  end
 
-      true ->
+  defp resolve_unnamed([], _leases, _opts), do: {:error, :no_devices, %{detected: 0}}
+
+  defp resolve_unnamed(all, leases, opts) do
+    free = DeviceLeases.exclude_claimed(all, leases)
+    claimed = all -- free
+    in_scope? = scope_filter(opts)
+
+    case select(free, [], opts) do
+      [] ->
+        if claimed != [] and Enum.any?(claimed, in_scope?) and not Enum.any?(free, in_scope?),
+          do: {:error, :all_claimed, %{claimed: length(claimed)}},
+          else: empty_selection_error(free, opts)
+
+      selected ->
+        unless broad?(opts) do
+          Enum.each(selected, &IO.puts("  Auto-selected #{DeviceLeases.label(&1)}"))
+        end
+
         {:ok, selected}
+    end
+  end
+
+  defp broad?(opts),
+    do:
+      Keyword.get(opts, :all_devices, false) == true or
+        Keyword.get(opts, :all_physical, false) == true
+
+  # Which devices a run without named ids could pick at all, before
+  # ambiguity: used to tell "everything you could have had is claimed" apart
+  # from the ordinary empty-selection errors.
+  defp scope_filter(opts) do
+    case {Keyword.get(opts, :all_devices, false) == true,
+          Keyword.get(opts, :all_physical, false) == true} do
+      {true, true} -> fn _ -> true end
+      {false, true} -> &Device.physical?/1
+      _ -> &(not Device.physical?(&1))
     end
   end
 

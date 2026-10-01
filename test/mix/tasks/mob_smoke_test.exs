@@ -132,10 +132,22 @@ defmodule Mix.Tasks.Mob.SmokeTest do
     assert output =~ "b_login.ad: receipts +2"
   end
 
-  test "a claimed device is skipped, never tested, and fails the run", %{args: args} do
+  test "a device another session claimed is never auto-selected or tested", %{args: args} do
+    assert_raise Mix.Error, ~r/claimed by another agent-device session/, fn ->
+      run_task(args, deps(@claimed, %{}, clean()))
+    end
+
+    assert test_runs() == []
+  end
+
+  test "a claimed device named with --device is blocked, never tested, and fails the run", %{
+    args: args
+  } do
     assert_raise Mix.Error,
                  ~r/blocked, in use by session rec \(workspace \/Users\/k\/code\/app\)/,
-                 fn -> run_task(args, deps(@claimed, %{}, clean())) end
+                 fn ->
+                   run_task(args ++ ["--device", "emulator-5554"], deps(@claimed, %{}, clean()))
+                 end
 
     assert test_runs() == []
   end

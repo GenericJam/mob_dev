@@ -9,13 +9,18 @@ defmodule Mix.Tasks.Mob.Deploy do
 
   ## Modes
 
-  **Fast deploy** (default) — push BEAMs + restart. Use this for day-to-day
-  Elixir code changes. Requires the native app already installed on device.
+  **Fast deploy** (default) — load the new BEAMs into the app. Use this for
+  day-to-day Elixir code changes. Requires the native app already installed on
+  device. When the app's node is reachable over Erlang distribution, the
+  modules are hot-loaded in place with no restart; otherwise the BEAMs are
+  written to the device and the app is restarted to pick them up (an app built
+  against a pre-MOB-49 mob is always restarted, which moves it to its private
+  cookie).
 
       mix mob.deploy
 
-  **Full deploy** — build native binary + install APK/app + push BEAMs.
-  Use this the first time, or after changes to native C/Java/Swift code.
+  **Full deploy** — build native binary + install APK/app + push BEAMs + restart.
+  Use this the first time, or after changes to native C/Java/Swift/Zig code.
 
       mix mob.deploy --native
 
@@ -26,22 +31,31 @@ defmodule Mix.Tasks.Mob.Deploy do
   warnings — otherwise the first sign is `:nif_not_loaded` at the first call.
 
   Device selection is resolved once before any build or push starts. With no
-  selection flag, one emulator or simulator is selected automatically; physical
-  devices always require an explicit `--device` or `--all-physical`. The
-  `ANDROID_SERIAL` environment variable is treated like `--device` for Android.
+  selection flag, one emulator or simulator is selected automatically and the
+  task prints which; physical devices always require an explicit `--device` or
+  `--all-physical`. The `ANDROID_SERIAL` environment variable is treated like
+  `--device` for Android.
+
+  When `agent-device` is on PATH, selection honours its device claims
+  (`MobDev.DeviceLeases`): auto-selection and `--all-devices` /
+  `--all-physical` skip a device another agent-device session has claimed,
+  and say so. A claim is yours when its session matches `AGENT_DEVICE_SESSION`.
+  A claimed device named with `--device` is still used, after a warning.
 
   ## Options
 
     * `--native`              — build native binaries before pushing BEAMs
-    * `--no-restart`          — push BEAMs but don't restart the app
+    * `--no-restart`          — write the BEAMs without restarting the app (a
+                               hot load over dist never restarts anyway)
     * `-d`, `--device <id>`   — target a specific device; use `mix mob.devices` to find IDs
     * `--all-devices`         — target all emulators and simulators
     * `--all-physical`        — target all physical devices; combine with
                                `--all-devices` to target every connected device
-    * `--dist-port <N>`       — pin the BEAM dist listen port (default: auto-allocated per
-                              device, `9100 + index`). Use to resolve EPMD collisions when
-                              multiple sims/emulators are running the same app concurrently
-                              and the auto-allocated ports aren't what you want.
+    * `--dist-port <N>`       — pin the BEAM dist listen port (default: derived per
+                              device from the device serial and app name, in
+                              `9100..9899`, moved past ports another device already
+                              uses; `mix mob.connect` derives the same port). Use to
+                              resolve a collision with a non-BEAM listener on that port.
     * `--node-suffix <S>`     — append `_<S>` to the BEAM node name (default: auto-derived
                               from device serial on Android, SIMULATOR_UDID on iOS sim). Use
                               for scripted scenarios where you need a specific naming scheme.
@@ -107,31 +121,40 @@ defmodule Mix.Tasks.Mob.Deploy do
 
   A fast deploy is equivalent to:
 
-      mix deps.get                                     # only with --native
       mix compile
 
-      # Android
-      adb push _build/prod/lib/*/ebin/*.beam /data/data/<pkg>/files/lib/*/ebin/
-      adb shell am force-stop <package>               # restart
-
-      # iOS simulator
-      xcrun simctl spawn <udid> cp <beam_files> <app_bundle>/
-
-  When Erlang distribution is already reachable (app running, node connected),
-  `mix mob.deploy` skips `adb push` and hot-pushes via RPC instead — equivalent
-  to calling `nl(Module)` in IEx for every changed module:
-
+      # Each target whose app answers over Erlang distribution: hot load in
+      # place, no restart — `nl(Module)` in IEx for every module
       :rpc.call(node, :code, :load_binary, [Module, path, beam_binary])
 
-  With `--native`, it also runs the platform build before pushing BEAMs:
+      # Any other Android target: copy the BEAMs into the app's files, restart
+      adb push <beams> /data/data/<package>/files/otp/<app>/   # as root (emulator), or
+                                                              # via /data/local/tmp + `run-as tar xf`
+      adb shell am force-stop <package>
+      adb shell am start -n <package>/.MainActivity --ei mob_dist_port <port> ...
+
+      # Any other iOS simulator: copy into the simulator runtime, relaunch
+      rsync -a <compile path>/ ~/.mob/runtime/ios-sim/<app>/
+      xcrun simctl launch <udid> <ios bundle id>
+
+      # Any other physical iPhone: replace Documents/otp/<app>, relaunch
+      xcrun devicectl device copy to --device <udid> ... Documents/otp/<app>
+
+  The BEAMs come from Mix's active build path (`Mix.Project.compile_path/0`
+  and `Mix.Project.build_path/0`): the app and its runtime dependencies, never
+  dev-only tooling.
+
+  With `--native`, it first runs `mix deps.get` and the platform build, installs
+  the result, then writes the BEAMs and restarts (never a hot load: the old
+  BEAM is gone after an install):
 
       # Android
       ./gradlew assembleDebug
       adb install -r app/build/outputs/apk/debug/app-debug.apk
 
-      # iOS simulator
-      xcodebuild -scheme <app> -destination 'platform=iOS Simulator,...' build
-      xcrun simctl install booted <app>.app
+      # iOS: ios/build.zig (simulator) or ios/build_device.zig (device), then
+      xcrun simctl install <udid> <app>.app            # simulator
+      xcrun devicectl device install app --device <udid> <app>.app   # device
 
   A named `--device` supplies the platform when `--native` is used, so
   `mix mob.deploy --native --device <id>` does not also need `--android` or
@@ -195,9 +218,8 @@ defmodule Mix.Tasks.Mob.Deploy do
     dist_port: :integer,
     node_suffix: :string,
     # Slim build (drops src/include + .beam debug chunks + Apple-policy strips).
-    # On by default for both dev and release. Pass `--no-slim` to keep the
-    # full OTP runtime in the bundle — useful if you need debug info on
-    # device, or to isolate a strip-induced regression during diagnosis.
+    # Off by default for dev iteration (the strip pass costs seconds); `--slim`
+    # turns it on to size-test a build before a release.
     slim: :boolean
   ]
 
@@ -260,8 +282,15 @@ defmodule Mix.Tasks.Mob.Deploy do
     target_reference = explicit_target_reference(platforms, opts, android_serial)
     discovered = discover_devices(platforms)
 
+    # Leases are read once, with the device snapshot: auto-selection skips
+    # devices another agent-device session has claimed (MOB-330).
     devices =
-      case resolve_targets(discovered, platforms, opts, android_serial) do
+      case resolve_targets(
+             discovered,
+             platforms,
+             Keyword.put(opts, :leases, MobDev.DeviceLeases.load()),
+             android_serial
+           ) do
         {:ok, selected} -> selected
         {:error, message} -> Mix.raise(message)
       end
@@ -842,6 +871,11 @@ defmodule Mix.Tasks.Mob.Deploy do
   end
 
   def target_error(:no_devices, _context, _ids), do: "No connected devices found."
+
+  def target_error(:all_claimed, _context, _ids),
+    do:
+      "Every device this run could select is claimed by another agent-device session " <>
+        "(skipped above). Name one with `--device <id>` to use it anyway, or boot another emulator."
 
   defp resolve_platforms(opts) do
     android = opts[:android]

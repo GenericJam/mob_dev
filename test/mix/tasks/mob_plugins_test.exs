@@ -2,6 +2,7 @@ defmodule Mix.Tasks.Mob.PluginsTest do
   use ExUnit.Case, async: true
 
   alias Mix.Tasks.Mob.Plugins
+  alias MobDev.Plugin.{Crypto, Report, Sign}
 
   describe "normalize_activated/1 (config :mob, :plugins coercion)" do
     test "keeps a clean list of atom plugin names" do
@@ -58,12 +59,65 @@ defmodule Mix.Tasks.Mob.PluginsTest do
       end
     end
 
-    test "unacknowledged unsigned plugins are still skipped", %{tmp_dir: tmp} do
+    test "unacknowledged unsigned plugins are not loaded, and say why", %{tmp_dir: tmp} do
       deps = %{plug_a: unsigned_plugin(tmp, :plug_a, "A_View")}
 
-      ExUnit.CaptureIO.capture_io(fn ->
-        assert [{:plug_a, nil}] = Plugins.load_manifests(deps, [])
-      end)
+      assert [{:plug_a, {:unverified, :missing_signature}}] = Plugins.load_manifests(deps, [])
+    end
+  end
+
+  # MOB-332: a plugin whose signature failed was listed as
+  # "tier 0 … no manifest (regular dep)", hiding both the failure and its fix.
+  describe "a plugin whose signature doesn't verify" do
+    @describetag :tmp_dir
+
+    defp signed_plugin(root, name) do
+      dir = Path.join(root, Atom.to_string(name))
+      File.mkdir_p!(Path.join(dir, "priv"))
+
+      manifest = %{name: name, mob_version: "~> 0.6", plugin_spec_version: 1, nifs: []}
+      File.write!(Path.join(dir, "priv/mob_plugin.exs"), inspect(manifest))
+
+      {priv, pub} = Crypto.generate_keypair()
+      File.write!(Path.join(dir, "priv/mob_plugin.pub"), Base.encode64(pub) <> "\n")
+      :ok = Sign.sign_plugin(dir, priv)
+      dir
+    end
+
+    defp listing(deps_paths, activated) do
+      deps_paths |> Plugins.load_manifests([]) |> Report.rows(activated) |> Report.render()
+    end
+
+    test "an activated plugin tampered after signing is reported invalid, with the fix", %{
+      tmp_dir: tmp
+    } do
+      dir = signed_plugin(tmp, :plug_t)
+      File.write!(Path.join(dir, "priv/mob_plugin.exs"), "%{name: :plug_t, nifs: [:evil]}")
+
+      out = listing(%{plug_t: dir}, [:plug_t])
+
+      assert out =~ "signature is invalid"
+      assert out =~ "mix mob.plugin.sign"
+      assert out =~ "mix deps.clean plug_t && mix deps.get"
+      assert out =~ "tier ?"
+      refute out =~ "no manifest"
+      refute out =~ ~r/plug_t\s+tier 0/
+    end
+
+    test "an unsigned plugin is listed even before activation, naming how to sign or allow it",
+         %{tmp_dir: tmp} do
+      out = listing(%{plug_a: unsigned_plugin(tmp, :plug_a, "A_View")}, [])
+
+      assert out =~ "plug_a"
+      assert out =~ "manifest is not signed"
+      assert out =~ "config :mob, :acknowledge_unsafe_plugins, [:plug_a]"
+    end
+
+    test "a correctly signed plugin carries no signature note", %{tmp_dir: tmp} do
+      out = listing(%{plug_ok: signed_plugin(tmp, :plug_ok)}, [:plug_ok])
+
+      assert out =~ "tier 1"
+      refute out =~ "fix:"
     end
   end
 end

@@ -278,6 +278,10 @@ narrowing functions). Don't make them private:
   counters reset with the app's BEAM (so health is read per flow), and
   `Mob.Agent.Receipts.count/0` is bounded; see
   `decisions/2026-09-30-mob-smoke-replays-agent-device-flows.md`
+- `MobDev.DeviceLeases.parse_status/1`, `current_session/1`, `foreign_claim/2`
+  and `partition/2` (which agent-device claims block auto-selection), and
+  `MobDev.Plugin.TrustStore.trust_stanza/1` / `Mix.Tasks.Mob.Plugin.Trust.version/3`
+  (the one-entry-per-line trust map and the version shown for review)
 
 If you make any of these private, every downstream test breaks loudly — but
 you'll lose the ability to evolve the parsers safely.
@@ -302,6 +306,15 @@ Apply consistently to every Mix task that mutates device state
   fires for a non-physical device. A solo phone connected with no
   flags → error with a hint pointing at `--all-physical` or
   `--device`.
+- **agent-device leases** (MOB-330): every selection the user did not
+  name — auto-detect and both broad flags — skips devices another
+  `agent-device` session has claimed and prints each skip; a claimed
+  device named with `--device` is used after a loud warning. A claim is
+  the caller's own when its session equals `AGENT_DEVICE_SESSION`.
+  Read the claims once with `MobDev.DeviceLeases.load/0` and filter with
+  `exclude_claimed/3` / `warn_claimed/2` (TaskTargets does this when given
+  `:leases`; `Connector.connect_all/1` and `HotPush.connect/1` load them
+  themselves). A new task that picks devices on its own must do the same.
 
 The predicate to route on is `MobDev.Device.physical?/1`. Shared
 selection logic lives in `MobDev.TaskTargets`; task-specific planning

@@ -120,12 +120,23 @@ defmodule Mix.Tasks.Mob.Uninstall do
       bundle_id: opts[:bundle_id],
       all_apps: Keyword.get(opts, :all_apps, false),
       bundle_prefix: opts[:bundle_prefix],
-      in_project: in_project?
+      in_project: in_project?,
+      # Sweeps and auto-selection leave another agent-device session's
+      # claimed devices alone (MOB-330).
+      leases: MobDev.DeviceLeases.load()
     ]
 
     case Uninstaller.plan(uninstaller_opts) do
       {:ok, plan} ->
         confirm_and_run(plan, opts)
+
+      {:error, :all_claimed, _} ->
+        Mix.shell().error(
+          "Every device this run could select is claimed by another agent-device " <>
+            "session (skipped above). Name one with --device to use it anyway."
+        )
+
+        exit({:shutdown, 1})
 
       {:error, :no_devices, _} ->
         Mix.shell().error(

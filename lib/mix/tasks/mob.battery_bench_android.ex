@@ -133,16 +133,22 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
     duration = opts[:duration] || 1800
     no_build = opts[:no_build] || false
 
+    leases = MobDev.DeviceLeases.load()
+
     device =
-      case opts[:device] || auto_detect_device() do
+      case opts[:device] || auto_detect_device(leases) do
         nil ->
           Mix.raise("""
-          No Android device found. Options:
+          No unclaimed Android device found. Options:
             mix mob.battery_bench_android --device 192.168.1.42:5555
             adb connect PHONE_IP:5555 then re-run
           """)
 
         d ->
+          if opts[:device],
+            do: MobDev.DeviceLeases.warn_claimed([android_device(d)], leases),
+            else: IO.puts("  Auto-selected #{d}")
+
           d
       end
 
@@ -741,20 +747,25 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
 
   # ── ADB helpers ──────────────────────────────────────────────────────────────
 
-  defp auto_detect_device do
+  # The first adb device another agent-device session hasn't claimed.
+  defp auto_detect_device(leases) do
     case System.cmd("adb", ["devices"], stderr_to_stdout: true) do
       {output, 0} ->
         output
         |> String.split("\n")
         |> Enum.drop(1)
         |> Enum.filter(&String.contains?(&1, "\tdevice"))
-        |> Enum.map(&(&1 |> String.split("\t") |> hd() |> String.trim()))
+        |> Enum.map(&(&1 |> String.split("\t") |> hd() |> String.trim() |> android_device()))
+        |> MobDev.DeviceLeases.exclude_claimed(leases)
+        |> Enum.map(& &1.serial)
         |> List.first()
 
       _ ->
         nil
     end
   end
+
+  defp android_device(serial), do: %MobDev.Device{platform: :android, serial: serial}
 
   defp adb_ok?(device) do
     case System.cmd("adb", ["-s", device, "shell", "echo", "ok"], stderr_to_stdout: true) do

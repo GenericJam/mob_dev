@@ -43,6 +43,10 @@ defmodule Mix.Tasks.Mob.Connect do
 
           mix mob.connect --only ZY22CRLMWK
 
+      Without it, a device another `agent-device` session has claimed is
+      skipped (and named), since connecting restarts the app; a claimed device
+      you name is used after a warning. See `MobDev.DeviceLeases`.
+
   ## Multiple simultaneous sessions
 
   Because Erlang distribution allows many nodes to connect to the same device,

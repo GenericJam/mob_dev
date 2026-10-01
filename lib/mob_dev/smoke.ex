@@ -19,7 +19,7 @@ defmodule MobDev.Smoke do
   is compared against zero rather than against the old BEAM's counters.
   """
 
-  alias MobDev.Device
+  alias MobDev.{Device, DeviceLeases}
 
   @uiautomation_conflict "Android snapshot helper output could not be parsed"
 
@@ -49,13 +49,8 @@ defmodule MobDev.Smoke do
   @typedoc "`agent-device` refused to run (`\"success\": false`)."
   @type cli_error :: %{code: String.t() | nil, message: String.t(), hint: String.t() | nil}
 
-  @typedoc "Another session's lease on a device."
-  @type claim :: %{
-          device_key: String.t() | nil,
-          classification: String.t() | nil,
-          session: String.t() | nil,
-          workspace: String.t() | nil
-        }
+  @typedoc "A session's lease on a device."
+  @type claim :: DeviceLeases.claim()
 
   @typedoc "An RPC reply sorted by what it means for the check."
   @type reply ::
@@ -291,42 +286,14 @@ defmodule MobDev.Smoke do
   end
 
   @doc false
-  # Reads `agent-device device status --json`. Stale claims are hidden from
-  # that listing (`hiddenStaleClaims`), so any listed claim is live.
+  # Any listed claim blocks a device, this process's own session included:
+  # every flow's `agent-device test` takes its own claim.
   @spec find_claim(String.t(), String.t()) :: {:ok, claim() | nil} | {:error, String.t()}
   def find_claim(output, device_id) do
-    case Jason.decode(String.trim(output)) do
-      {:ok, %{"success" => true, "data" => %{"claims" => claims}}} when is_list(claims) ->
-        {:ok, claims |> Enum.find(&claims_device?(&1, device_id)) |> claim()}
-
-      {:ok, %{"success" => false, "error" => %{} = error}} ->
-        {:error, cli_error(error).message}
-
-      _ ->
-        {:error, "agent-device device status did not print a claims report"}
+    with {:ok, claims} <- DeviceLeases.parse_status(output) do
+      id = String.downcase(device_id)
+      {:ok, Enum.find(claims, &(String.downcase(&1.id) == id))}
     end
-  end
-
-  defp claims_device?(claim, device_id) do
-    id = String.downcase(device_id)
-    claimed = dig(claim, ["device", "id"])
-    key = claim["deviceKey"]
-
-    (is_binary(claimed) and String.downcase(claimed) == id) or
-      (is_binary(key) and String.ends_with?(String.downcase(key), ":" <> id))
-  end
-
-  defp claim(nil), do: nil
-
-  defp claim(raw) do
-    owner = raw["owner"] || %{}
-
-    %{
-      device_key: raw["deviceKey"],
-      classification: raw["classification"],
-      session: owner["session"],
-      workspace: owner["workspace"]
-    }
   end
 
   @doc false

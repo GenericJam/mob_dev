@@ -89,7 +89,7 @@ defmodule MobDev.Deployer do
       # Manual overrides from `mix mob.deploy --dist-port N --node-suffix X`.
       # When set, all targeted devices share the same port/suffix (the user
       # is being explicit about a single device they care about). The
-      # auto-allocated per-device values (one port per index, suffix per
+      # auto-allocated per-device values (port from serial + app, suffix per
       # serial/UDID) only apply when these are nil.
       dist_port_override = Keyword.get(opts, :dist_port)
       node_suffix_override = Keyword.get(opts, :node_suffix)

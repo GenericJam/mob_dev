@@ -20,6 +20,42 @@
   it as `--cookie`, which would put it in the process arguments. See
   `decisions/2026-09-30-private-dist-cookie-for-every-platform.md`.
 
+### Fixed
+
+- **Tasks that pick devices on their own leave another agent's leased
+  device alone (MOB-330).** A bare `mix mob.deploy` installed and launched an
+  app on an emulator another agent held through `agent-device`. When
+  `agent-device` is on PATH, every selection the user did not name now skips
+  devices another session has claimed (read from `agent-device device status
+  --json`) and prints each one with the session holding it: single-device
+  auto-selection and `--all-devices` / `--all-physical` in `mix mob.deploy`,
+  `mix mob.uninstall` and `mix mob.smoke`, `mix mob.connect` without
+  `--device`, `mix mob.push` / `mix mob.watch`, and the battery benches'
+  device auto-detection. A claim is yours when its session equals
+  `AGENT_DEVICE_SESSION`; with that unset, every claim is someone else's. A
+  claimed device named with `--device` is still used, after a loud warning:
+  naming it is the same consent `--device` gives for a phone. The device
+  auto-selection picks is always printed. Without `agent-device`, selection is
+  unchanged. See `MobDev.DeviceLeases`.
+- **`mix mob.plugins` says when a plugin's signature doesn't verify (MOB-332).**
+  Such a plugin was listed as `tier 0 … no manifest (regular dep)` after a
+  separate `skipping <name>: invalid_signature` line, or not at all when not
+  activated. Its row now shows `tier ?`, what is wrong (not signed, invalid,
+  no public key, legacy v1) and the fix: re-sign a local checkout, reinstall,
+  ask the author, or acknowledge an unsigned plugin for development.
+- **`mix mob.plugin.trust` writes one trusted plugin per line and shows a path
+  dependency's real version (MOB-334).** `config :mob, :trusted_plugins` was
+  rewritten as one long line; it is now laid out as `mix format` would, sorted
+  by name, so a trust change is a one-line diff. An existing one-line stanza
+  is converted in place. The review showed `version: (unset)` for a path
+  dependency; it now shows the version from the plugin's `mix.exs` (read, not
+  evaluated) and the dependency's path.
+- **`mix mob.deploy`'s documentation matches what it does (MOB-333).** The
+  fast deploy hot-loads over Erlang distribution without a restart and only
+  restarts when it has to write the BEAMs to the device; `--dist-port`
+  defaults to the port derived from the device serial and app name, not
+  `9100 + index`; the "Under the hood" commands are the ones the task runs.
+
 ## [0.7.6] - 2026-10-01
 
 ### Breaking

@@ -155,6 +155,54 @@ defmodule MobDev.Plugin.TrustStoreTest do
       assert config[:mob][:trusted_plugins] == %{mob_foo: Crypto.fingerprint(pub)}
       assert config[:mob][:plugins] == [:mob_foo]
     end
+
+    # MOB-334: the whole map used to be rewritten as one long line, so every
+    # trust change was a diff of that line and merges conflicted.
+    test "writes one entry per line, sorted, laid out as mix format would", %{dir: dir} do
+      {_p1, pub1} = Crypto.generate_keypair()
+      {_p2, pub2} = Crypto.generate_keypair()
+      seed_mob_exs(dir, "import Config\n")
+
+      :ok = TrustStore.add_trust(:mob_zeta, pub1, dir)
+      :ok = TrustStore.add_trust(:mob_alpha, pub2, dir)
+      contents = File.read!(Path.join(dir, "mob.exs"))
+
+      assert contents =~ """
+             config :mob, :trusted_plugins, %{
+               mob_alpha: "#{Crypto.fingerprint(pub2)}",
+               mob_zeta: "#{Crypto.fingerprint(pub1)}"
+             }
+             """
+
+      assert Code.format_string!(contents) |> IO.iodata_to_binary() ==
+               String.trim_trailing(contents)
+    end
+
+    test "rewrites a legacy one-line stanza in place rather than adding a second", %{dir: dir} do
+      {_priv, pub} = Crypto.generate_keypair()
+
+      seed_mob_exs(dir, """
+      import Config
+      config :mob, :trusted_plugins, %{mob_old: "ed25519:abc=", mob_foo: "ed25519:def="}
+      config :mob, :plugins, [:mob_foo]
+      """)
+
+      :ok = TrustStore.add_trust(:mob_foo, pub, dir)
+      contents = File.read!(Path.join(dir, "mob.exs"))
+
+      assert [_before, _only_stanza] = String.split(contents, ":trusted_plugins")
+      assert contents =~ ~s(\n  mob_old: "ed25519:abc="\n}\nconfig :mob, :plugins)
+
+      assert TrustStore.load_trusted_plugins(dir) == %{
+               mob_foo: Crypto.fingerprint(pub),
+               mob_old: "ed25519:abc="
+             }
+    end
+
+    test "writes plugin names that need quoting as valid keys" do
+      assert TrustStore.trust_stanza(%{"mob-dash": "ed25519:x="}) ==
+               ~s(config :mob, :trusted_plugins, %{\n  "mob-dash": "ed25519:x="\n})
+    end
   end
 
   describe "remove_trust/2" do

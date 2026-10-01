@@ -9,7 +9,9 @@ defmodule Mix.Tasks.Mob.Push do
 
   The apps must already be running (start them with `mix mob.connect` or
   `mix mob.deploy` first). Modules are loaded into the live BEAM in place,
-  equivalent to calling `nl(Module)` in IEx for each changed module.
+  equivalent to calling `nl(Module)` in IEx for each changed module. A device
+  another `agent-device` session has claimed is skipped (see
+  `MobDev.DeviceLeases`).
 
   Only BEAMs are pushed, never native code: if a plugin with a NIF was
   activated since the last `mix mob.deploy --native`, it warns that the

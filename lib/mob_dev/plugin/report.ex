@@ -9,8 +9,12 @@ defmodule MobDev.Plugin.Report do
 
   alias MobDev.Plugin.Manifest
 
-  @typedoc "An app and its loaded manifest (nil = no manifest / tier 0)."
-  @type dep :: {atom(), map() | nil}
+  @typedoc """
+  An app and its manifest: the loaded map, `nil` for no manifest (tier 0), or
+  `{:unverified, reason}` for a manifest that was not loaded because its
+  signature check failed (`MobDev.Plugin.Verify.load_verified/2`).
+  """
+  @type dep :: {atom(), map() | nil | {:unverified, term()}}
 
   @typedoc "Vetting summary attached to a row by `with_vetting/2`."
   @type vetting :: %{
@@ -18,13 +22,18 @@ defmodule MobDev.Plugin.Report do
           capability_errors: non_neg_integer()
         }
 
-  @typedoc "One row of `mix mob.plugins` output."
+  @typedoc """
+  One row of `mix mob.plugins` output. `unverified` is the verification
+  failure for a manifest that was refused; tier and hot-push are then unknown
+  (`nil`), since the manifest is never evaluated.
+  """
   @type row :: %{
           name: atom(),
-          tier: 0..4,
-          hot_pushable: true | false | :partial,
+          tier: 0..4 | nil,
+          hot_pushable: true | false | :partial | nil,
           status: :activated | :installed,
           manifest?: boolean(),
+          unverified: term() | nil,
           description: String.t() | nil,
           vetting: vetting() | nil
         }
@@ -32,28 +41,44 @@ defmodule MobDev.Plugin.Report do
   @doc """
   Builds sorted report rows from all deps and the activated-plugin list.
 
-  A dep is a plugin row if it ships a manifest *or* is named in
-  `config :mob, :plugins`. A tier-0 plugin (no manifest) therefore only
-  appears once activated — otherwise it's indistinguishable from an ordinary
-  library dependency. Status is `:activated` when in the list, else
+  A dep is a plugin row if it ships a manifest (loaded or refused) *or* is
+  named in `config :mob, :plugins`. A tier-0 plugin (no manifest) therefore
+  only appears once activated — otherwise it's indistinguishable from an
+  ordinary library dependency. Status is `:activated` when in the list, else
   `:installed` (present in deps, not yet activated).
   """
   @spec rows([dep()], [atom()]) :: [row()]
   def rows(deps, activated) do
     deps
     |> Enum.filter(fn {name, manifest} -> manifest != nil or name in activated end)
-    |> Enum.map(fn {name, manifest} ->
-      %{
-        name: name,
-        tier: Manifest.tier(manifest),
-        hot_pushable: Manifest.hot_pushable(manifest),
-        status: if(name in activated, do: :activated, else: :installed),
-        manifest?: manifest != nil,
-        description: manifest && Map.get(manifest, :description),
-        vetting: nil
-      }
-    end)
+    |> Enum.map(fn {name, manifest} -> row(name, manifest, name in activated) end)
     |> Enum.sort_by(& &1.name)
+  end
+
+  defp row(name, {:unverified, reason}, activated?) do
+    %{
+      name: name,
+      tier: nil,
+      hot_pushable: nil,
+      status: if(activated?, do: :activated, else: :installed),
+      manifest?: false,
+      unverified: reason,
+      description: nil,
+      vetting: nil
+    }
+  end
+
+  defp row(name, manifest, activated?) do
+    %{
+      name: name,
+      tier: Manifest.tier(manifest),
+      hot_pushable: Manifest.hot_pushable(manifest),
+      status: if(activated?, do: :activated, else: :installed),
+      manifest?: manifest != nil,
+      unverified: nil,
+      description: manifest && Map.get(manifest, :description),
+      vetting: nil
+    }
   end
 
   @doc """
@@ -179,15 +204,58 @@ defmodule MobDev.Plugin.Report do
         :installed -> "installed (not activated)"
       end
 
-    note = if row.manifest?, do: "", else: "  — no manifest (regular dep)"
-
     "  " <>
       pad(to_string(row.name), 26) <>
-      pad("tier #{row.tier}", 8) <>
+      pad(if(row.tier, do: "tier #{row.tier}", else: "tier ?"), 8) <>
       pad(hot_push(row.hot_pushable), 10) <>
       if(with_vetting?, do: pad(render_vetting(row.vetting), 16), else: "") <>
-      status <> note
+      status <> note(row)
   end
+
+  defp note(row) do
+    case Map.get(row, :unverified) do
+      nil when row.manifest? ->
+        ""
+
+      nil ->
+        "  — no manifest (regular dep)"
+
+      reason ->
+        {problem, fix} = unverified_message(reason, row.name)
+        "  — #{problem}\n      fix: #{fix}"
+    end
+  end
+
+  # What a refused manifest means and what to do about it, per verification
+  # failure. The manifest is not loaded, so its tier and contributions are
+  # unknown and the build refuses the plugin while it is activated.
+  defp unverified_message(:missing_signature, name),
+    do:
+      {"manifest is not signed",
+       "ask the author to sign it (`mix mob.plugin.sign`); to use it unsigned in " <>
+         "development, add `config :mob, :acknowledge_unsafe_plugins, [#{inspect(name)}]` to mob.exs"}
+
+  defp unverified_message(:invalid_signature, name),
+    do:
+      {"signature is invalid (its files changed since signing, or were tampered with)",
+       "if it is your own checkout, re-sign it there with `mix mob.plugin.sign`; otherwise " <>
+         "reinstall it (`mix deps.clean #{name} && mix deps.get`) or ask the author"}
+
+  defp unverified_message(:missing_pubkey, _name),
+    do:
+      {"signed, but ships no priv/mob_plugin.pub to verify it",
+       "ask the author to re-sign it (`mix mob.plugin.keygen`, then `mix mob.plugin.sign`)"}
+
+  defp unverified_message(:envelope_v1_unsupported, name),
+    do:
+      {"legacy v1 signature, no longer accepted",
+       "`mix deps.update #{name}` to a v2-signed release; a local checkout is " <>
+         "re-signed in its directory with `mix mob.plugin.sign`"}
+
+  defp unverified_message(reason, _name),
+    do:
+      {"manifest could not be verified (#{inspect(reason)})",
+       "run `mix mob.validate_plugin` in the plugin's directory, or ask its author"}
 
   defp render_vetting(nil), do: "—"
 
@@ -211,6 +279,7 @@ defmodule MobDev.Plugin.Report do
   defp hot_push(true), do: "yes"
   defp hot_push(false), do: "no"
   defp hot_push(:partial), do: "partial"
+  defp hot_push(nil), do: "?"
 
   defp legend(rows) do
     not_activated = Enum.any?(rows, &(&1.status == :installed))

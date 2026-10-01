@@ -8,7 +8,8 @@ defmodule Mix.Tasks.Mob.Watch do
   updated modules to all running Android and iOS devices.
 
   Apps must already be running. Modules are loaded in place — no restart.
-  Only modules that actually changed are pushed each cycle.
+  Only modules that actually changed are pushed each cycle. A device another
+  `agent-device` session has claimed is skipped (see `MobDev.DeviceLeases`).
 
   Press Ctrl-C to stop.
 

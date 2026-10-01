@@ -9,18 +9,23 @@ defmodule MobDev.HotPush do
   `mix mob.deploy` first).
   """
 
-  alias MobDev.{DistCookie, Tunnel}
+  alias MobDev.{DeviceLeases, DistCookie, Tunnel}
   alias MobDev.Discovery.{Android, IOS}
 
   @doc """
   Sets up adb tunnels (idempotent) and connects to all running device nodes.
   Returns list of connected node atoms.
+
+  Devices another agent-device session has claimed are skipped
+  (`MobDev.DeviceLeases`): this pushes to every device, so none is named.
   """
   @spec connect(keyword()) :: [node()]
   def connect(opts \\ []) do
     cookies = opts |> Keyword.get(:cookie) |> DistCookie.candidates()
+    leases = Keyword.get_lazy(opts, :leases, &DeviceLeases.load/0)
 
     (Android.list_devices() ++ IOS.list_simulators())
+    |> DeviceLeases.exclude_claimed(leases, "Not pushing to it.")
     |> Enum.flat_map(fn device ->
       case Tunnel.setup(device) do
         {:ok, d} -> [d]

@@ -15,6 +15,9 @@ defmodule Mix.Tasks.Mob.Plugins do
   ordinary libraries until activated, so they appear only once listed in
   `config :mob, :plugins`.
 
+  A manifest whose signature doesn't verify is not loaded (its tier shows as
+  `?`); its row says what is wrong with the signature and how to fix it.
+
   Activation is two-step by design (see `MOB_PLUGINS.md`): adding a plugin to
   `deps` makes it *installed*; adding it to `config :mob, :plugins` makes it
   *activated* — only then are its contributions merged into the build.
@@ -41,8 +44,12 @@ defmodule Mix.Tasks.Mob.Plugins do
     |> Report.render()
     |> then(&IO.puts("\n" <> &1 <> "\n"))
 
+    # Refused manifests ({:unverified, _}) were never loaded; nothing to check.
     activated_manifests =
-      for {name, manifest} <- deps, name in activated, do: {dep_dirs[name], manifest}
+      for {name, manifest} <- deps,
+          name in activated,
+          not match?({:unverified, _}, manifest),
+          do: {dep_dirs[name], manifest}
 
     # Exits non-zero on a collision so CI and scripts can't miss it (MOB-170);
     # the native build runs the same check before codegen.
@@ -55,18 +62,19 @@ defmodule Mix.Tasks.Mob.Plugins do
   # `acknowledge_unsafe_plugins` is loaded unsigned. Without that, an
   # acknowledged plugin dropped out as nil and the collision check above
   # passed a configuration the native build rejects (release review).
-  @spec load_manifests(%{atom() => Path.t()}, [atom()]) :: [{atom(), map() | nil}]
+  #
+  # A manifest that fails verification is never evaluated; it comes back as
+  # `{:unverified, reason}` so its row says why and how to fix it (MOB-332)
+  # instead of passing for a tier-0 dep with no manifest.
+  @spec load_manifests(%{atom() => Path.t()}, [atom()]) ::
+          [{atom(), map() | nil | {:unverified, term()}}]
   def load_manifests(deps_paths, acknowledged) do
     Enum.map(deps_paths, fn {app, path} ->
       opts = if app in acknowledged, do: [acknowledged_unsafe: true], else: []
 
       case MobDev.Plugin.Verify.load_verified(path, opts) do
-        {:ok, manifest} ->
-          {app, manifest}
-
-        {:error, reason} ->
-          Mix.shell().info([:yellow, "[mob.plugins] skipping #{app}: #{reason}", :reset])
-          {app, nil}
+        {:ok, manifest} -> {app, manifest}
+        {:error, reason} -> {app, {:unverified, reason}}
       end
     end)
   end

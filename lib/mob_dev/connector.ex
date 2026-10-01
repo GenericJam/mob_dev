@@ -11,7 +11,7 @@ defmodule MobDev.Connector do
   forwards the port that node actually registered.
   """
 
-  alias MobDev.{Device, DistCookie, Tunnel}
+  alias MobDev.{Device, DeviceLeases, DistCookie, Tunnel}
   alias MobDev.Discovery.{Android, IOS}
 
   @android_activity ".MainActivity"
@@ -59,17 +59,36 @@ defmodule MobDev.Connector do
 
     IO.puts("\n#{color(:cyan)}Scanning for devices...#{color(:reset)}\n")
 
-    devices = platforms |> discover_all(only) |> filter_only(only)
+    discovered = platforms |> discover_all(only) |> filter_only(only)
+
+    # Without --device/--only every device is a target, so another
+    # agent-device session's claimed devices are left alone; a named one is
+    # used with a warning (MOB-330).
+    leases = Keyword.get_lazy(opts, :leases, &DeviceLeases.load/0)
+
+    devices =
+      if only == [],
+        do: DeviceLeases.exclude_claimed(discovered, leases),
+        else: DeviceLeases.warn_claimed(discovered, leases)
 
     if devices == [] do
-      if only != [] do
-        IO.puts("  #{color(:yellow)}No devices matched #{Enum.join(only, ", ")}.#{color(:reset)}")
+      cond do
+        discovered != [] ->
+          IO.puts(
+            "  #{color(:yellow)}Every device found is claimed by another session.#{color(:reset)}"
+          )
 
-        IO.puts("  • Run `mix mob.connect` with no --only to list all discovered devices")
-      else
-        IO.puts("  #{color(:yellow)}No devices found.#{color(:reset)}")
-        IO.puts("  • Connect an Android device via USB and enable USB debugging")
-        IO.puts("  • Start an iOS simulator in Xcode or via xcrun simctl")
+        only != [] ->
+          IO.puts(
+            "  #{color(:yellow)}No devices matched #{Enum.join(only, ", ")}.#{color(:reset)}"
+          )
+
+          IO.puts("  • Run `mix mob.connect` with no --only to list all discovered devices")
+
+        true ->
+          IO.puts("  #{color(:yellow)}No devices found.#{color(:reset)}")
+          IO.puts("  • Connect an Android device via USB and enable USB debugging")
+          IO.puts("  • Start an iOS simulator in Xcode or via xcrun simctl")
       end
 
       {[], []}

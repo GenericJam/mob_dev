@@ -39,7 +39,14 @@ defmodule Mix.Tasks.Mob.Plugin.Trust do
     fingerprint = Crypto.fingerprint(pub)
 
     existing = Map.get(TrustStore.load_trusted_plugins(project_dir), name)
-    print_summary(name, manifest, fingerprint, existing)
+
+    print_summary(
+      name,
+      manifest,
+      version(manifest, plugin_dir, project_dir),
+      fingerprint,
+      existing
+    )
 
     prompt = trust_prompt(existing, fingerprint)
 
@@ -114,14 +121,14 @@ defmodule Mix.Tasks.Mob.Plugin.Trust do
     end
   end
 
-  defp print_summary(name, manifest, fingerprint, existing) do
+  defp print_summary(name, manifest, version, fingerprint, existing) do
     Mix.shell().info([
       "\nReview ",
       :cyan,
       Atom.to_string(name),
       :reset,
       ":\n",
-      "  version:      #{manifest[:version] || "(unset)"}\n",
+      "  version:      #{version}\n",
       "  fingerprint:  ",
       :cyan,
       fingerprint,
@@ -131,6 +138,64 @@ defmodule Mix.Tasks.Mob.Plugin.Trust do
       capability_lines(manifest),
       "\n"
     ])
+  end
+
+  @doc false
+  # What to show as the plugin's version. Manifests rarely declare one, so
+  # this falls back to the package's own version: Hex metadata, else the
+  # `version:` in its mix.exs, read without evaluating it (the plugin is not
+  # trusted yet). A dependency outside the project's deps/ is a path
+  # dependency, and its location is shown too (MOB-334). Public for testing.
+  @spec version(map(), Path.t(), Path.t()) :: String.t()
+  def version(manifest, plugin_dir, project_dir) do
+    declared = manifest[:version] || hex_version(plugin_dir) || mix_exs_version(plugin_dir)
+
+    if path_dep?(plugin_dir, project_dir) do
+      "#{declared || "(not declared)"} (path dependency: #{plugin_dir})"
+    else
+      declared || "(unset)"
+    end
+  end
+
+  defp path_dep?(plugin_dir, project_dir) do
+    deps_dir = Path.expand("deps", project_dir)
+    not String.starts_with?(Path.expand(plugin_dir), deps_dir <> "/")
+  end
+
+  defp hex_version(plugin_dir) do
+    with {:ok, terms} <- :file.consult(Path.join(plugin_dir, "hex_metadata.config")),
+         {"version", version} <- List.keyfind(terms, "version", 0) do
+      version
+    else
+      _ -> nil
+    end
+  end
+
+  # `version: "1.2.3"` or `version: @version` with `@version "1.2.3"`.
+  defp mix_exs_version(plugin_dir) do
+    with {:ok, source} <- File.read(Path.join(plugin_dir, "mix.exs")),
+         {:ok, ast} <- Code.string_to_quoted(source) do
+      {_ast, {attrs, version}} =
+        Macro.prewalk(ast, {%{}, nil}, fn
+          {:@, _, [{attr, _, [value]}]} = node, {attrs, version}
+          when is_atom(attr) and is_binary(value) ->
+            {node, {Map.put(attrs, attr, value), version}}
+
+          {:version, value} = node, {attrs, nil} ->
+            {node, {attrs, value}}
+
+          node, acc ->
+            {node, acc}
+        end)
+
+      case version do
+        value when is_binary(value) -> value
+        {:@, _, [{attr, _, context}]} when is_atom(context) -> Map.get(attrs, attr)
+        _ -> nil
+      end
+    else
+      _ -> nil
+    end
   end
 
   defp existing_line(nil, _new), do: ""

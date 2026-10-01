@@ -159,12 +159,16 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
     duration = opts[:duration] || 1800
     no_build = opts[:no_build] || false
 
+    leases = MobDev.DeviceLeases.load()
+
     # hw_udid: hardware UDID for libimobiledevice tools (USB only, may be nil over WiFi).
     # device_id: identifier for xcrun devicectl (works over WiFi for paired devices).
     # --device accepts either; if given, use it for both.
     {hw_udid, device_id} =
       case opts[:device] do
         given when is_binary(given) ->
+          MobDev.DeviceLeases.warn_claimed([ios_device(given)], leases)
+
           # Hardware UDID has no hyphens in the first segment (e.g. 00008110-...)
           # CoreDevice UUID has the standard 8-4-4-4-12 UUID format.
           hw =
@@ -178,24 +182,28 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
           {hw, given}
 
         nil ->
-          case {auto_detect_usb(), auto_detect_wifi()} do
-            {nil, nil} ->
-              Mix.raise("""
-              No iOS device found. Options:
-                Connect an iPhone/iPad via USB and accept "Trust This Computer"
-                mix mob.battery_bench_ios --device UDID
-              List connected devices with: idevice_id -l
-              """)
+          picked =
+            case {auto_detect_usb(leases), auto_detect_wifi(leases)} do
+              {nil, nil} ->
+                Mix.raise("""
+                No unclaimed iOS device found. Options:
+                  Connect an iPhone/iPad via USB and accept "Trust This Computer"
+                  mix mob.battery_bench_ios --device UDID
+                List connected devices with: idevice_id -l
+                """)
 
-            {usb, nil} ->
-              {usb, usb}
+              {usb, nil} ->
+                {usb, usb}
 
-            {nil, wifi} ->
-              {nil, wifi}
+              {nil, wifi} ->
+                {nil, wifi}
 
-            {usb, wifi} ->
-              {usb, wifi}
-          end
+              {usb, wifi} ->
+                {usb, wifi}
+            end
+
+          IO.puts("  Auto-selected #{elem(picked, 1)}")
+          picked
       end
 
     # device_id is what we pass to xcrun devicectl (install, launch, terminate).
@@ -1268,7 +1276,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
 
   # ── Device detection ─────────────────────────────────────────────────────────
 
-  defp auto_detect_usb do
+  defp auto_detect_usb(leases) do
     case System.find_executable("idevice_id") &&
            System.cmd("idevice_id", ["-l"], stderr_to_stdout: true) do
       {out, 0} ->
@@ -1276,6 +1284,9 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
         |> String.split("\n")
         |> Enum.map(&String.trim/1)
         |> Enum.reject(&(&1 == ""))
+        |> Enum.map(&ios_device/1)
+        |> MobDev.DeviceLeases.exclude_claimed(leases)
+        |> Enum.map(& &1.serial)
         |> List.first()
 
       _ ->
@@ -1283,9 +1294,12 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
     end
   end
 
+  defp ios_device(udid), do: %MobDev.Device{platform: :ios, serial: udid}
+
   # Finds the CoreDevice UUID of a connected (including WiFi-paired) iOS device
-  # via `xcrun devicectl list devices --json-output`.
-  defp auto_detect_wifi do
+  # via `xcrun devicectl list devices --json-output`, skipping devices another
+  # agent-device session has claimed (claims name the hardware UDID).
+  defp auto_detect_wifi(leases) do
     tmp = Path.join(System.tmp_dir!(), "mob_devicectl_list_#{System.os_time(:millisecond)}.json")
 
     try do
@@ -1293,19 +1307,29 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
              stderr_to_stdout: true
            ) do
         {_, 0} ->
-          tmp
-          |> File.read!()
-          |> Jason.decode!()
-          |> get_in(["result", "devices"])
-          |> List.wrap()
-          |> Enum.find_value(fn dev ->
-            state =
-              get_in(dev, ["connectionProperties", "tunnelState"]) ||
-                get_in(dev, ["connectionProperties", "transportType"])
+          candidates =
+            tmp
+            |> File.read!()
+            |> Jason.decode!()
+            |> get_in(["result", "devices"])
+            |> List.wrap()
+            |> Enum.filter(fn dev ->
+              state =
+                get_in(dev, ["connectionProperties", "tunnelState"]) ||
+                  get_in(dev, ["connectionProperties", "transportType"])
 
-            if state not in [nil, "unavailable"] do
-              dev["identifier"]
-            end
+              state not in [nil, "unavailable"]
+            end)
+            |> Enum.map(fn dev ->
+              udid = get_in(dev, ["hardwareProperties", "udid"]) || dev["identifier"]
+              {ios_device(udid), dev["identifier"]}
+            end)
+
+          free =
+            candidates |> Enum.map(&elem(&1, 0)) |> MobDev.DeviceLeases.exclude_claimed(leases)
+
+          Enum.find_value(candidates, fn {device, identifier} ->
+            if device in free, do: identifier
           end)
 
         _ ->

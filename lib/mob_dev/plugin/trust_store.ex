@@ -135,8 +135,7 @@ defmodule MobDev.Plugin.TrustStore do
 
         # No mob.exs yet — create the minimal one (header + use Config + the
         # trusted_plugins entry). Same pattern used by mob_new templates.
-        contents =
-          "import Config\n\nconfig :mob, :trusted_plugins, " <> inspect_trust_map(new_map) <> "\n"
+        contents = "import Config\n\n" <> trust_stanza(new_map) <> "\n"
 
         File.mkdir_p!(Path.dirname(path))
         File.write!(path, contents)
@@ -150,28 +149,40 @@ defmodule MobDev.Plugin.TrustStore do
   # If the file already declares `config :mob, :trusted_plugins, ...` (any
   # arity, possibly multi-line) we replace the whole stanza; otherwise we
   # add a fresh line above the `mob.local.exs` import, so a local trust map
-  # still overrides the committed one. The map shape is pretty-printed via
-  # `inspect/2` with sorted keys for stable diffs.
+  # still overrides the committed one.
   defp replace_or_append_trust_line(source, new_map) do
-    new_line = "config :mob, :trusted_plugins, " <> inspect_trust_map(new_map)
+    new_stanza = trust_stanza(new_map)
 
     if Regex.match?(trust_stanza_pattern(), source) do
-      Regex.replace(trust_stanza_pattern(), source, fn _ -> new_line end, global: false)
+      Regex.replace(trust_stanza_pattern(), source, fn _ -> new_stanza end, global: false)
     else
-      MobExs.insert_config(source, new_line)
+      MobExs.insert_config(source, new_stanza)
     end
   end
 
   # Matches `config :mob, :trusted_plugins, <term>` where <term> can be a
   # map literal possibly spanning multiple lines. We use a greedy match up
   # to the closing `}` and rely on the writer always serialising the value
-  # as a `%{...}` literal (see inspect_trust_map/1) so this stays stable.
+  # as a `%{...}` literal (see trust_stanza/1) so this stays stable.
   defp trust_stanza_pattern do
-    ~r/config\s+:mob\s*,\s*:trusted_plugins\s*,\s*%\{[^}]*\}/s
+    Regex.compile!("config\\s+:mob\\s*,\\s*:trusted_plugins\\s*,\\s*%\\{[^}]*\\}", "s")
   end
 
-  defp inspect_trust_map(map) do
-    sorted = map |> Map.to_list() |> Enum.sort()
-    inspect(Map.new(sorted), pretty: false, limit: :infinity)
+  @doc false
+  # The stanza as `mix format` lays out a map too long for one line: one
+  # entry per line, sorted by plugin name, so adding or removing a plugin is a
+  # one-line diff (MOB-334). Public for testing.
+  @spec trust_stanza(trust_map()) :: String.t()
+  def trust_stanza(map) when map_size(map) == 0, do: "config :mob, :trusted_plugins, %{}"
+
+  def trust_stanza(map) do
+    entries =
+      map
+      |> Enum.sort()
+      |> Enum.map_join(",\n", fn {name, fingerprint} ->
+        "  #{Macro.inspect_atom(:key, name)} #{inspect(fingerprint)}"
+      end)
+
+    "config :mob, :trusted_plugins, %{\n" <> entries <> "\n}"
   end
 end

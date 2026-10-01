@@ -74,7 +74,7 @@ defmodule Mix.Tasks.Mob.Smoke do
 
   alias Mix.Tasks.Mob.Connect
   alias Mix.Tasks.Mob.Deploy
-  alias MobDev.{Connector, Device, Smoke, TaskHelp, TaskTargets}
+  alias MobDev.{Connector, Device, DeviceLeases, Smoke, TaskHelp, TaskTargets}
 
   @switches [
     device: :keep,
@@ -138,7 +138,7 @@ defmodule Mix.Tasks.Mob.Smoke do
         Mix.raise("agent-device is not on PATH. Install it with: npm i -g agent-device")
 
     Mix.Task.run("app.config")
-    devices = select_devices!(opts, deps)
+    devices = select_devices!(opts, exe, deps)
     health? = Keyword.get(opts, :health, true)
     cookie = opts[:cookie]
 
@@ -169,7 +169,7 @@ defmodule Mix.Tasks.Mob.Smoke do
     :ok
   end
 
-  defp select_devices!(opts, deps) do
+  defp select_devices!(opts, exe, deps) do
     platforms =
       case Connect.resolve_platforms(opts, MobDev.Config.platforms()) do
         {:ok, platforms} -> platforms
@@ -177,6 +177,8 @@ defmodule Mix.Tasks.Mob.Smoke do
       end
 
     ids = Keyword.get_values(opts, :device) ++ Keyword.get_values(opts, :only)
+    {status, _} = deps.cmd.(exe, ["device", "status", "--json"])
+    opts = Keyword.put(opts, :leases, DeviceLeases.from_status(status))
 
     case TaskTargets.resolve(deps.discover.(platforms), ids, opts) do
       {:ok, devices} -> devices
