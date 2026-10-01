@@ -27,6 +27,15 @@
   phone). mob's `mob_beam.m` reads it when the launch environment has none
   (needs the matching mob).
 
+### Documentation
+
+- **`mix mob.deploy` documents the physical-iPhone exception to the
+  legacy-app restart.** The 0.7.7 entry and the task's docs said an app built
+  against a pre-MOB-49 mob is always restarted onto its private cookie. A
+  connected physical iPhone is the exception: mob_dev never writes BEAMs to a
+  phone it is hot-loading (a `devicectl` replace has no undo), so the legacy
+  app is hot-loaded and keeps `mob_secret` until `mix mob.deploy --native`.
+
 ## [0.7.7] - 2026-10-01
 
 ### Security
