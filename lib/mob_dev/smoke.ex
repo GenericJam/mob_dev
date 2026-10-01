@@ -464,10 +464,19 @@ defmodule MobDev.Smoke do
     end
   end
 
+  # A freshly booted app's receipt store has no state until its first write,
+  # so health reports the entry without `:store`: nothing recorded yet, i.e.
+  # 0. Only a missing entry (older mob) or an unreadable store means the
+  # count is unknown.
   defp recorded(snapshot) do
     with {:ok, map} <- health_map(snapshot),
-         n when is_integer(n) <- dig(map, [:stores, Mob.Agent.Receipts, :store, :recorded]) do
-      {:ok, n}
+         %{} = entry <- dig(map, [:stores, Mob.Agent.Receipts]) do
+      case entry do
+        %{store: %{recorded: n}} when is_integer(n) -> {:ok, n}
+        %{store: %{} = store} when not is_map_key(store, :recorded) -> {:ok, 0}
+        %{store: _unreadable} -> :error
+        _no_state_yet -> {:ok, 0}
+      end
     else
       _ -> :error
     end

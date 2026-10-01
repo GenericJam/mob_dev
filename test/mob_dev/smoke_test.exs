@@ -406,16 +406,34 @@ defmodule MobDev.SmokeTest do
       assert Smoke.receipt_findings(snap(health(0, 0, 0, 10)), snap(health(0, 0, 0, 10)), 0) == []
     end
 
-    test "health without the receipt store's counter is a note" do
-      old = %{health(0, 0, 0) | stores: %{}}
+    test "a fresh app's receipt store with no state yet counts as zero recorded" do
+      # Seen on a Moto G 2024: before its first write the store's entry has
+      # owner/lost/resets/tables but no `store` key.
+      fresh =
+        update_in(health(0, 0, 0).stores[Mob.Agent.Receipts], &Map.delete(&1, :store))
 
-      assert Smoke.receipts_delta(snap(old), snap(old)) == nil
+      assert Smoke.receipts_delta(snap(fresh), snap(health(0, 0, 0, 3))) == 3
+      assert Smoke.receipt_findings(snap(fresh), snap(health(0, 0, 0, 3)), 1) == []
+
+      assert Smoke.receipt_findings(snap(fresh), snap(fresh), 1) ==
+               [{:warning, "the flow did not reach the app (no new receipts)"}]
+    end
+
+    test "health without the receipt store's entry (older mob) is a note" do
+      old = update_in(health(0, 0, 0).stores, &Map.delete(&1, Mob.Agent.Receipts))
+
+      assert Smoke.receipts_delta(snap(old), snap(health(0, 0, 0, 3))) == nil
 
       assert Smoke.receipt_findings(snap(old), snap(old), 1) ==
                [
                  {:note,
                   "receipts not counted: Mob.Diag.health/0 reports no Mob.Agent.Receipts recorded"}
                ]
+    end
+
+    test "an unreadable receipt store is not counted as zero" do
+      stale = put_in(health(0, 0, 0).stores[Mob.Agent.Receipts][:store], :stale)
+      assert Smoke.receipts_delta(snap(stale), snap(health(0, 0, 0, 3))) == nil
     end
   end
 

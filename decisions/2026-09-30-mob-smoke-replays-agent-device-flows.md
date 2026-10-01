@@ -68,8 +68,12 @@ can trust, for reasons found while wiring it up:
   **warning** (a flow may legitimately touch nothing that records one). Health
   unreadable after a flow (node never came back) is a **warning** naming the
   flow. An unreachable node before the flows, or a mob without the functions
-  (`< 0.9.5` for `health/0`, `< 0.9.7` for `listener`, no `recorded`), is a
-  note: the check could not run, and the output says so.
+  (`< 0.9.5` for `health/0`, `< 0.9.7` for `listener`, no
+  `Mob.Agent.Receipts` entry in `stores`), is a note: the check could not run,
+  and the output says so. A receipts entry with no `store` key is a freshly
+  booted app whose receipt store has not been written yet, and counts as 0
+  recorded. (Correction: the first version treated that as "not counted",
+  which on a device dropped the delta of every flow run against a fresh app.)
 - Attach with `Connector.connect_all(restart: false)`; the flows expect the
   running app.
 - Claims are only looked at (`device status --json`), never taken. A device
