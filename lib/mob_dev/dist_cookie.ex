@@ -6,7 +6,10 @@ defmodule MobDev.DistCookie do
   Android and the Mac-side node, so concurrent `mob.connect` sessions attach
   without restarting the app under different credentials. It lives in an
   owner-only directory under `~/.mob/dist_cookies/`, reaches the app only at
-  deploy/launch time, and is never printed. A hand-started node loads it with
+  deploy/launch time, and is never printed. Deploy also writes it to
+  `mob_dist_cookie` in the app's beams directory (`write_app_file!/2`), where
+  the app reads it at boot, so a relaunch outside mob_dev keeps it.
+  A hand-started node loads it with
   `Node.set_cookie(MobDev.DistCookie.for_project!())` from the project, which
   keeps it out of process arguments (`--cookie` would show it in `ps`).
 
@@ -19,6 +22,48 @@ defmodule MobDev.DistCookie do
   @cookie_bytes 32
   @cookie_pattern Regex.compile!("\\A[0-9a-f]{64}\\z")
   @legacy_cookie :mob_secret
+  @app_file "mob_dist_cookie"
+
+  @doc """
+  Name of the cookie file in an app's beams directory. Android's `Mob.Dist`
+  and iOS's `mob_beam.m` read `$MOB_BEAMS_DIR/mob_dist_cookie` at boot when
+  the launch environment carries no cookie.
+  """
+  @spec app_file() :: String.t()
+  def app_file, do: @app_file
+
+  @doc """
+  Writes `cookie` to `dir/mob_dist_cookie`, owner-only, and returns the path.
+
+  For directories on this Mac that an app reads its BEAMs from: the iOS
+  simulator runtime dir, or the staging dir a physical-iPhone deploy copies to
+  the device. The cookie is written inside a fresh `0700` directory, made
+  `0600`, then renamed over any previous file: nobody else can open it at any
+  point (a descriptor opened on the parent before the `chmod` doesn't help,
+  since lookups check the directory's current mode), and a booting app never
+  sees half a file.
+  """
+  @spec write_app_file!(String.t(), atom()) :: String.t()
+  def write_app_file!(dir, cookie) when is_binary(dir) and is_atom(cookie) do
+    path = Path.join(dir, @app_file)
+
+    private =
+      Path.join(dir, ".#{@app_file}.#{System.pid()}.#{System.unique_integer([:positive])}")
+
+    tmp = Path.join(private, @app_file)
+    File.mkdir_p!(dir)
+
+    try do
+      File.mkdir!(private)
+      File.chmod!(private, 0o700)
+      File.write!(tmp, Atom.to_string(cookie) <> "\n", [:exclusive])
+      File.chmod!(tmp, 0o600)
+      File.rename!(tmp, path)
+      path
+    after
+      File.rm_rf(private)
+    end
+  end
 
   @doc "Returns the private cookie for the current project, creating it on first use."
   @spec for_project!() :: atom()

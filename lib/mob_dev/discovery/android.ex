@@ -252,7 +252,7 @@ defmodule MobDev.Discovery.Android do
 
     script =
       "run-as #{package} sh -c 'umask 077; mkdir -p #{dir} && IFS= read -r c && " <>
-        "echo \"$c\" > #{dir}/mob_dist_cookie'"
+        "echo \"$c\" > #{dir}/#{MobDev.DistCookie.app_file()}'"
 
     run_adb_with_input(["-s", serial, "shell", script], Atom.to_string(cookie) <> "\n")
   end

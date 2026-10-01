@@ -41,6 +41,33 @@ defmodule MobDev.DistCookieTest do
     refute DistCookie.load_or_create!(path) == DistCookie.load_or_create!(other)
   end
 
+  describe "write_app_file!/2" do
+    @managed String.to_atom(String.duplicate("0123456789abcdef", 4))
+
+    test "writes the cookie the app reads at boot, owner-only", %{path: path} do
+      dir = Path.join(Path.dirname(path), "beams")
+      written = DistCookie.write_app_file!(dir, @managed)
+
+      assert written == Path.join(dir, "mob_dist_cookie")
+      assert File.read!(written) == Atom.to_string(@managed) <> "\n"
+      assert File.stat!(written).mode |> Bitwise.band(0o777) == 0o600
+      assert File.ls!(dir) == ["mob_dist_cookie"]
+    end
+
+    test "replaces an older, readable file and makes it owner-only", %{path: path} do
+      dir = Path.dirname(path)
+      old = Path.join(dir, "mob_dist_cookie")
+      File.mkdir_p!(dir)
+      File.write!(old, String.duplicate("f", 64))
+      File.chmod!(old, 0o644)
+
+      DistCookie.write_app_file!(dir, @managed)
+
+      assert File.read!(old) == Atom.to_string(@managed) <> "\n"
+      assert File.stat!(old).mode |> Bitwise.band(0o777) == 0o600
+    end
+  end
+
   # Readers racing the first write must see a complete cookie, never an empty
   # file that reads as corrupt.
   test "concurrent first sessions converge on one cookie", %{path: path} do
