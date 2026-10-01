@@ -36,6 +36,7 @@ end
 | `mix mob.watch_stop` | Stop a running `mix mob.watch` |
 | `mix mob.devices` | List connected devices and their status |
 | `mix mob.attest` | Prove a device is running the code you just pushed — compares module digests, not artifacts ([see below](#did-that-deploy-actually-land-mix-mobattest)) |
+| `mix mob.smoke` | Replay recorded `agent-device` UI flows on devices and check the app's own diagnostics held up ([see below](#smoke-flows-on-devices-mix-mobsmoke)) |
 | `mix mob.mutate` | Mutation-test the lines this branch changed: break the code on purpose and report what nothing noticed ([see below](#do-the-tests-guard-anything-mix-mobmutate)) |
 | `mix mob.push` | Hot-push only changed modules (no restart) |
 | `mix mob.enable <feature>...` | Wire up an optional Mob feature — platform-manifest entries, Elixir stubs, dep injections ([see below](#mix-mobenable-feature)) |
@@ -179,6 +180,59 @@ mix mob.deploy --beam-flags="-S 4:4 -A 4"
 exit code, a `message`, and the deployed, failed and skipped devices with their
 per-device reasons. Progress goes to stderr, so `mix mob.deploy --json | jq`
 receives exactly one document.
+
+## Smoke flows on devices (`mix mob.smoke`)
+
+`mix mob.smoke` replays the `.ad` flows in `smoke/` on each selected device
+through the [`agent-device`](https://www.npmjs.com/package/agent-device) CLI
+(`npm i -g agent-device`), and reads `Mob.Diag.health/0` over dist before the
+first flow and after each one. The app must already be installed and running.
+
+```bash
+mix mob.smoke                          # the one connected emulator/simulator
+mix mob.smoke --device emulator-5554 --retries 1
+mix mob.smoke --all-devices --junit _build/smoke.xml   # smoke-<device>-<flow>.xml each
+```
+
+A device fails on any failed or not-run flow, on a store whose `lost` or
+`resets` rose during a flow, or on new undeliverable listener events. No new
+receipts during a flow is a warning: its taps did not reach this app. A device
+another `agent-device` session holds is skipped, named with that session and
+workspace, and fails the run.
+
+The counters belong to the app's BEAM, and a flow that opens with `--relaunch`
+boots a new one. So each flow is its own `agent-device test` run (artifacts in
+`_build/mob_smoke/<device>/<flow>/`), the task waits up to 15 s for the
+relaunched app's node, and a reading from a new BEAM is compared from zero. A
+node that does not come back is a warning naming the flow. `--no-health` skips
+the comparison and runs the flows as one suite; on mob older than 0.9.5 the
+comparison is skipped with a note.
+
+Record a flow by hand. `--save-script` needs an **absolute** path: a relative
+one is resolved by the agent-device daemon, not your shell's directory, and the
+script lands somewhere else. `--relaunch` starts the flow from a fresh app, and
+`wait text` steps are the assertions:
+
+```bash
+agent-device open com.example.my_app --relaunch --serial emulator-5554 \
+  --session rec --save-script "$PWD/smoke/login.ad"
+agent-device snapshot -i --session rec          # element refs
+agent-device click @e3 --session rec
+agent-device wait text "Welcome" --session rec
+agent-device close --session rec --save-script
+```
+
+Use `--udid <udid>` instead of `--serial` for iOS.
+
+**Android and mobile-mcp.** Android allows one UiAutomation client. While
+mobile-mcp's `com.mobilenext.mobilecli.DeviceServer` runs on the phone, every
+agent-device snapshot fails with "Android snapshot helper output could not be
+parsed". `mix mob.smoke` names the fix in its report but does not run it, since
+mobile-mcp may be in use:
+
+```bash
+adb -s <serial> shell pkill -f mobilecli.DeviceServer
+```
 
 ## Do the tests guard anything? (`mix mob.mutate`)
 

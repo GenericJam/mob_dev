@@ -265,6 +265,16 @@ narrowing functions). Don't make them private:
   `stale_dist_forwards/4` (the serial + app dist-port rule, and which
   forwards `mob.connect` may remove); deploy and connect must both go through
   `Tunnel.dist_port_for/1`, or they disagree on the port
+- The `@doc false` kernel of `MobDev.Smoke` (`parse_report/1`, `find_claim/2`,
+  `test_argv/3`, `run_paths/4`, `health_findings/2`, `receipts_delta/2`,
+  `receipt_findings/3`, `failure_hints/2`, `verdict/1`, …) and
+  `Mix.Tasks.Mob.Smoke.run/2`, which takes the agent-device runner, discovery,
+  connect, node wait and RPC as functions so the task is tested end to end with
+  fakes. `Mix.Tasks.Mob.Deploy.target_error/3` is shared with `mob.smoke`'s
+  device selection. agent-device's `"success": true` is not a pass, Diag
+  counters reset with the app's BEAM (so health is read per flow), and
+  `Mob.Agent.Receipts.count/0` is bounded; see
+  `decisions/2026-09-30-mob-smoke-replays-agent-device-flows.md`
 
 If you make any of these private, every downstream test breaks loudly — but
 you'll lose the ability to evolve the parsers safely.

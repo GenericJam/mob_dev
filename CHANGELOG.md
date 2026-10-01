@@ -19,6 +19,24 @@
   `mix mob.plugin.sign` (mob_dev 0.7.2 or later). See
   `decisions/2026-09-30-v1-envelope-transition.md`.
 
+### Added
+
+- **`mix mob.smoke` replays recorded UI flows on devices and checks the app
+  held up.** It runs `agent-device test` on the `.ad` flows in `smoke/` on
+  each selected device (`--serial`/`--udid`, per-device and per-flow artifacts
+  and JUnit), judging the counts rather than agent-device's top-level
+  `success`, which is true even when scripts fail. It reads
+  `Mob.Diag.health/0` over dist before the first flow and after each one,
+  without restarting the app: a store's `lost`/`resets` or the listener's
+  undeliverable count rising during a flow fails the run, and no new receipts
+  (the receipt store's cumulative `recorded`) is a warning. Each flow runs on
+  its own so a `--relaunch` cannot erase the previous flow's evidence; a
+  reading from a relaunched BEAM is compared from zero.
+  A device another agent-device session holds is skipped with its owner named
+  and fails the run. Android's one-UiAutomation-client conflict with
+  mobile-mcp gets a hint naming the `pkill` that clears it. See
+  `decisions/2026-09-30-mob-smoke-replays-agent-device-flows.md`.
+
 ## [0.7.5] - 2026-09-30
 
 ### Fixed

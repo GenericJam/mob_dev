@@ -816,16 +816,19 @@ defmodule Mix.Tasks.Mob.Deploy do
     |> Enum.reject(&(&1.status == :unauthorized))
   end
 
-  defp target_error(:no_matching_devices, _context, ids),
+  @doc false
+  # Shared with `mix mob.smoke`, which selects devices by the same rules.
+  @spec target_error(TaskTargets.selection_error(), map(), [String.t()]) :: String.t()
+  def target_error(:no_matching_devices, _context, ids),
     do:
       "No connected device matched #{Enum.map_join(ids, ", ", &inspect/1)}. Run `mix mob.devices`."
 
-  defp target_error(:no_dev_devices, %{hint: hint}, _ids), do: hint
+  def target_error(:no_dev_devices, %{hint: hint}, _ids), do: hint
 
-  defp target_error(:no_physical_devices, _context, _ids),
+  def target_error(:no_physical_devices, _context, _ids),
     do: "No physical devices are connected. Run `mix mob.devices`."
 
-  defp target_error(:ambiguous_devices, context, _ids) do
+  def target_error(:ambiguous_devices, context, _ids) do
     case context do
       %{non_physical: 0, physical: physical} when physical > 0 ->
         "Only physical devices are connected. Use `--device <id>` or `--all-physical`."
@@ -838,7 +841,7 @@ defmodule Mix.Tasks.Mob.Deploy do
     end
   end
 
-  defp target_error(:no_devices, _context, _ids), do: "No connected devices found."
+  def target_error(:no_devices, _context, _ids), do: "No connected devices found."
 
   defp resolve_platforms(opts) do
     android = opts[:android]
