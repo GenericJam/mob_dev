@@ -2,6 +2,10 @@ defmodule MobDev.NdkVersionTest do
   use ExUnit.Case, async: false
   alias MobDev.NdkVersion
 
+  # No android/local.properties here, so SDK resolution falls through to the env
+  # regardless of what the checkout itself contains.
+  @no_project Path.join(System.tmp_dir!(), "mob_ndk_no_project")
+
   setup do
     # Make sure no leftover env / app config from another test biases us.
     prev_env = System.get_env("MOB_ANDROID_NDK_VERSION")
@@ -172,15 +176,17 @@ defmodule MobDev.NdkVersionTest do
       System.delete_env("ANDROID_SDK_ROOT")
       System.put_env("ANDROID_HOME", "/opt/custom-sdk")
 
-      assert NdkVersion.root() == Path.join(["/opt/custom-sdk", "ndk", NdkVersion.effective()])
-      refute NdkVersion.root() =~ "Library/Android/sdk"
+      assert NdkVersion.root(@no_project) ==
+               Path.join(["/opt/custom-sdk", "ndk", NdkVersion.effective()])
+
+      refute NdkVersion.root(@no_project) =~ "Library/Android/sdk"
     end
 
     test "root/0 falls back to ANDROID_SDK_ROOT when ANDROID_HOME is unset" do
       System.delete_env("ANDROID_HOME")
       System.put_env("ANDROID_SDK_ROOT", "/opt/sdkroot")
 
-      assert NdkVersion.root() =~ "/opt/sdkroot/ndk/"
+      assert NdkVersion.root(@no_project) =~ "/opt/sdkroot/ndk/"
     end
 
     # MOB-72: the toolchain gate and Gradle use local.properties sdk.dir; the
@@ -214,10 +220,18 @@ defmodule MobDev.NdkVersionTest do
     test "sysroot/0 and toolchain_bin/0 compose root + host" do
       System.delete_env("ANDROID_SDK_ROOT")
       System.put_env("ANDROID_HOME", "/opt/custom-sdk")
-      base = Path.join([NdkVersion.root(), "toolchains", "llvm", "prebuilt", NdkVersion.host()])
 
-      assert NdkVersion.sysroot() == Path.join(base, "sysroot")
-      assert NdkVersion.toolchain_bin() == Path.join(base, "bin")
+      base =
+        Path.join([
+          NdkVersion.root(@no_project),
+          "toolchains",
+          "llvm",
+          "prebuilt",
+          NdkVersion.host()
+        ])
+
+      assert NdkVersion.sysroot(@no_project) == Path.join(base, "sysroot")
+      assert NdkVersion.toolchain_bin(@no_project) == Path.join(base, "bin")
     end
   end
 end
