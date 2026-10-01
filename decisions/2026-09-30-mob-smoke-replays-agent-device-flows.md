@@ -86,12 +86,40 @@ can trust, for reasons found while wiring it up:
   flows drive the UI, so a lone phone is not auto-selected.
 - An iPhone discovered over the LAN only has its IP as `serial`, which
   agent-device cannot address; it is reported as blocked rather than guessed.
+- (Added 2026-10-01, MOB-343.) The documented workaround for flows recorded
+  on an iOS simulator is that the user deletes their
+  `# agent-device:target-v1` identity lines; the task prints the command
+  when it sees the failure and changes nothing. agent-device takes each step's
+  recorded identity (role/id/label, the ancestry of containers above it, its
+  sibling index) from its simulator accessibility bridge, but replay
+  verifies it against an XCTest snapshot (`snapshot_capture backend=xctest`
+  in the replay's diagnostics; the recording's press logs
+  `producer=simulator-ax-bridge`). Inside a SwiftUI `ScrollView` the two
+  trees differ: XCTest labels the content container with its first child's
+  text, so agent-device keeps it where the bridge's unlabeled one is pruned.
+  The recorded `ancestry[0]` is `scrollview`, the replayed one
+  `other/☀️`, and every tap fails with IDENTITY_MISMATCH even though the
+  selector matches. A recording that fell back to XCTest instead passes that
+  check and fails the next one: dispatch resolves through the bridge, and the
+  sibling index differs (12 vs 13, the first child's own text node). A
+  20-line SwiftUI app (no mob) fails identically, on agent-device 0.21.1 and
+  0.21.19. It has no flag or variable choosing either tree, so the lines go:
+  agent-device documents a step without one as a normal, selector-resolved
+  replay, and mob's selectors start with the tap tag (`id="open_dice"`). On
+  an iOS simulator an IDENTITY_MISMATCH (read from
+  `error.details.divergence.cause.code`) gets a hint with the `sed` command
+  that deletes the flow's lines. The task does not delete them itself: the
+  check also catches a genuinely wrong element, and the file is the user's.
 
 Rejected: one suite run with a single before/after pair (a loss in an early
 flow is erased by the next flow's relaunch, and the final BEAM reads clean);
 `Mob.Agent.Receipts.count/0` for the delta (bounded, see above); holding our
 own lease around the run (breaks `test`); trusting the top-level `success`;
 failing on zero receipts (too many flows legitimately record none).
+Also rejected for MOB-343: stripping the identity lines inside `mob.smoke`
+(it would hide a real wrong-element divergence and rewrite a user's file);
+changing mob's SwiftUI tree (the mismatch is between two readers of one
+stock `ScrollView`/`VStack`, reproduced without mob).
 
 ## Consequences
 - Requires `agent-device` on PATH; the task raises with

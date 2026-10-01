@@ -230,6 +230,32 @@ agent-device close --session rec --save-script
 
 Use `--udid <udid>` instead of `--serial` for iOS.
 
+**Flows recorded on an iOS simulator: delete the identity lines.** The
+recording writes a `# agent-device:target-v1 {…}` line above each tap: the
+element's identity (role, id, label, the containers above it, its position
+among siblings), which replay checks before tapping. On a simulator
+agent-device records it from its accessibility bridge but checks it on
+replay against an XCTest snapshot, and inside a SwiftUI `ScrollView` the two
+trees differ (XCTest adds a content container labeled with its first child's
+text). Every such tap then fails with `REPLAY_DIVERGENCE … nothing in the
+current tree carries the recorded identity`, though the selector still
+matches. agent-device has no flag to change either source (checked on 0.21.1
+and 0.21.19), so strip the lines after recording:
+
+```bash
+sed -i '' '/^# agent-device:target-v1 /d' smoke/login.ad
+```
+
+A step without the line is resolved by its selector alone, which agent-device
+documents as a normal replay. What is lost is the check that the element the
+selector finds is the one recorded, for every step in the flow. A selector
+leads with the element's id when that id is unique on screen (mob's tap tags,
+`id="open_dice"`, usually are); otherwise it falls back to role and label, so
+check those steps' selectors by eye. `mix mob.smoke` prints the command,
+with the flow's path, when a simulator flow fails the identity check. Android
+flows keep their lines. A physical iPhone is read through XCTest at record
+and replay alike, so it should not hit this (not yet tried on one).
+
 **Android and mobile-mcp.** Android allows one UiAutomation client. While
 mobile-mcp's `com.mobilenext.mobilecli.DeviceServer` runs on the phone, every
 agent-device snapshot fails with "Android snapshot helper output could not be
