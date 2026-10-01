@@ -859,6 +859,21 @@ defmodule MobDev.NativeBuildTest do
     end
   end
 
+  describe "check_ndk_sysroot/1 (MOB-72)" do
+    test "names the missing sysroot path and the SDK resolution order" do
+      missing =
+        Path.join(System.tmp_dir!(), "no_such_sysroot_#{System.unique_integer([:positive])}")
+
+      assert {:error, msg} = NativeBuild.check_ndk_sysroot(missing)
+      assert msg =~ missing
+      assert msg =~ "local.properties"
+    end
+
+    test "accepts an existing sysroot dir" do
+      assert :ok = NativeBuild.check_ndk_sysroot(System.tmp_dir!())
+    end
+  end
+
   describe "read_sdk_dir/1" do
     setup do
       tmp =

@@ -567,6 +567,7 @@ defmodule MobDev.NativeBuild do
     project_root = Path.expand(".")
     project_jni_dir = Path.join(project_root, "android/app/src/main/jni")
     jni_libs_abi = Path.join([project_root, "android/app/src/main/jniLibs", abi])
+    sysroot = ndk_sysroot()
     File.mkdir_p!(jni_libs_abi)
 
     # Activated plugins' C NIF sources (one .c per nif, named after the NIF
@@ -600,7 +601,7 @@ defmodule MobDev.NativeBuild do
       "-Dmob_dir=#{mob_dir}",
       "-Ddriver_tab=#{driver_tab}",
       "-Dproject_jni_dir=#{project_jni_dir}",
-      "-Dndk_sysroot=#{ndk_sysroot()}",
+      "-Dndk_sysroot=#{sysroot}",
       "-Dapp_name=#{app_name}",
       "-Dproject_root=#{project_root}",
       "-Dexqlite_src=#{Path.join(project_root, "deps/exqlite/c_src")}"
@@ -639,7 +640,8 @@ defmodule MobDev.NativeBuild do
         target_id -> build_plugin_static_archives(target_id, :android, otp_dir)
       end
 
-    with {:ok, plugin_archives} <- plugin_archive_result do
+    with :ok <- check_ndk_sysroot(sysroot),
+         {:ok, plugin_archives} <- plugin_archive_result do
       args =
         base_args ++
           plugin_args ++
@@ -655,10 +657,25 @@ defmodule MobDev.NativeBuild do
     end
   end
 
-  # Single source of truth in MobDev.NdkVersion (honors ANDROID_HOME /
-  # ANDROID_SDK_ROOT + host detection) — shared with cpp_archive / nx_eigen_nif
+  # Single source of truth in MobDev.NdkVersion (local.properties sdk.dir, then
+  # ANDROID_HOME / ANDROID_SDK_ROOT, + host detection) — shared with cpp_archive / nx_eigen_nif
   # so the NDK path can't diverge again (MOB-89).
   defp ndk_sysroot, do: MobDev.NdkVersion.sysroot()
+
+  @doc false
+  # A missing sysroot otherwise surfaces as zig "file not found" header errors
+  # with nothing pointing at the SDK path (MOB-72).
+  @spec check_ndk_sysroot(String.t()) :: :ok | {:error, String.t()}
+  def check_ndk_sysroot(sysroot) do
+    if File.dir?(sysroot) do
+      :ok
+    else
+      {:error,
+       "Android NDK sysroot not found at #{sysroot}. The SDK is resolved from " <>
+         "android/local.properties sdk.dir, then ANDROID_HOME, then ANDROID_SDK_ROOT. " <>
+         "Install the NDK with: #{MobDev.NdkVersion.install_command()}"}
+    end
+  end
 
   defp resolve_driver_tab_android(mob_dir) do
     resolve_driver_tab(mob_dir, "android", ["android", "jni"])
@@ -6781,20 +6798,7 @@ defmodule MobDev.NativeBuild do
 
   @doc false
   @spec read_sdk_dir(String.t()) :: {:ok, String.t()} | :error
-  def read_sdk_dir(project_dir) do
-    path = Path.join([project_dir, "android", "local.properties"])
-
-    with {:ok, content} <- File.read(path),
-         [_, raw] <- Regex.run(Regex.compile!("^\\s*sdk\\.dir\\s*=\\s*(.+?)\\s*$", "m"), content) do
-      {:ok, expand_sdk_dir(raw)}
-    else
-      _ -> :error
-    end
-  end
-
-  # Java's `Properties.store()` writes "/Users/me/Android/sdk" but with
-  # backslash-colons on Windows; on Unix it round-trips fine. Just trim.
-  defp expand_sdk_dir(raw), do: String.trim(raw) |> Path.expand()
+  def read_sdk_dir(project_dir), do: MobDev.NdkVersion.local_properties_sdk_dir(project_dir)
 
   @doc """
   Generates the fallback entitlements plist that `build_device.sh` writes when

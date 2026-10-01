@@ -183,6 +183,30 @@ defmodule MobDev.NdkVersionTest do
       assert NdkVersion.root() =~ "/opt/sdkroot/ndk/"
     end
 
+    # MOB-72: the toolchain gate and Gradle use local.properties sdk.dir; the
+    # zig -Dndk_sysroot must come from the same SDK, not from the env.
+    test "sdk_root/1 and sysroot/1 prefer android/local.properties sdk.dir over the env" do
+      project = Path.join(System.tmp_dir!(), "ndk_lp_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(Path.join(project, "android"))
+      on_exit(fn -> File.rm_rf!(project) end)
+      File.write!(Path.join([project, "android", "local.properties"]), "sdk.dir=/opt/lp-sdk\n")
+      System.put_env("ANDROID_HOME", "/opt/env-home")
+      System.put_env("ANDROID_SDK_ROOT", "/opt/env-root")
+
+      assert NdkVersion.sdk_root(project) == "/opt/lp-sdk"
+      assert NdkVersion.sysroot(project) =~ "/opt/lp-sdk/ndk/#{NdkVersion.effective()}/"
+    end
+
+    test "sdk_root/1 falls back to ANDROID_HOME when local.properties has no sdk.dir" do
+      project = Path.join(System.tmp_dir!(), "ndk_lp_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(Path.join(project, "android"))
+      on_exit(fn -> File.rm_rf!(project) end)
+      File.write!(Path.join([project, "android", "local.properties"]), "other=1\n")
+      System.put_env("ANDROID_HOME", "/opt/env-home")
+
+      assert NdkVersion.sdk_root(project) == "/opt/env-home"
+    end
+
     test "host/0 is the single NDK prebuilt tag for this OS" do
       assert NdkVersion.host() in ["darwin-x86_64", "linux-x86_64"]
     end
