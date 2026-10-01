@@ -5,9 +5,10 @@ defmodule MobDev.Smoke do
 
   A replayed flow passing is the tool's opinion. The app's own counters say
   whether it held up: a store that lost its table or reset, events the
-  listener could not deliver, or no receipts at all while a flow ran (the taps
-  landed somewhere other than this app). So the verdict combines both, and a
-  device that could not be checked never counts as a pass.
+  listener could not deliver, or, on mob 0.9.7 or later, no receipts at all
+  while a flow ran (the taps landed somewhere other than this app). So the
+  verdict combines both, and a device that could not be checked never counts
+  as a pass.
 
   `agent-device test --json` reports `"success": true` even when scripts
   fail; only `data.failed` and `data.notRun` say what happened.

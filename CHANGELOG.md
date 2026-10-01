@@ -1,4 +1,4 @@
-## [Unreleased]
+## [0.7.6] - 2026-10-01
 
 ### Breaking
 
@@ -38,9 +38,10 @@
   mobile-mcp gets a hint naming the `pkill` that clears it. See
   `decisions/2026-09-30-mob-smoke-replays-agent-device-flows.md`.
 - **The legacy v1 signature refusal names the fix for a local checkout.** A
-  path or git dependency is not changed by `mix deps.update`; the message now
-  also says to re-sign it in place with `mix mob.plugin.sign`
-  (`~/.mob/keys/<name>.priv`). Path and git checkouts have been refused since
+  path dependency is not changed by `mix deps.update`; the message now also
+  says to re-sign it in place with `mix mob.plugin.sign`
+  (`~/.mob/keys/<name>.priv`), and that a git dependency pinned with
+  `ref:`/`tag:` needs a v2-signed ref. Path checkouts have been refused since
   MOB-74; the MOB-287 window only ever covered Hex checkouts.
 
 - **`mix mob.new_plugin` scaffolds the signing release setup for tiers 1–4.**

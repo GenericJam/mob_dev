@@ -23,8 +23,9 @@ defmodule Mix.Tasks.Mob.Smoke do
   3. **The app held up** (unless `--no-health`). `Mob.Diag.health/0` is read
      over dist before the first flow and after each one, attaching without
      restarting the app. A store whose `lost` or `resets` rose, or a rise in
-     the listener's undeliverable events, fails the run. No new receipts
-     during a flow is a warning: its taps did not reach this app. An
+     the listener's undeliverable events, fails the run. On mob 0.9.7 or
+     later, which receipts native taps, no new receipts during a flow is a
+     warning: its taps did not reach this app (on older mob it is a note). An
      unreachable node, or a mob too old for these functions, is a note.
 
   The counters belong to the app's BEAM, and a flow that opens with

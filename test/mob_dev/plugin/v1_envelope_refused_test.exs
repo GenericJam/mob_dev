@@ -69,7 +69,7 @@ defmodule MobDev.Plugin.V1EnvelopeRefusedTest do
     # A path dependency (the mob_plugin_demo plugins) never changes with
     # deps.update; the message must name re-signing the checkout too.
     assert error.message =~
-             "path or git\n    dependency (a local checkout) is not changed by deps.update"
+             "A path dependency\n    (a local checkout) is not changed by deps.update"
 
     assert error.message =~ "~/.mob/keys/mob_scanner.priv"
   end
