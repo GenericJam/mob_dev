@@ -22,6 +22,7 @@ defmodule MobDev.Smoke do
   alias MobDev.{Device, DeviceLeases}
 
   @uiautomation_conflict "Android snapshot helper output could not be parsed"
+  @identity_annotation "# agent-device:target-v1 "
 
   @typedoc "One failed script from `agent-device test --json`."
   @type failure :: %{
@@ -30,6 +31,7 @@ defmodule MobDev.Smoke do
           attempts: non_neg_integer(),
           artifacts_dir: String.t() | nil,
           code: String.t() | nil,
+          cause: String.t() | nil,
           message: String.t() | nil,
           hint: String.t() | nil
         }
@@ -220,10 +222,19 @@ defmodule MobDev.Smoke do
       attempts: count(entry, "attempts"),
       artifacts_dir: entry["artifactsDir"],
       code: error["code"],
+      cause: divergence_cause(error),
       message: error["message"],
       hint: error["hint"]
     }
   end
+
+  # A REPLAY_DIVERGENCE names its cause under details.divergence.cause.code
+  # (agent-device 0.21.x), e.g. "IDENTITY_MISMATCH" or "SELECTOR_MISS".
+  defp divergence_cause(%{"details" => %{"divergence" => %{"cause" => %{"code" => code}}}})
+       when is_binary(code),
+       do: code
+
+  defp divergence_cause(_error), do: nil
 
   defp cli_error(error) do
     %{
@@ -249,6 +260,7 @@ defmodule MobDev.Smoke do
             attempts: 0,
             artifacts_dir: nil,
             code: error.code,
+            cause: nil,
             message: error.message,
             hint: error.hint
           }
@@ -303,24 +315,43 @@ defmodule MobDev.Smoke do
   end
 
   @doc false
+  # Hints for failures whose message does not name the cause.
+  #
   # Android allows one UiAutomation client. mobile-mcp's DeviceServer holding
   # it makes every agent-device snapshot fail with this text, which says
   # nothing about the cause. It is not killed for the user: it may be in use.
+  #
+  # On an iOS simulator agent-device records a step's identity (the
+  # target-v1 line above it) from its simulator AX tree, but checks it on
+  # replay against XCTest's tree, and the two disagree inside SwiftUI scroll
+  # views (MOB-343). The lines are not removed for the user: they also guard
+  # against a genuinely wrong element.
   @spec failure_hints(failure(), Device.t()) :: [String.t()]
-  def failure_hints(failure, %Device{platform: platform, serial: serial}) do
+  def failure_hints(failure, %Device{platform: platform, type: type, serial: serial}) do
     conflict? =
       platform == :android and is_binary(failure.message) and
         String.contains?(failure.message, @uiautomation_conflict)
 
+    identity? =
+      platform == :ios and type == :simulator and failure.cause == "IDENTITY_MISMATCH"
+
     Enum.reject([failure.hint], &is_nil/1) ++
-      if conflict? do
-        [
+      if(conflict?,
+        do: [
           "another UiAutomation client (mobile-mcp's DeviceServer) holds the device; " <>
             "stop it with: adb -s #{serial} shell pkill -f mobilecli.DeviceServer"
-        ]
-      else
-        []
-      end
+        ],
+        else: []
+      ) ++
+      if(identity?,
+        do: [
+          "agent-device checks a simulator recording's step identity against a different " <>
+            "accessibility tree on replay, and inside SwiftUI scroll views they never match. " <>
+            "If the app reached the right screen, delete the identity lines and rerun: " <>
+            "sed -i '' '/^#{@identity_annotation}/d' #{failure.file || "<flow>.ad"}"
+        ],
+        else: []
+      )
   end
 
   @doc false

@@ -63,6 +63,20 @@
   directory named for the shim's content. Tests that timed out only under
   machine load wait on their work instead of a 5 s clock, or carry an
   explicit timeout for legitimately heavy work.
+- **`mix mob.smoke` explains why a flow recorded on an iOS simulator fails
+  its identity check (MOB-343).** Such flows failed at their first tap with
+  `REPLAY_DIVERGENCE … nothing in the current tree carries the recorded
+  identity`. agent-device (seen on 0.21.1 and 0.21.19) records each step's
+  identity (the `# agent-device:target-v1` line) from its simulator
+  accessibility bridge, but replay checks it against an XCTest snapshot. Inside
+  a SwiftUI `ScrollView`, XCTest labels the content container with its first
+  child's text and keeps it, so the recorded ancestry (`scrollview`) never
+  matches the replayed one (`other "☀️"`). A plain SwiftUI app fails the same
+  way, so it is not a mob bug. On an iOS simulator, an `IDENTITY_MISMATCH`
+  failure now carries a hint with the `sed` command that deletes the flow's
+  identity lines; replay then resolves the step by its selector. The README
+  ("Smoke flows on devices") says to strip them after recording on a
+  simulator.
 
 ## [0.7.6] - 2026-10-01
 

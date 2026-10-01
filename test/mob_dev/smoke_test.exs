@@ -5,6 +5,11 @@ defmodule MobDev.SmokeTest do
 
   @android %Device{platform: :android, serial: "emulator-5554", type: :emulator}
   @iphone %Device{platform: :ios, serial: "00008110-001A2C3E0E8B801E", type: :physical}
+  @simulator %Device{
+    platform: :ios,
+    serial: "1F8955AE-2BD3-440D-9831-2025E1402FD2",
+    type: :simulator
+  }
 
   # The shape agent-device 0.21.1 prints when a script fails: top-level
   # "success" is still true.
@@ -44,6 +49,46 @@ defmodule MobDev.SmokeTest do
       "message": "No replay tests matched.",
       "hint": "Check command arguments and run --help for usage examples.",
       "diagnosticId": "muozkxur-5e37262a"
+    }
+  }
+  """
+
+  # agent-device 0.21.1 replaying a flow recorded on an iOS simulator: the
+  # selector still matches, the recorded identity (ancestry) does not.
+  @identity_report ~S"""
+  {
+    "success": true,
+    "data": {
+      "total": 1, "executed": 1, "passed": 0, "failed": 1, "skipped": 0, "notRun": 0,
+      "durationMs": 3381,
+      "failures": [
+        {
+          "file": "/p/smoke/dice.ad",
+          "status": "failed",
+          "attempts": 1,
+          "artifactsDir": "/p/_build/mob_smoke/sim/dice",
+          "error": {
+            "code": "REPLAY_DIVERGENCE",
+            "message": "Replay failed at step 3 (press \"id=\\\"open_dice\\\" || label=\\\"Roll Dice\\\"\"): The recorded selector/ref still matches, but nothing in the current tree carries the recorded identity.",
+            "details": {
+              "step": 3,
+              "action": "press",
+              "divergence": {
+                "version": 1,
+                "kind": "identity-mismatch",
+                "cause": {
+                  "code": "IDENTITY_MISMATCH",
+                  "message": "The recorded selector/ref still matches, but nothing in the current tree carries the recorded identity."
+                },
+                "targetBinding": {
+                  "classification": "identity-mismatch",
+                  "mismatches": ["ancestry[0]: recorded=scrollview observed=other/☀️"]
+                }
+              }
+            }
+          }
+        }
+      ]
     }
   }
   """
@@ -282,11 +327,34 @@ defmodule MobDev.SmokeTest do
     end
 
     test "other failures, and iOS, keep only agent-device's hint" do
-      failure = %{message: "Element not found", hint: nil}
+      failure = %{message: "Element not found", cause: nil, hint: nil}
       assert Smoke.failure_hints(failure, @android) == []
 
-      conflict = %{message: "Android snapshot helper output could not be parsed", hint: "h"}
+      conflict = %{
+        message: "Android snapshot helper output could not be parsed",
+        cause: nil,
+        hint: "h"
+      }
+
       assert Smoke.failure_hints(conflict, @iphone) == ["h"]
+    end
+
+    test "a simulator identity mismatch names the identity lines to delete in that flow" do
+      {:ok, %{failures: [failure]}} = Smoke.parse_report(@identity_report)
+      assert failure.cause == "IDENTITY_MISMATCH"
+
+      assert [hint] = Smoke.failure_hints(failure, @simulator)
+      assert hint =~ "SwiftUI scroll views"
+      assert hint =~ "sed -i '' '/^# agent-device:target-v1 /d' /p/smoke/dice.ad"
+    end
+
+    test "the identity hint is for simulators only, and only for an identity mismatch" do
+      {:ok, %{failures: [failure]}} = Smoke.parse_report(@identity_report)
+
+      # agent-device reads a physical iPhone through XCTest only (its README).
+      assert Smoke.failure_hints(failure, @iphone) == []
+      assert Smoke.failure_hints(failure, @android) == []
+      assert Smoke.failure_hints(%{failure | cause: "SELECTOR_MISS"}, @simulator) == []
     end
   end
 
