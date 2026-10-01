@@ -43,12 +43,14 @@ defmodule MobDev.DeviceLeasesTest do
       assert pixel == %{
                id: "emulator-5560",
                platform: :android,
+               kind: :emulator,
                session: "OtherAgent",
                workspace: "/Users/k/code/app"
              }
 
       # No "device" object: the id comes from the device key.
-      assert %{id: "00008110-001A2C3E0E8B801E", platform: nil, session: "Phone"} = phone
+      assert %{id: "00008110-001A2C3E0E8B801E", platform: nil, kind: nil, session: "Phone"} =
+               phone
     end
 
     test "a refusal or unreadable output is an error, never an empty claim list" do
@@ -89,6 +91,37 @@ defmodule MobDev.DeviceLeasesTest do
 
       assert DeviceLeases.foreign_claim(device("emulator-5560", :ios), leases("Me")) == nil
     end
+
+    test "an iPhone found over the LAN is held by any claim that could be an iPhone" do
+      # find_physical_at/1's shape: the IP is the only identity there is.
+      lan_iphone = %Device{
+        serial: "192.168.1.42",
+        name: "iPhone (192.168.1.42)",
+        platform: :ios,
+        type: :physical,
+        host_ip: "192.168.1.42"
+      }
+
+      physical = %{id: "00008110-001A2C3E0E8B801E", platform: :ios, kind: :device}
+      simulator = %{id: "E30555E4-1340-4505-A8E2-80A2E3FAAC67", platform: :ios, kind: :simulator}
+      android = %{id: "ZY22K6BSJM", platform: :android, kind: :device}
+
+      claims = fn list ->
+        %DeviceLeases{
+          claims: Enum.map(list, &Map.merge(&1, %{session: "Other", workspace: nil})),
+          session: "Me"
+        }
+      end
+
+      assert %{session: "Other"} = DeviceLeases.foreign_claim(lan_iphone, claims.([physical]))
+      # The status fixture's key-only claim: platform and kind unknown.
+      assert %{session: "Phone"} = DeviceLeases.foreign_claim(lan_iphone, leases("Me"))
+
+      assert DeviceLeases.foreign_claim(lan_iphone, claims.([simulator, android])) == nil
+
+      assert DeviceLeases.foreign_claim(lan_iphone, %DeviceLeases{claims: [], session: "Me"}) ==
+               nil
+    end
   end
 
   test "current_session/1 treats an empty AGENT_DEVICE_SESSION as unset" do
@@ -108,6 +141,17 @@ defmodule MobDev.DeviceLeasesTest do
 
     assert output =~ "Skipping emulator-5560"
     assert output =~ ~s(session "OtherAgent" \(in /Users/k/code/app\))
+  end
+
+  test "exclude_claimed/2 says a skipped LAN iPhone only possibly holds the claim" do
+    lan_iphone = %Device{serial: "10.0.0.7", platform: :ios, type: :physical, host_ip: "10.0.0.7"}
+
+    output =
+      capture_io(fn ->
+        assert DeviceLeases.exclude_claimed([lan_iphone], leases("Me")) == []
+      end)
+
+    assert output =~ ~s(Skipping 10.0.0.7: possibly claimed by agent-device session "Phone")
   end
 
   test "warn_claimed/2 keeps a named device and warns about its claim" do

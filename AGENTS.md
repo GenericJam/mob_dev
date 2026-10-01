@@ -314,7 +314,12 @@ Apply consistently to every Mix task that mutates device state
   Read the claims once with `MobDev.DeviceLeases.load/0` and filter with
   `exclude_claimed/3` / `warn_claimed/2` (TaskTargets does this when given
   `:leases`; `Connector.connect_all/1` and `HotPush.connect/1` load them
-  themselves). A new task that picks devices on its own must do the same.
+  themselves). A new task that picks devices on its own must do the same,
+  and so must anything that acts on devices outside the selection: the
+  stale-app cleanup (`Connector.stale_simulator_pids/3`) and a watcher's
+  cached nodes (`HotPush.reconnect/2`). An iPhone found over the LAN has its
+  IP as its serial and counts as claimed while any foreign claim could be an
+  iPhone.
 
 The predicate to route on is `MobDev.Device.physical?/1`. Shared
 selection logic lives in `MobDev.TaskTargets`; task-specific planning

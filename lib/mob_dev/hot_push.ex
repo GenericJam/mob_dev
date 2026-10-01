@@ -9,7 +9,7 @@ defmodule MobDev.HotPush do
   `mix mob.deploy` first).
   """
 
-  alias MobDev.{DeviceLeases, DistCookie, Tunnel}
+  alias MobDev.{Device, DeviceLeases, DistCookie, Tunnel}
   alias MobDev.Discovery.{Android, IOS}
 
   @doc """
@@ -21,25 +21,63 @@ defmodule MobDev.HotPush do
   """
   @spec connect(keyword()) :: [node()]
   def connect(opts \\ []) do
+    {nodes, _devices, _leases} = connect_unclaimed(opts)
+    nodes
+  end
+
+  @doc """
+  `connect/1` again for a long-running watcher, plus the `cached` nodes it
+  connected to before that still answer, so a node discovery misses once is
+  not dropped. A cached node on a device another session has claimed since
+  is dropped, so the next push leaves it alone.
+  """
+  @spec reconnect([node()], keyword()) :: [node()]
+  def reconnect(cached, opts \\ []) do
+    {nodes, devices, leases} = connect_unclaimed(opts)
+
+    alive =
+      cached
+      |> unclaimed_nodes(devices, leases)
+      |> Enum.filter(&(Node.connect(&1) == true))
+
+    Enum.uniq(alive ++ nodes)
+  end
+
+  @doc false
+  # The `nodes` not running on a device in `devices` that another session
+  # has claimed. A node is tied to its device by the node name discovery
+  # gave the device, the name connect/1 dials it by.
+  @spec unclaimed_nodes([node()], [Device.t()], DeviceLeases.t()) :: [node()]
+  def unclaimed_nodes(nodes, devices, leases) do
+    {_free, claimed} = DeviceLeases.partition(devices, leases)
+    claimed_nodes = MapSet.new(claimed, fn {device, _claim} -> device.node end)
+    Enum.reject(nodes, &MapSet.member?(claimed_nodes, &1))
+  end
+
+  defp connect_unclaimed(opts) do
     cookies = opts |> Keyword.get(:cookie) |> DistCookie.candidates()
     leases = Keyword.get_lazy(opts, :leases, &DeviceLeases.load/0)
+    devices = Android.list_devices() ++ IOS.list_simulators()
 
-    (Android.list_devices() ++ IOS.list_simulators())
-    |> DeviceLeases.exclude_claimed(leases, "Not pushing to it.")
-    |> Enum.flat_map(fn device ->
-      case Tunnel.setup(device) do
-        {:ok, d} -> [d]
-        _ -> []
-      end
-    end)
-    |> Enum.flat_map(fn device ->
-      ensure_local_dist(hd(cookies))
+    nodes =
+      devices
+      |> DeviceLeases.exclude_claimed(leases, "Not pushing to it.")
+      |> Enum.flat_map(fn device ->
+        case Tunnel.setup(device) do
+          {:ok, d} -> [d]
+          _ -> []
+        end
+      end)
+      |> Enum.flat_map(fn device ->
+        ensure_local_dist(hd(cookies))
 
-      case DistCookie.connect(device.node, cookies) do
-        {:ok, _cookie} -> [device.node]
-        :error -> []
-      end
-    end)
+        case DistCookie.connect(device.node, cookies) do
+          {:ok, _cookie} -> [device.node]
+          :error -> []
+        end
+      end)
+
+    {nodes, devices, leases}
   end
 
   @doc """

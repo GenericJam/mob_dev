@@ -127,18 +127,18 @@ defmodule MobDev.Server.WatchWorker do
 
   defp schedule_tick, do: Process.send_after(self(), :tick, @interval)
 
-  defp connect_nodes do
+  defp connect_nodes, do: discover(&HotPush.connect/0)
+
+  # Not the cached nodes on their own when discovery fails: one of them may be
+  # on a device another session has claimed since.
+  defp reconnect(nodes), do: discover(fn -> HotPush.reconnect(nodes) end)
+
+  defp discover(fun) do
     try do
-      HotPush.connect()
+      fun.()
     rescue
       _ -> []
     end
-  end
-
-  defp reconnect(nodes) do
-    alive = Enum.filter(nodes, &(Node.connect(&1) == true))
-    new = connect_nodes()
-    Enum.uniq(alive ++ new)
   end
 
   defp compile do

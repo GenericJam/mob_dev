@@ -110,8 +110,9 @@ defmodule Mix.Tasks.Mob.Watch do
       :timer.sleep(debounce)
       current2 = MobDev.SourceWatch.snapshot()
 
-      # Re-connect if any nodes dropped (device rebooted, app restarted, etc.)
-      live_nodes = reconnect_if_needed(nodes, cookie)
+      # Re-connect if any nodes dropped (device rebooted, app restarted, etc.),
+      # dropping any on a device another session has claimed since.
+      live_nodes = MobDev.HotPush.reconnect(nodes, cookie: cookie)
 
       snapshot = MobDev.HotPush.snapshot_beams()
       recompile()
@@ -155,13 +156,6 @@ defmodule Mix.Tasks.Mob.Watch do
     end
 
     nodes
-  end
-
-  defp reconnect_if_needed(nodes, cookie) do
-    alive = Enum.filter(nodes, &(Node.connect(&1) == true))
-    new_nodes = MobDev.HotPush.connect(cookie: cookie)
-    # Union: keep existing alive nodes + any newly discovered ones
-    Enum.uniq(alive ++ new_nodes)
   end
 
   # Lines from mix compile subprocess we don't want to echo.

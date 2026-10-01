@@ -31,12 +31,17 @@
   auto-selection and `--all-devices` / `--all-physical` in `mix mob.deploy`,
   `mix mob.uninstall` and `mix mob.smoke`, `mix mob.connect` without
   `--device`, `mix mob.push` / `mix mob.watch`, and the battery benches'
-  device auto-detection. A claim is yours when its session equals
-  `AGENT_DEVICE_SESSION`; with that unset, every claim is someone else's. A
-  claimed device named with `--device` is still used, after a loud warning:
-  naming it is the same consent `--device` gives for a phone. The device
-  auto-selection picks is always printed. Without `agent-device`, selection is
-  unchanged. See `MobDev.DeviceLeases`.
+  device auto-detection. `mix mob.connect` also leaves the app running on a
+  claimed simulator when it kills stale simulator apps, and `mix mob.watch`
+  stops pushing to a device another session claims while it runs. An iPhone
+  found only over the LAN is known by its IP while a claim names a UDID, so
+  it is skipped whenever another session claims a device that could be an
+  iPhone; name it with `--device` to use it. A claim is yours when its
+  session equals `AGENT_DEVICE_SESSION`; with that unset, every claim is
+  someone else's. A claimed device named with `--device` is still used, after
+  a loud warning: naming it is the same consent `--device` gives for a phone.
+  The device auto-selection picks is always printed. Without `agent-device`,
+  selection is unchanged. See `MobDev.DeviceLeases`.
 - **`mix mob.plugins` says when a plugin's signature doesn't verify (MOB-332).**
   Such a plugin was listed as `tier 0 … no manifest (regular dep)` after a
   separate `skipping <name>: invalid_signature` line, or not at all when not

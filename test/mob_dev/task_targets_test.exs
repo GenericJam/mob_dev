@@ -84,6 +84,30 @@ defmodule MobDev.TaskTargetsTest do
       assert output =~ "Skipping emulator-5560"
     end
 
+    test "--all-physical leaves a LAN iPhone alone while another session holds an iPhone" do
+      # An iPhone found over the LAN is known by its IP; the claim names its UDID.
+      lan_iphone = %{device("192.168.1.42", :ios, :physical) | host_ip: "192.168.1.42"}
+      android_phone = device("PHONE", :android, :physical)
+
+      leases = %DeviceLeases{
+        claims: [
+          %{
+            id: "00008110-001A2C3E0E8B801E",
+            platform: :ios,
+            kind: :device,
+            session: "OtherAgent",
+            workspace: "/w"
+          }
+        ],
+        session: "Me"
+      }
+
+      assert {{:ok, [^android_phone]}, output} =
+               resolve([lan_iphone, android_phone], [], all_physical: true, leases: leases)
+
+      assert output =~ "Skipping 192.168.1.42: possibly claimed"
+    end
+
     test "a claimed device named explicitly is used, with a loud warning" do
       held = device("emulator-5560", :android, :emulator)
 
