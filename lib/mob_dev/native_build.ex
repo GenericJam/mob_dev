@@ -13,7 +13,8 @@ defmodule MobDev.NativeBuild do
 
   ## mob.exs keys
 
-    * `:mob_dir`           — mob library repo (native C/ObjC/Swift source)
+    * `:mob_dir`           — mob library repo (native C/ObjC/Swift source);
+                             must be the `:mob` dependency's directory
     * `:elixir_lib`        — Elixir stdlib lib dir
     * `:project_swift_sources` — optional extra Swift sources compiled into
                              the iOS app module
@@ -30,6 +31,12 @@ defmodule MobDev.NativeBuild do
   @spec build_all(keyword()) :: boolean()
   def build_all(opts \\ []) do
     cfg = load_config()
+
+    # Native code comes from mob_dir, the BEAMs from the :mob dependency. Two
+    # different mobs build and boot fine and misbehave silently (MOB-351), so
+    # stop before compiling anything.
+    MobDev.MobDirCheck.check!(cfg[:mob_dir])
+
     platforms = Keyword.get(opts, :platforms, [:android, :ios])
     device_id = Keyword.get(opts, :device, nil)
     devices = Keyword.get(opts, :devices, :discover)

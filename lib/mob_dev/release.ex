@@ -42,6 +42,7 @@ defmodule MobDev.Release do
   @spec build_ipa(keyword()) :: {:ok, String.t()} | {:error, String.t()}
   def build_ipa(opts \\ []) do
     cfg = MobDev.NativeBuild.__load_config__()
+    MobDev.MobDirCheck.check!(cfg[:mob_dir])
     slim = Keyword.get(opts, :slim, true)
 
     MobDev.Plugin.Validator.raise_on_cross_plugin_conflicts!(MobDev.Plugin.activated())
