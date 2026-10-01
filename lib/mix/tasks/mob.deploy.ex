@@ -13,9 +13,11 @@ defmodule Mix.Tasks.Mob.Deploy do
   day-to-day Elixir code changes. Requires the native app already installed on
   device. When the app's node is reachable over Erlang distribution, the
   modules are hot-loaded in place with no restart; otherwise the BEAMs are
-  written to the device and the app is restarted to pick them up (an app built
-  against a pre-MOB-49 mob is always restarted, which moves it to its private
-  cookie).
+  written to the device and the app is restarted to pick them up. An app built
+  against a pre-MOB-49 mob is restarted instead of hot-loaded, which moves it to
+  its private cookie, except on a physical iPhone: writing BEAMs to a phone over
+  `devicectl` has no undo, so a connected legacy iPhone app is still hot-loaded
+  and keeps `mob_secret` until you deploy with `--native`.
 
       mix mob.deploy
 
