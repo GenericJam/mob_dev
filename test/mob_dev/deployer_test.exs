@@ -152,12 +152,32 @@ defmodule MobDev.DeployerTest do
   # ── generate_crypto_shim/0 ────────────────────────────────────────────────
 
   describe "generate_crypto_shim/0" do
-    test "compiles successfully" do
-      # Delete cached shim so we always test a fresh compile
-      File.rm_rf!(Path.join(System.tmp_dir!(), "mob_crypto_shim"))
-      assert {:ok, dir} = Deployer.generate_crypto_shim()
+    @tag :tmp_dir
+    test "compiles successfully into a fresh directory", %{tmp_dir: root} do
+      assert {:ok, dir} = Deployer.generate_crypto_shim(root)
       assert File.exists?(Path.join(dir, "crypto.beam"))
       assert File.exists?(Path.join(dir, "crypto.app"))
+      # No staging directory is left behind.
+      assert [_shim_dir] = File.ls!(root)
+    end
+
+    # MOB-339: every build wrote the one shared $TMPDIR/mob_crypto_shim in
+    # place, so concurrent deploys or test runs on a machine broke each other
+    # ("crypto.beam: error writing file: no such file or directory").
+    @tag :tmp_dir
+    test "concurrent first builds all succeed with the same complete shim", %{tmp_dir: root} do
+      results =
+        1..8
+        |> Task.async_stream(fn _ -> Deployer.generate_crypto_shim(root) end,
+          max_concurrency: 8,
+          timeout: :infinity
+        )
+        |> Enum.map(fn {:ok, result} -> result end)
+
+      assert [{:ok, dir}] = Enum.uniq(results)
+      beam = String.to_charlist(Path.join(dir, "crypto.beam"))
+      assert {:ok, {:crypto, _vsn}} = :beam_lib.version(beam)
+      assert [_shim_dir] = File.ls!(root)
     end
 
     test "is idempotent — second call reuses cached shim" do

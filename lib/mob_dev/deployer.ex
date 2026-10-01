@@ -1763,14 +1763,9 @@ defmodule MobDev.Deployer do
   # crypto.so NIF; in that case `real_device_crypto_available?/0` returns
   # true and this shim is skipped.
   @doc false
-  @spec generate_crypto_shim() :: {:ok, String.t()} | {:error, term()}
-  def generate_crypto_shim do
-    dir = Path.join(System.tmp_dir!(), "mob_crypto_shim")
-    File.mkdir_p!(dir)
-
-    src = Path.join(dir, "crypto.erl")
-
-    File.write!(src, """
+  @spec generate_crypto_shim(Path.t()) :: {:ok, String.t()} | {:error, term()}
+  def generate_crypto_shim(root \\ System.tmp_dir!()) do
+    source = """
     -module(crypto).
     -export([strong_rand_bytes/1, hash/2, mac/4, mac/3, supports/1, pbkdf2_hmac/5, exor/2]).
 
@@ -1825,18 +1820,53 @@ defmodule MobDev.Deployer do
 
     exor(A, B) ->
         xor_bins(iolist_to_binary(A), iolist_to_binary(B)).
-    """)
+    """
 
     app =
       "{application,crypto,[{modules,[crypto]},{applications,[kernel,stdlib]}," <>
         "{description,\"Crypto shim for mobile (no OpenSSL; uses rand:bytes)\"}," <>
         "{registered,[]},{vsn,\"5.6\"}]}."
 
-    File.write!(Path.join(dir, "crypto.app"), app)
+    # One directory per shim content, never written in place: each call
+    # compiles in its own staging dir and renames it there whole. A shared,
+    # rewritten-in-place dir let two deploys or test runs on one machine
+    # delete or truncate each other's crypto.beam mid-compile (MOB-339).
+    dir = Path.join(root, "mob_crypto_shim_#{:erlang.phash2({source, app})}")
 
-    case System.cmd("erlc", ["-o", dir, src], stderr_to_stdout: true) do
-      {_, 0} -> {:ok, dir}
-      {out, _} -> {:error, "crypto shim compile failed: #{out}"}
+    if File.regular?(Path.join(dir, "crypto.beam")),
+      do: {:ok, dir},
+      else: build_crypto_shim(dir, source, app)
+  end
+
+  defp build_crypto_shim(dir, source, app) do
+    staging = "#{dir}.#{System.pid()}.#{System.unique_integer([:positive])}.tmp"
+    File.mkdir_p!(staging)
+
+    try do
+      src = Path.join(staging, "crypto.erl")
+      File.write!(src, source)
+      File.write!(Path.join(staging, "crypto.app"), app)
+
+      case System.cmd("erlc", ["-o", staging, src], stderr_to_stdout: true) do
+        {_, 0} -> publish_crypto_shim(staging, dir)
+        {out, _} -> {:error, "crypto shim compile failed: #{out}"}
+      end
+    after
+      File.rm_rf(staging)
+    end
+  end
+
+  # Losing the rename to a concurrent build is fine: the winner's directory
+  # holds the same compiled shim.
+  defp publish_crypto_shim(staging, dir) do
+    case File.rename(staging, dir) do
+      :ok ->
+        {:ok, dir}
+
+      {:error, reason} ->
+        if File.regular?(Path.join(dir, "crypto.beam")),
+          do: {:ok, dir},
+          else: {:error, "crypto shim install failed: #{inspect(reason)}"}
     end
   end
 

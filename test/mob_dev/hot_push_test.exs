@@ -3,6 +3,11 @@ defmodule MobDev.HotPushTest do
 
   alias MobDev.HotPush
 
+  # snapshot_beams/0 and push_changed/2 stat every BEAM in the build through
+  # the single file server that every async test shares; on a loaded machine
+  # that passed the 60 s default (MOB-339).
+  @moduletag timeout: 300_000
+
   describe "select_runtime_beam_paths/4" do
     test "uses only active app beams when the build path has stale app output" do
       root = Path.join(System.tmp_dir!(), "mob_[edge]_paths_#{System.unique_integer()}")

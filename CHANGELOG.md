@@ -55,6 +55,14 @@
   restarts when it has to write the BEAMs to the device; `--dist-port`
   defaults to the port derived from the device serial and app name, not
   `9100 + index`; the "Under the hood" commands are the ones the task runs.
+- **The crypto shim no longer breaks concurrent deploys and test runs
+  (MOB-339).** `Deployer.generate_crypto_shim` wrote one shared
+  `$TMPDIR/mob_crypto_shim` in place, so two runs on one machine could delete
+  or truncate each other's `crypto.beam` mid-compile ("error writing file").
+  It now compiles in a private staging directory and renames it into a
+  directory named for the shim's content. Tests that timed out only under
+  machine load wait on their work instead of a 5 s clock, or carry an
+  explicit timeout for legitimately heavy work.
 
 ## [0.7.6] - 2026-10-01
 

@@ -51,7 +51,10 @@ defmodule MobDev.DistCookieTest do
         1..16
         |> Task.async_stream(fn _ -> DistCookie.load_or_create!(path) end,
           max_concurrency: 16,
-          ordered: false
+          ordered: false,
+          # Wait for every task, not a wall clock: under machine load 5 s
+          # (the default) timed this out with nothing wrong (MOB-339).
+          timeout: :infinity
         )
         |> Enum.map(fn {:ok, cookie} -> cookie end)
 

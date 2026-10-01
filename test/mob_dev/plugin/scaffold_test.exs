@@ -330,6 +330,9 @@ defmodule MobDev.Plugin.ScaffoldTest do
   end
 
   describe "files_for/2 — test scaffolding (all tiers)" do
+    # Compiles five generated projects through `mix` subprocesses: legitimately
+    # slow, and past the 60 s default on a loaded machine (MOB-339).
+    @tag timeout: 600_000
     test "every generated plugin compiles" do
       for tier <- 0..4 do
         name = "mob_scaffold_tier_#{tier}"
