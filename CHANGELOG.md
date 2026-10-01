@@ -19,6 +19,25 @@
   `mix mob.plugin.sign` (mob_dev 0.7.2 or later). See
   `decisions/2026-09-30-v1-envelope-transition.md`.
 
+- **Plugin collisions now fail native and release builds (MOB-170).**
+  Two activated plugins claiming the same component or native-view key,
+  screen route, migration namespace, NIF module, native source destination,
+  bridge class, Android manifest component, iOS plist key, supervised
+  worker, notification match or default font used to build, and one plugin's
+  registration silently overwrote the other's at runtime. Native builds and
+  the `.ipa`/`.aab` release builds now refuse, naming each colliding
+  `priv/mob_plugin.exs`, and `mix mob.plugins` exits non-zero on the same
+  check (it now loads plugins listed in `acknowledge_unsafe_plugins` the way
+  the build does, so it cannot pass what the build rejects). Shared Android
+  permissions, Gradle dependencies and iOS frameworks remain allowed, and the
+  same plugin activated twice is not a collision. An opted-in Android factory
+  name that isn't a valid class name now fails early with the plugin named.
+
+  **Upgrade note:** an app that built on 0.7.5 can now fail instead of
+  silently keeping one plugin's contribution. Run `mix mob.plugins` to see
+  the collision, then deactivate one plugin in `config :mob, :plugins` or fix
+  the manifests (re-signing any signed manifest you change).
+
 ### Added
 
 - **`mix mob.smoke` replays recorded UI flows on devices and checks the app
@@ -63,6 +82,17 @@
   plugin. The printed next steps cover keygen, the secret, local signing and
   `mix mob.plugin.trust`; tier 0 (no manifest) has nothing to sign. The
   tier-4 hint now names `Mob.Plugins.get_setting/2` / `put_setting/3`.
+
+### Fixed
+
+- **Android native builds take the NDK sysroot from the project's SDK
+  (MOB-72).** Zig used `ANDROID_HOME`/`ANDROID_SDK_ROOT` while the toolchain
+  check and Gradle used `android/local.properties` `sdk.dir`, so an SDK
+  configured only there passed the check and failed in zig with
+  missing-header errors. The SDK root now resolves `sdk.dir`, then
+  `ANDROID_HOME`, `ANDROID_SDK_ROOT`, then the OS default, and a missing
+  sysroot fails with its path. If `sdk.dir` is stale, fix
+  `android/local.properties`: setting `ANDROID_HOME` no longer overrides it.
 
 ## [0.7.5] - 2026-09-30
 

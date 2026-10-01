@@ -29,7 +29,9 @@ defmodule Mix.Tasks.Mob.Plugins do
   def run(_args) do
     Mix.Task.run("loadpaths")
 
-    deps = load_all_manifests()
+    deps =
+      load_manifests(Mix.Project.deps_paths(), MobDev.Plugin.SignatureGate.acknowledged_unsafe())
+
     activated = activated_plugins()
     dep_dirs = Mix.Project.deps_paths()
 
@@ -47,10 +49,18 @@ defmodule Mix.Tasks.Mob.Plugins do
     Validator.raise_on_cross_plugin_conflicts!(activated_manifests)
   end
 
-  defp load_all_manifests do
-    Mix.Project.deps_paths()
-    |> Enum.map(fn {app, path} ->
-      case MobDev.Plugin.Verify.load_verified(path) do
+  @doc false
+  # Loads each dependency's manifest the way the build does
+  # (`MobDev.Plugin.activated_with_verify/0`): a plugin listed in
+  # `acknowledge_unsafe_plugins` is loaded unsigned. Without that, an
+  # acknowledged plugin dropped out as nil and the collision check above
+  # passed a configuration the native build rejects (release review).
+  @spec load_manifests(%{atom() => Path.t()}, [atom()]) :: [{atom(), map() | nil}]
+  def load_manifests(deps_paths, acknowledged) do
+    Enum.map(deps_paths, fn {app, path} ->
+      opts = if app in acknowledged, do: [acknowledged_unsafe: true], else: []
+
+      case MobDev.Plugin.Verify.load_verified(path, opts) do
         {:ok, manifest} ->
           {app, manifest}
 
