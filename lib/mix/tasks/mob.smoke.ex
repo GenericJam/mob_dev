@@ -26,7 +26,10 @@ defmodule Mix.Tasks.Mob.Smoke do
      the listener's undeliverable events, fails the run. On mob 0.9.7 or
      later, which receipts native taps, no new receipts during a flow is a
      warning: its taps did not reach this app (on older mob it is a note). An
-     unreachable node, or a mob too old for these functions, is a note.
+     unreachable node, or a mob too old for these functions, is a note, and
+     those flows are reported as not checked: the summary's health column
+     says so and a passing run does not claim the app held up. If the node
+     is unreachable at the start, it is tried once more after the first flow.
 
   The counters belong to the app's BEAM, and a flow that opens with
   `--relaunch` starts a new one. So with health on each flow is its own
@@ -162,7 +165,7 @@ defmodule Mix.Tasks.Mob.Smoke do
     Enum.each(Smoke.summary_lines(results), &IO.puts("  " <> &1))
 
     case Smoke.verdict(results) do
-      :ok -> IO.puts("\nAll flows passed and the app held up.")
+      :ok -> IO.puts("\n" <> Smoke.passed_line(results))
       {:error, failures} -> Mix.raise("mob.smoke failed:\n  " <> Enum.join(failures, "\n  "))
     end
 
@@ -251,14 +254,18 @@ defmodule Mix.Tasks.Mob.Smoke do
       device: id,
       outcome: {:ran, Smoke.merge_reports(reports), runs |> Enum.map(& &1.status) |> Enum.max()},
       findings: runs |> Enum.flat_map(& &1.findings) |> Enum.uniq(),
-      receipts_delta: if(deltas == [], do: nil, else: Enum.sum(deltas))
+      receipts_delta: if(deltas == [], do: nil, else: Enum.sum(deltas)),
+      health: %{
+        flows: length(runs),
+        unchecked: runs |> Enum.map(& &1.unchecked) |> Enum.reject(&is_nil/1)
+      }
     }
   end
 
-  defp run_flow(flow, device, target, %{node: node, snapshot: before}, ctx) do
+  defp run_flow(flow, device, target, %{node: node, snapshot: before, runs: runs}, ctx) do
     name = Path.basename(flow)
     {report, status} = run_script(flow, flow, device, target, ctx)
-    node_after = node && ctx.deps.await_node.(device, node, ctx.cookie)
+    node_after = node_after(node, runs, device, ctx)
     after_flow = snapshot(node_after, ctx.deps)
     delta = Smoke.receipts_delta(before, after_flow)
 
@@ -278,10 +285,20 @@ defmodule Mix.Tasks.Mob.Smoke do
       status: status,
       findings: findings,
       delta: delta,
+      unchecked: Smoke.unchecked_reason(before),
       node: node_after,
       snapshot: after_flow
     }
   end
+
+  # The node read before the flow, back after a relaunch. With no node before
+  # the first flow the app was likely not running; recorded flows open it with
+  # `--relaunch`, so connecting once more lets the later flows be checked.
+  defp node_after(nil, [], device, ctx),
+    do: Map.get(ctx.deps.connect.([device], ctx.cookie), device.serial)
+
+  defp node_after(nil, _runs, _device, _ctx), do: nil
+  defp node_after(node, _runs, device, ctx), do: ctx.deps.await_node.(device, node, ctx.cookie)
 
   defp run_script(script, flow, device, target, ctx) do
     paths = Smoke.run_paths(ctx.artifacts_root, ctx.junit, device.serial, flow)

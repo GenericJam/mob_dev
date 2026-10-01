@@ -68,12 +68,17 @@ defmodule MobDev.Smoke do
 
   @type outcome :: {:blocked, String.t()} | {:ran, report(), integer()}
 
-  @typedoc "Everything `mix mob.smoke` learned about one device."
+  @typedoc """
+  Everything `mix mob.smoke` learned about one device. `health` is present
+  when health was checked flow by flow: how many flows ran, and why each
+  flow without a baseline snapshot went unchecked.
+  """
   @type result :: %{
-          device: String.t(),
-          outcome: outcome(),
-          findings: [finding()],
-          receipts_delta: integer() | nil
+          required(:device) => String.t(),
+          required(:outcome) => outcome(),
+          required(:findings) => [finding()],
+          required(:receipts_delta) => integer() | nil,
+          optional(:health) => %{flows: non_neg_integer(), unchecked: [String.t()]}
         }
 
   @doc false
@@ -405,6 +410,17 @@ defmodule MobDev.Smoke do
     end
   end
 
+  @doc false
+  # Why a flow's health could not be compared, or nil: the snapshot before it
+  # (the baseline) did not read.
+  @spec unchecked_reason(snapshot()) :: String.t() | nil
+  def unchecked_reason(before) do
+    case health_map(before) do
+      {:ok, _map} -> nil
+      {_kind, reason} -> reason
+    end
+  end
+
   defp health_map(%{health: {:ok, map}}) when is_map(map), do: {:ok, map}
 
   defp health_map(%{health: {:ok, other}}),
@@ -572,7 +588,7 @@ defmodule MobDev.Smoke do
           passed,
           failed,
           not_run,
-          "#{failures} failure(s), #{warnings} warning(s)",
+          health_cell(result, "#{failures} failure(s), #{warnings} warning(s)"),
           status_label(outcome, device_failures(result))
         ]
       end)
@@ -589,6 +605,39 @@ defmodule MobDev.Smoke do
       |> String.trim_trailing()
     end)
   end
+
+  @doc false
+  # The last line of a run that passed. It claims the app held up only when
+  # every flow's health was compared; otherwise it names the devices whose
+  # health went unchecked, one per line like the failure list.
+  @spec passed_line([result()]) :: String.t()
+  def passed_line(results) do
+    unchecked =
+      for %{device: id, health: %{unchecked: [_ | _]} = health} <- results,
+          do: "#{id}: #{unchecked_text(health)}"
+
+    case unchecked do
+      [] -> "All flows passed and the app held up."
+      lines -> "All flows passed; app health not checked on:\n  " <> Enum.join(lines, "\n  ")
+    end
+  end
+
+  defp health_cell(%{health: %{flows: n, unchecked: unchecked}}, _counted)
+       when unchecked != [] and length(unchecked) == n,
+       do: "not checked (#{reasons(unchecked)})"
+
+  defp health_cell(%{health: %{unchecked: [_ | _]} = health}, counted),
+    do: "#{counted}; #{unchecked_text(health)}"
+
+  defp health_cell(_result, counted), do: counted
+
+  defp unchecked_text(%{flows: n, unchecked: unchecked}) when length(unchecked) == n,
+    do: reasons(unchecked)
+
+  defp unchecked_text(%{flows: n, unchecked: unchecked}),
+    do: "#{length(unchecked)} of #{n} flow(s) not checked (#{reasons(unchecked)})"
+
+  defp reasons(unchecked), do: unchecked |> Enum.uniq() |> Enum.join("; ")
 
   defp counts({:ran, report, _}),
     do: {to_string(report.passed), to_string(report.failed), to_string(report.not_run)}

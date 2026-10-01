@@ -540,6 +540,57 @@ defmodule MobDev.SmokeTest do
            ]
   end
 
+  describe "unchecked health" do
+    defp checked(flows, unchecked),
+      do:
+        Map.put(result(ran(%{passed: flows, total: flows, executed: flows})), :health, %{
+          flows: flows,
+          unchecked: unchecked
+        })
+
+    test "a device whose flows were never checked says so and claims nothing" do
+      results = [checked(2, ["node not reachable", "node not reachable"])]
+
+      assert Smoke.verdict(results) == :ok
+
+      assert Smoke.summary_lines(results) == [
+               "device         passed  failed  not run  health                            status",
+               "emulator-5554  2       0       0        not checked (node not reachable)  ok"
+             ]
+
+      assert Smoke.passed_line(results) ==
+               "All flows passed; app health not checked on:\n  emulator-5554: node not reachable"
+    end
+
+    test "partly checked devices count what was checked and name the rest" do
+      results = [
+        checked(3, ["node not reachable"]),
+        %{checked(2, []) | device: "emulator-5556"}
+      ]
+
+      assert [_, partial, full] = Smoke.summary_lines(results)
+
+      assert partial =~
+               "0 failure(s), 0 warning(s); 1 of 3 flow(s) not checked (node not reachable)  ok"
+
+      assert full =~ ~r/^emulator-5556 .* 0 failure\(s\), 0 warning\(s\) +ok$/
+
+      assert Smoke.passed_line(results) ==
+               "All flows passed; app health not checked on:\n" <>
+                 "  emulator-5554: 1 of 3 flow(s) not checked (node not reachable)"
+    end
+
+    test "every flow checked, or health off, is the plain pass" do
+      assert Smoke.passed_line([checked(2, [])]) == "All flows passed and the app held up."
+      assert Smoke.passed_line([result(ran(%{}))]) == "All flows passed and the app held up."
+    end
+
+    test "the reason is a baseline that did not read" do
+      assert Smoke.unchecked_reason(@unreachable) == "node not reachable"
+      assert Smoke.unchecked_reason(snap(health(0, 0, 0))) == nil
+    end
+  end
+
   test "the no-flows message carries the recording recipe with an absolute path" do
     message = Smoke.no_flows_message("smoke")
     assert message =~ "No smoke flows (*.ad) in smoke/."
