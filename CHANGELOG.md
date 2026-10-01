@@ -1,4 +1,15 @@
-## [Unreleased]
+## [0.7.8] - 2026-10-01
+
+### Upgrading
+
+- **iOS users on mob 0.9.8 / mob_dev 0.7.7: update both (mob 0.9.9, mob_dev
+  0.7.8) and redeploy with `mix mob.deploy --native`** (MOB-348). That
+  installs mob 0.9.9's `mob_beam.m`, which reads the cookie file this release
+  writes, and on a physical iPhone it is the deploy that writes the file (a
+  phone that is only hot-loaded over dist gets none). Either half alone keeps
+  0.7.7's behaviour: mob 0.9.8 ignores the file, and mob 0.9.9 with mob_dev
+  0.7.7 finds none; in both cases only launches mob_dev makes get the private
+  cookie, as before.
 
 ### Fixed
 
@@ -24,8 +35,33 @@
   the simulator runtime dir on every deploy, and `Documents/otp/<app>/` on a
   physical iPhone whenever the deploy copies BEAMs there (`--native`, or the
   app isn't connected over dist; a hot-load-only deploy writes nothing to the
-  phone). mob's `mob_beam.m` reads it when the launch environment has none
-  (needs the matching mob).
+  phone). mob 0.9.9's `mob_beam.m` reads it when the launch environment has
+  none; mob 0.9.8 ignores it.
+
+- **`mix mob.smoke` no longer says the app held up when it never read its
+  health (MOB-347).** With the node unreachable (or `Mob.Diag.health/0`
+  missing), every flow's check was skipped with a note, yet the summary showed
+  `0 failure(s), 0 warning(s)` and the run ended "All flows passed and the app
+  held up." The health column now reads `not checked (<reason>)`, or keeps
+  the counts and adds `not checked (<reason>)` (or `k of n flow(s) not
+  checked (<reason>)` when only some flows were checked) when there are any,
+  and a passing run ends `All flows passed; app health not checked on:` with
+  the devices and reasons. Exit status is unchanged (0 when the flows pass).
+  If the node was unreachable before the first flow, the task now waits for
+  it once after that flow, since recorded flows relaunch the app.
+
+- **Compiler warnings in a native build no longer print as `failed
+  command:`, and a failed NIF compile names its plugin (MOB-344).** zig's
+  build runner prints any build step that wrote to stderr — a plugin NIF
+  whose clang compile emits a warning — with a `failed command:` line, even
+  though the step succeeded. An iOS simulator build showed nine of them and
+  then `✓ iOS native build complete`; every NIF was in fact compiled in. The
+  native `zig build` runs (iOS simulator, iOS device, Android, Zigler NIFs) now set
+  `ZIG_BUILD_ERROR_STYLE=minimal` unless you set a style, and list warned
+  steps after a successful build as warnings. When a compile does fail, the
+  `✗ native build failed` line names the plugin and source and quotes the
+  compiler's `error:` lines instead of only zig's exit code. See
+  `decisions/2026-10-01-zig-build-warnings-vs-failures.md`.
 
 ### Documentation
 
@@ -66,31 +102,6 @@
   (`--native` for iOS) moves the app to its private cookie.
 
 ### Fixed
-
-- **`mix mob.smoke` no longer says the app held up when it never read its
-  health (MOB-347).** With the node unreachable (or `Mob.Diag.health/0`
-  missing), every flow's check was skipped with a note, yet the summary showed
-  `0 failure(s), 0 warning(s)` and the run ended "All flows passed and the app
-  held up." The health column now reads `not checked (<reason>)`, or keeps
-  the counts and adds `not checked (<reason>)` (or `k of n flow(s) not
-  checked (<reason>)` when only some flows were checked) when there are any,
-  and a passing run ends `All flows passed; app health not checked on:` with
-  the devices and reasons. Exit status is unchanged (0 when the flows pass).
-  If the node was unreachable before the first flow, the task now waits for
-  it once after that flow, since recorded flows relaunch the app.
-
-- **Compiler warnings in a native build no longer print as `failed
-  command:`, and a failed NIF compile names its plugin (MOB-344).** zig's
-  build runner prints any build step that wrote to stderr — a plugin NIF
-  whose clang compile emits a warning — with a `failed command:` line, even
-  though the step succeeded. An iOS simulator build showed nine of them and
-  then `✓ iOS native build complete`; every NIF was in fact compiled in. The
-  native `zig build` runs (iOS simulator, iOS device, Android, Zigler NIFs) now set
-  `ZIG_BUILD_ERROR_STYLE=minimal` unless you set a style, and list warned
-  steps after a successful build as warnings. When a compile does fail, the
-  `✗ native build failed` line names the plugin and source and quotes the
-  compiler's `error:` lines instead of only zig's exit code. See
-  `decisions/2026-10-01-zig-build-warnings-vs-failures.md`.
 
 - **Tasks that pick devices on their own leave another agent's leased
   device alone (MOB-330).** A bare `mix mob.deploy` installed and launched an
