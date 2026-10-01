@@ -162,6 +162,17 @@ defmodule Mix.Tasks.Mob.SmokeTest do
     assert [["test", _ | _]] = test_runs()
   end
 
+  test "--fail-fast halts on a health failure even when the replay passed", %{args: args} do
+    snapshots = [{health(0, 5), ~c"1"}, {health(1, 7), ~c"1"}, {health(1, 9), ~c"1"}]
+
+    assert_raise Mix.Error, ~r/a_home.ad: Mob.Store.Notes: lost 0 → 1/, fn ->
+      run_task(["--fail-fast" | args], deps(@no_claims, %{}, snapshots))
+    end
+
+    assert [["test", first | _]] = test_runs()
+    assert Path.basename(first) == "a_home.ad"
+  end
+
   test "a store loss during a flow fails the run, naming the flow", %{args: args} do
     snapshots = [{health(0, 5), ~c"1"}, {health(1, 7), ~c"1"}, {health(1, 9), ~c"1"}]
 

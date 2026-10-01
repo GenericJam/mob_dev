@@ -157,7 +157,8 @@ defmodule MobDev.Smoke do
   @doc false
   # `script` is a flow file or the quoted glob for a whole suite; agent-device
   # expands globs itself. Paths should be absolute, because the agent-device
-  # daemon does not share our cwd.
+  # daemon does not share our cwd. `--retries` is always passed, 0 included:
+  # without it agent-device falls back to the script's own `context retries=`.
   @spec test_argv(Path.t(), [String.t()], keyword()) :: [String.t()]
   def test_argv(script, target, opts) do
     retries = Keyword.get(opts, :retries, 0)
@@ -165,7 +166,7 @@ defmodule MobDev.Smoke do
     ["test", script] ++
       target ++
       ["--json", "--artifacts-dir", Keyword.fetch!(opts, :artifacts_dir)] ++
-      if(retries > 0, do: ["--retries", Integer.to_string(retries)], else: []) ++
+      ["--retries", Integer.to_string(retries)] ++
       if(opts[:junit], do: ["--reporter", "junit:" <> opts[:junit]], else: []) ++
       if(opts[:fail_fast], do: ["--fail-fast"], else: [])
   end
@@ -287,10 +288,6 @@ defmodule MobDev.Smoke do
       failures: []
     }
   end
-
-  @doc false
-  @spec failed_report?(report()) :: boolean()
-  def failed_report?(report), do: report.failed > 0 or report.not_run > 0
 
   @doc false
   # Reads `agent-device device status --json`. Stale claims are hidden from
@@ -504,6 +501,12 @@ defmodule MobDev.Smoke do
     (outcome_failures(outcome) ++ for({:failure, message} <- findings, do: message))
     |> Enum.map(&"#{id}: #{&1}")
   end
+
+  @doc false
+  # The verdict's criterion, applied to one device or one flow: what
+  # `--fail-fast` halts on. Warnings and notes never fail.
+  @spec failed?(result()) :: boolean()
+  def failed?(result), do: device_failures(result) != []
 
   defp outcome_failures({:blocked, reason}), do: ["blocked, #{reason}"]
 

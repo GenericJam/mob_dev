@@ -198,7 +198,8 @@ A device fails on any failed or not-run flow, on a store whose `lost` or
 `resets` rose during a flow, or on new undeliverable listener events. No new
 receipts during a flow is a warning: its taps did not reach this app. A device
 another `agent-device` session holds is skipped, named with that session and
-workspace, and fails the run.
+workspace, and fails the run. `--retries` (default 0) is always passed to
+agent-device, so it overrides a script's own `context retries=`.
 
 The counters belong to the app's BEAM, and a flow that opens with `--relaunch`
 boots a new one. So each flow is its own `agent-device test` run (artifacts in

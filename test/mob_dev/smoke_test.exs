@@ -212,7 +212,7 @@ defmodule MobDev.SmokeTest do
                artifacts_dir: paths.artifacts_dir,
                junit: paths.junit
              ) ==
-               ~w(test /p/smoke/*.ad --serial emulator-5554 --json --artifacts-dir /p/_build/mob_smoke/emulator-5554)
+               ~w(test /p/smoke/*.ad --serial emulator-5554 --json --artifacts-dir /p/_build/mob_smoke/emulator-5554 --retries 0)
     end
 
     test "a per-flow run gets a directory and JUnit file of its own" do
@@ -236,7 +236,7 @@ defmodule MobDev.SmokeTest do
       refute spaced.junit == plain.junit
     end
 
-    test "passes retries, junit and fail-fast; zero retries is not passed" do
+    test "passes retries, junit and fail-fast" do
       argv =
         Smoke.test_argv("/p/smoke/a.ad", ["--udid", "U"],
           artifacts_dir: "/a",
@@ -246,7 +246,13 @@ defmodule MobDev.SmokeTest do
         )
 
       assert Enum.drop(argv, 7) == ~w(--retries 2 --reporter junit:/j.xml --fail-fast)
-      refute "--retries" in Smoke.test_argv("/s", [], artifacts_dir: "/a", retries: 0)
+    end
+
+    test "zero retries is passed, so a script's own `context retries=` cannot win" do
+      assert Enum.drop(Smoke.test_argv("/s", [], artifacts_dir: "/a", retries: 0), 5) ==
+               ~w(--retries 0)
+
+      assert Enum.drop(Smoke.test_argv("/s", [], artifacts_dir: "/a"), 5) == ~w(--retries 0)
     end
   end
 

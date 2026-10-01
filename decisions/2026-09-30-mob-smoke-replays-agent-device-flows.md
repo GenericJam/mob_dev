@@ -44,11 +44,18 @@ can trust, for reasons found while wiring it up:
   task waits up to 15 s for the node (`Node.connect`, then one
   `Connector.connect_all(restart: false)` re-attach, which finds an Android
   app re-registered under the bare `<app>_android` name and forwards its
-  port). `--fail-fast` is decided by the task: remaining flows count as not
-  run.
+  port). `--fail-fast` is decided by the task, on the verdict's own per-flow
+  criterion (`MobDev.Smoke.failed?/1`: a failed or refused replay, a non-zero
+  exit, or a health *failure*; never a warning or note), and remaining flows
+  count as not run. (Correction: the first version halted only on a failed or
+  not-run replay, so a flow that replayed cleanly but lost a store's table
+  ran the next flow anyway, though the verdict then failed it.)
 - With `--no-health` there is nothing to read between flows, so the flows run
   as one suite: `agent-device test '<flows>/*.ad'` (agent-device expands the
   glob), `--artifacts-dir <root>/<device>`, `--fail-fast` passed through.
+- `--retries <n>` is always passed, `0` included. Without the flag
+  agent-device falls back to a script's own `context retries=`, so omitting
+  `0` (as the first version did) let a recorded script retry anyway.
 - All paths are absolute: the agent-device daemon does not share our cwd.
 - The verdict is computed by `MobDev.Smoke` (pure): a device fails on any
   failed or not-run flow, on zero executed flows, on a non-zero exit with an

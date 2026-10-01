@@ -41,13 +41,16 @@ defmodule Mix.Tasks.Mob.Smoke do
     * `--all-physical` — every physical device (with `--all-devices`: everything)
     * `--ios-only` / `--android-only` — restrict discovery to one platform
     * `--flows DIR`    — directory of `.ad` flows (default: `smoke`)
-    * `--retries N`    — retry each failed flow up to N times (default: 0)
+    * `--retries N`    — retry each failed flow up to N times (default: 0).
+      Always passed to agent-device, so it overrides a script's own
+      `context retries=`
     * `--artifacts-dir DIR` — agent-device artifacts under `DIR/<device>/`
       (per flow, `DIR/<device>/<flow>/`; default: `_build/mob_smoke`)
     * `--junit PATH`   — JUnit reports, the device id (and, per flow, the flow
       name) appended to the file name
     * `--no-health`    — skip the `Mob.Diag` comparison
-    * `--fail-fast`    — stop a device's flows at the first failing one
+    * `--fail-fast`    — stop a device's flows at the first one that fails the
+      run: a failed replay, a non-zero exit, or a health failure
     * `--cookie C`     — dist cookie (default: `mob_secret`)
 
   With no selection flags exactly one emulator/simulator is picked; a lone
@@ -220,7 +223,14 @@ defmodule Mix.Tasks.Mob.Smoke do
         run = run_flow(flow, device, target, acc, ctx)
         acc = %{node: run.node || acc.node, snapshot: run.snapshot, runs: [run | acc.runs]}
 
-        if ctx.fail_fast? and Smoke.failed_report?(run.report),
+        flow_result = %{
+          device: device.serial,
+          outcome: {:ran, run.report, run.status},
+          findings: run.findings,
+          receipts_delta: run.delta
+        }
+
+        if ctx.fail_fast? and Smoke.failed?(flow_result),
           do: {:halt, acc},
           else: {:cont, acc}
       end)
