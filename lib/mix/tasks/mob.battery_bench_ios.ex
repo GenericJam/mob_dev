@@ -257,6 +257,9 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
     # Best-effort: nil means RPC won't be available.
     IO.puts("  Connecting to device BEAM...")
     node = connect_beam_node(device_id, opts[:wifi_ip], dist_cookie)
+    # The cookie the node accepted: a pre-MOB-49 build still uses the legacy
+    # one, and Preflight/Reconnector must reconnect with the same.
+    dist_cookie = if node, do: :erlang.get_cookie(node), else: dist_cookie
 
     if node do
       IO.puts("  BEAM connected: #{node}")
@@ -1020,33 +1023,32 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
         sleep_unless_last(attempt)
         do_connect_attempts(device_id, wifi_ip, expected_prefix, nil, attempt + 1, cookie)
 
-      true ->
-        Node.set_cookie(device.node, cookie)
+      not Node.alive?() ->
+        # Local node isn't alive (couldn't start it) — retrying won't help.
+        IO.puts(
+          "  attempt #{attempt}/#{@max_connect_attempts}: local node never started, " <>
+            "aborting retries"
+        )
 
-        case Node.connect(device.node) do
-          true ->
+        nil
+
+      true ->
+        # The private cookie, then the legacy one an app built against a mob
+        # from before MOB-49 still uses (with a warning).
+        case MobDev.DistCookie.connect(device.node, [cookie, :mob_secret]) do
+          {:ok, _accepted} ->
             device.node
 
-          false ->
+          :error ->
             IO.puts(
               "  attempt #{attempt}/#{@max_connect_attempts}: found #{device.serial} at " <>
                 "#{device.host_ip || "?"} (#{device.node}) but Node.connect returned false " <>
-                "(BEAM not yet ready, or built against a mob from before MOB-49 — " <>
-                "rebuild with --native)"
+                "(BEAM not yet ready or cookie mismatch)"
             )
 
             sleep_unless_last(attempt)
             # Keep the device cached — likely the BEAM just isn't up yet.
             do_connect_attempts(device_id, wifi_ip, expected_prefix, device, attempt + 1, cookie)
-
-          :ignored ->
-            # Local node isn't alive (couldn't start it) — retrying won't help.
-            IO.puts(
-              "  attempt #{attempt}/#{@max_connect_attempts}: Node.connect returned :ignored — " <>
-                "local node never started, aborting retries"
-            )
-
-            nil
         end
     end
   end

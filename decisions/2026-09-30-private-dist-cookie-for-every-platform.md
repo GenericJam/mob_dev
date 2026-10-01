@@ -31,8 +31,15 @@ the bundle id. iOS, Android and the Mac-side node all use it.
   gets it as `files/otp/<app>/mob_dist_cookie`, written with `run-as` by every
   deploy (filesystem or dist path) and before every `mob.connect` restart. The
   value goes to adb on stdin, not in an argument, so `ps` on the Mac never
-  shows it. `mix mob.cookie` is the one command that prints it, for attaching
-  by hand.
+  shows it. A hand-started node loads it inside the VM
+  (`Node.set_cookie(MobDev.DistCookie.for_project!())`); there is deliberately
+  no command that prints it, since the obvious use, `--cookie "$(...)"`, would
+  put it in the arguments of a long-lived process.
+- **Migration restarts.** `mob.deploy` hot-loads by default, but `Mob.Dist`
+  reads its cookie and binds its listener only at start, so a node that
+  accepted the legacy cookie is sent down the filesystem path, which writes
+  the private cookie and restarts it (`Deployer.hot_load_nodes/1`). A physical
+  iPhone stays on the hot-load path; only `--native` changes its launcher.
 - **Legacy fallback.** Without `--cookie`, `MobDev.DistCookie.connect/2` tries
   the private cookie, then `mob_secret`, and warns when the second one works:
   that app was built against a mob from before MOB-49 and stays reachable

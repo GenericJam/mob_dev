@@ -439,16 +439,21 @@ mix mob.connect            # starts IEx connected to all devices
 mix mob.connect --no-iex   # sets up tunnels, prints node names, exits
 ```
 
-Another IEx (or one-shot script) needs the app's private cookie, which
-`mix mob.cookie` prints from the project directory:
+Another IEx (or one-shot script) needs the app's private cookie. Load it
+inside the VM, from the project directory, so it never appears in the
+process arguments:
 
 ```bash
-elixir --name probe@127.0.0.1 --cookie "$(mix mob.cookie)" -e '
+elixir --name probe@127.0.0.1 -S mix run --no-start -e '
+Node.set_cookie(MobDev.DistCookie.for_project!())
 node = :"your_app_android_<suffix>@127.0.0.1"
 Node.connect(node)
 :rpc.call(node, YourApp.Module, :function, [args])
 '
 ```
+
+In an `iex --name me@127.0.0.1 -S mix` session, run
+`Node.set_cookie(MobDev.DistCookie.for_project!())` first.
 
 The cookie is per app, kept under `~/.mob/dist_cookies/` and handed to the app
 at deploy/connect time (Android: a file in its private storage; iOS: the launch

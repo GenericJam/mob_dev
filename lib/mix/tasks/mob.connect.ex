@@ -120,7 +120,7 @@ defmodule Mix.Tasks.Mob.Connect do
   the `172.20.10.x` address.
 
   Distribution is authenticated with a random 256-bit cookie per app, kept in an
-  owner-only file under `~/.mob/dist_cookies/` (`mix mob.cookie` prints it).
+  owner-only file under `~/.mob/dist_cookies/`.
   `mob.connect` hands it to the app when it restarts it: Android reads it from a
   file in the app's private storage, iOS from the launch environment. An iOS app
   started from Xcode or the home screen has an ephemeral random cookie until
@@ -142,7 +142,7 @@ defmodule Mix.Tasks.Mob.Connect do
 
       # Then, in Elixir:
       Node.start(:"mob_dev@127.0.0.1", :longnames)
-      Node.set_cookie(private_cookie)   # mix mob.cookie
+      Node.set_cookie(MobDev.DistCookie.for_project!())
       Node.connect(:"my_app_android@127.0.0.1")
       Node.connect(:"my_app_ios@127.0.0.1")
       IEx.start([])

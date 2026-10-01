@@ -84,7 +84,7 @@ defmodule MobDev.Deployer do
       # get BEAMs via RPC, the rest fall back to adb/cp + restart.
       # force_fs: true skips dist and always writes to the filesystem — required
       # after a native build/install where the old BEAM process is dead.
-      dist_nodes = if force_fs, do: [], else: connect_dist(all, cookies)
+      dist_nodes = if force_fs, do: [], else: all |> connect_dist(cookies) |> hot_load_nodes()
 
       # Manual overrides from `mix mob.deploy --dist-port N --node-suffix X`.
       # When set, all targeted devices share the same port/suffix (the user
@@ -1546,17 +1546,37 @@ defmodule MobDev.Deployer do
 
   # ── Dist push ────────────────────────────────────────────────────────────────
 
-  # Try to connect via Erlang dist to each discovered device. Returns a list of
-  # connected node atoms. Devices that don't respond are left for the adb fallback.
+  # Try to connect via Erlang dist to each discovered device. Returns the
+  # connected nodes with the cookie each accepted. Devices that don't respond
+  # are left for the adb fallback.
   defp connect_dist(devices, cookies) do
     ensure_local_dist(hd(cookies))
 
     Enum.flat_map(devices, fn device ->
       node = Device.node_name(device)
-      if match?({:ok, _}, DistCookie.connect(node, cookies)), do: [node], else: []
+
+      case DistCookie.connect(node, cookies) do
+        {:ok, cookie} -> [{device, node, cookie}]
+        :error -> []
+      end
     end)
   rescue
     _ -> []
+  end
+
+  @doc false
+  # Which connected nodes take the hot-load path. A node that accepted only
+  # the legacy cookie is running a `Mob.Dist` from before MOB-49: hot loading
+  # the new mob into it would leave its cookie and all-interface listener as
+  # they are, because `Mob.Dist` only runs at start. It takes the filesystem
+  # path instead, which writes the private cookie and restarts the app. A
+  # physical iPhone stays on the hot-load path: its filesystem write is unsafe
+  # from here (see `persistable?/1`), and only `--native` moves it anyway.
+  @spec hot_load_nodes([{Device.t(), node(), atom()}]) :: [node()]
+  def hot_load_nodes(connected) do
+    for {device, node, cookie} <- connected,
+        cookie != DistCookie.legacy_cookie() or not persistable?(device),
+        do: node
   end
 
   # A taken default name (another mob.connect or deploy on this Mac) falls back

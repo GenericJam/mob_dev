@@ -27,7 +27,7 @@ defmodule Mix.Tasks.Mob.Attest do
                       `mix mob.deploy` pushes, which is the only scope that
                       cannot drift from what was actually shipped
     * `--node NAME` — attest one node instead of every connected one
-    * `--cookie C`  — use this cookie instead of the app's private one (`mix mob.cookie`)
+    * `--cookie C`  — use this cookie instead of the app's private one
     * `--json`      — machine-readable result on stdout, progress on stderr
 
   ## Exit status

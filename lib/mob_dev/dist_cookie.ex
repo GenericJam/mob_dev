@@ -6,7 +6,9 @@ defmodule MobDev.DistCookie do
   Android and the Mac-side node, so concurrent `mob.connect` sessions attach
   without restarting the app under different credentials. It lives in an
   owner-only directory under `~/.mob/dist_cookies/`, reaches the app only at
-  deploy/launch time, and is never printed except by `mix mob.cookie`.
+  deploy/launch time, and is never printed. A hand-started node loads it with
+  `Node.set_cookie(MobDev.DistCookie.for_project!())` from the project, which
+  keeps it out of process arguments (`--cookie` would show it in `ps`).
 
   Apps built against a mob from before MOB-49 still answer to the public
   `:mob_secret`. Without an explicit cookie, `connect/2` tries the private
@@ -94,13 +96,19 @@ defmodule MobDev.DistCookie do
 
       IO.puts(
         :stderr,
-        "\n#{IO.ANSI.yellow()}warning: #{node} accepted the public cookie mob_secret, so it " <>
-          "was built with a mob from before MOB-49 and anyone who can reach its dist port " <>
+        "\n#{IO.ANSI.yellow()}warning: #{node} accepted the public cookie mob_secret: it " <>
+          "is running a mob from before MOB-49, and anyone who can reach its dist port " <>
           "can run code in it. Update the mob dependency and run `mix mob.deploy` " <>
-          "(`--native` for iOS) to move it to this project's private cookie.#{IO.ANSI.reset()}"
+          "(`--native` for iOS) without `--no-restart`: deploy restarts an app in this " <>
+          "state instead of hot-loading it, so it comes back on this project's private " <>
+          "cookie.#{IO.ANSI.reset()}"
       )
     end
   end
+
+  @doc false
+  @spec legacy_cookie() :: atom()
+  def legacy_cookie, do: @legacy_cookie
 
   @doc false
   @spec default_path(String.t()) :: String.t()

@@ -13,7 +13,7 @@ defmodule Mix.Tasks.Mob.Watch do
   Press Ctrl-C to stop.
 
   Options:
-    --cookie        Use this cookie instead of the app's private one (`mix mob.cookie`)
+    --cookie        Use this cookie instead of the app's private one
     --debounce      ms to wait after a change before compiling (default: 300)
     --interval      ms between file-change polls (default: 500)
 

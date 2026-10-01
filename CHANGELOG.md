@@ -1,3 +1,25 @@
+## [Unreleased]
+
+### Security
+
+- **Every platform uses a private distribution cookie per app; `mob_secret`
+  is only a fallback for old apps (MOB-49).** The Mac-side node and every
+  development app used the public cookie `mob_secret`, so anyone who could
+  reach a dist port could run code on the phone or the Mac. mob_dev now keeps
+  a random 256-bit cookie per app in `~/.mob/dist_cookies/` (owner-only) and
+  hands it over at deploy/connect time: iOS in the launch environment, Android
+  as a file in the app's private storage (sent over adb's stdin, never on a
+  command line). An app built against a mob from before MOB-49 still answers
+  only to `mob_secret`; `mob.connect`, `mob.deploy`, `mob.push`, `mob.watch`,
+  `mob.attest`, `mob.smoke`, `mob.trace_otp` and the battery benches fall back
+  to it with a warning. `mob.deploy` restarts such an app instead of
+  hot-loading it, so updating `mob` and deploying (`--native` for iOS) moves
+  it to the private cookie. `--cookie` now means "only this cookie". To attach
+  by hand, load the cookie inside the VM
+  (`Node.set_cookie(MobDev.DistCookie.for_project!())`) rather than passing
+  it as `--cookie`, which would put it in the process arguments. See
+  `decisions/2026-09-30-private-dist-cookie-for-every-platform.md`.
+
 ## [0.7.6] - 2026-10-01
 
 ### Breaking
@@ -39,9 +61,6 @@
   the manifests (re-signing any signed manifest you change).
 
 ### Added
-
-- **`mix mob.cookie`** prints the app's private cookie, for attaching by hand:
-  `elixir --name probe@127.0.0.1 --cookie "$(mix mob.cookie)" ...`.
 
 - **`mix mob.smoke` replays recorded UI flows on devices and checks the app
   held up.** It runs `agent-device test` on the `.ad` flows in `smoke/` on

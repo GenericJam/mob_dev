@@ -17,7 +17,7 @@ defmodule Mix.Tasks.Mob.Push do
 
   Options:
     --all      Push all modules, not just those changed since last compile
-    --cookie   Use this cookie instead of the app's private one (`mix mob.cookie`)
+    --cookie   Use this cookie instead of the app's private one
 
   Examples:
       mix mob.push

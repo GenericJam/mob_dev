@@ -104,8 +104,7 @@ If dist is not reachable (first deploy, app not running), it falls back to `adb 
 
 **Requirements:** The app must start development distribution. Every launch
 and attach command shares one private cookie per app, kept in
-`~/.mob/dist_cookies/` (`mix mob.cookie` prints it) and handed to the app at
-deploy/connect time. An app built against a mob from before MOB-49 still uses
+`~/.mob/dist_cookies/` and handed to the app at deploy/connect time. An app built against a mob from before MOB-49 still uses
 the public `mob_secret`; the tasks fall back to it with a warning until it is
 redeployed. Pass `--cookie` only for an app that sets a custom cookie.
 
