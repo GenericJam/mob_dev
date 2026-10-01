@@ -78,8 +78,9 @@ can trust, for reasons found while wiring it up:
   node, or mob without `health/0`) is *unchecked*, and the run says so
   (MOB-347). The summary's
   health column reads `not checked (<reason>)` when no flow on the device was
-  checked, or appends `k of n flow(s) not checked (<reason>)` to the counts
-  when some were. A passing run claims "the app held up" only when every
+  checked and nothing was found, or keeps the counts and appends
+  `not checked (<reason>)` / `k of n flow(s) not checked (<reason>)` to them
+  otherwise. A passing run claims "the app held up" only when every
   flow was checked (or `--no-health`, unchanged); otherwise its last line is
   `All flows passed; app health not checked on:` followed by one
   `<device>: <reason>` line per device, like the failure list. Exit stays 0:

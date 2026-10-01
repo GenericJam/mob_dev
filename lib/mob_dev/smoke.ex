@@ -72,7 +72,7 @@ defmodule MobDev.Smoke do
   @typedoc """
   Everything `mix mob.smoke` learned about one device. `health` is present
   when health was checked flow by flow: how many flows ran, and why each
-  flow without a baseline snapshot went unchecked.
+  flow whose snapshot before or after it did not read went unchecked.
   """
   @type result :: %{
           required(:device) => String.t(),
@@ -590,7 +590,11 @@ defmodule MobDev.Smoke do
           passed,
           failed,
           not_run,
-          health_cell(result, "#{failures} failure(s), #{warnings} warning(s)"),
+          health_cell(
+            result,
+            {failures, warnings},
+            "#{failures} failure(s), #{warnings} warning(s)"
+          ),
           status_label(outcome, device_failures(result))
         ]
       end)
@@ -624,14 +628,20 @@ defmodule MobDev.Smoke do
     end
   end
 
-  defp health_cell(%{health: %{flows: n, unchecked: unchecked}}, _counted)
+  # Every flow unchecked and nothing found: the counts would only mislead.
+  # Findings (a warning from a node that vanished mid-run) keep the counts.
+  defp health_cell(%{health: %{flows: n, unchecked: unchecked}}, {0, 0}, _counted)
        when unchecked != [] and length(unchecked) == n,
        do: "not checked (#{reasons(unchecked)})"
 
-  defp health_cell(%{health: %{unchecked: [_ | _]} = health}, counted),
+  defp health_cell(%{health: %{flows: n, unchecked: [_ | _] = unchecked}}, _found, counted)
+       when length(unchecked) == n,
+       do: "#{counted}; not checked (#{reasons(unchecked)})"
+
+  defp health_cell(%{health: %{unchecked: [_ | _]} = health}, _found, counted),
     do: "#{counted}; #{unchecked_text(health)}"
 
-  defp health_cell(_result, counted), do: counted
+  defp health_cell(_result, _found, counted), do: counted
 
   defp unchecked_text(%{flows: n, unchecked: unchecked}) when length(unchecked) == n,
     do: reasons(unchecked)

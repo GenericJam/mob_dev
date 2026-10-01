@@ -263,6 +263,7 @@ defmodule Mix.Tasks.Mob.SmokeTest do
 
     assert_received {:result, :ok}
     assert output =~ "warning: a_home.ad: health unavailable after the flow: node not reachable"
+    assert output =~ "0 failure(s), 1 warning(s); not checked (node not reachable)  ok"
     assert output =~ "emulator-5554: node not reachable"
     refute output =~ "held up"
   end
