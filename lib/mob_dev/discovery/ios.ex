@@ -606,6 +606,7 @@ defmodule MobDev.Discovery.IOS do
     * `MOB_NODE_SUFFIX`      — appended to the BEAM node name. When
       absent, `mob_beam.m` falls back to deriving a suffix from
       `SIMULATOR_UDID` so concurrent sims still get unique names.
+    * `MOB_DIST_COOKIE`      — private development distribution cookie.
     * `MOB_SIM_RUNTIME_DIR`  — directory the OTP runtime was written
       to; `mob_beam.m` reads from the same place `ios/build.sh` wrote.
 
@@ -614,6 +615,7 @@ defmodule MobDev.Discovery.IOS do
     * `:dist_port`    — pin the dist listen port (default `9100`).
     * `:node_suffix`  — override the BEAM node-name suffix. `nil` lets
       `mob_beam.m` auto-derive from `SIMULATOR_UDID`.
+    * `:dist_cookie`  — private development distribution cookie.
   """
   @spec launch_app(String.t(), String.t(), keyword()) :: {String.t(), non_neg_integer()}
   def launch_app(udid, bundle_id, opts \\ []) do
@@ -652,12 +654,14 @@ defmodule MobDev.Discovery.IOS do
       {"SIMCTL_CHILD_MOB_SIM_RUNTIME_DIR", runtime_dir}
     ]
 
-    if node_suffix && node_suffix != "" do
-      base ++ [{"SIMCTL_CHILD_MOB_NODE_SUFFIX", node_suffix}]
-    else
-      base
-    end
+    base
+    |> maybe_add_env("SIMCTL_CHILD_MOB_NODE_SUFFIX", node_suffix)
+    |> maybe_add_env("SIMCTL_CHILD_MOB_DIST_COOKIE", Keyword.get(opts, :dist_cookie))
   end
+
+  defp maybe_add_env(env, _key, nil), do: env
+  defp maybe_add_env(env, _key, ""), do: env
+  defp maybe_add_env(env, key, value), do: env ++ [{key, value}]
 
   @spec terminate_app(String.t(), String.t()) :: {String.t(), non_neg_integer()}
   def terminate_app(udid, bundle_id) do
@@ -672,8 +676,9 @@ defmodule MobDev.Discovery.IOS do
   target app fresh. Apps `mob_dev` did not install are never touched, whoever
   they belong to. See `MobDev.IOSInstalls` and MOB-70.
   """
-  @spec restart_app_physical(String.t(), String.t()) :: {String.t(), non_neg_integer()}
-  def restart_app_physical(udid, bundle_id) do
+  @spec restart_app_physical(String.t(), String.t(), keyword()) ::
+          {String.t(), non_neg_integer()}
+  def restart_app_physical(udid, bundle_id, opts \\ []) do
     kill_other_user_apps_physical(udid, bundle_id)
 
     # --terminate-existing kills any remaining instance of *this* app atomically.
@@ -689,8 +694,21 @@ defmodule MobDev.Discovery.IOS do
         "--terminate-existing",
         bundle_id
       ],
-      stderr_to_stdout: true
+      stderr_to_stdout: true,
+      env: physical_launch_env(opts)
     )
+  end
+
+  @doc false
+  @spec physical_launch_env(keyword()) :: [{String.t(), String.t()}]
+  def physical_launch_env(opts) do
+    case Keyword.get(opts, :dist_cookie) do
+      cookie when is_binary(cookie) and cookie != "" ->
+        [{"DEVICECTL_CHILD_MOB_DIST_COOKIE", cookie}]
+
+      _ ->
+        []
+    end
   end
 
   @doc """

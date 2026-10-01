@@ -9,10 +9,8 @@ defmodule MobDev.HotPush do
   `mix mob.deploy` first).
   """
 
-  alias MobDev.{Tunnel}
+  alias MobDev.{DistCookie, Tunnel}
   alias MobDev.Discovery.{Android, IOS}
-
-  @cookie :mob_secret
 
   @doc """
   Sets up adb tunnels (idempotent) and connects to all running device nodes.
@@ -20,27 +18,23 @@ defmodule MobDev.HotPush do
   """
   @spec connect(keyword()) :: [node()]
   def connect(opts \\ []) do
-    cookie = Keyword.get(opts, :cookie, @cookie)
+    cookies = opts |> Keyword.get(:cookie) |> DistCookie.candidates()
 
-    nodes =
-      (Android.list_devices() ++ IOS.list_simulators())
-      |> Enum.flat_map(fn device ->
-        case Tunnel.setup(device) do
-          {:ok, d} -> [d]
-          _ -> []
-        end
-      end)
-      |> Enum.flat_map(fn device ->
-        ensure_local_dist(cookie)
-        Node.set_cookie(device.node, cookie)
+    (Android.list_devices() ++ IOS.list_simulators())
+    |> Enum.flat_map(fn device ->
+      case Tunnel.setup(device) do
+        {:ok, d} -> [d]
+        _ -> []
+      end
+    end)
+    |> Enum.flat_map(fn device ->
+      ensure_local_dist(hd(cookies))
 
-        case Node.connect(device.node) do
-          true -> [device.node]
-          _ -> []
-        end
-      end)
-
-    nodes
+      case DistCookie.connect(device.node, cookies) do
+        {:ok, _cookie} -> [device.node]
+        :error -> []
+      end
+    end)
   end
 
   @doc """

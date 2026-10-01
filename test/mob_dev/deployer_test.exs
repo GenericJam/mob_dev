@@ -492,4 +492,31 @@ defmodule MobDev.DeployerTest do
       assert File.dir?(keep)
     end
   end
+
+  # MOB-49: hot loading the new mob into an app whose Mob.Dist started on the
+  # public cookie leaves that cookie and its all-interface listener in place.
+  describe "hot_load_nodes/1" do
+    test "an app on the legacy cookie is restarted, not hot-loaded" do
+      android = %Device{platform: :android, type: :emulator, serial: "emulator-5554"}
+      sim = %Device{platform: :ios, type: :simulator, serial: "SIM"}
+
+      connected = [
+        {android, :"a_android@127.0.0.1", :private},
+        {android, :"b_android@127.0.0.1", :mob_secret},
+        {sim, :"c_ios@127.0.0.1", :mob_secret}
+      ]
+
+      assert Deployer.hot_load_nodes(connected) == [:"a_android@127.0.0.1"]
+    end
+
+    # Its filesystem write is unsafe from the dist path, and only --native
+    # moves its launcher to the private cookie.
+    test "a physical iPhone on the legacy cookie still hot-loads" do
+      phone = %Device{platform: :ios, type: :physical, serial: "UDID"}
+
+      assert Deployer.hot_load_nodes([{phone, :"a_ios@10.0.0.2", :mob_secret}]) == [
+               :"a_ios@10.0.0.2"
+             ]
+    end
+  end
 end

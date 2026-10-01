@@ -248,6 +248,9 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
     # will (correctly) report "BEAM never registered".
     ensure_tunnels(device)
 
+    # Mob.Dist reads its cookie file once, at start.
+    MobDev.Discovery.Android.write_dist_cookie(device, pkg, app, MobDev.DistCookie.for_project!())
+
     IO.puts("")
     IO.puts("=== Launching app ===")
     adb!(device, ~w[shell am start -n #{pkg}/#{@android_activity}])
@@ -291,7 +294,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
           platform: :android,
           node: active_node,
           host: "127.0.0.1",
-          cookie: :mob_secret,
+          cookie: dist_cookie(active_node),
           bundle_id: pkg,
           adb_serial: device,
           require_keep_alive: opts[:no_keep_alive] != true
@@ -337,7 +340,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
         Logger.open(log_path, start_ts_ms: System.monotonic_time(:millisecond))
       end
 
-    reconnector = Reconnector.new(active_node || :unset@unset, :mob_secret)
+    reconnector = Reconnector.new(active_node || :unset@unset, dist_cookie(active_node))
 
     observer =
       DeviceObserver.subscribe(active_node, categories: [:app, :display, :memory])
@@ -974,11 +977,15 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
   # raw `gen_tcp:connect/3` returns `:ok` even when nothing is listening
   # inside the app.
   defp beam_reachable?(node) do
-    Node.set_cookie(node, :mob_secret)
-    Node.connect(node) == true
+    match?({:ok, _}, MobDev.DistCookie.connect(node, MobDev.DistCookie.candidates()))
   rescue
     _ -> false
   end
+
+  # The cookie the node accepted (the private one, or the legacy cookie of an
+  # app built against an older mob), so later reconnects use it too.
+  defp dist_cookie(nil), do: MobDev.DistCookie.for_project!()
+  defp dist_cookie(node), do: :erlang.get_cookie(node)
 
   # Repeatedly try Node.connect until success or timeout. Used right after
   # `verify_app_running!` to handle the timing window where the device-side
@@ -1292,7 +1299,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
     # Local Erlang dist must be alive for Node.connect/1 to work.
     unless Node.alive?() do
       Node.start(:"mob_bench_android@127.0.0.1", :longnames)
-      Node.set_cookie(:mob_secret)
+      Node.set_cookie(MobDev.DistCookie.for_project!())
     end
 
     :ok

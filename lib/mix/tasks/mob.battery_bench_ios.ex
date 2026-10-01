@@ -246,7 +246,8 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
     # ── Launch app first so the BEAM is reachable for all battery reads ──────────
 
     IO.puts("=== Launching app ===")
-    pid = launch_app!(udid, pkg)
+    dist_cookie = MobDev.DistCookie.for_project!()
+    pid = launch_app!(udid, pkg, dist_cookie)
     :timer.sleep(3000)
 
     # ── Pre-run checks ─────────────────────────────────────────────────────────
@@ -255,7 +256,10 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
     # unavailable (WiFi-only mode) and for battery reads when screen is locked.
     # Best-effort: nil means RPC won't be available.
     IO.puts("  Connecting to device BEAM...")
-    node = connect_beam_node(device_id, opts[:wifi_ip])
+    node = connect_beam_node(device_id, opts[:wifi_ip], dist_cookie)
+    # The cookie the node accepted: a pre-MOB-49 build still uses the legacy
+    # one, and Preflight/Reconnector must reconnect with the same.
+    dist_cookie = if node, do: :erlang.get_cookie(node), else: dist_cookie
 
     if node do
       IO.puts("  BEAM connected: #{node}")
@@ -285,7 +289,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
       preflight_results =
         Preflight.run(
           node: node,
-          cookie: :mob_secret,
+          cookie: dist_cookie,
           bundle_id: pkg,
           device_id: device_id,
           hw_udid: hw_udid,
@@ -370,7 +374,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
         Logger.open(log_path, start_ts_ms: System.monotonic_time(:millisecond))
       end
 
-    reconnector = Reconnector.new(node || :unset@unset, :mob_secret)
+    reconnector = Reconnector.new(node || :unset@unset, dist_cookie)
 
     expected_screen = if screen_locked, do: :off, else: :on
 
@@ -838,7 +842,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
   # ── App lifecycle ─────────────────────────────────────────────────────────────
 
   # Returns the process PID (integer) or nil if it couldn't be parsed.
-  defp launch_app!(udid, bundle_id) do
+  defp launch_app!(udid, bundle_id, dist_cookie) do
     case System.cmd(
            "xcrun",
            [
@@ -851,7 +855,8 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
              udid,
              bundle_id
            ],
-           stderr_to_stdout: true
+           stderr_to_stdout: true,
+           env: MobDev.Discovery.IOS.physical_launch_env(dist_cookie: Atom.to_string(dist_cookie))
          ) do
       {out, 0} ->
         case Regex.run(Regex.compile!("\\bprocess identifier\\s+(\\d+)", "i"), out) ||
@@ -976,9 +981,9 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
     )
   end
 
-  defp connect_beam_node(device_id, explicit_wifi_ip) do
+  defp connect_beam_node(device_id, explicit_wifi_ip, dist_cookie) do
     case Node.start(:"mob_bench@127.0.0.1", :longnames) do
-      {:ok, _} -> Node.set_cookie(:mob_secret)
+      {:ok, _} -> Node.set_cookie(dist_cookie)
       {:error, {:already_started, _}} -> :ok
       _ -> :ok
     end
@@ -991,14 +996,21 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
 
     expected_node_prefix = "#{app_name()}_ios"
 
-    do_connect_attempts(device_id, explicit_wifi_ip, expected_node_prefix, _cache = nil, 1)
+    do_connect_attempts(
+      device_id,
+      explicit_wifi_ip,
+      expected_node_prefix,
+      _cache = nil,
+      1,
+      dist_cookie
+    )
   end
 
-  defp do_connect_attempts(_device_id, _wifi_ip, _expected_prefix, _cache, attempt)
+  defp do_connect_attempts(_device_id, _wifi_ip, _expected_prefix, _cache, attempt, _cookie)
        when attempt > @max_connect_attempts,
        do: nil
 
-  defp do_connect_attempts(device_id, wifi_ip, expected_prefix, cache, attempt) do
+  defp do_connect_attempts(device_id, wifi_ip, expected_prefix, cache, attempt, cookie) do
     device = cache || discover_ios_device(device_id, wifi_ip, expected_prefix)
 
     cond do
@@ -1009,16 +1021,25 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
         )
 
         sleep_unless_last(attempt)
-        do_connect_attempts(device_id, wifi_ip, expected_prefix, nil, attempt + 1)
+        do_connect_attempts(device_id, wifi_ip, expected_prefix, nil, attempt + 1, cookie)
+
+      not Node.alive?() ->
+        # Local node isn't alive (couldn't start it) — retrying won't help.
+        IO.puts(
+          "  attempt #{attempt}/#{@max_connect_attempts}: local node never started, " <>
+            "aborting retries"
+        )
+
+        nil
 
       true ->
-        Node.set_cookie(device.node, :mob_secret)
-
-        case Node.connect(device.node) do
-          true ->
+        # The private cookie, then the legacy one an app built against a mob
+        # from before MOB-49 still uses (with a warning).
+        case MobDev.DistCookie.connect(device.node, [cookie, :mob_secret]) do
+          {:ok, _accepted} ->
             device.node
 
-          false ->
+          :error ->
             IO.puts(
               "  attempt #{attempt}/#{@max_connect_attempts}: found #{device.serial} at " <>
                 "#{device.host_ip || "?"} (#{device.node}) but Node.connect returned false " <>
@@ -1027,16 +1048,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
 
             sleep_unless_last(attempt)
             # Keep the device cached — likely the BEAM just isn't up yet.
-            do_connect_attempts(device_id, wifi_ip, expected_prefix, device, attempt + 1)
-
-          :ignored ->
-            # Local node isn't alive (couldn't start it) — retrying won't help.
-            IO.puts(
-              "  attempt #{attempt}/#{@max_connect_attempts}: Node.connect returned :ignored — " <>
-                "local node never started, aborting retries"
-            )
-
-            nil
+            do_connect_attempts(device_id, wifi_ip, expected_prefix, device, attempt + 1, cookie)
         end
     end
   end

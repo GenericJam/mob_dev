@@ -27,7 +27,8 @@ defmodule Mix.Tasks.Mob.Connect do
       registers in the Mac's EPMD through `adb reverse`); if it didn't, restart it.
     * `--name`     — local node name for this session (default: `mob_dev@127.0.0.1`,
       or `mob_dev_<os pid>@127.0.0.1` when another process on this Mac holds it)
-    * `--cookie`   — Erlang cookie (default: `mob_secret`)
+    * `--cookie`   — use this Erlang cookie instead of the app's private one. Only
+      needed for an app that sets a custom `cookie:` in `Mob.Dist.ensure_started/1`
     * `--ios-only` / `--android-only` — restrict discovery to one platform. iOS-only
       development on a Mac with no Android platform-tools installed works without
       this flag (adb's absence is handled gracefully), but `--ios-only` skips the
@@ -118,6 +119,14 @@ defmodule Mix.Tasks.Mob.Connect do
   automatically — the Mac connects to the hotspot and the LAN detection picks up
   the `172.20.10.x` address.
 
+  Distribution is authenticated with a random 256-bit cookie per app, kept in an
+  owner-only file under `~/.mob/dist_cookies/`.
+  `mob.connect` hands it to the app when it restarts it: Android reads it from a
+  file in the app's private storage, iOS from the launch environment. An iOS app
+  started from Xcode or the home screen has an ephemeral random cookie until
+  `mob.connect` restarts it. Apps built against a mob from before MOB-49 still
+  use the public `mob_secret`; `mob.connect` falls back to it with a warning.
+
   ## Under the hood
 
   `mix mob.connect` is a convenience wrapper around standard Erlang distribution setup:
@@ -133,7 +142,7 @@ defmodule Mix.Tasks.Mob.Connect do
 
       # Then, in Elixir:
       Node.start(:"mob_dev@127.0.0.1", :longnames)
-      Node.set_cookie(:mob_secret)
+      Node.set_cookie(MobDev.DistCookie.for_project!())
       Node.connect(:"my_app_android@127.0.0.1")
       Node.connect(:"my_app_ios@127.0.0.1")
       IEx.start([])
@@ -160,7 +169,6 @@ defmodule Mix.Tasks.Mob.Connect do
       )
 
     no_iex = Keyword.get(opts, :iex, true) == false
-    cookie = opts |> Keyword.get(:cookie, "mob_secret") |> String.to_atom()
     local_name = opts |> Keyword.get(:name) |> then(&(&1 && String.to_atom(&1)))
     # --only / --device (repeatable) restrict to matching serials/udids. Without
     # it, connect attaches to every running device — handy for a cluster, but a
@@ -180,7 +188,7 @@ defmodule Mix.Tasks.Mob.Connect do
 
     {connected, _failed} =
       MobDev.Connector.connect_all(
-        cookie: cookie,
+        cookie: opts[:cookie],
         only: only,
         platforms: platforms,
         name: local_name,
@@ -195,7 +203,7 @@ defmodule Mix.Tasks.Mob.Connect do
         IO.puts("\nNodes ready:")
         Enum.each(connected, fn d -> IO.puts("  #{d.node}") end)
       else
-        start_iex(connected, cookie)
+        start_iex(connected)
       end
     end
   end
@@ -230,7 +238,7 @@ defmodule Mix.Tasks.Mob.Connect do
     end
   end
 
-  defp start_iex(connected, cookie) do
+  defp start_iex(connected) do
     IO.puts(
       "\n#{IO.ANSI.cyan()}Starting IEx (connected to #{length(connected)} device(s))...#{IO.ANSI.reset()}"
     )
@@ -239,13 +247,8 @@ defmodule Mix.Tasks.Mob.Connect do
     IO.puts("  nl(MyModule)      — hot-push code to all nodes")
     IO.puts("")
 
-    # Distribution is already up: connect_all/1 started it (under --name, or
-    # the default with its fallback).
-    Enum.each(connected, fn d ->
-      Node.set_cookie(d.node, cookie)
-      Node.connect(d.node)
-    end)
-
+    # connect_all/1 started distribution and connected every node with the
+    # cookie that node accepted; resetting cookies here would undo that.
     # Hand off to IEx in this process — tunnels stay alive via adb daemon.
     ensure_iex_started()
     # IEx.Server.run/1 is the 1.20 programmatic-start surface (IEx.start/0

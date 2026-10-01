@@ -11,7 +11,7 @@ defmodule MobDev.Connector do
   forwards the port that node actually registered.
   """
 
-  alias MobDev.{Device, Tunnel}
+  alias MobDev.{Device, DistCookie, Tunnel}
   alias MobDev.Discovery.{Android, IOS}
 
   @android_activity ".MainActivity"
@@ -39,7 +39,12 @@ defmodule MobDev.Connector do
   """
   @spec connect_all(keyword()) :: {[Device.t()], [Device.t()]}
   def connect_all(opts \\ []) do
-    cookie = Keyword.get(opts, :cookie, :mob_secret)
+    platforms = opts |> Keyword.get(:platforms, [:android, :ios]) |> List.wrap()
+    # The private cookie first; the legacy public one only for apps built
+    # against a pre-MOB-49 mob (see MobDev.DistCookie).
+    cookies = opts |> Keyword.get(:cookie) |> DistCookie.candidates()
+    launch_cookie = hd(cookies)
+
     # The `mob.connect --name` option is documented for the multi-session
     # workflow (one IEx per developer, distinct EPMD names). Before MOB-69
     # this arg was accepted at the Mix-task layer, but connect_all/1
@@ -50,7 +55,6 @@ defmodule MobDev.Connector do
     local_name = local_name_from_opts(opts)
 
     only = opts |> Keyword.get(:only, []) |> List.wrap()
-    platforms = opts |> Keyword.get(:platforms, [:android, :ios]) |> List.wrap()
     restart = Keyword.get(opts, :restart, true)
 
     IO.puts("\n#{color(:cyan)}Scanning for devices...#{color(:reset)}\n")
@@ -82,14 +86,14 @@ defmodule MobDev.Connector do
           kill_stale_simulator_apps(tunneled)
 
           # Restart apps so they pick up tunnels and use correct node names
-          Enum.each(tunneled, &restart_app/1)
+          Enum.each(tunneled, &restart_app(&1, launch_cookie))
           tunneled
         else
           Enum.map(tunneled, &attach_target/1)
         end
 
       # Start distribution on the Mac side
-      ensure_local_dist(local_name, cookie)
+      ensure_local_dist(local_name, launch_cookie)
 
       # Activate accessibility on iOS simulators so ui_tree() returns elements.
       # SwiftUI lazily populates its a11y tree; this one-time activation persists
@@ -110,7 +114,7 @@ defmodule MobDev.Connector do
       # not, so attaching doesn't wait out a boot.
       IO.puts("\n  Waiting for nodes...")
       timeout = if restart, do: @connect_timeout, else: @attach_timeout
-      {connected, failed_wait} = wait_for_nodes(tunneled, cookie, timeout)
+      {connected, failed_wait} = wait_for_nodes(tunneled, cookies, timeout)
 
       # Report failures
       all_failed = failed_tunnel ++ failed_wait
@@ -255,13 +259,26 @@ defmodule MobDev.Connector do
 
   defp attach_target(device), do: device
 
-  defp restart_app(%Device{
-         platform: :android,
-         serial: serial,
-         dist_port: port,
-         node_suffix: suffix
-       }) do
+  defp restart_app(
+         %Device{
+           platform: :android,
+           serial: serial,
+           dist_port: port,
+           node_suffix: suffix
+         },
+         cookie
+       ) do
     IO.write("  Restarting app on #{serial}...")
+
+    # Before the start: Mob.Dist reads the cookie once, when the app boots.
+    case Android.write_dist_cookie(serial, android_package(), Mix.Project.config()[:app], cookie) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        IO.write(" #{color(:yellow)}(could not write the dist cookie: #{reason})#{color(:reset)}")
+    end
+
     # node_suffix may be nil — Android.restart_app falls back to
     # device_node_suffix(serial) in that case (auto-derive from serial).
     Android.restart_app(serial, android_package(), @android_activity,
@@ -272,20 +289,29 @@ defmodule MobDev.Connector do
     IO.puts(" done")
   end
 
-  defp restart_app(%Device{platform: :ios, type: :physical, serial: udid}) do
+  defp restart_app(%Device{platform: :ios, type: :physical, serial: udid}, cookie) do
     IO.write("  Restarting app on #{udid}...")
-    # mob_beam.m picks its node IP via getifaddrs() (WiFi first) — no env vars needed.
-    IOS.restart_app_physical(udid, ios_bundle_id())
+    # mob_beam.m picks its node IP via getifaddrs() (WiFi first). devicectl
+    # passes the cookie in the child environment, never on a command line.
+    IOS.restart_app_physical(udid, ios_bundle_id(), dist_cookie: Atom.to_string(cookie))
     IO.puts(" done")
   end
 
-  defp restart_app(%Device{platform: :ios, serial: udid, dist_port: port, node_suffix: suffix}) do
+  defp restart_app(
+         %Device{platform: :ios, serial: udid, dist_port: port, node_suffix: suffix},
+         cookie
+       ) do
     IO.write("  Restarting app on #{udid}...")
     IOS.terminate_app(udid, ios_bundle_id())
     :timer.sleep(500)
     # node_suffix nil → IOS.launch_app omits SIMCTL_CHILD_MOB_NODE_SUFFIX
     # → mob_beam.m auto-derives from SIMULATOR_UDID.
-    IOS.launch_app(udid, ios_bundle_id(), dist_port: port, node_suffix: suffix)
+    IOS.launch_app(udid, ios_bundle_id(),
+      dist_port: port,
+      node_suffix: suffix,
+      dist_cookie: Atom.to_string(cookie)
+    )
+
     IO.puts(" done")
   end
 
@@ -359,7 +385,7 @@ defmodule MobDev.Connector do
     """)
   end
 
-  defp wait_for_nodes(devices, cookie, timeout) do
+  defp wait_for_nodes(devices, cookies, timeout) do
     # Start all connection attempts in parallel so slow starters (simulators
     # that need ~20s to boot their BEAM) don't consume the other devices' budget.
     # Total wall time = max(individual connect times), not sum.
@@ -367,7 +393,7 @@ defmodule MobDev.Connector do
       Enum.map(devices, fn device ->
         candidates = node_candidates(device)
 
-        {device, Task.async(fn -> wait_for_any_node(candidates, cookie, timeout) end)}
+        {device, Task.async(fn -> wait_for_any_node(candidates, cookies, timeout) end)}
       end)
 
     Enum.reduce(tasks, {[], []}, fn {device, task}, {ok, fail} ->
@@ -438,7 +464,8 @@ defmodule MobDev.Connector do
 
       true ->
         "registered + forwarded but Node.connect failed — likely a cookie mismatch " <>
-          "(both sides must use :mob_secret)"
+          "(an app with a custom cookie needs `--cookie`; one started before mob_dev " <>
+          "wrote its private cookie needs a restart)"
     end
   end
 
@@ -488,33 +515,31 @@ defmodule MobDev.Connector do
     end
   end
 
-  defp wait_for_any_node(candidates, _cookie, timeout) when timeout <= 0 do
+  defp wait_for_any_node(candidates, _cookies, timeout) when timeout <= 0 do
     {:error, "timed out waiting for any of #{inspect(candidates)}"}
   end
 
-  defp wait_for_any_node(candidates, cookie, timeout) do
-    case try_connect_each(candidates, cookie) do
+  defp wait_for_any_node(candidates, cookies, timeout) do
+    case try_connect_each(candidates, cookies) do
       {:ok, _} = ok ->
         ok
 
       :none ->
         :timer.sleep(@connect_interval)
-        wait_for_any_node(candidates, cookie, timeout - @connect_interval)
+        wait_for_any_node(candidates, cookies, timeout - @connect_interval)
 
       {:error, _} = err ->
         err
     end
   end
 
-  defp try_connect_each([], _cookie), do: :none
-
-  defp try_connect_each([node | rest], cookie) do
-    Node.set_cookie(node, cookie)
-
-    case Node.connect(node) do
-      true -> {:ok, node}
-      false -> try_connect_each(rest, cookie)
-      :ignored -> {:error, "local node not alive (distribution not started)"}
+  defp try_connect_each(candidates, cookies) do
+    if Node.alive?() do
+      Enum.find_value(candidates, :none, fn node ->
+        if match?({:ok, _}, DistCookie.connect(node, cookies)), do: {:ok, node}
+      end)
+    else
+      {:error, "local node not alive (distribution not started)"}
     end
   end
 

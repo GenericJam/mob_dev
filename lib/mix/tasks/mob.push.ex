@@ -17,7 +17,7 @@ defmodule Mix.Tasks.Mob.Push do
 
   Options:
     --all      Push all modules, not just those changed since last compile
-    --cookie   Erlang cookie (default: mob_secret)
+    --cookie   Use this cookie instead of the app's private one
 
   Examples:
       mix mob.push
@@ -48,7 +48,7 @@ defmodule Mix.Tasks.Mob.Push do
       )
 
     push_all = Keyword.get(opts, :all, false)
-    cookie = opts |> Keyword.get(:cookie, "mob_secret") |> String.to_atom()
+    cookie = Keyword.get(opts, :cookie)
 
     IO.puts("")
 

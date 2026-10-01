@@ -52,7 +52,7 @@ defmodule Mix.Tasks.Mob.Smoke do
     * `--no-health`    — skip the `Mob.Diag` comparison
     * `--fail-fast`    — stop a device's flows at the first one that fails the
       run: a failed replay, a non-zero exit, or a health failure
-    * `--cookie C`     — dist cookie (default: `mob_secret`)
+    * `--cookie C`     — dist cookie (default: the app's private cookie)
 
   With no selection flags exactly one emulator/simulator is picked; a lone
   phone needs `--device` or `--all-physical`, because the flows drive it.
@@ -140,7 +140,7 @@ defmodule Mix.Tasks.Mob.Smoke do
     Mix.Task.run("app.config")
     devices = select_devices!(opts, deps)
     health? = Keyword.get(opts, :health, true)
-    cookie = String.to_atom(opts[:cookie] || "mob_secret")
+    cookie = opts[:cookie]
 
     ctx = %{
       exe: exe,

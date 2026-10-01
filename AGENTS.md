@@ -237,6 +237,9 @@ narrowing functions). Don't make them private:
   consumer side — public so the WIRING is testable, not just the resolver;
   reverting either to `bundle_id/0` was the original defect and the suite
   did not notice)
+- `DistCookie.candidates/2`, `DistCookie.connect/2`, `DistCookie.default_path/1`,
+  `DistCookie.load_or_create!/1`, `Discovery.IOS.physical_launch_env/1` (the
+  private per-app distribution cookie, its legacy fallback, and its launch plumbing)
 - `Emulators.parse_simctl_json/1`, `find_emulator_binary/1`
 - `Provision.diagnose_xcodebuild_failure/1`
 - `Mix.Tasks.Mob.Deploy.failure_message/3` (which bucket makes a deploy exit non-zero)

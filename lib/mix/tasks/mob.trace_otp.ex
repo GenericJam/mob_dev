@@ -100,7 +100,7 @@ defmodule Mix.Tasks.Mob.TraceOtp do
     duration = opts[:duration] || 30_000
     node = String.to_atom(node_str)
 
-    ensure_distribution_started!()
+    ensure_distribution_started!(node)
 
     Mix.shell().info("Tracing #{node_str} for #{duration / 1000}s…")
     Mix.shell().info("  Drive the app on the device while the window is open.\n")
@@ -155,7 +155,9 @@ defmodule Mix.Tasks.Mob.TraceOtp do
   # returns {:badrpc, :nodedown} even though the target node is alive
   # and registered in EPMD. Self-name into a unique node so multiple
   # invocations don't collide.
-  defp ensure_distribution_started! do
+  defp ensure_distribution_started!(remote_node) do
+    cookies = MobDev.DistCookie.candidates()
+
     if Node.alive?() do
       :ok
     else
@@ -163,14 +165,15 @@ defmodule Mix.Tasks.Mob.TraceOtp do
 
       case Node.start(name, :longnames) do
         {:ok, _} ->
-          :ok
+          Node.set_cookie(hd(cookies))
 
         {:error, reason} ->
           Mix.raise("Failed to start distribution: #{inspect(reason)}")
       end
     end
 
-    Node.set_cookie(:mob_secret)
+    # A failure surfaces as the :badrpc below, with its own hint.
+    MobDev.DistCookie.connect(remote_node, cookies)
   end
 
   defp write_remote_json(result, path) do
