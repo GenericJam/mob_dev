@@ -347,12 +347,17 @@ defmodule MobDev.Smoke do
         do: [
           "agent-device checks a simulator recording's step identity against a different " <>
             "accessibility tree on replay, and inside SwiftUI scroll views they never match. " <>
-            "If the app reached the right screen, delete the identity lines and rerun: " <>
-            "sed -i '' '/^#{@identity_annotation}/d' #{failure.file || "<flow>.ad"}"
+            "If the app reached the right screen, delete the flow's identity lines (this " <>
+            "drops the check for every step in it) and rerun: " <>
+            "sed -i '' '/^#{@identity_annotation}/d' #{shell_quote(failure.file || "<flow>.ad")}"
         ],
         else: []
       )
   end
+
+  # The hint is meant to be pasted into a shell, so the path is one
+  # single-quoted word whatever it contains.
+  defp shell_quote(path), do: "'" <> String.replace(path, "'", ~S('\'')) <> "'"
 
   @doc false
   @spec classify_reply(term()) :: reply()

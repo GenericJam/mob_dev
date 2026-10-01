@@ -247,9 +247,12 @@ sed -i '' '/^# agent-device:target-v1 /d' smoke/login.ad
 ```
 
 A step without the line is resolved by its selector alone, which agent-device
-documents as a normal replay. Recorded selectors start with the element's id
-(`id="open_dice"`, mob's tap tag), so they stay specific. `mix mob.smoke`
-prints this command when a simulator flow fails the identity check. Android
+documents as a normal replay. What is lost is the check that the element the
+selector finds is the one recorded, for every step in the flow. A selector
+leads with the element's id when that id is unique on screen (mob's tap tags,
+`id="open_dice"`, usually are); otherwise it falls back to role and label, so
+check those steps' selectors by eye. `mix mob.smoke` prints the command,
+with the flow's path, when a simulator flow fails the identity check. Android
 flows keep their lines. A physical iPhone is read through XCTest at record
 and replay alike, so it should not hit this (not yet tried on one).
 

@@ -345,7 +345,19 @@ defmodule MobDev.SmokeTest do
 
       assert [hint] = Smoke.failure_hints(failure, @simulator)
       assert hint =~ "SwiftUI scroll views"
-      assert hint =~ "sed -i '' '/^# agent-device:target-v1 /d' /p/smoke/dice.ad"
+
+      assert String.ends_with?(
+               hint,
+               "sed -i '' '/^# agent-device:target-v1 /d' '/p/smoke/dice.ad'"
+             )
+    end
+
+    test "the identity hint's path survives a shell whatever it contains" do
+      {:ok, %{failures: [failure]}} = Smoke.parse_report(@identity_report)
+      failure = %{failure | file: "/p/my app/it's $(x).ad"}
+
+      assert [hint] = Smoke.failure_hints(failure, @simulator)
+      assert String.ends_with?(hint, ~S"/d' '/p/my app/it'\''s $(x).ad'")
     end
 
     test "the identity hint is for simulators only, and only for an identity mismatch" do

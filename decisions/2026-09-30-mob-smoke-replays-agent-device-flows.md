@@ -86,9 +86,10 @@ can trust, for reasons found while wiring it up:
   flows drive the UI, so a lone phone is not auto-selected.
 - An iPhone discovered over the LAN only has its IP as `serial`, which
   agent-device cannot address; it is reported as blocked rather than guessed.
-- (Added 2026-10-01, MOB-343.) Flows recorded on an iOS simulator are
-  replayed **without** their `# agent-device:target-v1` identity lines, and
-  the task says so when it sees the failure. agent-device takes each step's
+- (Added 2026-10-01, MOB-343.) The documented workaround for flows recorded
+  on an iOS simulator is that the user deletes their
+  `# agent-device:target-v1` identity lines; the task prints the command
+  when it sees the failure and changes nothing. agent-device takes each step's
   recorded identity (role/id/label, the ancestry of containers above it, its
   sibling index) from its simulator accessibility bridge, but replay
   verifies it against an XCTest snapshot (`snapshot_capture backend=xctest`
