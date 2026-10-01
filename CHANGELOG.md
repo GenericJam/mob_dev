@@ -1,3 +1,24 @@
+## [Unreleased]
+
+### Breaking
+
+- **Legacy v1 plugin signatures are refused again; the MOB-287 transition
+  is gone (MOB-301).** Every first-party plugin now has a v2-signed
+  release, so `MobDev.Plugin.V1Transition` is deleted: a v1 envelope no
+  longer passes because the plugin comes from Hex, is pinned to hexpm in
+  `mix.lock` and has a trusted key. Every v1 envelope now fails
+  verification with `:envelope_v1_unsupported`, and its manifest is never
+  evaluated. The per-build "uses a legacy v1 signature, accepted during the
+  v2 transition" notice is gone too.
+
+  **Upgrade note:** on mob_dev 0.7.6, apps locked to plugin releases signed
+  before 2026-09-30 (e.g. mob_deliver ≤ 0.2.0) fail the native build with
+  `plugin :<name> ships a legacy v1 signature`. Run
+  `mix deps.update <plugin>` to move to a v2-signed release. A third-party
+  plugin whose newest release is still v1 needs its author to re-sign with
+  `mix mob.plugin.sign` (mob_dev 0.7.2 or later). See
+  `decisions/2026-09-30-v1-envelope-transition.md`.
+
 ## [0.7.5] - 2026-09-30
 
 ### Fixed

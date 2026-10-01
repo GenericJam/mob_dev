@@ -56,6 +56,11 @@ the envelope doesn't list could be added or swapped freely.
 5. The pre-MOB-297 file selection moves into `V1Transition`, because v1
    payloads were built with it and rebuilding one needs it verbatim.
 
+   **Update (2026-09-30, MOB-301):** `V1Transition` was removed in mob_dev
+   0.7.6, and the pre-MOB-297 file selection with it.
+   No v1 payload is rebuilt any more. Point 4 is unaffected: v2 envelopes
+   without the marker still verify as before.
+
 ## Why a marker entry and not a `coverage:` key
 
 The ticket proposed `coverage: 2` in the envelope. mob_dev 0.7.2 hosts must

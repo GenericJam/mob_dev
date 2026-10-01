@@ -162,10 +162,9 @@ defmodule MobDev.Plugin do
       # is_map(manifest) and skip the nil. Result: a build that ships
       # nothing from the plugin, no error message. See MOB-74 pre-merge
       # review. Every OTHER verify failure (:invalid_signature,
-      # :missing_pubkey) still refuses the eval — those are tamper/mis-key
-      # signals, not the "unsigned during dev" case. A v1 envelope is
-      # evaluated only under the MOB-287 transition rule
-      # (MobDev.Plugin.V1Transition).
+      # :missing_pubkey, :envelope_v1_unsupported) still refuses the eval —
+      # those are tamper/mis-key/legacy-envelope signals, not the "unsigned
+      # during dev" case.
       opts = if name in acknowledged, do: [acknowledged_unsafe: true], else: []
 
       case MobDev.Plugin.Verify.load_verified(dir, opts) do
