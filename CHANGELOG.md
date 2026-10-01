@@ -58,6 +58,19 @@
   If the node was unreachable before the first flow, the task now waits for
   it once after that flow, since recorded flows relaunch the app.
 
+- **Compiler warnings in a native build no longer print as `failed
+  command:`, and a failed NIF compile names its plugin (MOB-344).** zig's
+  build runner prints any build step that wrote to stderr — a plugin NIF
+  whose clang compile emits a warning — with a `failed command:` line, even
+  though the step succeeded. An iOS simulator build showed nine of them and
+  then `✓ iOS native build complete`; every NIF was in fact compiled in. The
+  native `zig build` runs (iOS simulator, iOS device, Android, Zigler NIFs) now set
+  `ZIG_BUILD_ERROR_STYLE=minimal` unless you set a style, and list warned
+  steps after a successful build as warnings. When a compile does fail, the
+  `✗ native build failed` line names the plugin and source and quotes the
+  compiler's `error:` lines instead of only zig's exit code. See
+  `decisions/2026-10-01-zig-build-warnings-vs-failures.md`.
+
 - **Tasks that pick devices on their own leave another agent's leased
   device alone (MOB-330).** A bare `mix mob.deploy` installed and launched an
   app on an emulator another agent held through `agent-device`. When

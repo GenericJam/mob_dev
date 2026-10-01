@@ -655,10 +655,11 @@ defmodule MobDev.NativeBuild do
           tflite_zig_args_android(tflite_build) ++
           plugin_static_lib_args(plugin_archives)
 
-      case System.cmd("zig", args, stderr_to_stdout: true, into: IO.stream()) do
-        {_, 0} -> :ok
-        {_, code} -> {:error, "zig build for #{abi} exited #{code}"}
-      end
+      MobDev.ZigBuild.run(
+        args,
+        "zig build for #{abi}",
+        MobDev.ZigBuild.plugin_nif_sources(MobDev.Plugin.activated(), :android)
+      )
     end
   end
 
@@ -2867,10 +2868,11 @@ defmodule MobDev.NativeBuild do
           tflite_zig_args_ios(tflite_build) ++
           plugin_static_lib_args(plugin_archives)
 
-      case System.cmd("zig", args, stderr_to_stdout: true, into: IO.stream()) do
-        {_, 0} -> :ok
-        {_, code} -> {:error, "zig build binary (iOS sim) exited #{code}"}
-      end
+      MobDev.ZigBuild.run(
+        args,
+        "zig build binary (iOS sim)",
+        MobDev.ZigBuild.plugin_nif_sources(activated_plugins, :ios)
+      )
     end
   end
 
@@ -4104,12 +4106,11 @@ defmodule MobDev.NativeBuild do
             prefix
           ] ++ path_args ++ sdkroot_args
 
-        case System.cmd(zig_exe, args,
-               cd: staging_dir,
-               stderr_to_stdout: true,
-               into: IO.stream()
+        case MobDev.ZigBuild.run(args, "zig build for Zig NIF '#{name}' (#{target})", [],
+               zig: zig_exe,
+               cd: staging_dir
              ) do
-          {_, 0} ->
+          :ok ->
             # Zigler names the output `libElixir.<Module>.a`.
             a = Path.join([staging_dir, "#{prefix}/lib/libElixir.#{module_basename(module)}.a"])
 
@@ -4139,8 +4140,8 @@ defmodule MobDev.NativeBuild do
                 {:ok, a}
             end
 
-          {_, code} ->
-            {:error, "zig build for Zig NIF '#{name}' exited #{code}"}
+          {:error, _} = err ->
+            err
         end
     end
   end
@@ -4336,13 +4337,14 @@ defmodule MobDev.NativeBuild do
           tflite_zig_args_ios(tflite_build) ++
           plugin_static_lib_args(plugin_archives)
 
-      case System.cmd("zig", args, stderr_to_stdout: true, into: IO.stream()) do
-        {_, 0} ->
-          File.cp!("ios/zig-out/#{display_name}", Path.join(build_dir, display_name))
-          :ok
-
-        {_, code} ->
-          {:error, "zig build binary (iOS device) exited #{code}"}
+      with :ok <-
+             MobDev.ZigBuild.run(
+               args,
+               "zig build binary (iOS device)",
+               MobDev.ZigBuild.plugin_nif_sources(activated_plugins, :ios)
+             ) do
+        File.cp!("ios/zig-out/#{display_name}", Path.join(build_dir, display_name))
+        :ok
       end
     end
   end
