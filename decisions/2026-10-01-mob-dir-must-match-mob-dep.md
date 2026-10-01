@@ -61,5 +61,6 @@ Every setup mob_dev and mob_new generate already makes the two agree:
   `sdk.dir`, so that value can go stale independently of `mob.exs`.
   `mix mob.release --android` (`MobDev.ReleaseAndroid.build_aab/1`) compiles
   no mob native code itself: Gradle packages the objects the last
-  `mix mob.deploy --native` built, which this check covered, or falls back to
+  `mix mob.deploy --native` built (checked against the `:mob` dependency of
+  that moment, so stale if the dependency changed since), or falls back to
   the CMake path above.

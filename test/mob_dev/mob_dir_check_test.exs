@@ -93,7 +93,7 @@ defmodule MobDev.MobDirCheckTest do
       # The test runs inside mob_dev's own Mix project, whose :mob dependency
       # is a real path that is not `other`.
       dep = MobDirCheck.dep_path()
-      assert is_binary(dep)
+      assert {:mismatch, ^other, _} = MobDirCheck.check(other, dep)
       %{project: project, dep: dep}
     end
 

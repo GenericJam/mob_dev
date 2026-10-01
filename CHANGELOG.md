@@ -3,15 +3,16 @@
 ### Fixed
 
 - **A native build stops when `mob_dir` isn't the `:mob` dependency
-  (MOB-351).** `mix mob.deploy --native` and the iOS `mix mob.release` compiled mob's
-  native code from `mob.exs` `mob_dir` and the Elixir side from the `:mob`
-  dependency without comparing them, so an app could ship native code and
-  BEAMs from two different mob commits and misbehave with no error. Both now
-  raise before compiling anything, naming the two paths and how to make them
-  agree (point `mob_dir` at the dependency, or the dependency at `mob_dir`);
-  `mix mob.doctor` fails the same check. Symlinked paths to the same checkout
-  match, and an unset `mob_dir` or a project without `:mob` is not checked.
-  See `decisions/2026-10-01-mob-dir-must-match-mob-dep.md`.
+  (MOB-351).** `mix mob.deploy --native` and the iOS `mix mob.release`
+  compiled mob's native code from `mob.exs` `mob_dir` and the Elixir side
+  from the `:mob` dependency without comparing them, so an app could ship
+  native code and BEAMs from two different mob commits and misbehave with no
+  error. Both now raise before compiling anything, naming the two paths and
+  how to make them agree (point `mob_dir` at the dependency, or the
+  dependency at `mob_dir`); `mix mob.doctor` fails the same check. Symlinked
+  paths to the same checkout match, and an unset `mob_dir` or a project
+  without `:mob` is not checked. See
+  `decisions/2026-10-01-mob-dir-must-match-mob-dep.md`.
 
 - **iOS apps stay reachable after a relaunch mob_dev didn't make (MOB-348).**
   iOS got its private cookie only in the launch environment, so an icon tap,
