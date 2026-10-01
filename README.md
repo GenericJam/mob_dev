@@ -236,6 +236,16 @@ mobile-mcp may be in use:
 adb -s <serial> shell pkill -f mobilecli.DeviceServer
 ```
 
+**A physical iPhone.** agent-device drives it through its own XCTest runner,
+which must be signed for your team. Its daemon reads `AGENT_DEVICE_IOS_TEAM_ID`
+and `AGENT_DEVICE_IOS_BUNDLE_ID` (plus `AGENT_DEVICE_IOS_PROVISIONING_PROFILE`
+if Xcode cannot pick one) when it starts, not per command, so export them
+before the first `agent-device` call or run a separate daemon with its own
+`AGENT_DEVICE_STATE_DIR`. Signing needs an Apple account in Xcode (automatic)
+or a manually managed development profile for that bundle id and
+`<id>.uitests`: an Xcode-managed wildcard team profile is rejected. Simulators
+and Android need none of this.
+
 ## Do the tests guard anything? (`mix mob.mutate`)
 
 A green suite says the tests ran, not that they guard anything. This changes
