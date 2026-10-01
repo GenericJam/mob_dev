@@ -130,6 +130,56 @@ defmodule Mix.Tasks.Mob.SmokeTest do
     assert {first, second} == {Path.join(flows, "a_home.ad"), Path.join(flows, "b_login.ad")}
     assert String.ends_with?(dir, "artifacts/emulator-5554/a_home")
     assert output =~ "b_login.ad: receipts +2"
+    assert output =~ "0 failure(s), 0 warning(s)  ok"
+    assert output =~ "All flows passed and the app held up."
+  end
+
+  test "an app that is never reachable passes without claiming it held up", %{args: args} do
+    test = self()
+
+    unreachable = %{
+      deps(@no_claims, %{}, [])
+      | connect: fn _devices, _ -> %{} end,
+        await_node: fn device, node, _ ->
+          send(test, {:await, device.serial, node})
+          nil
+        end,
+        rpc: fn _, _, _, _ -> flunk("called rpc") end
+    }
+
+    output = run_task(args, unreachable)
+
+    assert_received {:result, :ok}
+    # Awaited once after the first flow (it may have launched the app), never again.
+    assert_received {:await, "emulator-5554", node}
+    assert node == @emulator.node
+    refute_received {:await, _, _}
+    assert output =~ "not checked (node not reachable)  ok"
+
+    assert output =~
+             "All flows passed; app health not checked on:\n  emulator-5554: node not reachable"
+
+    refute output =~ "held up"
+  end
+
+  test "an app the first flow launched is checked from the second flow on", %{args: args} do
+    late = %{
+      deps(@no_claims, %{}, [{health(0, 5), ~c"1"}, {health(0, 7), ~c"1"}])
+      | connect: fn _devices, _ -> %{} end
+    }
+
+    output = run_task(args, late)
+
+    assert_received {:result, :ok}
+    assert output =~ "b_login.ad: receipts +2"
+
+    assert output =~
+             "0 failure(s), 0 warning(s); 1 of 2 flow(s) not checked (node not reachable)  ok"
+
+    assert output =~
+             "app health not checked on:\n  emulator-5554: 1 of 2 flow(s) not checked (node not reachable)"
+
+    refute output =~ "held up"
   end
 
   test "a device another session claimed is never auto-selected or tested", %{args: args} do
@@ -213,6 +263,9 @@ defmodule Mix.Tasks.Mob.SmokeTest do
 
     assert_received {:result, :ok}
     assert output =~ "warning: a_home.ad: health unavailable after the flow: node not reachable"
+    assert output =~ "0 failure(s), 1 warning(s); not checked (node not reachable)  ok"
+    assert output =~ "emulator-5554: node not reachable"
+    refute output =~ "held up"
   end
 
   test "old mob without Mob.Diag passes with a note", %{args: args} do
@@ -221,6 +274,7 @@ defmodule Mix.Tasks.Mob.SmokeTest do
 
     assert_received {:result, :ok}
     assert output =~ "health check skipped: Mob.Diag.health/0 is not on the device"
+    assert output =~ "not checked (Mob.Diag.health/0 is not on the device)"
   end
 
   test "--no-health runs the flows as one suite and never touches dist", %{
@@ -233,9 +287,11 @@ defmodule Mix.Tasks.Mob.SmokeTest do
         rpc: fn _, _, _, _ -> flunk("called rpc") end
     }
 
-    run_task(["--no-health", "--fail-fast" | args], no_dist)
+    output = run_task(["--no-health", "--fail-fast" | args], no_dist)
 
     assert_received {:result, :ok}
+    assert output =~ "0 failure(s), 0 warning(s)  ok"
+    assert output =~ "All flows passed and the app held up."
     assert [["test", glob | rest]] = test_runs()
     assert glob == Path.join(flows, "*.ad")
     assert List.last(rest) == "--fail-fast"

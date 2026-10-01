@@ -46,6 +46,18 @@
 
 ### Fixed
 
+- **`mix mob.smoke` no longer says the app held up when it never read its
+  health (MOB-347).** With the node unreachable (or `Mob.Diag.health/0`
+  missing), every flow's check was skipped with a note, yet the summary showed
+  `0 failure(s), 0 warning(s)` and the run ended "All flows passed and the app
+  held up." The health column now reads `not checked (<reason>)`, or keeps
+  the counts and adds `not checked (<reason>)` (or `k of n flow(s) not
+  checked (<reason>)` when only some flows were checked) when there are any,
+  and a passing run ends `All flows passed; app health not checked on:` with
+  the devices and reasons. Exit status is unchanged (0 when the flows pass).
+  If the node was unreachable before the first flow, the task now waits for
+  it once after that flow, since recorded flows relaunch the app.
+
 - **Tasks that pick devices on their own leave another agent's leased
   device alone (MOB-330).** A bare `mix mob.deploy` installed and launched an
   app on an emulator another agent held through `agent-device`. When

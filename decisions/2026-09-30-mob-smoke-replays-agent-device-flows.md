@@ -74,6 +74,25 @@ can trust, for reasons found while wiring it up:
   booted app whose receipt store has not been written yet, and counts as 0
   recorded. (Correction: the first version treated that as "not counted",
   which on a device dropped the delta of every flow run against a fresh app.)
+- A flow whose health snapshot before or after it did not read (unreachable
+  node, or mob without `health/0`) is *unchecked*, and the run says so
+  (MOB-347). The summary's
+  health column reads `not checked (<reason>)` when no flow on the device was
+  checked and nothing was found, or keeps the counts and appends
+  `not checked (<reason>)` / `k of n flow(s) not checked (<reason>)` to them
+  otherwise. A passing run claims "the app held up" only when every
+  flow was checked (or `--no-health`, unchanged); otherwise its last line is
+  `All flows passed; app health not checked on:` followed by one
+  `<device>: <reason>` line per device, like the failure list. Exit stays 0:
+  unchecked is not failed. (Correction: the first version printed
+  `0 failure(s), 0 warning(s)` and "the app held up" for a run that never
+  reached the node.)
+- When the node is unreachable before the first flow, it is awaited once
+  after that flow under its expected name (the same 15 s wait as after a
+  relaunch, then a re-attach): recorded flows open the app with `--relaunch`,
+  so an app that was not running usually is by then, and the later flows get
+  checked. Only once, so an app without dist (or, on iOS, one relaunched
+  without its dist cookie, MOB-348) costs one wait, not one per flow.
 - Attach with `Connector.connect_all(restart: false)`; the flows expect the
   running app.
 - Claims are only looked at (`device status --json`), never taken. A device
