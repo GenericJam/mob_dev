@@ -3,7 +3,7 @@
 ### Fixed
 
 - **A native build stops when `mob_dir` isn't the `:mob` dependency
-  (MOB-351).** `mix mob.deploy --native` and `mix mob.release` compiled mob's
+  (MOB-351).** `mix mob.deploy --native` and the iOS `mix mob.release` compiled mob's
   native code from `mob.exs` `mob_dir` and the Elixir side from the `:mob`
   dependency without comparing them, so an app could ship native code and
   BEAMs from two different mob commits and misbehave with no error. Both now
