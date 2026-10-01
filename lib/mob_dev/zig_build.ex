@@ -31,6 +31,9 @@ defmodule MobDev.ZigBuild do
     defstruct acc: []
 
     defimpl Collectable do
+      @spec into(%MobDev.ZigBuild.Tee{}) ::
+              {iodata(),
+               (iodata(), {:cont, binary()} | :done | :halt -> iodata() | binary() | :ok)}
       def into(tee) do
         collector = fn
           acc, {:cont, chunk} ->
