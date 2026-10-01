@@ -139,15 +139,13 @@ defmodule MobDev.Plugin.Validator do
   Also runs the Phase 2 signature gate
   (`MobDev.Plugin.SignatureGate.raise_on_signature_drift!/1`) at the top
   — fails fast on a tampered or untrusted plugin before any capability
-  analysis runs. The unsigned-plugin banner and the MOB-287 legacy-v1
-  notices are printed afterwards so they surface on every successful
-  invocation.
+  analysis runs. The unsigned-plugin banner is printed afterwards so it
+  surfaces on every successful invocation.
   """
   @spec raise_on_capability_drift!([{Path.t(), map() | nil}]) :: :ok
   def raise_on_capability_drift!(plugins) do
     MobDev.Plugin.SignatureGate.raise_on_signature_drift!(plugins)
     MobDev.Plugin.SignatureGate.maybe_print_unsafe_banner(plugins)
-    MobDev.Plugin.SignatureGate.maybe_print_v1_transition_notice(plugins)
 
     case activated_capability_errors(plugins) do
       [] ->

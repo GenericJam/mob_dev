@@ -1,7 +1,7 @@
 # Legacy v1 plugin envelopes: accepted for one transition window (MOB-287)
 
 - Date: 2026-09-30
-- Status: accepted (temporary — see "Removal")
+- Status: superseded — removed by MOB-301 (see "Removed")
 - Linear: MOB-287
 - Amends: [2026-09-11-plugin-envelope-v2-verify-before-eval.md](2026-09-11-plugin-envelope-v2-verify-before-eval.md), point 5
 
@@ -132,3 +132,21 @@ versions are the ones the generator and the sample apps pin. Removal steps:
 3. Restore the unconditional refusal text in `SignatureGate.format_error/1`.
 4. Mark this record superseded, and remove the transition note from the
    MOB-74 record.
+
+## Removed (2026-09-30, MOB-301)
+
+Every first-party plugin now has a v2-signed release (mob_deliver 0.2.1
+was the last), so the transition was removed in mob_dev 0.7.6. Steps 1–3
+above were followed with two differences:
+
+- The `test/fixtures/plugins/mob_scanner_v1/` fixture stays. It is the
+  published v1 plugin that met every transition condition, and
+  `test/mob_dev/plugin/v1_envelope_refused_test.exs` uses it to prove such a
+  plugin is now refused without evaluating its manifest.
+- The refusal text is not the pre-MOB-287 one. It tells the user to
+  `mix deps.update <plugin>` to a v2-signed release, because the user who
+  hits it is a consumer on an old lock, not the plugin author.
+
+Apps locked to plugin releases signed before 2026-09-30 (e.g. mob_deliver
+≤ 0.2.0) fail the build with `:envelope_v1_unsupported` until they update.
+The text above is left as written; it records what the transition was.

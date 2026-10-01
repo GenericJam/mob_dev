@@ -82,6 +82,11 @@ Move to envelope v2, which flips the trust chain end-to-end:
    evaluated manifest. Every other v1 envelope still gets this refusal. See
    [2026-09-30-v1-envelope-transition.md](2026-09-30-v1-envelope-transition.md).
 
+   **Update (2026-09-30, MOB-301):** the transition was removed in mob_dev
+   0.7.6, once every first-party plugin had a v2-signed release. This point
+   is unconditional again: every v1 envelope is refused,
+   and the error tells the user to `mix deps.update <plugin>`.
+
 ## Consequences
 
 - **Breaking change for signed plugins.** Every plugin published with a
@@ -96,6 +101,9 @@ Move to envelope v2, which flips the trust chain end-to-end:
   part of the 0.7.2 release" did not happen, and "there is no fallback path" is
   suspended for one release window. See point 5's correction and
   [2026-09-30-v1-envelope-transition.md](2026-09-30-v1-envelope-transition.md).
+
+  **Update (2026-09-30, MOB-301):** the window has closed; there is again no
+  fallback path for v1.
 - **Consumer paths that eval a manifest** now go through
   `MobDev.Plugin.Verify.load_verified/1` in the four places that
   matter to build- or activation-time: `MobDev.Plugin.activated/0`,

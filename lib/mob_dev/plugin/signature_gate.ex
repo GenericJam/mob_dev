@@ -23,12 +23,12 @@ defmodule MobDev.Plugin.SignatureGate do
     from the trusted one, the key-rotation case). Not suppressible;
     user must run `mix mob.plugin.trust <name>`.
 
-  A legacy v1 envelope is refused (`:envelope_v1_unsupported`) unless it
-  meets the MOB-287 transition rule in `MobDev.Plugin.V1Transition`; each
-  plugin accepted that way gets a one-line notice per build.
+  A legacy v1 envelope is refused (`:envelope_v1_unsupported`). Not
+  suppressible; the message tells the user to `mix deps.update` the plugin
+  to a v2-signed release.
   """
 
-  alias MobDev.Plugin.{Crypto, Manifest, TrustStore, V1Transition, Verify}
+  alias MobDev.Plugin.{Crypto, Manifest, TrustStore, Verify}
 
   @typedoc "Errors `check_plugin/2` can return."
   @type gate_error ::
@@ -58,18 +58,11 @@ defmodule MobDev.Plugin.SignatureGate do
   end
 
   @doc """
-  Pure variant of `check_activated/1` for tests. `v1_opts` carries the
-  `V1Transition` provenance inputs (`:scms`, `:lock`, `:deps_path`); they default to
-  the current Mix project's.
+  Pure variant of `check_activated/1` for tests.
   """
-  @spec check_activated(
-          [{Path.t(), map() | nil}],
-          TrustStore.trust_map(),
-          [atom()],
-          V1Transition.opts()
-        ) ::
+  @spec check_activated([{Path.t(), map() | nil}], TrustStore.trust_map(), [atom()]) ::
           :ok | {:error, [gate_error()]}
-  def check_activated(plugins, trust_map, acknowledged, v1_opts \\ []) do
+  def check_activated(plugins, trust_map, acknowledged) do
     # A `nil` manifest can mean two things after MOB-74:
     #
     # * tier-0 plugin (no `priv/mob_plugin.exs` at all — nothing to sign,
@@ -85,7 +78,7 @@ defmodule MobDev.Plugin.SignatureGate do
     errors =
       for {dir, manifest} <- plugins,
           Manifest.manifest_present?(dir),
-          err = check_plugin(dir, manifest, trust_map, acknowledged, v1_opts),
+          err = check_plugin(dir, manifest, trust_map, acknowledged),
           err != :ok do
         err
       end
@@ -153,23 +146,6 @@ defmodule MobDev.Plugin.SignatureGate do
     end
   end
 
-  @doc """
-  Prints the one-line MOB-287 notice for every plugin in `plugins` accepted
-  under the transitional v1 rule. Callers invoke it once per build, after
-  `raise_on_signature_drift!/1` has passed.
-  """
-  @spec maybe_print_v1_transition_notice([{Path.t(), map() | nil}], V1Transition.opts()) :: :ok
-  def maybe_print_v1_transition_notice(plugins, v1_opts \\ []) do
-    for {dir, manifest} <- plugins,
-        is_map(manifest),
-        Verify.load_envelope(dir) == {:error, :envelope_v1_unsupported},
-        V1Transition.accepted?(dir, manifest, v1_opts) do
-      Mix.shell().info([:yellow, V1Transition.notice(dir, v1_opts), :reset])
-    end
-
-    :ok
-  end
-
   @doc false
   # Public for tests: checks a single plugin against the trust map and
   # acknowledgement list. Returns `:ok` on pass, a gate_error otherwise.
@@ -177,9 +153,9 @@ defmodule MobDev.Plugin.SignatureGate do
   # plugin whose signature check failed; the error surface still needs a
   # name, so we fall back to the dep-directory basename (which matches the
   # published plugin name by convention).
-  @spec check_plugin(Path.t(), map() | nil, TrustStore.trust_map(), [atom()], V1Transition.opts()) ::
+  @spec check_plugin(Path.t(), map() | nil, TrustStore.trust_map(), [atom()]) ::
           :ok | gate_error()
-  def check_plugin(dir, manifest, trust_map, acknowledged, v1_opts \\ []) do
+  def check_plugin(dir, manifest, trust_map, acknowledged) do
     name = manifest_name(dir, manifest)
 
     case Verify.verify_plugin(dir) do
@@ -196,11 +172,7 @@ defmodule MobDev.Plugin.SignatureGate do
         {:invalid_signature, name}
 
       {:error, :envelope_v1_unsupported} ->
-        v1_opts = Keyword.put(v1_opts, :trust_map, trust_map)
-
-        if V1Transition.accepted?(dir, manifest, v1_opts),
-          do: :ok,
-          else: {:envelope_v1_unsupported, name}
+        {:envelope_v1_unsupported, name}
     end
   end
 
@@ -293,15 +265,13 @@ defmodule MobDev.Plugin.SignatureGate do
   end
 
   defp format_error({:envelope_v1_unsupported, name}) do
-    "  - plugin #{inspect(name)} ships a v1 signature envelope (MOB-74).\n" <>
-      "    v1 requires evaluating the manifest before verifying it, which\n" <>
-      "    lets a malicious priv/mob_plugin.exs run arbitrary code at build\n" <>
-      "    time. During the v2 transition (MOB-287) a v1 plugin is accepted\n" <>
-      "    only when Mix resolves it from Hex and mix.lock pins it to hexpm\n" <>
-      "    (not a path or git dep), its priv/mob_plugin.pub fingerprint is trusted\n" <>
-      "    in config :mob, :trusted_plugins, and its v1 signature verifies.\n" <>
-      "    This one did not qualify. Ask the plugin author to re-sign with a\n" <>
-      "    mob_dev that produces envelope v2 (`mix mob.plugin.sign`)."
+    "  - plugin #{inspect(name)} ships a legacy v1 signature, which mob_dev no longer\n" <>
+      "    accepts (MOB-301). Verifying v1 means evaluating priv/mob_plugin.exs first,\n" <>
+      "    which would let a malicious manifest run arbitrary code at build time.\n" <>
+      "    Update it to a v2-signed release:\n" <>
+      "      mix deps.update #{name}\n" <>
+      "    If the newest release is still v1-signed, ask the plugin author to re-sign\n" <>
+      "    with `mix mob.plugin.sign` on mob_dev 0.7.2 or later."
   end
 
   defp format_error({:untrusted, name, actual_fp, nil}) do
