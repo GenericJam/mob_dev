@@ -29,7 +29,7 @@ defmodule Mix.Tasks.Mob.Smoke do
      unreachable node, or a mob too old for these functions, is a note, and
      those flows are reported as not checked: the summary's health column
      says so and a passing run does not claim the app held up. If the node
-     is unreachable at the start, it is tried once more after the first flow.
+     is unreachable at the start, it is awaited once more after the first flow.
 
   The counters belong to the app's BEAM, and a flow that opens with
   `--relaunch` starts a new one. So with health on each flow is its own
@@ -285,7 +285,7 @@ defmodule Mix.Tasks.Mob.Smoke do
       status: status,
       findings: findings,
       delta: delta,
-      unchecked: Smoke.unchecked_reason(before),
+      unchecked: Smoke.unchecked_reason(before, after_flow),
       node: node_after,
       snapshot: after_flow
     }
@@ -293,9 +293,10 @@ defmodule Mix.Tasks.Mob.Smoke do
 
   # The node read before the flow, back after a relaunch. With no node before
   # the first flow the app was likely not running; recorded flows open it with
-  # `--relaunch`, so connecting once more lets the later flows be checked.
+  # `--relaunch`, so it is awaited once (up to 15 s, then re-attached) under
+  # its expected name, letting the later flows be checked.
   defp node_after(nil, [], device, ctx),
-    do: Map.get(ctx.deps.connect.([device], ctx.cookie), device.serial)
+    do: ctx.deps.await_node.(device, device.node || Device.node_name(device), ctx.cookie)
 
   defp node_after(nil, _runs, _device, _ctx), do: nil
   defp node_after(node, _runs, device, ctx), do: ctx.deps.await_node.(device, node, ctx.cookie)

@@ -139,9 +139,10 @@ defmodule Mix.Tasks.Mob.SmokeTest do
 
     unreachable = %{
       deps(@no_claims, %{}, [])
-      | connect: fn devices, _ ->
-          send(test, {:connect, Enum.map(devices, & &1.serial)})
-          %{}
+      | connect: fn _devices, _ -> %{} end,
+        await_node: fn device, node, _ ->
+          send(test, {:await, device.serial, node})
+          nil
         end,
         rpc: fn _, _, _, _ -> flunk("called rpc") end
     }
@@ -149,10 +150,10 @@ defmodule Mix.Tasks.Mob.SmokeTest do
     output = run_task(args, unreachable)
 
     assert_received {:result, :ok}
-    # Once up front, once more after the first flow (it may have launched the app).
-    assert_received {:connect, ["emulator-5554"]}
-    assert_received {:connect, ["emulator-5554"]}
-    refute_received {:connect, _}
+    # Awaited once after the first flow (it may have launched the app), never again.
+    assert_received {:await, "emulator-5554", node}
+    assert node == @emulator.node
+    refute_received {:await, _, _}
     assert output =~ "not checked (node not reachable)  ok"
 
     assert output =~
@@ -162,15 +163,9 @@ defmodule Mix.Tasks.Mob.SmokeTest do
   end
 
   test "an app the first flow launched is checked from the second flow on", %{args: args} do
-    {:ok, connects} = Agent.start_link(fn -> 0 end)
-
     late = %{
       deps(@no_claims, %{}, [{health(0, 5), ~c"1"}, {health(0, 7), ~c"1"}])
-      | connect: fn devices, _ ->
-          if Agent.get_and_update(connects, &{&1, &1 + 1}) == 0,
-            do: %{},
-            else: Map.new(devices, &{&1.serial, &1.node})
-        end
+      | connect: fn _devices, _ -> %{} end
     }
 
     output = run_task(args, late)
@@ -268,6 +263,8 @@ defmodule Mix.Tasks.Mob.SmokeTest do
 
     assert_received {:result, :ok}
     assert output =~ "warning: a_home.ad: health unavailable after the flow: node not reachable"
+    assert output =~ "emulator-5554: node not reachable"
+    refute output =~ "held up"
   end
 
   test "old mob without Mob.Diag passes with a note", %{args: args} do

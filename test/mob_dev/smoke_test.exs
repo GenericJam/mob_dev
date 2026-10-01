@@ -585,9 +585,11 @@ defmodule MobDev.SmokeTest do
       assert Smoke.passed_line([result(ran(%{}))]) == "All flows passed and the app held up."
     end
 
-    test "the reason is a baseline that did not read" do
-      assert Smoke.unchecked_reason(@unreachable) == "node not reachable"
-      assert Smoke.unchecked_reason(snap(health(0, 0, 0))) == nil
+    test "a flow is unchecked when either snapshot around it did not read" do
+      ok = snap(health(0, 0, 0))
+      assert Smoke.unchecked_reason(@unreachable, ok) == "node not reachable"
+      assert Smoke.unchecked_reason(ok, @unreachable) == "node not reachable"
+      assert Smoke.unchecked_reason(ok, ok) == nil
     end
   end
 

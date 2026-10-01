@@ -30,8 +30,8 @@
   `k of n flow(s) not checked (<reason>)` when only some flows were checked,
   and a passing run ends `All flows passed; app health not checked on:` with
   the devices and reasons. Exit status is unchanged (0 when the flows pass).
-  If the node was unreachable before the first flow, the task now connects
-  once more after it, since recorded flows relaunch the app.
+  If the node was unreachable before the first flow, the task now waits for
+  it once after that flow, since recorded flows relaunch the app.
 
 - **Tasks that pick devices on their own leave another agent's leased
   device alone (MOB-330).** A bare `mix mob.deploy` installed and launched an

@@ -7,8 +7,9 @@ defmodule MobDev.Smoke do
   whether it held up: a store that lost its table or reset, events the
   listener could not deliver, or, on mob 0.9.7 or later, no receipts at all
   while a flow ran (the taps landed somewhere other than this app). So the
-  verdict combines both, and a device that could not be checked never counts
-  as a pass.
+  verdict combines both. A flow whose health could not be read is reported as
+  not checked: it does not fail the run, but the run does not claim the app
+  held up either.
 
   `agent-device test --json` reports `"success": true` even when scripts
   fail; only `data.failed` and `data.notRun` say what happened.
@@ -412,12 +413,13 @@ defmodule MobDev.Smoke do
 
   @doc false
   # Why a flow's health could not be compared, or nil: the snapshot before it
-  # (the baseline) did not read.
-  @spec unchecked_reason(snapshot()) :: String.t() | nil
-  def unchecked_reason(before) do
-    case health_map(before) do
-      {:ok, _map} -> nil
-      {_kind, reason} -> reason
+  # (the baseline) or after it did not read.
+  @spec unchecked_reason(snapshot(), snapshot()) :: String.t() | nil
+  def unchecked_reason(before, after_flow) do
+    case {health_map(before), health_map(after_flow)} do
+      {{:ok, _was}, {:ok, _now}} -> nil
+      {{:ok, _was}, {_kind, reason}} -> reason
+      {{_kind, reason}, _after} -> reason
     end
   end
 
