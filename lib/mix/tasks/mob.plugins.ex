@@ -18,6 +18,9 @@ defmodule Mix.Tasks.Mob.Plugins do
   Activation is two-step by design (see `MOB_PLUGINS.md`): adding a plugin to
   `deps` makes it *installed*; adding it to `config :mob, :plugins` makes it
   *activated* — only then are its contributions merged into the build.
+
+  Exits non-zero when activated plugins collide (same component atom, native
+  view key, NIF module, ...), naming each plugin's `priv/mob_plugin.exs`.
   """
 
   alias MobDev.Plugin.{Report, Validator}
@@ -36,21 +39,12 @@ defmodule Mix.Tasks.Mob.Plugins do
     |> Report.render()
     |> then(&IO.puts("\n" <> &1 <> "\n"))
 
-    report_conflicts(deps, activated)
-  end
+    activated_manifests =
+      for {name, manifest} <- deps, name in activated, do: {dep_dirs[name], manifest}
 
-  defp report_conflicts(deps, activated) do
-    activated_manifests = for {name, manifest} <- deps, name in activated, do: {name, manifest}
-
-    case Validator.cross_validate(activated_manifests) do
-      %{errors: []} ->
-        :ok
-
-      %{errors: errors} ->
-        Mix.shell().error("Plugin activation conflicts:")
-        Enum.each(errors, &Mix.shell().error("  ✗ #{&1}"))
-        IO.puts("")
-    end
+    # Exits non-zero on a collision so CI and scripts can't miss it (MOB-170);
+    # the native build runs the same check before codegen.
+    Validator.raise_on_cross_plugin_conflicts!(activated_manifests)
   end
 
   defp load_all_manifests do

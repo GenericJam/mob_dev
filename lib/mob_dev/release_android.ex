@@ -42,6 +42,8 @@ defmodule MobDev.ReleaseAndroid do
     app_name = Mix.Project.config()[:app] |> to_string()
     slim = Keyword.get(opts, :slim, true)
 
+    MobDev.Plugin.Validator.raise_on_cross_plugin_conflicts!(MobDev.Plugin.activated())
+
     with :ok <- check_android_project(),
          log("Ensuring Android OTP runtime..."),
          {:ok, otp_arm64} <- MobDev.OtpDownloader.ensure_android("arm64-v8a"),

@@ -42,6 +42,11 @@ defmodule MobDev.NativeBuild do
 
     __apply_slim_env__(slim)
 
+    # Cross-plugin collisions (MOB-170) abort before anything is generated or
+    # compiled — otherwise a duplicate NIF/view key fails deep in zig/Gradle or
+    # one plugin's registration silently overwrites another's at runtime.
+    MobDev.Plugin.Validator.raise_on_cross_plugin_conflicts!(MobDev.Plugin.activated())
+
     # Always regenerate the runtime plugin manifest from the CURRENT activated
     # plugins before bundling priv — like the driver_tab, it's derived state, not
     # a hand-maintained file. Regenerating on every build (not just when the

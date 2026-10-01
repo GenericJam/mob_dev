@@ -44,6 +44,8 @@ defmodule MobDev.Release do
     cfg = MobDev.NativeBuild.__load_config__()
     slim = Keyword.get(opts, :slim, true)
 
+    MobDev.Plugin.Validator.raise_on_cross_plugin_conflicts!(MobDev.Plugin.activated())
+
     with :ok <- check_macos(),
          :ok <- check_xcrun(),
          :ok <- check_driver_table(),

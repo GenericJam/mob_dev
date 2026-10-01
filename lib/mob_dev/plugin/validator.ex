@@ -198,20 +198,44 @@ defmodule MobDev.Plugin.Validator do
 
   `plugins` is a list of `{name, manifest}` for the activated plugins (tier-0
   no-manifest plugins, i.e. `manifest == nil`, contribute nothing and are
-  ignored).
+  ignored). The first element identifies the plugin in error messages: a
+  plugin directory (as `MobDev.Plugin.activated/0` returns) is reported as its
+  `priv/mob_plugin.exs` path, anything else via `inspect/1`.
   """
-  @spec cross_validate([{atom(), map() | nil}]) :: result()
+  @spec cross_validate([{atom() | Path.t(), map() | nil}]) :: result()
   def cross_validate(plugins) do
-    manifests = for {_name, m} <- plugins, is_map(m), do: m
+    owned = for {owner, m} <- plugins, is_map(m), do: {manifest_location(owner), m}
 
     errors =
       for {_gatherer, {:collision, checks}} <- conflict_surface(),
           {label, extractor} <- checks,
-          error <- collisions(manifests, extractor, label),
+          error <- collisions(owned, extractor, label),
           do: error
 
     %{errors: errors, warnings: []}
   end
+
+  @doc """
+  Runs `cross_validate/1` over the activated `{plugin_dir, manifest}` pairs and
+  `Mix.raise/1`s on any collision, so a native build stops before codegen
+  instead of letting one plugin's registration silently overwrite another's.
+  """
+  @spec raise_on_cross_plugin_conflicts!([{Path.t(), map() | nil}]) :: :ok
+  def raise_on_cross_plugin_conflicts!(plugins) do
+    case cross_validate(plugins) do
+      %{errors: []} ->
+        :ok
+
+      %{errors: errors} ->
+        Mix.raise(
+          "activated plugins conflict — remove one from `config :mob, :plugins` in " <>
+            "mob.exs or fix the manifests:\n" <> Enum.map_join(errors, "\n", &"  - #{&1}")
+        )
+    end
+  end
+
+  defp manifest_location(dir) when is_binary(dir), do: Path.join([dir, "priv", "mob_plugin.exs"])
+  defp manifest_location(other), do: inspect(other)
 
   @doc """
   The cross-plugin **conflict surface**: every `MobDev.Plugin.Merge` gatherer
@@ -434,7 +458,7 @@ defmodule MobDev.Plugin.Validator do
           android = c[:android],
           is_map(android),
           Map.has_key?(android, :factory),
-          err = composable_error(android[:factory]),
+          err = android_factory_error(android[:factory]),
           do: err
 
     %{result | errors: result.errors ++ errs}
@@ -442,13 +466,17 @@ defmodule MobDev.Plugin.Validator do
 
   defp add_composable_errors(result, _manifest), do: result
 
-  defp composable_error(value) when is_binary(value) do
+  @doc false
+  # Shared with `MobDev.Plugin.AndroidBootstrap.classify/1` so the native build
+  # rejects an unpasteable factory name with the plugin named, not at Kotlin compile.
+  @spec android_factory_error(term()) :: String.t() | nil
+  def android_factory_error(value) when is_binary(value) do
     if Regex.match?(@kotlin_composable_pattern, value),
       do: nil,
       else: bad_composable_message(value)
   end
 
-  defp composable_error(other), do: bad_composable_message(other)
+  def android_factory_error(other), do: bad_composable_message(other)
 
   defp bad_composable_message(value) do
     "ui_components.android.factory #{inspect(value)} must be a Kotlin " <>
@@ -586,13 +614,18 @@ defmodule MobDev.Plugin.Validator do
   # cross-platform NIF with one iOS + one Android entry sharing a `:module` — is
   # not mistaken for a cross-plugin collision. cross_validate is about CROSS-plugin
   # clashes; within-plugin duplicates are a single-plugin concern.
-  defp collisions(manifests, extractor, label) do
-    manifests
-    |> Enum.flat_map(fn manifest -> manifest |> extractor.() |> Enum.uniq() end)
-    |> Enum.frequencies()
-    |> Enum.filter(fn {_value, count} -> count > 1 end)
-    |> Enum.map(fn {value, count} ->
-      "#{count} activated plugins declare the same #{label}: #{inspect(value)}"
+  defp collisions(owned, extractor, label) do
+    owned
+    |> Enum.flat_map(fn {owner, manifest} ->
+      manifest |> extractor.() |> Enum.uniq() |> Enum.map(&{&1, owner})
+    end)
+    |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+    # The same plugin activated twice is one owner, not a clash.
+    |> Enum.map(fn {value, owners} -> {value, Enum.uniq(owners)} end)
+    |> Enum.filter(&match?({_value, [_, _ | _]}, &1))
+    |> Enum.map(fn {value, owners} ->
+      "#{length(owners)} activated plugins declare the same #{label}: #{inspect(value)} " <>
+        "(#{Enum.join(owners, ", ")})"
     end)
   end
 
