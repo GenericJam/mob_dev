@@ -535,7 +535,7 @@ defmodule Mix.Tasks.Mob.Doctor do
         do: Config.Reader.read!("mob.exs") |> Keyword.get(:mob_dev, []),
         else: []
 
-    [
+    List.flatten([
       mob_exs_check,
       check_cfg_path(
         cfg,
@@ -544,8 +544,9 @@ defmodule Mix.Tasks.Mob.Doctor do
         "Run:  mix mob.install\n" <>
           "      or add to mob.exs: config :mob_dev, mob_dir: \"/path/to/mob\""
       ),
+      __mob_dir_dep_check__(cfg[:mob_dir], MobDev.MobDirCheck.dep_path()),
       check_bundle_id(cfg)
-    ]
+    ])
   end
 
   defp check_cfg_path(cfg, key, description, fix) do
@@ -564,6 +565,28 @@ defmodule Mix.Tasks.Mob.Doctor do
 
       true ->
         {:ok, to_string(key), Path.expand(val), nil}
+    end
+  end
+
+  @doc false
+  # mob_dir must be the :mob dependency, or the native build compiles one mob
+  # and ships another's BEAMs (MOB-351); `mix mob.deploy --native` refuses it.
+  # Nothing to report when either is unknown. Public for tests.
+  @spec __mob_dir_dep_check__(Path.t() | nil, Path.t() | nil) ::
+          [] | {:ok | :fail, String.t(), String.t(), String.t() | nil}
+  def __mob_dir_dep_check__(mob_dir, dep_path) do
+    case MobDev.MobDirCheck.check(mob_dir, dep_path) do
+      :ok when is_nil(mob_dir) or is_nil(dep_path) ->
+        []
+
+      :ok ->
+        {:ok, "mob_dir is the :mob dependency", Path.expand(dep_path), nil}
+
+      {:mismatch, mob_dir, dep_path} ->
+        {:fail, "mob_dir is the :mob dependency",
+         "mob_dir is #{mob_dir} but the :mob dependency is #{dep_path} — the native " <>
+           "build would compile one mob and ship the other's BEAMs",
+         MobDev.MobDirCheck.fix(mob_dir, dep_path)}
     end
   end
 
