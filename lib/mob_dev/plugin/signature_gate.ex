@@ -264,14 +264,20 @@ defmodule MobDev.Plugin.SignatureGate do
       "    tampering with the plugin's manifest or source files."
   end
 
+  # The gate does not know where the plugin came from. A Hex dependency moves to
+  # a v2-signed release with `deps.update`; a path or git checkout never does,
+  # and has been refused since MOB-74 (the MOB-287 window only ever covered Hex
+  # checkouts), so both remedies are named.
   defp format_error({:envelope_v1_unsupported, name}) do
-    "  - plugin #{inspect(name)} ships a legacy v1 signature, which mob_dev no longer\n" <>
-      "    accepts (MOB-301). Verifying v1 means evaluating priv/mob_plugin.exs first,\n" <>
+    "  - plugin #{inspect(name)} ships a legacy v1 signature, which mob_dev does not\n" <>
+      "    accept. Verifying v1 means evaluating priv/mob_plugin.exs first,\n" <>
       "    which would let a malicious manifest run arbitrary code at build time.\n" <>
       "    Update it to a v2-signed release:\n" <>
       "      mix deps.update #{name}\n" <>
       "    If the newest release is still v1-signed, ask the plugin author to re-sign\n" <>
-      "    with `mix mob.plugin.sign` on mob_dev 0.7.2 or later."
+      "    with `mix mob.plugin.sign` on mob_dev 0.7.2 or later. A path or git\n" <>
+      "    dependency (a local checkout) is not changed by deps.update: re-sign it in\n" <>
+      "    its directory with `mix mob.plugin.sign` (key: ~/.mob/keys/#{name}.priv)."
   end
 
   defp format_error({:untrusted, name, actual_fp, nil}) do

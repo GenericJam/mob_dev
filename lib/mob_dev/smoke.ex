@@ -484,12 +484,17 @@ defmodule MobDev.Smoke do
 
   @doc false
   # A flow that taps a different app, or a launcher that never brought ours up,
-  # replays cleanly. No new receipts while the flow executed is the trace of it.
+  # replays cleanly. No new receipts while the flow executed is the trace of it,
+  # but only on mob >= 0.9.7: before it, native taps reached `handle_info/2`
+  # without a receipt, so a flow that worked also left none. The `listener`
+  # section in health arrived in the same release, so it is the version signal.
   @spec receipt_findings(snapshot(), snapshot(), non_neg_integer()) :: [finding()]
   def receipt_findings(before, after_flow, executed) do
     case {receipts_delta(before, after_flow), health_map(before), health_map(after_flow)} do
-      {0, _, _} when executed > 0 ->
-        [{:warning, "the flow did not reach the app (no new receipts)"}]
+      {0, _, {:ok, now}} when executed > 0 ->
+        if is_map_key(now, :listener),
+          do: [{:warning, "the flow did not reach the app (no new receipts)"}],
+          else: [{:note, "reach not checked: mob < 0.9.7 records no receipts for native taps"}]
 
       {nil, {:ok, _}, {:ok, _}} ->
         [

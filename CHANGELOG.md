@@ -29,13 +29,19 @@
   `Mob.Diag.health/0` over dist before the first flow and after each one,
   without restarting the app: a store's `lost`/`resets` or the listener's
   undeliverable count rising during a flow fails the run, and no new receipts
-  (the receipt store's cumulative `recorded`) is a warning. Each flow runs on
+  (the receipt store's cumulative `recorded`) is a warning on mob 0.9.7 or
+  later, which receipts native taps; on older mob it is a note. Each flow runs on
   its own so a `--relaunch` cannot erase the previous flow's evidence; a
   reading from a relaunched BEAM is compared from zero.
   A device another agent-device session holds is skipped with its owner named
   and fails the run. Android's one-UiAutomation-client conflict with
   mobile-mcp gets a hint naming the `pkill` that clears it. See
   `decisions/2026-09-30-mob-smoke-replays-agent-device-flows.md`.
+- **The legacy v1 signature refusal names the fix for a local checkout.** A
+  path or git dependency is not changed by `mix deps.update`; the message now
+  also says to re-sign it in place with `mix mob.plugin.sign`
+  (`~/.mob/keys/<name>.priv`). Path and git checkouts have been refused since
+  MOB-74; the MOB-287 window only ever covered Hex checkouts.
 
 - **`mix mob.new_plugin` scaffolds the signing release setup for tiers 1–4.**
   A plugin with a manifest is verified by every host, but the scaffold said

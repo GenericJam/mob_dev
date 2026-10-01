@@ -419,6 +419,15 @@ defmodule MobDev.SmokeTest do
                [{:warning, "the flow did not reach the app (no new receipts)"}]
     end
 
+    test "before mob 0.9.7 (no listener section) no new receipts is a note, not a warning" do
+      # Native taps were not receipted until mob 0.9.7, so a working flow on an
+      # older app also leaves none (release review, codex).
+      old = Map.delete(health(0, 0, 0, 10), :listener)
+
+      assert Smoke.receipt_findings(snap(old), snap(old), 1) ==
+               [{:note, "reach not checked: mob < 0.9.7 records no receipts for native taps"}]
+    end
+
     test "health without the receipt store's entry (older mob) is a note" do
       old = update_in(health(0, 0, 0).stores, &Map.delete(&1, Mob.Agent.Receipts))
 

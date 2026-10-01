@@ -104,5 +104,14 @@ failing on zero receipts (too many flows legitimately record none).
 - The JSON shapes are pinned to agent-device 0.21.1 in
   `test/mob_dev/smoke_test.exs`. A shape change surfaces as "printed JSON
   that is not a test report", counted as a flow not run, never a pass.
-- Not verified on a device when written; the first phone run is the
-  integrator's.
+- The "did not reach the app" warning needs mob >= 0.9.7, where native taps
+  first get receipts (MOB-305). On an older app (no `listener` section in
+  health) it is a note instead, so a working flow is never flagged (release
+  review, codex, 2026-09-30).
+- Verified on a Moto G power 5G 2024 (Android 15, mob 0.9.7): two flows passed
+  with exit 0 and per-flow receipt deltas (+4, +2). Earlier runs on the same
+  phone and on a Pixel_8_arm emulator showed the failure paths: a lock screen
+  or system overlay, and a snapshot-helper install failure, each named with
+  the failing step, hint and artifacts, exit 1. The device runs found the
+  per-BEAM counters, the capped `Receipts.count/0` and the fresh receipt store.
+  iOS (`--udid`) is not yet verified on a device.
