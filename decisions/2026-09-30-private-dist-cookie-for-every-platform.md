@@ -56,7 +56,10 @@ the bundle id. iOS, Android and the Mac-side node all use it.
   deploy/connect creates a new one and hands it over.
 - An iOS app launched from Xcode or the home screen has an ephemeral random
   cookie until `mob.connect` restarts it. An Android launcher start reads the
-  file, so it stays attachable.
+  file, so it stays attachable. (Amended by MOB-348: every iOS deploy now also
+  writes `mob_dist_cookie` into the beams dir, the simulator runtime dir or
+  the physical iPhone's `Documents/otp/<app>/`, and mob ≥ the matching release
+  reads it, so iOS relaunches stay attachable too.)
 - While a legacy app is connected, its node name carries `mob_secret` as a
   per-node cookie on the Mac. That is the old exposure, limited to that name,
   and the warning tells the developer how to end it.

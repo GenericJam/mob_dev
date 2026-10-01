@@ -29,6 +29,17 @@
 
 ### Fixed
 
+- **iOS apps stay reachable after a relaunch mob_dev didn't make (MOB-348).**
+  iOS got its private cookie only in the launch environment, so an icon tap,
+  `xcrun simctl launch` or an agent-device relaunch (every relaunching
+  `mix mob.smoke` flow) left the node on a random cookie: registered in EPMD,
+  but `mob.connect --no-restart` and `mob.smoke`'s health checks timed out.
+  `mix mob.deploy` now writes the cookie to `mob_dist_cookie` in the app's
+  beams dir on iOS too: the simulator runtime dir on the Mac, or
+  `Documents/otp/<app>/` on a physical iPhone, owner-only
+  (`MobDev.DistCookie.write_app_file!/2`). mob's `mob_beam.m` reads it when the
+  launch environment has none (needs the matching mob).
+
 - **Tasks that pick devices on their own leave another agent's leased
   device alone (MOB-330).** A bare `mix mob.deploy` installed and launched an
   app on an emulator another agent held through `agent-device`. When

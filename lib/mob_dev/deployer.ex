@@ -1124,6 +1124,10 @@ defmodule MobDev.Deployer do
         File.write!(Path.join(ios_beams_dir(), "mob_beam_flags"), beam_flags)
       end
 
+      # mob_beam.m reads it at boot when the launch env has no MOB_DIST_COOKIE
+      # (icon tap, `xcrun simctl launch`), so those launches stay reachable.
+      DistCookie.write_app_file!(ios_beams_dir(), Keyword.fetch!(opts, :dist_cookie))
+
       if restart do
         IOS.terminate_app(udid, ios_bundle_id())
         :timer.sleep(300)
@@ -1329,6 +1333,10 @@ defmodule MobDev.Deployer do
       if beam_flags do
         File.write!(Path.join(staging_dir, "mob_beam_flags"), beam_flags)
       end
+
+      # Lands in Documents/otp/<app>/ with the BEAMs; mob_beam.m reads it at
+      # boot when the launch env has no MOB_DIST_COOKIE (a tap on the icon).
+      DistCookie.write_app_file!(staging_dir, dist_cookie)
 
       case validate_ios_override(compile_path, staging_dir, app) do
         :ok -> :ok
