@@ -37,24 +37,31 @@ defmodule MobDev.DistCookie do
 
   For directories on this Mac that an app reads its BEAMs from: the iOS
   simulator runtime dir, or the staging dir a physical-iPhone deploy copies to
-  the device. The file is created empty, made `0600`, filled, then renamed
-  over any previous one, so the cookie is never readable by others and a
-  booting app never sees half a file.
+  the device. The cookie is written inside a fresh `0700` directory, made
+  `0600`, then renamed over any previous file: nobody else can open it at any
+  point (a descriptor opened on the parent before the `chmod` doesn't help,
+  since lookups check the directory's current mode), and a booting app never
+  sees half a file.
   """
   @spec write_app_file!(String.t(), atom()) :: String.t()
   def write_app_file!(dir, cookie) when is_binary(dir) and is_atom(cookie) do
     path = Path.join(dir, @app_file)
-    tmp = "#{path}.#{System.pid()}.#{System.unique_integer([:positive])}.tmp"
+
+    private =
+      Path.join(dir, ".#{@app_file}.#{System.pid()}.#{System.unique_integer([:positive])}")
+
+    tmp = Path.join(private, @app_file)
     File.mkdir_p!(dir)
 
     try do
-      File.write!(tmp, "", [:exclusive])
+      File.mkdir!(private)
+      File.chmod!(private, 0o700)
+      File.write!(tmp, Atom.to_string(cookie) <> "\n", [:exclusive])
       File.chmod!(tmp, 0o600)
-      File.write!(tmp, Atom.to_string(cookie) <> "\n")
       File.rename!(tmp, path)
       path
     after
-      File.rm(tmp)
+      File.rm_rf(private)
     end
   end
 
