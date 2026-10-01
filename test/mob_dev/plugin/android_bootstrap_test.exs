@@ -148,6 +148,27 @@ defmodule MobDev.Plugin.AndroidBootstrapTest do
       end
     end
 
+    # MOB-170: a binary but non-identifier factory used to pass classify and
+    # fail later inside the Kotlin compile with no manifest named.
+    test "binary factories that are not Kotlin identifiers are build errors" do
+      for factory <- ["", "1Bad", "io.mob.-x", "Bad Name"] do
+        manifest =
+          base(%{
+            name: :pad_plugin,
+            ui_components: [
+              %{atom: :pad, android: %{composable: "MobPad_View", factory: factory}}
+            ],
+            android: %{bridge_class: "io.mob.pad.PadBridge"}
+          })
+
+        assert %{registrations: [], errors: [err]} =
+                 AndroidBootstrap.classify([{"/a", manifest}])
+
+        assert err =~ ":pad_plugin"
+        assert err =~ inspect(factory)
+      end
+    end
+
     test "iOS-only components and tier-0 plugins contribute nothing" do
       plugins = [
         {"/zero", nil},

@@ -694,4 +694,48 @@ defmodule MobDev.Plugin.ValidatorTest do
       assert %{errors: []} = Validator.cross_validate([{:a, a}, {:b, b}])
     end
   end
+
+  # MOB-170: a collision used to be printed by `mix mob.plugins` (exit 0) and
+  # never checked by the native build, so one plugin's registration silently
+  # overwrote the other's at runtime.
+  describe "raise_on_cross_plugin_conflicts!/1" do
+    test "raises on colliding opted-in factories, naming both manifests" do
+      a =
+        Map.put(@base, :ui_components, [
+          %{atom: :chart, android: %{composable: "Shared_Key", factory: "x.Chart"}}
+        ])
+
+      b =
+        Map.put(@base, :ui_components, [
+          %{atom: :gauge, android: %{composable: "Shared_Key", factory: "y.Gauge"}}
+        ])
+
+      error =
+        assert_raise Mix.Error, fn ->
+          Validator.raise_on_cross_plugin_conflicts!([{"/deps/a", a}, {"/deps/b", b}])
+        end
+
+      assert error.message =~ "Android native view key"
+      assert error.message =~ "/deps/a/priv/mob_plugin.exs"
+      assert error.message =~ "/deps/b/priv/mob_plugin.exs"
+    end
+
+    test "valid plugins pass" do
+      a = Map.put(@base, :ui_components, [%{atom: :chart, android: %{composable: "A_View"}}])
+      b = Map.put(@base, :ui_components, [%{atom: :gauge, android: %{composable: "B_View"}}])
+
+      assert :ok =
+               Validator.raise_on_cross_plugin_conflicts!([
+                 {"/deps/a", a},
+                 {"/deps/b", b},
+                 {"/deps/zero", nil}
+               ])
+    end
+
+    test "the same plugin activated twice is not a conflict with itself" do
+      a = Map.put(@base, :ui_components, [%{atom: :chart, android: %{composable: "A_View"}}])
+
+      assert :ok = Validator.raise_on_cross_plugin_conflicts!([{"/deps/a", a}, {"/deps/a", a}])
+    end
+  end
 end

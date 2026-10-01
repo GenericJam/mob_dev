@@ -53,10 +53,9 @@ defmodule MobDev.Plugin.AndroidBootstrap do
     bridge_pkg = bridge_package(manifest)
 
     cond do
-      not is_binary(factory) ->
+      error = MobDev.Plugin.Validator.android_factory_error(factory) ->
         {:error,
-         "plugin #{inspect(plugin)}: ui_components #{component_label(component)} declares " <>
-           "android.factory #{inspect(factory)}; expected a Kotlin identifier or dotted path"}
+         "plugin #{inspect(plugin)}: ui_components #{component_label(component)}: #{error}"}
 
       not is_binary(key) ->
         {:error,
