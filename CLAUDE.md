@@ -43,10 +43,11 @@ but if in doubt, ask.
 always a host-port collision with `adb`, not a BEAM bug. An Android
 device's `adb forward tcp:<port> tcp:<port>` binds `127.0.0.1:<port>` on
 the Mac, and iOS sims share the Mac's network stack. `mix mob.deploy`
-starts the sim's BEAM on `MobDev.Tunnel.serial_base_port(udid)` (crc32 into
-`9100..9899`) without bumping past ports already in use, so if a forward
-holds that port the sim can't bind it. The OTP boot exits cleanly on
-`eaddrinuse` and there is no crash report. First diagnostic:
+starts the sim's BEAM on `MobDev.Tunnel.dist_port_for/1` (crc32 of app +
+udid into `9100..9899`, bumped past ports registered in EPMD or forwarded to
+another device), but a non-BEAM listener or another sim's non-registered
+process can still hold it, and then the sim can't bind it. The OTP boot exits
+cleanly on `eaddrinuse` and there is no crash report. First diagnostic:
 
 ```bash
 lsof -nP -iTCP:9100-9899 -sTCP:LISTEN | grep adb
@@ -366,7 +367,7 @@ git config core.hooksPath .githooks
 
 **Always testable (pure functions, no hardware):**
 - `MobDev.Device` — `short_id/1`, `node_name/1`, `summary/1`
-- `MobDev.Tunnel` — `serial_base_port/1`, `assign_dist_port/2`
+- `MobDev.Tunnel` — `base_port/2`, `assign_dist_port/3`, `in_use_ports/4`, `stale_dist_forwards/4`
 - `MobDev.Discovery.Android.parse_devices_output/1`
 - `MobDev.Discovery.IOS.parse_simctl_json/1`, `parse_simctl_text/1`, `parse_runtime_version/1`
 - `MobDev.HotPush.snapshot_beams/0`, `push_changed/2`
@@ -403,7 +404,7 @@ updating the hash in `otp_downloader.ex`).
 ## Key files
 
 - `lib/mob_dev/device.ex` — device struct + `node_name/1`, `short_id/1`
-- `lib/mob_dev/tunnel.ex` — adb tunnel setup, serial-derived dist ports (`serial_base_port/1`, `assign_dist_port/2`)
+- `lib/mob_dev/tunnel.ex` — adb tunnel setup, serial + app derived dist ports (`base_port/2`, `assign_dist_port/3`, `dist_port_for/1`)
 - `lib/mob_dev/hot_push.ex` — BEAM snapshot + RPC push
 - `lib/mob_dev/deployer.ex` — full BEAM push + app restart
 - `lib/mob_dev/connector.ex` — discover → tunnel → restart → wait → connect
@@ -466,17 +467,20 @@ helper already existed and was used in `restart_app/4`. See ADR
 Physical (USB/Wi-Fi) Android is unchanged: still keyed off `ro.serialno`.
 iOS untouched.
 
-### Dist ports are serial-derived (FIXED 0.6.7, 2026-06-18)
+### Dist ports are serial + app derived (0.6.7; app added in 0.7.5)
 
 Dist ports are no longer assigned by per-run index (which made *every*
 project's first device claim 9100 → cross-project collisions in the one
-shared Mac EPMD → silent timeouts). `Tunnel.serial_base_port/1` maps a
-device serial to a stable port in `9100..9899` (crc32 hash), bumped past
-any port a live node/forward already holds (`assign_dist_port/2`). The
-device-side BEAM listens on that same port (via `MOB_DIST_PORT`), so the
-forward is 1:1 and EPMD's broadcast matches. `setup` also removes the
-device's own stale forwards first. A given phone always gets the same
-unique port across runs/projects, and deploy + connect agree on it.
+shared Mac EPMD → silent timeouts). `Tunnel.base_port/2` maps a device
+serial plus the app name to a stable port in `9100..9899` (crc32 hash), and
+`assign_dist_port/3` bumps past any port another live node or another
+device's forward already holds. Keying on the serial alone gave two apps on
+one device the same port, and the second one's dist failed with
+`:nodistribution` (N18). Deploy and connect both resolve the port through
+`Tunnel.dist_port_for/1`, so they agree. The device-side BEAM listens on that
+port (via `MOB_DIST_PORT` / the `mob_dist` file), so the forward is 1:1 and
+EPMD's broadcast matches. `setup` removes the device's stale dist forwards
+first, but never one another app on the same device is live on.
 
 If `mix mob.connect` still fails, it now tells you *why* (app not running /
 Standby-killed, dist not registered, port mismatch, no forward, cookie

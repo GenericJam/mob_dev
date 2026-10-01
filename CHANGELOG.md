@@ -46,6 +46,26 @@
 
 ### Fixed
 
+- **Two Mob apps on one device no longer share a dist port.** The port was
+  hashed from the device serial alone, so a second app on the same emulator,
+  simulator or phone claimed the first one's port: its dist failed with
+  `{:EXIT, :nodistribution}` on Android and `eaddrinuse` on the iOS
+  simulator. The port is now a crc32 of the serial **and the app name**
+  (`MobDev.Tunnel.base_port/2`), still in `9100..9899` and the same on every
+  run, and it is bumped past any port another live node in the Mac's EPMD or
+  another device's `adb forward` holds. `mix mob.deploy` and `mix mob.connect`
+  resolve it through the same function, so they agree. `mix mob.connect` also
+  stopped removing every forward of the device it connects to: a forward
+  another app on that device is live on, and other tools' `localabstract:`
+  forwards, are left alone. An explicit `--dist-port` still wins.
+
+  **Upgrade note:** an existing app's dist port changes once. Nothing needs
+  doing: the next restarting `mix mob.deploy` (or `mix mob.connect`) starts the
+  app on the new port and records it in `mob_dist`, and
+  `mix mob.connect --no-restart` finds a still-running app on its old port
+  through EPMD. Scripts that hard-coded the old serial-derived port should
+  read the node's port from `epmd -names` or pass `--dist-port`.
+
 - **An Android deploy that restarts the app sets up the dist tunnels first.**
   After an emulator reboot (or an adbd restart) nothing had re-created
   `adb reverse tcp:4369`, so a restarted app logged `Mob.Dist: no EPMD on

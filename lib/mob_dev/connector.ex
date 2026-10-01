@@ -183,7 +183,7 @@ defmodule MobDev.Connector do
   end
 
   defp setup_tunnels(devices) do
-    # Ports are derived from each device's serial (Tunnel.assign_dist_port/2),
+    # Ports are derived from each device's serial and the app (Tunnel.dist_port_for/1),
     # not a per-run index — so they're stable and don't collide across projects.
     # Sequential so each device's freshly-added forward is visible as "in use"
     # to the next device's collision check.

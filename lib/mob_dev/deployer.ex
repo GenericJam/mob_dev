@@ -96,10 +96,11 @@ defmodule MobDev.Deployer do
         all
         |> Enum.map(fn device ->
           IO.write("  #{device.name || device.serial}  →  pushing...")
-          # Serial-derived so the port a device is deployed to listen on matches
-          # what `mix mob.connect` later forwards to (same crc32(serial) base).
-          dist_port = dist_port_override || Tunnel.serial_base_port(device.serial)
           node = Device.node_name(device)
+          # Serial + app derived (Tunnel.dist_port_for/1) so the port a device is
+          # deployed to listen on matches what `mix mob.connect` later forwards
+          # to, and two apps on one device don't share it.
+          dist_port = dist_port_override || Tunnel.dist_port_for(%{device | node: node})
 
           # Shared by both branches. `restart` is honoured by the fallback and
           # overridden to false by the dist path, where the modules are

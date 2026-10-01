@@ -261,6 +261,10 @@ narrowing functions). Don't make them private:
 - `MobDev.AppLifecycleHooks.check/2` (the mob 0.9.6 Android lifecycle-hook
   check shared by `mix mob.doctor` and the Android native build) and
   `Connector.ios_scan_needed?/2` (when `mob.connect` skips iOS discovery)
+- `Tunnel.base_port/2`, `assign_dist_port/3`, `in_use_ports/4` and
+  `stale_dist_forwards/4` (the serial + app dist-port rule, and which
+  forwards `mob.connect` may remove); deploy and connect must both go through
+  `Tunnel.dist_port_for/1`, or they disagree on the port
 
 If you make any of these private, every downstream test breaks loudly — but
 you'll lose the ability to evolve the parsers safely.

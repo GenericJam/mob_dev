@@ -9,7 +9,7 @@ defmodule MobDev.TunnelAdbMissingTest do
     setup do
       original = System.get_env("PATH")
 
-      # Point PATH at a dir that has epmd (ports_in_use queries it too) but not
+      # Point PATH at a dir that has epmd (dist_port_for queries it too) but not
       # adb, so we exercise exactly the missing-adb path.
       dir = Path.join(System.tmp_dir!(), "mob_dev_no_adb_#{System.unique_integer([:positive])}")
       File.mkdir_p!(dir)
@@ -30,12 +30,12 @@ defmodule MobDev.TunnelAdbMissingTest do
       :ok
     end
 
-    test "ports_in_use/1 degrades to a MapSet instead of crashing on :enoent" do
+    test "a simulator's dist port is still assigned instead of crashing on :enoent" do
       # Regression: run_adb shelled out to a missing `adb`; System.cmd raised
       # :enoent inside a linked Task, propagating an exit that killed the whole
-      # `mix mob.connect` for iOS-only Macs. It must now return the (adb-less)
-      # port set without raising — forwards simply read as "none".
-      assert %MapSet{} = Tunnel.ports_in_use()
+      # `mix mob.connect` for iOS-only Macs. Forwards must simply read as "none".
+      sim = %MobDev.Device{platform: :ios, type: :simulator, serial: "90E55910-0000"}
+      assert Tunnel.dist_port_for(sim) in 9100..9899
     end
   end
 end

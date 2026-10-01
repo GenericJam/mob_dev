@@ -184,7 +184,7 @@ defmodule Mix.Tasks.Mob.Deploy do
     schedulers: :integer,
     beam_flags: :string,
     # Manual overrides for the BEAM-distribution surface — useful when
-    # the auto-allocated per-device dist port (`Tunnel.dist_port(idx)`)
+    # the auto-allocated dist port (`Tunnel.dist_port_for/1`, serial + app)
     # or auto-derived node-name suffix (`Discovery.Android.device_node_suffix`
     # / SIMULATOR_UDID-derived) collides with another locally-running
     # device, or when scripting a specific naming scheme.
