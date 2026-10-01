@@ -29,9 +29,17 @@ defmodule MobDev.DeviceLeases do
       battery benches' device auto-detection.
     * **A device named explicitly is used anyway, with a loud warning**
       (`warn_claimed/2`). Naming the device is the same consent
-      `--device` already gives for a physical phone; refusing would leave no
+      `--device` already gives for a phone; refusing would leave no
       way to reach a device whose lease outlived its owner short of releasing
       someone else's claim.
+
+  An iPhone found over the LAN (`MobDev.Discovery.IOS.find_physical_at/1`)
+  carries its IP as its serial: EPMD names the app's node, not the phone,
+  so there is no hardware UDID to match against a claim. Such an iPhone
+  counts as claimed whenever another session claims a device that could be
+  a physical iPhone (an iOS claim, or one of unknown platform, that is not a
+  simulator). That can skip a free phone, which `--device <ip>` still
+  reaches; the alternative deploys onto a leased one.
   """
 
   alias MobDev.Device
@@ -41,6 +49,7 @@ defmodule MobDev.DeviceLeases do
   @type claim :: %{
           id: String.t(),
           platform: :android | :ios | nil,
+          kind: :device | :emulator | :simulator | nil,
           session: String.t() | nil,
           workspace: String.t() | nil
         }
@@ -137,6 +146,7 @@ defmodule MobDev.DeviceLeases do
           %{
             id: id,
             platform: platform(device["platform"]),
+            kind: kind(device["kind"]),
             session: owner["session"],
             workspace: owner["workspace"]
           }
@@ -157,6 +167,11 @@ defmodule MobDev.DeviceLeases do
   defp platform("ios"), do: :ios
   defp platform(_), do: nil
 
+  defp kind("device"), do: :device
+  defp kind("emulator"), do: :emulator
+  defp kind("simulator"), do: :simulator
+  defp kind(_), do: nil
+
   @doc """
   The claim another session holds on `device`, or `nil` when it is free or
   claimed by this session.
@@ -168,10 +183,24 @@ defmodule MobDev.DeviceLeases do
     end)
   end
 
-  defp claims_device?(claim, %Device{platform: platform, serial: serial}) do
-    claim.platform in [nil, platform] and is_binary(serial) and
-      String.downcase(claim.id) == String.downcase(serial)
+  defp claims_device?(claim, %Device{platform: platform, serial: serial} = device) do
+    if lan_iphone?(device),
+      do: could_be_iphone?(claim),
+      else:
+        claim.platform in [nil, platform] and is_binary(serial) and
+          String.downcase(claim.id) == String.downcase(serial)
   end
+
+  # An iPhone known only by the IP it answered EPMD on: which phone it is,
+  # and so which claim is its, can't be told.
+  defp lan_iphone?(%Device{platform: :ios, type: :physical, serial: serial})
+       when is_binary(serial),
+       do: match?({:ok, _}, :inet.parse_address(String.to_charlist(serial)))
+
+  defp lan_iphone?(_), do: false
+
+  defp could_be_iphone?(claim),
+    do: claim.platform in [nil, :ios] and claim.kind not in [:emulator, :simulator]
 
   @doc """
   Split `devices` into the ones auto-selection may use and the ones another
@@ -207,7 +236,7 @@ defmodule MobDev.DeviceLeases do
 
     Enum.each(claimed, fn {device, claim} ->
       IO.puts(
-        "  #{IO.ANSI.yellow()}Skipping #{label(device)}: #{describe(claim)}. " <>
+        "  #{IO.ANSI.yellow()}Skipping #{label(device)}: #{reason(device, claim)}. " <>
           "#{hint}#{IO.ANSI.reset()}"
       )
     end)
@@ -226,8 +255,8 @@ defmodule MobDev.DeviceLeases do
     |> elem(1)
     |> Enum.each(fn {device, claim} ->
       IO.puts(
-        "\n  #{IO.ANSI.red()}#{IO.ANSI.bright()}WARNING: #{label(device)} is #{describe(claim)}." <>
-          "#{IO.ANSI.reset()}\n" <>
+        "\n  #{IO.ANSI.red()}#{IO.ANSI.bright()}WARNING: #{label(device)} is " <>
+          "#{reason(device, claim)}.#{IO.ANSI.reset()}\n" <>
           "  #{IO.ANSI.red()}Using it because you named it; this may disrupt that agent's work." <>
           "#{IO.ANSI.reset()}\n"
       )
@@ -243,6 +272,14 @@ defmodule MobDev.DeviceLeases do
   def describe(%{session: session, workspace: workspace}) do
     where = if is_binary(workspace), do: " (in #{workspace})", else: ""
     "claimed by agent-device session #{inspect(session || "?")}#{where}"
+  end
+
+  defp reason(device, claim) do
+    if lan_iphone?(device),
+      do:
+        "possibly #{describe(claim)}: an iPhone found over the LAN can't be matched " <>
+          "to its claim",
+      else: describe(claim)
   end
 
   @doc false

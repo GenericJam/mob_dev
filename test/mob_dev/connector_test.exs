@@ -173,4 +173,36 @@ defmodule MobDev.ConnectorTest do
       end
     end
   end
+
+  describe "stale_simulator_pids/3 (MOB-330)" do
+    @ours "AAAAAAAA-1111-4111-8111-111111111111"
+    @claimed "BBBBBBBB-2222-4222-8222-222222222222"
+    @stale "CCCCCCCC-3333-4333-8333-333333333333"
+
+    # `pgrep -fl <bundle id>`: one "<pid> <command>" line per app process.
+    defp pgrep_line(pid, udid),
+      do:
+        "#{pid} /Users/k/Library/Developer/CoreSimulator/Devices/#{udid}/data/" <>
+          "Containers/Bundle/Application/0F/MobDemo.app/MobDemo"
+
+    test "kills the app on a simulator outside the session, but never on one another agent claimed" do
+      output =
+        Enum.map_join([{101, @ours}, {202, @claimed}, {303, @stale}], "\n", fn {pid, udid} ->
+          pgrep_line(pid, udid)
+        end)
+
+      leases = %MobDev.DeviceLeases{
+        claims: [
+          %{id: @claimed, platform: :ios, kind: :simulator, session: "Other", workspace: nil}
+        ],
+        session: "Me"
+      }
+
+      assert Connector.stale_simulator_pids(output, [String.downcase(@ours)], leases) == [303]
+
+      # Your own claim protects nothing: that simulator is yours to clean up.
+      assert Connector.stale_simulator_pids(output, [@ours], %{leases | session: "Other"}) ==
+               [202, 303]
+    end
+  end
 end

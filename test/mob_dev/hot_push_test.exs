@@ -221,4 +221,34 @@ defmodule MobDev.HotPushTest do
       end
     end
   end
+
+  describe "unclaimed_nodes/3 (MOB-330)" do
+    test "a watcher's cached node is dropped once another session claims its device" do
+      held = %MobDev.Device{
+        platform: :android,
+        type: :emulator,
+        serial: "emulator-5560",
+        node: :"app_android_5560@127.0.0.1"
+      }
+
+      free = %MobDev.Device{
+        platform: :ios,
+        type: :simulator,
+        serial: "AAAAAAAA-1111-4111-8111-111111111111",
+        node: :"app_ios_aaaaaaaa@127.0.0.1"
+      }
+
+      claim = %{id: "emulator-5560", platform: :android, kind: :emulator, workspace: nil}
+      leases = %MobDev.DeviceLeases{claims: [Map.put(claim, :session, "Other")], session: "Me"}
+      # A node discovery no longer sees is kept: nothing ties it to a claim.
+      cached = [held.node, free.node, :"gone@127.0.0.1"]
+
+      assert HotPush.unclaimed_nodes(cached, [held, free], leases) ==
+               [free.node, :"gone@127.0.0.1"]
+
+      # Claimed by this session: still ours to push to.
+      assert HotPush.unclaimed_nodes(cached, [held, free], %{leases | session: "Other"}) ==
+               cached
+    end
+  end
 end

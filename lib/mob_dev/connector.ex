@@ -102,7 +102,7 @@ defmodule MobDev.Connector do
         if restart do
           # Kill any stale simulator processes from previous sessions. A lingering
           # BEAM holds its EPMD slot, blocking new instances from registering.
-          kill_stale_simulator_apps(tunneled)
+          kill_stale_simulator_apps(tunneled, leases)
 
           # Restart apps so they pick up tunnels and use correct node names
           Enum.each(tunneled, &restart_app(&1, launch_cookie))
@@ -229,25 +229,17 @@ defmodule MobDev.Connector do
   # Kill any app processes running in simulators that are NOT in our current
   # tunneled set. A stale BEAM from a previous session holds its EPMD slot,
   # blocking new instances of the same node name from registering.
-  defp kill_stale_simulator_apps(tunneled) do
+  defp kill_stale_simulator_apps(tunneled, leases) do
     active =
       tunneled
       |> Enum.filter(&(&1.platform == :ios && &1.type == :simulator))
       |> Enum.map(& &1.serial)
-      |> MapSet.new()
 
     case System.cmd("pgrep", ["-fl", ios_bundle_id()], stderr_to_stdout: true) do
       {output, 0} ->
         output
-        |> String.split("\n", trim: true)
-        |> Enum.each(fn line ->
-          with [pid_str | _] <- String.split(line, " ", parts: 2),
-               {pid, ""} <- Integer.parse(pid_str),
-               [_, udid] <- Regex.run(~r|/Devices/([0-9A-F-]{36})/|i, line),
-               false <- MapSet.member?(active, udid) do
-            System.cmd("kill", ["-9", to_string(pid)], stderr_to_stdout: true)
-          end
-        end)
+        |> stale_simulator_pids(active, leases)
+        |> Enum.each(&System.cmd("kill", ["-9", to_string(&1)], stderr_to_stdout: true))
 
       _ ->
         :ok
@@ -255,6 +247,32 @@ defmodule MobDev.Connector do
 
     :timer.sleep(300)
   end
+
+  @doc false
+  # The pids in `pgrep -fl <bundle id>` output that run the app on a
+  # simulator outside `active` (UDIDs). A simulator another agent-device
+  # session has claimed is never one of them: it is outside `active` because
+  # selection left it alone, and the app on it is that agent's (MOB-330).
+  @spec stale_simulator_pids(String.t(), [String.t()], DeviceLeases.t()) :: [pos_integer()]
+  def stale_simulator_pids(pgrep_output, active, leases) do
+    active = MapSet.new(active, &String.upcase/1)
+
+    pgrep_output
+    |> String.split("\n", trim: true)
+    |> Enum.flat_map(fn line ->
+      with [pid_str | _] <- String.split(line, " ", parts: 2),
+           {pid, ""} <- Integer.parse(pid_str),
+           [_, udid] <- Regex.run(~r|/Devices/([0-9A-F-]{36})/|i, line),
+           false <- MapSet.member?(active, String.upcase(udid)),
+           nil <- DeviceLeases.foreign_claim(simulator(udid), leases) do
+        [pid]
+      else
+        _ -> []
+      end
+    end)
+  end
+
+  defp simulator(udid), do: %Device{platform: :ios, type: :simulator, serial: udid}
 
   # Attach mode: point the device at the node its running app registered —
   # the deploy-time name, or the bare `<app>_android` of a launcher start
