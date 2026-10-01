@@ -182,11 +182,36 @@ defmodule MobDev.NdkVersion do
   # ── Internals ────────────────────────────────────────────────────────────────
 
   @doc false
-  @spec sdk_root() :: String.t() | nil
-  def sdk_root do
-    System.get_env("ANDROID_HOME") ||
-      System.get_env("ANDROID_SDK_ROOT") ||
-      default_sdk_root_for_os()
+  # The Android SDK the build uses, resolved in Gradle's order so the zig NDK
+  # flags and Gradle can't point at different SDKs (MOB-72): the project's
+  # `android/local.properties` `sdk.dir` (what `mob.install` writes and the
+  # `android_toolchain_available?/1` gate checks), then ANDROID_HOME, then
+  # ANDROID_SDK_ROOT, then the OS-conventional dir if it exists.
+  @spec sdk_root(String.t()) :: String.t() | nil
+  def sdk_root(project_dir \\ File.cwd!()) do
+    case local_properties_sdk_dir(project_dir) do
+      {:ok, dir} ->
+        dir
+
+      :error ->
+        System.get_env("ANDROID_HOME") ||
+          System.get_env("ANDROID_SDK_ROOT") ||
+          default_sdk_root_for_os()
+    end
+  end
+
+  @doc false
+  # `sdk.dir` from `<project_dir>/android/local.properties`, expanded.
+  @spec local_properties_sdk_dir(String.t()) :: {:ok, String.t()} | :error
+  def local_properties_sdk_dir(project_dir) do
+    path = Path.join([project_dir, "android", "local.properties"])
+
+    with {:ok, content} <- File.read(path),
+         [_, raw] <- Regex.run(Regex.compile!("^\\s*sdk\\.dir\\s*=\\s*(.+?)\\s*$", "m"), content) do
+      {:ok, raw |> String.trim() |> Path.expand()}
+    else
+      _ -> :error
+    end
   end
 
   @doc false
@@ -202,21 +227,23 @@ defmodule MobDev.NdkVersion do
   end
 
   @doc false
-  # NDK root for the effective version, honoring ANDROID_HOME / ANDROID_SDK_ROOT
-  # (falls back to the OS-conventional SDK dir even when it doesn't exist, so a
+  # NDK root for the effective version, under `sdk_root/1` (falls back to the OS-conventional SDK dir even when it doesn't exist, so a
   # "toolchain not found at <path>" error still names a sensible location). The
   # single source of truth for `native_build`, `cpp_archive`, and `nx_eigen_nif`
   # — none of them should re-derive this (see MOB-89).
-  @spec root() :: String.t()
-  def root, do: Path.join([sdk_root() || os_default_sdk_dir(), "ndk", effective()])
+  @spec root(String.t()) :: String.t()
+  def root(project_dir \\ File.cwd!()),
+    do: Path.join([sdk_root(project_dir) || os_default_sdk_dir(), "ndk", effective()])
 
   @doc false
-  @spec toolchain_bin() :: String.t()
-  def toolchain_bin, do: Path.join([root(), "toolchains", "llvm", "prebuilt", host(), "bin"])
+  @spec toolchain_bin(String.t()) :: String.t()
+  def toolchain_bin(project_dir \\ File.cwd!()),
+    do: Path.join([root(project_dir), "toolchains", "llvm", "prebuilt", host(), "bin"])
 
   @doc false
-  @spec sysroot() :: String.t()
-  def sysroot, do: Path.join([root(), "toolchains", "llvm", "prebuilt", host(), "sysroot"])
+  @spec sysroot(String.t()) :: String.t()
+  def sysroot(project_dir \\ File.cwd!()),
+    do: Path.join([root(project_dir), "toolchains", "llvm", "prebuilt", host(), "sysroot"])
 
   # The OS-conventional SDK dir (path only, no existence check) — used by
   # `root/0` as the last-resort fallback so error messages name a real path.
