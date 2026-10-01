@@ -1,4 +1,4 @@
-## [Unreleased]
+## [0.7.7] - 2026-10-01
 
 ### Security
 
@@ -19,6 +19,13 @@
   (`Node.set_cookie(MobDev.DistCookie.for_project!())`) rather than passing
   it as `--cookie`, which would put it in the process arguments. See
   `decisions/2026-09-30-private-dist-cookie-for-every-platform.md`.
+
+  **Upgrade note:** update mob_dev together with mob. mob 0.9.8 accepts only
+  the private cookie this release hands over, so mob_dev 0.7.6 or older can't
+  `mix mob.connect` (or deploy, push, watch) to an app built on mob 0.9.8.
+  mob_dev 0.7.7 still reaches apps built on older mob through the
+  `mob_secret` fallback; the first `mix mob.deploy` after updating mob
+  (`--native` for iOS) moves the app to its private cookie.
 
 ### Fixed
 
