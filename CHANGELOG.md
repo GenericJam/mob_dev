@@ -26,8 +26,9 @@
   health (MOB-347).** With the node unreachable (or `Mob.Diag.health/0`
   missing), every flow's check was skipped with a note, yet the summary showed
   `0 failure(s), 0 warning(s)` and the run ended "All flows passed and the app
-  held up." The health column now reads `not checked (<reason>)`, or adds
-  `k of n flow(s) not checked (<reason>)` when only some flows were checked,
+  held up." The health column now reads `not checked (<reason>)`, or keeps
+  the counts and adds `not checked (<reason>)` (or `k of n flow(s) not
+  checked (<reason>)` when only some flows were checked) when there are any,
   and a passing run ends `All flows passed; app health not checked on:` with
   the devices and reasons. Exit status is unchanged (0 when the flows pass).
   If the node was unreachable before the first flow, the task now waits for
