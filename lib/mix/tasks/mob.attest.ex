@@ -27,7 +27,7 @@ defmodule Mix.Tasks.Mob.Attest do
                       `mix mob.deploy` pushes, which is the only scope that
                       cannot drift from what was actually shipped
     * `--node NAME` — attest one node instead of every connected one
-    * `--cookie C`  — dist cookie (default: `mob_secret`, as `Mob.Dist` sets)
+    * `--cookie C`  — use this cookie instead of the app's private one (`mix mob.cookie`)
     * `--json`      — machine-readable result on stdout, progress on stderr
 
   ## Exit status
@@ -64,9 +64,10 @@ defmodule Mix.Tasks.Mob.Attest do
     end
 
     Mix.Task.run("compile")
-    start_dist!(String.to_atom(opts[:cookie] || "mob_secret"))
+    cookies = MobDev.DistCookie.candidates(opts[:cookie])
+    start_dist!(hd(cookies))
 
-    case reachable_nodes(opts) do
+    case reachable_nodes(opts, cookies) do
       {[], _down} ->
         emit(opts, %{"outcome" => "no_nodes", "nodes" => []})
 
@@ -88,18 +89,17 @@ defmodule Mix.Tasks.Mob.Attest do
   # app, which reloads every module and would destroy the very evidence this
   # task exists to read. The tunnels a previous `mix mob.connect` set up are
   # device-level and outlive it, so a plain `Node.connect/1` is enough.
-  defp reachable_nodes(opts) do
+  defp reachable_nodes(opts, cookies) do
     candidates =
       case opts[:node] do
         nil -> discover_node_names()
         name -> [String.to_atom(name)]
       end
 
-    # `Node.connect/1` returns `true | false | :ignored`, and `:ignored` — the
-    # local node not being alive — is truthy. Matching on `true` keeps a run
-    # that could not connect at all from looking like a run that connected to
-    # everything.
-    Enum.split_with(candidates, &(Node.connect(&1) == true))
+    # Only `{:ok, _}` counts: with the local node not alive `Node.connect/1`
+    # answers the truthy `:ignored`, and a run that could not connect at all
+    # must not look like one that connected to everything.
+    Enum.split_with(candidates, &match?({:ok, _}, MobDev.DistCookie.connect(&1, cookies)))
   end
 
   # Use the name discovery already resolved rather than deriving one again.

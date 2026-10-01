@@ -237,6 +237,27 @@ defmodule MobDev.Discovery.Android do
   end
 
   @doc """
+  Writes the app's private distribution cookie to
+  `/data/data/<package>/files/otp/<app>/mob_dist_cookie`, where `Mob.Dist`
+  reads it when the app starts (MOB-49).
+
+  `run-as` writes it with the app's owner, label and a `077` umask, so other
+  apps on the phone can't read it. The cookie travels on adb's stdin rather
+  than in an argument, which `ps` would show to every user on the Mac.
+  """
+  @spec write_dist_cookie(String.t(), String.t(), atom() | String.t(), atom()) ::
+          :ok | {:error, String.t()}
+  def write_dist_cookie(serial, package, app, cookie) do
+    dir = "/data/data/#{package}/files/otp/#{app}"
+
+    script =
+      "run-as #{package} sh -c 'umask 077; mkdir -p #{dir} && IFS= read -r c && " <>
+        "echo \"$c\" > #{dir}/mob_dist_cookie'"
+
+    run_adb_with_input(["-s", serial, "shell", script], Atom.to_string(cookie) <> "\n")
+  end
+
+  @doc """
   Sanitizes a string into a Mob node-name suffix. Pure — no adb calls.
 
       node_suffix_for("ZY22CRLMWK")        → "zy22crlmwk"
@@ -355,6 +376,38 @@ defmodule MobDev.Discovery.Android do
       {:ok, {output, _rc}} -> {:error, output}
       nil -> {:error, "adb timed out"}
       {:exit, reason} -> {:error, "adb crashed: #{inspect(reason)}"}
+    end
+  end
+
+  defp run_adb_with_input(args, input) do
+    case System.find_executable("adb") do
+      nil ->
+        {:error, "adb not found on PATH"}
+
+      adb ->
+        port =
+          Port.open({:spawn_executable, adb}, [
+            :binary,
+            :exit_status,
+            :stderr_to_stdout,
+            :hide,
+            args: args
+          ])
+
+        Port.command(port, input)
+        await_port(port, "")
+    end
+  end
+
+  defp await_port(port, output) do
+    receive do
+      {^port, {:data, data}} -> await_port(port, output <> data)
+      {^port, {:exit_status, 0}} -> :ok
+      {^port, {:exit_status, _}} -> {:error, String.trim(output)}
+    after
+      8_000 ->
+        Port.close(port)
+        {:error, "adb timed out"}
     end
   end
 end

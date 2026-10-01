@@ -193,6 +193,32 @@ defmodule MobDev.Discovery.IOSTest do
       assert {"SIMCTL_CHILD_MOB_DIST_PORT", "9120"} in env
       assert {"SIMCTL_CHILD_MOB_NODE_SUFFIX", "alt"} in env
     end
+
+    test "passes the private distribution cookie to the simulator process" do
+      env = IOS.build_simctl_env([dist_cookie: "private-cookie"], "/tmp/runtime")
+      assert {"SIMCTL_CHILD_MOB_DIST_COOKIE", "private-cookie"} in env
+    end
+
+    test "omits an absent or empty distribution cookie" do
+      empty = IOS.build_simctl_env([dist_cookie: ""], "/tmp/runtime")
+      absent = IOS.build_simctl_env([], "/tmp/runtime")
+
+      refute Enum.any?(empty, fn {key, _value} -> key == "SIMCTL_CHILD_MOB_DIST_COOKIE" end)
+      refute Enum.any?(absent, fn {key, _value} -> key == "SIMCTL_CHILD_MOB_DIST_COOKIE" end)
+    end
+  end
+
+  describe "physical_launch_env/1" do
+    test "uses devicectl's child environment prefix without exposing other values" do
+      assert IOS.physical_launch_env(dist_cookie: "private-cookie") == [
+               {"DEVICECTL_CHILD_MOB_DIST_COOKIE", "private-cookie"}
+             ]
+    end
+
+    test "omits the child environment when no cookie is supplied" do
+      assert IOS.physical_launch_env([]) == []
+      assert IOS.physical_launch_env(dist_cookie: "") == []
+    end
   end
 
   # ── EPMD node resolution (MOB-283) ───────────────────────────────────────────

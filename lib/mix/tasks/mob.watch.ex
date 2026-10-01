@@ -13,7 +13,7 @@ defmodule Mix.Tasks.Mob.Watch do
   Press Ctrl-C to stop.
 
   Options:
-    --cookie        Erlang cookie (default: mob_secret)
+    --cookie        Use this cookie instead of the app's private one (`mix mob.cookie`)
     --debounce      ms to wait after a change before compiling (default: 300)
     --interval      ms between file-change polls (default: 500)
 
@@ -58,7 +58,7 @@ defmodule Mix.Tasks.Mob.Watch do
         aliases: [c: :cookie]
       )
 
-    cookie = opts |> Keyword.get(:cookie, "mob_secret") |> String.to_atom()
+    cookie = Keyword.get(opts, :cookie)
     debounce = Keyword.get(opts, :debounce, 300)
     interval = Keyword.get(opts, :interval, 500)
 

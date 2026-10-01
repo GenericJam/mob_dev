@@ -24,9 +24,7 @@ defmodule MobDev.Deployer do
   """
 
   alias MobDev.Discovery.{Android, IOS}
-  alias MobDev.{Device, HotPush, Tunnel}
-
-  @cookie :mob_secret
+  alias MobDev.{Device, DistCookie, HotPush, Tunnel}
 
   @android_activity ".MainActivity"
 
@@ -68,6 +66,10 @@ defmodule MobDev.Deployer do
     ios_device_id = Keyword.get(opts, :ios_device, nil)
     beam_flags = Keyword.get(opts, :beam_flags, nil)
     beam_dirs = collect_beam_dirs()
+    # The private cookie first, then the legacy one a pre-MOB-49 app still
+    # uses; new launches and Android's cookie file always get the private one.
+    cookies = DistCookie.candidates()
+    dist_cookie = hd(cookies)
 
     all = target_devices(opts, platforms, device_id, ios_device_id)
 
@@ -82,7 +84,7 @@ defmodule MobDev.Deployer do
       # get BEAMs via RPC, the rest fall back to adb/cp + restart.
       # force_fs: true skips dist and always writes to the filesystem — required
       # after a native build/install where the old BEAM process is dead.
-      dist_nodes = if force_fs, do: [], else: connect_dist(all)
+      dist_nodes = if force_fs, do: [], else: connect_dist(all, cookies)
 
       # Manual overrides from `mix mob.deploy --dist-port N --node-suffix X`.
       # When set, all targeted devices share the same port/suffix (the user
@@ -109,7 +111,8 @@ defmodule MobDev.Deployer do
             restart: restart,
             dist_port: dist_port,
             node_suffix: node_suffix_override,
-            beam_flags: beam_flags
+            beam_flags: beam_flags,
+            dist_cookie: dist_cookie
           ]
 
           {method, result} =
@@ -275,6 +278,7 @@ defmodule MobDev.Deployer do
               setup_exqlite_android(serial)
               setup_app_priv_android(serial)
               write_dist_identity_android(serial, node_suffix, dist_port)
+              write_dist_cookie_android(serial, Keyword.fetch!(opts, :dist_cookie))
               # Last, after every write: a file pushed as root keeps root's
               # SELinux categories and the app can't open it. This used to run
               # only before a restart, so a hot (dist) deploy left the exqlite
@@ -1036,6 +1040,18 @@ defmodule MobDev.Deployer do
     :ok
   end
 
+  # Mob.Dist (MOB-49) reads this at start; an older mob ignores it and keeps
+  # the public cookie, which connect falls back to.
+  defp write_dist_cookie_android(serial, cookie) do
+    case Android.write_dist_cookie(serial, android_package(), app_name(), cookie) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        IO.puts("    (warning: could not write the private dist cookie: #{reason})")
+    end
+  end
+
   # ── iOS ─────────────────────────────────────────────────────────────────────
 
   defp deploy_ios(%Device{type: :physical} = device, beam_dirs, opts) do
@@ -1115,7 +1131,12 @@ defmodule MobDev.Deployer do
         # → mob_beam.m auto-derives from SIMULATOR_UDID. Pass explicit when
         # `mix mob.deploy --node-suffix ...` was used.
         node_suffix = Keyword.get(opts, :node_suffix)
-        IOS.launch_app(udid, ios_bundle_id(), dist_port: dist_port, node_suffix: node_suffix)
+
+        IOS.launch_app(udid, ios_bundle_id(),
+          dist_port: dist_port,
+          node_suffix: node_suffix,
+          dist_cookie: Keyword.fetch!(opts, :dist_cookie) |> Atom.to_string()
+        )
       end
 
       {:ok, device}
@@ -1223,6 +1244,7 @@ defmodule MobDev.Deployer do
   defp deploy_ios_physical(%Device{serial: udid} = device, beam_dirs, opts) do
     restart = Keyword.get(opts, :restart, true)
     beam_flags = Keyword.get(opts, :beam_flags, nil)
+    dist_cookie = Keyword.fetch!(opts, :dist_cookie)
     bundle = ios_bundle_id()
     app = app_name()
     compile_path = Mix.Project.compile_path()
@@ -1251,7 +1273,8 @@ defmodule MobDev.Deployer do
         compile_path: compile_path,
         active_bootstrap: active_bootstrap,
         restart: restart,
-        beam_flags: beam_flags
+        beam_flags: beam_flags,
+        dist_cookie: dist_cookie
       })
     end
   end
@@ -1263,7 +1286,8 @@ defmodule MobDev.Deployer do
          compile_path: compile_path,
          active_bootstrap: active_bootstrap,
          restart: restart,
-         beam_flags: beam_flags
+         beam_flags: beam_flags,
+         dist_cookie: dist_cookie
        }) do
     # Stage all BEAMs (and priv/) into a temp dir named <app>.
     # PID-qualified: unique_integer restarts low in a fresh VM, so two
@@ -1382,7 +1406,9 @@ defmodule MobDev.Deployer do
           throw({:error, "physical iOS bootstrap verification failed: #{out}"})
       end
 
-      if restart, do: IOS.restart_app_physical(udid, bundle)
+      if restart do
+        IOS.restart_app_physical(udid, bundle, dist_cookie: Atom.to_string(dist_cookie))
+      end
 
       Process.delete(:mob_ios_override_replaced)
       {:ok, device}
@@ -1522,13 +1548,12 @@ defmodule MobDev.Deployer do
 
   # Try to connect via Erlang dist to each discovered device. Returns a list of
   # connected node atoms. Devices that don't respond are left for the adb fallback.
-  defp connect_dist(devices) do
-    ensure_local_dist()
+  defp connect_dist(devices, cookies) do
+    ensure_local_dist(hd(cookies))
 
     Enum.flat_map(devices, fn device ->
       node = Device.node_name(device)
-      Node.set_cookie(node, @cookie)
-      if Node.connect(node), do: [node], else: []
+      if match?({:ok, _}, DistCookie.connect(node, cookies)), do: [node], else: []
     end)
   rescue
     _ -> []
@@ -1537,8 +1562,8 @@ defmodule MobDev.Deployer do
   # A taken default name (another mob.connect or deploy on this Mac) falls back
   # to a per-process one instead of leaving distribution off, which silently
   # turned every deploy into a push-and-restart.
-  defp ensure_local_dist do
-    MobDev.NodeUtil.start_host_dist(nil, @cookie)
+  defp ensure_local_dist(cookie) do
+    MobDev.NodeUtil.start_host_dist(nil, cookie)
   end
 
   # Push all compiled BEAMs to a single dist-connected node, then trigger

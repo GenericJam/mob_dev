@@ -19,7 +19,6 @@ defmodule MobDev.Server.WatchWorker do
 
   @pubsub MobDev.PubSub
   @topic "watch"
-  @cookie :mob_secret
   # ms between source polls
   @interval 500
   # ms to wait after first change before compiling
@@ -130,7 +129,7 @@ defmodule MobDev.Server.WatchWorker do
 
   defp connect_nodes do
     try do
-      HotPush.connect(cookie: @cookie)
+      HotPush.connect()
     rescue
       _ -> []
     end

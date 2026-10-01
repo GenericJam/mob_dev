@@ -439,19 +439,23 @@ mix mob.connect            # starts IEx connected to all devices
 mix mob.connect --no-iex   # sets up tunnels, prints node names, exits
 ```
 
-Then from any other IEx (or one-shot script) on the Mac:
+Another IEx (or one-shot script) needs the app's private cookie, which
+`mix mob.cookie` prints from the project directory:
 
 ```bash
-elixir --name probe@127.0.0.1 --cookie mob_secret -e '
+elixir --name probe@127.0.0.1 --cookie "$(mix mob.cookie)" -e '
 node = :"your_app_android_<suffix>@127.0.0.1"
 Node.connect(node)
 :rpc.call(node, YourApp.Module, :function, [args])
 '
 ```
 
-The cookie defaults to `:mob_secret` (set by `Mob.Dist.ensure_started`
-in your app's `on_start/0`). `--name` (long names) is required when
-the device node uses a numeric host like `@10.0.0.120`.
+The cookie is per app, kept under `~/.mob/dist_cookies/` and handed to the app
+at deploy/connect time (Android: a file in its private storage; iOS: the launch
+environment). An app built against a mob from before MOB-49 still uses the
+public `mob_secret`; mob_dev's tasks fall back to it with a warning. `--name`
+(long names) is required when the device node uses a numeric host like
+`@10.0.0.120`.
 
 ### Multi-Android — node naming (FIXED 2026-05-28, commit `7497f4b`)
 

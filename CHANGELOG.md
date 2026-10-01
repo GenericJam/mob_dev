@@ -40,6 +40,9 @@
 
 ### Added
 
+- **`mix mob.cookie`** prints the app's private cookie, for attaching by hand:
+  `elixir --name probe@127.0.0.1 --cookie "$(mix mob.cookie)" ...`.
+
 - **`mix mob.smoke` replays recorded UI flows on devices and checks the app
   held up.** It runs `agent-device test` on the `.ad` flows in `smoke/` on
   each selected device (`--serial`/`--udid`, per-device and per-flow artifacts
