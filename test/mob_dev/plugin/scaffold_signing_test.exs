@@ -182,9 +182,12 @@ defmodule MobDev.Plugin.ScaffoldSigningTest do
     test "publishing stops until @source_url is set, then passes", %{tmp_dir: tmp} do
       {_name, dir} = scaffold!(tmp, 3)
       run = step!(workflow_steps(dir), "Require a real @source_url in mix.exs")["run"]
-      guard = fn -> System.cmd("sh", ["-c", run], cd: dir, stderr_to_stdout: true) end
+      # Actions substitutes ${{ … }} before the shell sees the script.
+      script = String.replace(run, "${{ github.repository }}", "acme/plugin")
+      guard = fn -> System.cmd("sh", ["-c", script], cd: dir, stderr_to_stdout: true) end
 
-      assert {_, 1} = guard.()
+      assert {out, 1} = guard.()
+      assert out =~ "https://github.com/acme/plugin"
 
       mix_exs = Path.join(dir, "mix.exs")
 
