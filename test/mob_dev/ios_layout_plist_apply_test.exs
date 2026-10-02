@@ -13,7 +13,7 @@ defmodule MobDev.IosLayoutPlistApplyTest do
           UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight)
 
   # An app generated before MOB-206: no UIDeviceFamily, iPhone orientations
-  # only, plus a nested key the overrides must not touch.
+  # only, plus a hand-added ~iphone lock the orientation override must remove.
   @old_plist """
   <?xml version="1.0" encoding="UTF-8"?>
   <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -24,6 +24,10 @@ defmodule MobDev.IosLayoutPlistApplyTest do
       <key>UISupportedInterfaceOrientations</key>
       <array>
           <string>UIInterfaceOrientationPortrait</string>
+          <string>UIInterfaceOrientationLandscapeLeft</string>
+      </array>
+      <key>UISupportedInterfaceOrientations~iphone</key>
+      <array>
           <string>UIInterfaceOrientationLandscapeLeft</string>
       </array>
   </dict>
@@ -56,6 +60,7 @@ defmodule MobDev.IosLayoutPlistApplyTest do
                "UIInterfaceOrientationPortrait",
                "UIInterfaceOrientationPortraitUpsideDown"
              ],
+             iphone_orientations: nil,
              ipad_orientations: @all
            } = keys!(path)
 
@@ -74,21 +79,26 @@ defmodule MobDev.IosLayoutPlistApplyTest do
     assert File.read!(path) == @old_plist
   end
 
-  test "release_device.sh's loop stamps the same values", %{path: path} do
-    sh = MobDev.Release.release_device_sh()
-
+  defp release_block! do
     [block] =
-      Regex.run(~r/^ *if \[ -n "\$MOB_IOS_LAYOUT_PLIST_COMMANDS" \]; then\n.*?^ *fi\n/ms, sh)
-
-    {var, commands} = MobDev.Release.layout_plist_env(@cfg)
-    app = Path.dirname(path)
-    File.rename!(path, Path.join(app, "Info.plist"))
-
-    {output, status} =
-      System.cmd("bash", ["-e", "-c", block],
-        env: [{var, commands}, {"APP", app}],
-        stderr_to_stdout: true
+      Regex.run(
+        ~r/^ *if \[ -n "\$MOB_IOS_LAYOUT_PLIST_COMMANDS" \]; then\n.*?^ *fi\n/ms,
+        MobDev.Release.release_device_sh()
       )
+
+    block
+  end
+
+  defp run_release_block(path, commands) do
+    System.cmd("bash", ["-e", "-c", release_block!()],
+      env: [{"MOB_IOS_LAYOUT_PLIST_COMMANDS", commands}, {"APP", Path.dirname(path)}],
+      stderr_to_stdout: true
+    )
+  end
+
+  test "release_device.sh's loop stamps the same values", %{path: path} do
+    {"MOB_IOS_LAYOUT_PLIST_COMMANDS", commands} = MobDev.Release.layout_plist_env(@cfg)
+    {output, status} = run_release_block(path, commands)
 
     assert status == 0, output
 
@@ -98,7 +108,19 @@ defmodule MobDev.IosLayoutPlistApplyTest do
                "UIInterfaceOrientationPortrait",
                "UIInterfaceOrientationPortraitUpsideDown"
              ],
+             iphone_orientations: nil,
              ipad_orientations: @all
            } = keys!(path)
+  end
+
+  test "release_device.sh's loop stops on a failing Add but not a failing Delete", %{path: path} do
+    assert {_, 0} = run_release_block(path, "Delete :NoSuchKey\nAdd :Fresh string ok")
+
+    # PlistBuddy refuses to Add a key that exists.
+    assert {_, status} = run_release_block(path, "Add :Fresh string again\nAdd :After string x")
+
+    assert status != 0
+    {_, absent} = System.cmd("/usr/libexec/PlistBuddy", ["-c", "Print :After", path])
+    assert absent != 0
   end
 end

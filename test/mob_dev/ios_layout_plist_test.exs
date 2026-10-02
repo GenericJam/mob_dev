@@ -114,6 +114,11 @@ defmodule MobDev.IosLayoutPlistTest do
         IosLayoutPlist.plist_commands(ios_target_devices: [])
       end
 
+      # iPad-only isn't an option mob offers.
+      assert_raise Mix.Error, ~r/ios_target_devices must be/, fn ->
+        IosLayoutPlist.plist_commands(ios_target_devices: [:ipad])
+      end
+
       assert_raise Mix.Error, ~r/ios_orientations must be/, fn ->
         IosLayoutPlist.plist_commands(ios_orientations: [:portrait])
       end
@@ -122,8 +127,45 @@ defmodule MobDev.IosLayoutPlistTest do
 
   describe "audit/2" do
     test "the new template passes" do
-      assert [{:ok, _, "iPhone + iPad, all orientations, resizable", nil}] =
+      assert [{:ok, _, "iPhone + iPad, rotates, resizable", nil}] =
                IosLayoutPlist.audit(plist(@new), [])
+    end
+
+    test "Apple's iPhone default (all but upside-down) counts as rotating" do
+      xml =
+        plist(
+          List.keyreplace(@new, "UISupportedInterfaceOrientations", 0, {
+            "UISupportedInterfaceOrientations",
+            List.delete(@all, "UIInterfaceOrientationPortraitUpsideDown")
+          })
+        )
+
+      assert [{:ok, _, _, nil}] = IosLayoutPlist.audit(xml, [])
+    end
+
+    test "landscape-only orientations warn as a landscape lock" do
+      xml =
+        plist(
+          List.keyreplace(@new, "UISupportedInterfaceOrientations", 0, {
+            "UISupportedInterfaceOrientations",
+            ["UIInterfaceOrientationLandscapeLeft", "UIInterfaceOrientationLandscapeRight"]
+          })
+        )
+
+      assert [{:warn, "iOS orientations", detail, fix}] = IosLayoutPlist.audit(xml, [])
+      assert detail =~ "only landscape"
+      assert fix =~ "ios_orientations: :landscape"
+    end
+
+    test "a ~iphone key overrides the base key on iPhone" do
+      xml =
+        plist(
+          @new ++
+            [{"UISupportedInterfaceOrientations~iphone", ["UIInterfaceOrientationPortrait"]}]
+        )
+
+      assert [{:warn, "iOS orientations", _, _}] = IosLayoutPlist.audit(xml, [])
+      assert [{:ok, _, _, nil}] = IosLayoutPlist.audit(xml, ios_orientations: :all)
     end
 
     test "the old template warns that iPad is missing, with the exact fix" do

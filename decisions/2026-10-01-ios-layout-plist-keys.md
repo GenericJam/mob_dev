@@ -37,8 +37,10 @@ Facts this rests on, checked 2026-10-01 against Xcode 27.0:
 - **Two `config :mob_dev` keys, applied to the bundle at build time**:
   `ios_target_devices` (`[:iphone, :ipad]` or `[:iphone]`) sets
   `UIDeviceFamily`; `ios_orientations` (`:all`, `:portrait`, `:landscape`) sets
-  the iPhone `UISupportedInterfaceOrientations` and always writes all four to
-  `UISupportedInterfaceOrientations~ipad`. `MobDev.IosLayoutPlist` turns them
+  the iPhone `UISupportedInterfaceOrientations` (removing any `~iphone`
+  variant, which would otherwise win on iPhone) and always writes all four to
+  `UISupportedInterfaceOrientations~ipad`. iPad-only (`[:ipad]`) is rejected:
+  mob doesn't offer it. `MobDev.IosLayoutPlist` turns them
   into PlistBuddy commands; the sim and device bundles run them
   (`apply!/2`), and `mix mob.release` passes the same commands to
   `release_device.sh` (`MOB_IOS_LAYOUT_PLIST_COMMANDS`) ahead of its

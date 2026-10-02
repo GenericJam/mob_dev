@@ -16,7 +16,8 @@ defmodule MobDev.IosLayoutPlist do
       in iPhone compatibility mode, and it can't join Split View. An App Store
       app that has shipped iPad support can't drop it in an update.
     * `ios_orientations` — `:all`, `:portrait` or `:landscape`. Sets the
-      iPhone `UISupportedInterfaceOrientations`. iPad always declares all four
+      iPhone `UISupportedInterfaceOrientations` (and removes any
+      `UISupportedInterfaceOrientations~iphone`). iPad always declares all four
       (`UISupportedInterfaceOrientations~ipad`): iPadOS 26 rotates resizable
       apps freely, and iPad multitasking requires all four.
 
@@ -45,7 +46,6 @@ defmodule MobDev.IosLayoutPlist do
   @landscape ["UIInterfaceOrientationLandscapeLeft", "UIInterfaceOrientationLandscapeRight"]
   @all_orientations @portrait ++ @landscape
 
-  @device_families %{iphone: 1, ipad: 2}
   @orientation_sets %{all: @all_orientations, portrait: @portrait, landscape: @landscape}
 
   @typedoc "One `mix mob.doctor` row."
@@ -55,6 +55,7 @@ defmodule MobDev.IosLayoutPlist do
   @type keys :: %{
           device_family: [integer()] | nil,
           orientations: [String.t()] | nil,
+          iphone_orientations: [String.t()] | nil,
           ipad_orientations: [String.t()] | nil,
           requires_full_screen: boolean() | nil
         }
@@ -76,10 +77,10 @@ defmodule MobDev.IosLayoutPlist do
   defp device_family(nil), do: {:ok, nil}
 
   defp device_family([_ | _] = devices) do
-    if Enum.all?(devices, &Map.has_key?(@device_families, &1)) do
-      {:ok, devices |> Enum.map(&@device_families[&1]) |> Enum.uniq() |> Enum.sort()}
-    else
-      device_family_error(devices)
+    case devices |> Enum.uniq() |> Enum.sort() do
+      [:iphone] -> {:ok, [1]}
+      [:ipad, :iphone] -> {:ok, [1, 2]}
+      _ -> device_family_error(devices)
     end
   end
 
@@ -124,7 +125,8 @@ defmodule MobDev.IosLayoutPlist do
   defp orientation_commands(nil), do: []
 
   defp orientation_commands(orientations) do
-    array_commands("UISupportedInterfaceOrientations", "string", orientations) ++
+    ["Delete :UISupportedInterfaceOrientations~iphone"] ++
+      array_commands("UISupportedInterfaceOrientations", "string", orientations) ++
       array_commands("UISupportedInterfaceOrientations~ipad", "string", @all_orientations)
   end
 
@@ -169,6 +171,8 @@ defmodule MobDev.IosLayoutPlist do
        %{
          device_family: dict |> Map.get("UIDeviceFamily") |> integers(),
          orientations: dict |> Map.get("UISupportedInterfaceOrientations") |> strings(),
+         iphone_orientations:
+           dict |> Map.get("UISupportedInterfaceOrientations~iphone") |> strings(),
          ipad_orientations: dict |> Map.get("UISupportedInterfaceOrientations~ipad") |> strings(),
          requires_full_screen: dict |> Map.get("UIRequiresFullScreen") |> boolean()
        }}
@@ -255,7 +259,7 @@ defmodule MobDev.IosLayoutPlist do
     with {:settings, {:ok, settings}} <- {:settings, settings(cfg)},
          {:plist, {:ok, keys}} <- {:plist, read(xml)} do
       family = settings.device_family || keys.device_family || [1]
-      orientations = settings.orientations || keys.orientations
+      orientations = settings.orientations || keys.iphone_orientations || keys.orientations
 
       ipad_orientations =
         if settings.orientations,
@@ -288,7 +292,7 @@ defmodule MobDev.IosLayoutPlist do
     rotation =
       cond do
         orientations == nil -> "orientations not declared"
-        all_orientations?(orientations) -> "all orientations"
+        rotates?(orientations) -> "rotates"
         true -> "orientation-locked (ios_orientations)"
       end
 
@@ -322,19 +326,18 @@ defmodule MobDev.IosLayoutPlist do
 
   defp orientation_check(orientations, configured) do
     cond do
-      configured != nil or all_orientations?(orientations) ->
+      configured != nil or rotates?(orientations) ->
         []
 
       true ->
-        locked =
-          cond do
-            Enum.any?(orientations, &(&1 in @landscape)) -> "landscape"
-            true -> "portrait"
-          end
+        {locked, other} =
+          if Enum.any?(orientations, &(&1 in @landscape)),
+            do: {"landscape", "portrait"},
+            else: {"portrait", "landscape"}
 
         {:warn, "iOS orientations",
-         "ios/Info.plist allows only #{locked} on iPhone (UISupportedInterfaceOrientations); " <>
-           "iPhone Duo's inner display ignores the lock, so the app letterboxes there",
+         "ios/Info.plist allows only #{locked} on iPhone (UISupportedInterfaceOrientations), " <>
+           "so the app can't rotate to fill a #{other} screen or window",
          """
          Add to mob.exs (config :mob_dev):  ios_orientations: :all
          or list all four in ios/Info.plist UISupportedInterfaceOrientations:
@@ -343,6 +346,12 @@ defmodule MobDev.IosLayoutPlist do
          """}
     end
   end
+
+  # Portrait and landscape both reachable. Apple's own iPhone default
+  # (everything but upside-down) rotates.
+  defp rotates?(orientations),
+    do:
+      Enum.any?(orientations, &(&1 in @portrait)) and Enum.any?(orientations, &(&1 in @landscape))
 
   defp ipad_orientation_check(false, _orientations), do: []
   defp ipad_orientation_check(true, nil), do: []
