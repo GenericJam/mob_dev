@@ -1,7 +1,7 @@
 defmodule MobDev.MobNifTableTest do
   use ExUnit.Case, async: true
 
-  alias MobDev.MobNifTable
+  alias MobDev.{MobDirCheck, MobNifTable}
 
   @moduletag :tmp_dir
 
@@ -31,58 +31,66 @@ defmodule MobDev.MobNifTableTest do
   -on_load(init/0).
   """
 
-  defp write(root, rel, content) do
-    path = Path.join(root, rel)
-    File.mkdir_p!(Path.dirname(path))
-    File.write!(path, content)
-  end
-
-  defp project(root, deps_nif) do
-    app = Path.join(root, "app")
-    File.mkdir_p!(app)
-    if deps_nif, do: write(app, "deps/mob/src/mob_nif.erl", deps_nif)
-    app
-  end
-
-  defp checkout(root, nif) do
-    dir = Path.join(root, "mob_checkout")
-    write(dir, "src/mob_nif.erl", nif)
+  defp mob(root, name, nif) do
+    dir = Path.join(root, name)
+    File.mkdir_p!(Path.join(dir, "src"))
+    File.write!(Path.join(dir, "src/mob_nif.erl"), nif)
     dir
   end
 
-  test "flags a checkout whose NIF table differs from deps/mob, both ways", %{tmp_dir: tmp} do
-    app = project(tmp, @hex_nif)
-    mob_dir = checkout(tmp, @master_nif)
+  test "names the NIFs only one checkout lists, both ways", %{tmp_dir: tmp} do
+    master = mob(tmp, "master", @master_nif)
+    hex = mob(tmp, "hex", @hex_nif)
 
-    assert {:mismatch, m} = MobNifTable.check(app, mob_dir)
-    assert m.only_in_mob_dir == ["capabilities/0", "native_stats/1"]
-    assert m.only_in_deps == []
+    assert MobNifTable.diff(master, hex) ==
+             %{only_in_mob_dir: ["capabilities/0", "native_stats/1"], only_in_dep: []}
 
-    msg = MobNifTable.message(m)
-    assert msg =~ Path.join(mob_dir, "src/mob_nif.erl")
-    assert msg =~ Path.join(app, "deps/mob/src/mob_nif.erl")
-    assert msg =~ "undef mob_nif:log/1"
-    assert msg =~ ~s|Path.join(File.cwd!(), "deps/mob")|
+    assert MobNifTable.diff(hex, master) ==
+             %{only_in_mob_dir: [], only_in_dep: ["capabilities/0", "native_stats/1"]}
   end
 
-  test "agrees when the tables match despite formatting and comments", %{tmp_dir: tmp} do
-    app = project(tmp, @hex_nif)
-    mob_dir = checkout(tmp, "-nifs([log/2, platform/0,\n log/1]).\n")
+  test "tables that agree despite formatting and comments are no difference", %{tmp_dir: tmp} do
+    hex = mob(tmp, "hex", @hex_nif)
+    other = mob(tmp, "other", "-nifs([log/2, platform/0,\n log/1]).\n")
 
-    assert MobNifTable.check(app, mob_dir) == :ok
+    assert MobNifTable.diff(other, hex) == nil
   end
 
-  test "mob_dir pointing at deps/mob (relative or absolute) is the safe pairing", %{tmp_dir: tmp} do
-    app = project(tmp, @hex_nif)
-
-    assert MobNifTable.check(app, "deps/mob") == :ok
-    assert MobNifTable.check(app, Path.join(app, "deps/mob")) == :ok
+  test "a checkout without mob_nif.erl has nothing to compare", %{tmp_dir: tmp} do
+    hex = mob(tmp, "hex", @hex_nif)
+    assert MobNifTable.diff(Path.join(tmp, "missing"), hex) == nil
   end
 
-  test "a path dep (no deps/mob) or unset mob_dir has nothing to compare", %{tmp_dir: tmp} do
-    app = project(tmp, nil)
+  describe "the mob_dir / :mob dependency mismatch error" do
+    test "names the boot crash and the differing NIFs when the tables differ", %{tmp_dir: tmp} do
+      master = mob(tmp, "master", @master_nif)
+      hex = mob(tmp, "hex", @hex_nif)
 
-    assert MobNifTable.check(app, checkout(tmp, @master_nif)) == :ok
-    assert MobNifTable.check(app, nil) == :ok
+      msg = MobDirCheck.message(master, hex)
+      assert msg =~ "undef mob_nif:log/1"
+      assert msg =~ "only in mob_dir:         capabilities/0, native_stats/1"
+      assert msg =~ "config :mob_dev, mob_dir: #{inspect(hex)}"
+
+      assert {:fail, _, detail, _fix} = Mix.Tasks.Mob.Doctor.__mob_dir_dep_check__(master, hex)
+      assert detail =~ "undef mob_nif:log/1"
+    end
+
+    test "doesn't claim a boot crash when the tables agree", %{tmp_dir: tmp} do
+      a = mob(tmp, "a", @hex_nif)
+      b = mob(tmp, "b", @hex_nif)
+
+      refute MobDirCheck.message(a, b) =~ "undef"
+    end
+
+    test "a path dep matching mob_dir passes even with a stale Hex deps/mob on disk", %{
+      tmp_dir: tmp
+    } do
+      checkout = mob(tmp, "checkout", @master_nif)
+      app = Path.join(tmp, "app")
+      mob(app, "deps/mob", @hex_nif)
+
+      assert MobDirCheck.check(checkout, checkout) == :ok
+      assert {:ok, _, _, nil} = Mix.Tasks.Mob.Doctor.__mob_dir_dep_check__(checkout, checkout)
+    end
   end
 end

@@ -1,91 +1,56 @@
 defmodule MobDev.MobNifTable do
   @moduledoc """
-  Detects "two paths to mob": native code built from `mob_dir` while the app's
-  BEAMs come from a different mob (the Hex package in `deps/mob`).
+  The `-nifs` difference between two mob checkouts' `src/mob_nif.erl`.
 
-  The native side registers the NIF table compiled from `mob_dir`; the BEAM
-  side loads `mob_nif.beam` built from `deps/mob/src/mob_nif.erl`. When their
-  `-nifs` lists differ, `erlang:load_nif/2` rejects the library, `mob_nif`'s
-  `on_load` fails, the module is never loaded, and the app dies during boot with
-  `undef mob_nif:log/1`, which says nothing about the cause.
+  `MobDev.MobDirCheck` stops a native build whose `mob_dir` isn't the `:mob`
+  dependency. When the two checkouts also list different NIFs, the outcome is
+  not subtle misbehaviour but a boot crash: `erlang:load_nif/2` rejects the
+  library, `mob_nif`'s `on_load` fails, and the bootstrap's first call dies
+  with `undef mob_nif:log/1` (MOB-227). This module names that difference so
+  the mismatch error can say so.
   """
 
   @src "src/mob_nif.erl"
 
-  @type mismatch :: %{
-          mob_dir: Path.t(),
-          deps_mob: Path.t(),
-          only_in_mob_dir: [String.t()],
-          only_in_deps: [String.t()]
-        }
+  @type diff :: %{only_in_mob_dir: [String.t()], only_in_dep: [String.t()]}
 
   @doc """
-  Compares the `-nifs` table of `mob_dir` with the one in `project_root`'s
-  `deps/mob`. `:ok` when they agree, when `mob_dir` *is* `deps/mob`, or when
-  either file is missing (a `path:` dep has no `deps/mob`; nothing to compare).
+  NIFs listed by only one of `mob_dir` and `dep_path`, or `nil` when the
+  tables agree or either `mob_nif.erl` can't be read.
   """
-  @spec check(Path.t(), Path.t() | nil) :: :ok | {:mismatch, mismatch()}
-  def check(_project_root, nil), do: :ok
-
-  def check(project_root, mob_dir) do
-    mob_dir = Path.expand(mob_dir, project_root)
-    deps_mob = Path.expand("deps/mob", project_root)
-
-    with false <- same_dir?(mob_dir, deps_mob),
-         {:ok, ours} <- read_nifs(Path.join(mob_dir, @src)),
-         {:ok, theirs} <- read_nifs(Path.join(deps_mob, @src)),
-         false <- ours == theirs do
-      {:mismatch,
-       %{
-         mob_dir: mob_dir,
-         deps_mob: deps_mob,
-         only_in_mob_dir: MapSet.difference(ours, theirs) |> Enum.sort(),
-         only_in_deps: MapSet.difference(theirs, ours) |> Enum.sort()
-       }}
+  @spec diff(Path.t(), Path.t()) :: diff() | nil
+  def diff(mob_dir, dep_path) do
+    with {:ok, ours} <- read_nifs(Path.join(mob_dir, @src)),
+         {:ok, theirs} <- read_nifs(Path.join(dep_path, @src)),
+         false <- MapSet.equal?(ours, theirs) do
+      %{
+        only_in_mob_dir: MapSet.difference(ours, theirs) |> Enum.sort(),
+        only_in_dep: MapSet.difference(theirs, ours) |> Enum.sort()
+      }
     else
-      _ -> :ok
+      _ -> nil
     end
   end
 
-  @doc "Human-readable explanation of a mismatch, naming both paths and the fix."
-  @spec message(mismatch()) :: String.t()
-  def message(m) do
-    """
-    mob_dir's NIF table differs from the mob your app's BEAMs are built from.
-      mob_dir (native code): #{Path.join(m.mob_dir, @src)}
-      deps/mob (BEAMs):      #{Path.join(m.deps_mob, @src)}
-    #{diff_lines(m)}
-    The native library would be rejected by load_nif, mob_nif would fail to load,
-    and the app would crash at boot with `undef mob_nif:log/1`.
-    Fix: build natives from the same mob as the BEAMs. Either set
-      config :mob_dev, mob_dir: Path.join(File.cwd!(), "deps/mob")
-    in mob.exs (and remove any mob_dir override in mob.local.exs), or make the app
-    depend on the checkout: {:mob, path: "#{m.mob_dir}", override: true}.\
-    """
-  end
+  @doc "What the difference means, for appending to the mismatch error; `\"\"` for `nil`."
+  @spec describe(diff() | nil) :: String.t()
+  def describe(nil), do: ""
 
-  defp diff_lines(m) do
-    [
-      {"only in mob_dir:  ", m.only_in_mob_dir},
-      {"only in deps/mob: ", m.only_in_deps}
-    ]
-    |> Enum.reject(fn {_, l} -> l == [] end)
-    |> Enum.map_join("\n", fn {label, l} -> "  #{label}#{Enum.join(l, ", ")}" end)
-  end
+  def describe(diff) do
+    lines =
+      [
+        {"only in mob_dir:         ", diff.only_in_mob_dir},
+        {"only in :mob dependency: ", diff.only_in_dep}
+      ]
+      |> Enum.reject(fn {_, nifs} -> nifs == [] end)
+      |> Enum.map_join("", fn {label, nifs} -> "\n    #{label}#{Enum.join(nifs, ", ")}" end)
 
-  defp same_dir?(a, b) do
-    resolve(a) == resolve(b)
-  end
-
-  defp resolve(path) do
-    case :file.read_link_all(String.to_charlist(path)) do
-      {:ok, target} -> Path.expand(to_string(target), Path.dirname(path))
-      _ -> path
-    end
+    "Their mob_nif.erl NIF tables differ, so load_nif would reject the native " <>
+      "library and the app would crash at boot with `undef mob_nif:log/1`:" <> lines
   end
 
   @doc false
-  # Every `name/arity` listed in the file's `-nifs([...])` attributes.
+  # Every `name/arity` in the file's `-nifs([...])` attributes.
   @spec read_nifs(Path.t()) :: {:ok, MapSet.t(String.t())} | :error
   def read_nifs(path) do
     case File.read(path) do

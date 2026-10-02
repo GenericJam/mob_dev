@@ -675,7 +675,8 @@ defmodule Mix.Tasks.Mob.Doctor do
       {:mismatch, mob_dir, dep_path} ->
         {:fail, "mob_dir is the :mob dependency",
          "mob_dir is #{mob_dir} but the :mob dependency is #{dep_path} — the native " <>
-           "build would compile one mob and ship the other's BEAMs",
+           "build would compile one mob and ship the other's BEAMs" <>
+           MobDev.MobDirCheck.nif_note(mob_dir, dep_path),
          MobDev.MobDirCheck.fix(mob_dir, dep_path)}
     end
   end
@@ -717,8 +718,7 @@ defmodule Mix.Tasks.Mob.Doctor do
         check_inactive_nif_plugins(),
         check_component_event_jni(),
         check_sheet_dismiss_wire_shape(),
-        check_app_lifecycle_hooks(),
-        check_mob_nif_table()
+        check_app_lifecycle_hooks()
       ])
     else
       []
@@ -803,26 +803,6 @@ defmodule Mix.Tasks.Mob.Doctor do
         [
           {:warn, "Android app lifecycle hooks (#{Enum.join(files, ", ")})",
            MobDev.AppLifecycleHooks.problem(), MobDev.AppLifecycleHooks.fix()}
-        ]
-    end
-  end
-
-  # ── Two paths to mob (MOB-227) ────────────────────────────────────────────
-  #
-  # Natives built from mob_dir, BEAMs from deps/mob: differing -nifs tables
-  # crash the app at boot with `undef mob_nif:log/1`.
-  defp check_mob_nif_table do
-    mob_dir = if File.exists?("mob.exs"), do: MobDev.NativeBuild.__load_config__()[:mob_dir]
-
-    case MobDev.MobNifTable.check(File.cwd!(), mob_dir) do
-      :ok ->
-        []
-
-      {:mismatch, m} ->
-        [
-          {:fail, "mob_dir NIF table",
-           "#{m.mob_dir}/src/mob_nif.erl and #{m.deps_mob}/src/mob_nif.erl list different NIFs",
-           MobDev.MobNifTable.message(m)}
         ]
     end
   end

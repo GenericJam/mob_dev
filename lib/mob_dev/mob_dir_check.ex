@@ -66,9 +66,22 @@ defmodule MobDev.MobDirCheck do
         :mob dependency (Elixir code comes from): #{dep_path}
     The app would run native code from one and BEAMs from the other. If they are
     different commits it misbehaves without any error, so the native build stops here.
-
+    #{nif_note(mob_dir, dep_path)}
     #{fix(mob_dir, dep_path)}
     """
+  end
+
+  @doc """
+  When the two checkouts' NIF tables differ, a paragraph saying so and that the
+  app would crash at boot with `undef mob_nif:log/1` (MOB-227), the symptom
+  someone in this state actually sees; otherwise `""`.
+  """
+  @spec nif_note(Path.t(), Path.t()) :: String.t()
+  def nif_note(mob_dir, dep_path) do
+    case MobDev.MobNifTable.diff(mob_dir, dep_path) do
+      nil -> ""
+      diff -> "\n" <> MobDev.MobNifTable.describe(diff) <> "\n"
+    end
   end
 
   @doc "How to make the two agree."

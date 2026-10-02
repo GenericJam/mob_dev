@@ -49,6 +49,21 @@
 
 ### Fixed
 
+- **The `mob_dir` / `:mob` dependency mismatch error says when the app would
+  crash at boot (MOB-227).** When the two checkouts' `src/mob_nif.erl`
+  `-nifs` tables differ, `load_nif` rejects the native library and the app
+  dies at boot with `undef mob_nif:log/1`, with nothing pointing at the two
+  mobs. The `mix mob.deploy --native` refusal and the `mix mob.doctor` row
+  for a `mob_dir` that isn't the `:mob` dependency (MOB-351) now add that,
+  listing the NIFs only one checkout has.
+
+- **`mix mob.connect` finds an Android app whose node name it can't predict
+  (MOB-229).** An app whose `Mob.Dist.ensure_started/1` base name isn't
+  `<app>_android` (e.g. `crosscourt@127.0.0.1`, registered as
+  `crosscourt_<serial>`) timed out with "distribution didn't start on the
+  device" while the node was up. Connect now also accepts the node registered
+  on the dist port it launched the app with, and reports the name it found.
+
 - **A plugin activated twice is built once (MOB-325).** Listing a plugin
   twice in `config :mob, :plugins` passed the plugin-collision check but merged
   the plugin twice, so its NIF sources compiled and linked twice (duplicate
@@ -178,21 +193,6 @@
   (`--native` for iOS) moves the app to its private cookie.
 
 ### Fixed
-
-- **`mix mob.deploy --native` refuses to build natives from a different mob
-  than the BEAMs (MOB-227).** With `mob_dir` pointing at a mob checkout whose
-  `src/mob_nif.erl` `-nifs` table differs from the app's `deps/mob`, the app
-  crashed at boot with `undef mob_nif:log/1` and nothing in the deploy output
-  pointed at the cause. The native build now stops before compiling, names
-  both files and the NIFs only one of them lists, and gives the fix (`mob_dir:
-  Path.join(File.cwd!(), "deps/mob")`, or a `path:` dep on the checkout).
-  `mix mob.doctor` reports the same check.
-- **`mix mob.connect` finds an Android app whose node name it can't predict
-  (MOB-229).** An app whose `Mob.Dist.ensure_started/1` base name isn't
-  `<app>_android` (e.g. `crosscourt@127.0.0.1`, registered as
-  `crosscourt_<serial>`) timed out with "distribution didn't start on the
-  device" while the node was up. Connect now also accepts the node registered
-  on the dist port it launched the app with, and reports the name it found.
 
 - **Tasks that pick devices on their own leave another agent's leased
   device alone (MOB-330).** A bare `mix mob.deploy` installed and launched an
