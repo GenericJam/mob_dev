@@ -57,6 +57,23 @@
   by plugin directory, the rule the collision check uses, before any build step
   reads them.
 
+- **iOS native builds no longer leave their build dir in `$TMPDIR`, and
+  rebuild faster (MOB-313).** Every `mix mob.deploy --native` to an iPhone
+  left a `mob_ios_device_<n>` dir of ~190 MB (the bundled `.app`, binary and
+  codesign scratch), whether the build worked or not; one machine had 3.3 GB
+  of them. Simulator builds left a `mob_ios_sim_<n>` and a
+  `mob_ios_bundle_<n>` each time, and a failed iOS device exqlite compile left
+  `mob_exqlite_<n>`. The `.app` and scratch now go in a temp dir that is
+  removed when the build returns, fails or raises. The sources mob_dev
+  generates for `zig build` now live in `_build/<env>/mob_ios/<target>/`
+  instead: their paths used to change every build, which made zig recompile
+  all the Swift and relink each time. Rebuilding a blank app for the
+  simulator with nothing changed took 21 s in `zig build` before and under
+  1 s now. Dirs left by earlier versions aren't touched: remove them with
+  `rm -rf "$TMPDIR"/mob_ios_device_* "$TMPDIR"/mob_ios_sim_* "$TMPDIR"/mob_ios_bundle_*`
+  while no build is running. See
+  `decisions/2026-10-01-ios-build-sources-stable-app-dir-removed.md`.
+
 ## [0.7.8] - 2026-10-01
 
 ### Upgrading

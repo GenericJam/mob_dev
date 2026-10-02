@@ -2390,4 +2390,161 @@ defmodule MobDev.NativeBuildTest do
       assert message =~ "failed"
     end
   end
+
+  describe "with_temp_build_dir/2 (MOB-313: iOS builds leaked their build dir)" do
+    # A private TMPDIR, so "nothing is left behind" means the sandbox is empty
+    # rather than "no dir with this name", which other builds can't disturb.
+    setup do
+      sandbox =
+        Path.join(System.tmp_dir!(), "mob313_tmpdir_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(sandbox)
+      previous = System.get_env("TMPDIR")
+      System.put_env("TMPDIR", sandbox)
+
+      on_exit(fn ->
+        if previous, do: System.put_env("TMPDIR", previous), else: System.delete_env("TMPDIR")
+        File.rm_rf!(sandbox)
+      end)
+
+      %{sandbox: sandbox}
+    end
+
+    # What a device build leaves in its dir: the binary, a bundled .app with
+    # nested runtime files, and codesign scratch.
+    defp fill_like_a_device_build(dir) do
+      app = Path.join(dir, "Demo.app")
+      File.mkdir_p!(Path.join(app, "otp/lib/kernel/ebin"))
+      File.write!(Path.join(app, "otp/lib/kernel/ebin/kernel.beam"), "beam")
+      File.write!(Path.join(dir, "Demo"), "mach-o")
+      File.write!(Path.join(dir, "mob_device.entitlements"), "<plist/>")
+    end
+
+    test "hands the function an empty dir under TMPDIR and removes it after success", %{
+      sandbox: sandbox
+    } do
+      result =
+        NativeBuild.with_temp_build_dir("ios_device", fn dir ->
+          assert Path.dirname(dir) == sandbox
+          assert Path.basename(dir) =~ ~r/^mob_ios_device_\d+_\d+$/
+          assert File.ls!(dir) == []
+          fill_like_a_device_build(dir)
+          {:ok, "iOS (device)"}
+        end)
+
+      assert result == {:ok, "iOS (device)"}
+      assert File.ls!(sandbox) == []
+    end
+
+    test "removes the dir when the build returns an error", %{sandbox: sandbox} do
+      result =
+        NativeBuild.with_temp_build_dir("ios_device", fn dir ->
+          fill_like_a_device_build(dir)
+          {:error, "iOS", "devicectl install failed"}
+        end)
+
+      assert result == {:error, "iOS", "devicectl install failed"}
+      assert File.ls!(sandbox) == []
+    end
+
+    test "removes the dir and re-raises when a build step raises", %{sandbox: sandbox} do
+      assert_raise File.CopyError, fn ->
+        NativeBuild.with_temp_build_dir("ios_device", fn dir ->
+          fill_like_a_device_build(dir)
+          # The bundle steps copy with File.cp!/2, which raises.
+          File.cp!(Path.join(dir, "no_such_binary"), Path.join(dir, "Demo.app/Demo"))
+        end)
+      end
+
+      assert File.ls!(sandbox) == []
+    end
+
+    test "removes the dir when a build step throws", %{sandbox: sandbox} do
+      # bundle_ios_device_app/4 throws when bundle_id is unset.
+      assert catch_throw(
+               NativeBuild.with_temp_build_dir("ios_device", fn dir ->
+                 fill_like_a_device_build(dir)
+                 throw({:error, "bundle_id not set in mob.exs"})
+               end)
+             ) == {:error, "bundle_id not set in mob.exs"}
+
+      assert File.ls!(sandbox) == []
+    end
+
+    test "two builds at once get separate dirs", %{sandbox: sandbox} do
+      # Two devices of one project deploying concurrently must not share (and
+      # then delete) each other's bundle.
+      NativeBuild.with_temp_build_dir("ios_device", fn outer ->
+        NativeBuild.with_temp_build_dir("ios_device", fn inner ->
+          refute inner == outer
+        end)
+
+        assert File.dir?(outer), "the inner build removed the outer build's dir"
+      end)
+
+      assert File.ls!(sandbox) == []
+    end
+
+    test "names the dir after the OS process, so deploys from separate VMs can't collide" do
+      # unique_integer restarts low in every VM (a real sim build got
+      # `mob_ios_sim_2`), so two `mix mob.deploy` runs would otherwise share a
+      # name and the first to finish would delete the other's bundle.
+      NativeBuild.with_temp_build_dir("ios_device", fn dir ->
+        assert String.starts_with?(Path.basename(dir), "mob_ios_device_#{:os.getpid()}_")
+      end)
+    end
+  end
+
+  describe "ios_build_inputs_dir/1 (MOB-313: zig's cache keys on source paths)" do
+    setup do
+      root = Path.join(Mix.Project.build_path(), "mob_ios")
+      existed? = File.exists?(root)
+      on_exit(fn -> unless existed?, do: File.rm_rf!(root) end)
+    end
+
+    test "is the same project-local dir on every build, one per target" do
+      sim = NativeBuild.ios_build_inputs_dir(:ios_sim)
+      device = NativeBuild.ios_build_inputs_dir(:ios_device)
+
+      assert File.dir?(sim) and File.dir?(device)
+      assert NativeBuild.ios_build_inputs_dir(:ios_sim) == sim
+      refute sim == device
+      assert String.starts_with?(sim, Mix.Project.build_path() <> "/")
+    end
+  end
+
+  describe "write_build_input!/2" do
+    @describetag :tmp_dir
+
+    test "writes a new file and leaves no temp file behind", %{tmp_dir: tmp_dir} do
+      path = Path.join(tmp_dir, "enif_keepalive.c")
+
+      assert :ok = NativeBuild.write_build_input!(path, ["/* a */\n", "int x;\n"])
+      assert File.read!(path) == "/* a */\nint x;\n"
+      assert File.ls!(tmp_dir) == ["enif_keepalive.c"]
+    end
+
+    test "leaves a file that already has the content untouched", %{tmp_dir: tmp_dir} do
+      # Every build regenerates the same sources; rewriting them would race a
+      # concurrent build of the same project reading them.
+      path = Path.join(tmp_dir, "mob_plugin_bootstrap.swift")
+      File.write!(path, "func mob_register_plugins() {}\n")
+      old = {{2020, 1, 1}, {0, 0, 0}}
+      File.touch!(path, old)
+
+      :ok = NativeBuild.write_build_input!(path, "func mob_register_plugins() {}\n")
+
+      assert File.stat!(path, time: :universal).mtime == old
+    end
+
+    test "replaces a file whose content changed", %{tmp_dir: tmp_dir} do
+      path = Path.join(tmp_dir, "mob_plugin_bootstrap.swift")
+      File.write!(path, "old\n")
+
+      :ok = NativeBuild.write_build_input!(path, "new\n")
+
+      assert File.read!(path) == "new\n"
+      assert File.ls!(tmp_dir) == ["mob_plugin_bootstrap.swift"]
+    end
+  end
 end
