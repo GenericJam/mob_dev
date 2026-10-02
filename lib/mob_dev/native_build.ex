@@ -54,6 +54,14 @@ defmodule MobDev.NativeBuild do
     # one plugin's registration silently overwrites another's at runtime.
     MobDev.Plugin.Validator.raise_on_cross_plugin_conflicts!(MobDev.Plugin.activated())
 
+    # Two paths to mob (MOB-227): natives from mob_dir, BEAMs from deps/mob.
+    # Differing -nifs tables make load_nif reject the library and the app dies
+    # at boot with `undef mob_nif:log/1`, nothing pointing at the cause.
+    case MobDev.MobNifTable.check(File.cwd!(), cfg[:mob_dir]) do
+      :ok -> :ok
+      {:mismatch, m} -> Mix.raise(MobDev.MobNifTable.message(m))
+    end
+
     # Always regenerate the runtime plugin manifest from the CURRENT activated
     # plugins before bundling priv — like the driver_tab, it's derived state, not
     # a hand-maintained file. Regenerating on every build (not just when the

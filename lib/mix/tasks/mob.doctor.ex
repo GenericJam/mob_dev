@@ -717,7 +717,8 @@ defmodule Mix.Tasks.Mob.Doctor do
         check_inactive_nif_plugins(),
         check_component_event_jni(),
         check_sheet_dismiss_wire_shape(),
-        check_app_lifecycle_hooks()
+        check_app_lifecycle_hooks(),
+        check_mob_nif_table()
       ])
     else
       []
@@ -802,6 +803,26 @@ defmodule Mix.Tasks.Mob.Doctor do
         [
           {:warn, "Android app lifecycle hooks (#{Enum.join(files, ", ")})",
            MobDev.AppLifecycleHooks.problem(), MobDev.AppLifecycleHooks.fix()}
+        ]
+    end
+  end
+
+  # ── Two paths to mob (MOB-227) ────────────────────────────────────────────
+  #
+  # Natives built from mob_dir, BEAMs from deps/mob: differing -nifs tables
+  # crash the app at boot with `undef mob_nif:log/1`.
+  defp check_mob_nif_table do
+    mob_dir = if File.exists?("mob.exs"), do: MobDev.NativeBuild.__load_config__()[:mob_dir]
+
+    case MobDev.MobNifTable.check(File.cwd!(), mob_dir) do
+      :ok ->
+        []
+
+      {:mismatch, m} ->
+        [
+          {:fail, "mob_dir NIF table",
+           "#{m.mob_dir}/src/mob_nif.erl and #{m.deps_mob}/src/mob_nif.erl list different NIFs",
+           MobDev.MobNifTable.message(m)}
         ]
     end
   end
