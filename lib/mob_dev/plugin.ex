@@ -144,13 +144,32 @@ defmodule MobDev.Plugin do
   re-load or re-verify anything. A plugin that failed verification appears as
   `{dir, nil, {:error, reason}}`; a tier-0 plugin (no `priv/mob_plugin.exs`
   and no signature required) appears as `{dir, nil, :unsigned}`.
+
+  Each plugin appears once, however many times it is activated (MOB-325).
   """
   @spec activated_with_verify() :: [activated_entry()]
   def activated_with_verify do
-    deps = Mix.Project.deps_paths()
-    acknowledged = MobDev.Plugin.SignatureGate.acknowledged_unsafe()
+    load_activated(
+      activated_names(),
+      Mix.Project.deps_paths(),
+      MobDev.Plugin.SignatureGate.acknowledged_unsafe()
+    )
+  end
 
-    for name <- activated_names(), dir = deps[name], not is_nil(dir) do
+  @doc false
+  # Pure kernel of `activated_with_verify/0`: resolves `names` against `deps`
+  # and verify-loads each plugin once. This is the single choke point every
+  # build consumer (`Merge`, `ZigBuild`, the bootstraps, `RuntimeManifest`)
+  # reads through, so deduping here keeps a plugin listed twice in
+  # `config :mob, :plugins` from contributing its NIF sources, bridge sources,
+  # snippets, plist keys, … twice (MOB-325). Identity is the plugin directory —
+  # the same rule `Validator.cross_validate/1` uses to say "the same plugin
+  # activated twice is not a clash".
+  @spec load_activated([atom()], %{atom() => Path.t()}, [atom()]) :: [activated_entry()]
+  def load_activated(names, deps, acknowledged) do
+    resolved = for name <- names, dir = deps[name], not is_nil(dir), do: {name, dir}
+
+    for {name, dir} <- Enum.uniq_by(resolved, &elem(&1, 1)) do
       # Threading acknowledged-unsafe here matters. Without it, an unsigned
       # plugin the user has explicitly opted into via
       # :acknowledge_unsafe_plugins would get :missing_signature from
