@@ -50,6 +50,21 @@ defmodule MobDev.IosLayoutPlistTest do
 
   defp levels(rows), do: Enum.map(rows, fn {level, label, _, _} -> {level, label} end)
 
+  # The template's scene manifest (the generated SceneDelegate), in place of
+  # the stub manifest plist/1 writes.
+  defp with_scene_configurations(
+         xml,
+         roles \\ "<dict><key>UISceneDelegateClassName</key><string>SceneDelegate</string></dict>"
+       ) do
+    String.replace(
+      xml,
+      "<dict><key>UIDeviceFamily</key><array><integer>9</integer></array></dict>",
+      "<dict><key>UIApplicationSupportsMultipleScenes</key><false/>" <>
+        "<key>UISceneConfigurations</key><dict>" <>
+        "<key>UIWindowSceneSessionRoleApplication</key><array>#{roles}</array></dict></dict>"
+    )
+  end
+
   describe "read/1" do
     test "reads the top-level layout keys, not nested dicts" do
       assert {:ok,
@@ -68,6 +83,16 @@ defmodule MobDev.IosLayoutPlistTest do
 
     test "refuses a binary plist" do
       assert {:error, _} = IosLayoutPlist.read("bplist00\x01\x02")
+    end
+
+    test "sees whether the scene manifest has an application scene configuration" do
+      assert {:ok, %{scene_configurations?: false}} = IosLayoutPlist.read(plist(@new))
+
+      assert {:ok, %{scene_configurations?: true}} =
+               IosLayoutPlist.read(with_scene_configurations(plist(@new)))
+
+      assert {:ok, %{scene_configurations?: false}} =
+               IosLayoutPlist.read(with_scene_configurations(plist(@new), ""))
     end
   end
 
@@ -105,6 +130,19 @@ defmodule MobDev.IosLayoutPlistTest do
       end
     end
 
+    test "multi_window stamps UIApplicationSupportsMultipleScenes into the scene manifest" do
+      assert IosLayoutPlist.plist_commands(multi_window: true) == [
+               "Print :UIApplicationSceneManifest:UISceneConfigurations:UIWindowSceneSessionRoleApplication:0",
+               "Delete :UIApplicationSceneManifest:UIApplicationSupportsMultipleScenes",
+               "Add :UIApplicationSceneManifest:UIApplicationSupportsMultipleScenes bool true"
+             ]
+
+      # Absent reads as false, and removing it can't create a manifest.
+      assert IosLayoutPlist.plist_commands(multi_window: false) == [
+               "Delete :UIApplicationSceneManifest:UIApplicationSupportsMultipleScenes"
+             ]
+    end
+
     test "rejects an invalid value instead of building something else" do
       assert_raise Mix.Error, ~r/ios_target_devices must be/, fn ->
         IosLayoutPlist.plist_commands(ios_target_devices: [:watch])
@@ -121,6 +159,10 @@ defmodule MobDev.IosLayoutPlistTest do
 
       assert_raise Mix.Error, ~r/ios_orientations must be/, fn ->
         IosLayoutPlist.plist_commands(ios_orientations: [:portrait])
+      end
+
+      assert_raise Mix.Error, ~r/multi_window must be true or false/, fn ->
+        IosLayoutPlist.plist_commands(multi_window: :ipad)
       end
     end
   end
@@ -259,6 +301,16 @@ defmodule MobDev.IosLayoutPlistTest do
     test "an unreadable plist warns instead of crashing" do
       assert [{:warn, _, "couldn't check ios/Info.plist" <> _, nil}] =
                IosLayoutPlist.audit("bplist00", [])
+    end
+
+    test "multi_window: true without UISceneConfigurations fails; with them it passes" do
+      assert levels(IosLayoutPlist.audit(plist(@new), multi_window: true)) == [
+               {:fail, "iOS multi_window (Info.plist)"}
+             ]
+
+      xml = with_scene_configurations(plist(@new))
+      assert [{:ok, _, _, _}] = IosLayoutPlist.audit(xml, multi_window: true)
+      assert [{:ok, _, _, _}] = IosLayoutPlist.audit(plist(@new), multi_window: false)
     end
   end
 end

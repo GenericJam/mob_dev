@@ -6,7 +6,7 @@ defmodule MobDev.IosLayoutPlist do
 
   ## `mob.exs` overrides
 
-  Two `config :mob_dev` keys override the project's `ios/Info.plist` in the
+  Three `config :mob_dev` keys override the project's `ios/Info.plist` in the
   built app bundle (the dev simulator and device builds and `mix mob.release`).
   The project file is never rewritten, so the setting reaches new and existing
   apps alike:
@@ -20,6 +20,15 @@ defmodule MobDev.IosLayoutPlist do
       `UISupportedInterfaceOrientations~iphone`). iPad always declares all four
       (`UISupportedInterfaceOrientations~ipad`): iPadOS 26 rotates resizable
       apps freely, and iPad multitasking requires all four.
+    * `multi_window` — `true` or `false` (MOB-245). `true` sets
+      `UIApplicationSceneManifest` → `UIApplicationSupportsMultipleScenes`, so
+      iPad users can open several windows of the app, each with its own
+      navigation (`Mob.Scene` in mob). It needs the plist's existing
+      `UISceneConfigurations` → `UIWindowSceneSessionRoleApplication` entry
+      (the generated `SceneDelegate`); the build refuses a plist without one
+      rather than add a manifest that would switch the app to a scene
+      lifecycle with no delegate. `false` removes the
+      key, which iOS reads as `false`. Needs a mob release with `Mob.Scene`.
 
   Unset keys leave `ios/Info.plist` as written. `UIRequiresFullScreen` has no
   override: the only supported value is `false` (or no key), and
@@ -48,6 +57,9 @@ defmodule MobDev.IosLayoutPlist do
 
   @orientation_sets %{all: @all_orientations, portrait: @portrait, landscape: @landscape}
 
+  @scene_configurations ":UIApplicationSceneManifest:UISceneConfigurations:UIWindowSceneSessionRoleApplication:0"
+  @multiple_scenes ":UIApplicationSceneManifest:UIApplicationSupportsMultipleScenes"
+
   @typedoc "One `mix mob.doctor` row."
   @type check :: {:ok | :warn | :fail, String.t(), String.t(), String.t() | nil}
 
@@ -57,7 +69,8 @@ defmodule MobDev.IosLayoutPlist do
           orientations: [String.t()] | nil,
           iphone_orientations: [String.t()] | nil,
           ipad_orientations: [String.t()] | nil,
-          requires_full_screen: boolean() | nil
+          requires_full_screen: boolean() | nil,
+          scene_configurations?: boolean()
         }
 
   @doc """
@@ -65,12 +78,18 @@ defmodule MobDev.IosLayoutPlist do
   each key that is unset.
   """
   @spec settings(keyword()) ::
-          {:ok, %{device_family: [integer()] | nil, orientations: [String.t()] | nil}}
+          {:ok,
+           %{
+             device_family: [integer()] | nil,
+             orientations: [String.t()] | nil,
+             multi_window: boolean() | nil
+           }}
           | {:error, String.t()}
   def settings(cfg) do
     with {:ok, family} <- device_family(cfg[:ios_target_devices]),
-         {:ok, orientations} <- orientations(cfg[:ios_orientations]) do
-      {:ok, %{device_family: family, orientations: orientations}}
+         {:ok, orientations} <- orientations(cfg[:ios_orientations]),
+         {:ok, multi_window} <- multi_window(cfg[:multi_window]) do
+      {:ok, %{device_family: family, orientations: orientations, multi_window: multi_window}}
     end
   end
 
@@ -101,16 +120,24 @@ defmodule MobDev.IosLayoutPlist do
      "mob.exs ios_orientations must be :all, :portrait or :landscape, got #{inspect(other)}"}
   end
 
+  defp multi_window(value) when is_boolean(value) or is_nil(value), do: {:ok, value}
+
+  defp multi_window(other),
+    do: {:error, "mob.exs multi_window must be true or false, got #{inspect(other)}"}
+
   @doc """
   The PlistBuddy commands that stamp the `mob.exs` overrides into a bundle's
   Info.plist, in order. A `Delete` of a key the plist lacks fails harmlessly;
-  every other command must succeed. Raises `Mix.Error` on an invalid setting.
+  every other command must succeed, including the `Print` that checks a
+  `multi_window: true` plist has an application scene configuration. Raises
+  `Mix.Error` on an invalid setting.
   """
   @spec plist_commands(keyword()) :: [String.t()]
   def plist_commands(cfg) do
     case settings(cfg) do
-      {:ok, %{device_family: family, orientations: orientations}} ->
-        family_commands(family) ++ orientation_commands(orientations)
+      {:ok, %{device_family: family, orientations: orientations, multi_window: multi_window}} ->
+        family_commands(family) ++
+          orientation_commands(orientations) ++ multi_window_commands(multi_window)
 
       {:error, message} ->
         Mix.raise(message)
@@ -129,6 +156,19 @@ defmodule MobDev.IosLayoutPlist do
       array_commands("UISupportedInterfaceOrientations", "string", orientations) ++
       array_commands("UISupportedInterfaceOrientations~ipad", "string", @all_orientations)
   end
+
+  defp multi_window_commands(nil), do: []
+  defp multi_window_commands(false), do: ["Delete #{@multiple_scenes}"]
+
+  # PlistBuddy's Add creates a missing UIApplicationSceneManifest dict on its
+  # own, which would put a manifest-less app on the scene lifecycle with no
+  # delegate (a blank window), so check the configurations exist first.
+  defp multi_window_commands(true),
+    do: [
+      "Print #{@scene_configurations}",
+      "Delete #{@multiple_scenes}",
+      "Add #{@multiple_scenes} bool true"
+    ]
 
   defp array_commands(key, type, values) do
     ["Delete :#{key}", "Add :#{key} array"] ++
@@ -149,15 +189,31 @@ defmodule MobDev.IosLayoutPlist do
           :ok
 
         {output, status} ->
-          unless String.starts_with?(command, "Delete ") do
-            Mix.raise(
-              "PlistBuddy `#{command}` on #{path} exited #{status}: #{String.trim(output)}"
-            )
+          cond do
+            String.starts_with?(command, "Delete ") ->
+              :ok
+
+            command == "Print #{@scene_configurations}" ->
+              Mix.raise(missing_scene_configurations(path))
+
+            true ->
+              Mix.raise(
+                "PlistBuddy `#{command}` on #{path} exited #{status}: #{String.trim(output)}"
+              )
           end
       end
     end
 
     :ok
+  end
+
+  # The error for `multi_window: true` on a plist without a scene manifest;
+  # release_device.sh prints the same advice.
+  defp missing_scene_configurations(path) do
+    "mob.exs multi_window: true needs UIApplicationSceneManifest → UISceneConfigurations → " <>
+      "UIWindowSceneSessionRoleApplication (a SceneDelegate) in #{path}. Copy the " <>
+      "UIApplicationSceneManifest dict from a newly generated app's ios/Info.plist " <>
+      "(mix mob.new), or set multi_window: false"
   end
 
   @doc """
@@ -174,7 +230,9 @@ defmodule MobDev.IosLayoutPlist do
          iphone_orientations:
            dict |> Map.get("UISupportedInterfaceOrientations~iphone") |> strings(),
          ipad_orientations: dict |> Map.get("UISupportedInterfaceOrientations~ipad") |> strings(),
-         requires_full_screen: dict |> Map.get("UIRequiresFullScreen") |> boolean()
+         requires_full_screen: dict |> Map.get("UIRequiresFullScreen") |> boolean(),
+         scene_configurations?:
+           dict |> Map.get("UIApplicationSceneManifest") |> scene_configurations?()
        }}
     end
   end
@@ -247,6 +305,23 @@ defmodule MobDev.IosLayoutPlist do
   defp boolean(xml_element(name: false)), do: false
   defp boolean(_), do: nil
 
+  # An application-role scene configuration (the SceneDelegate) to extend.
+  defp scene_configurations?(xml_element(name: :dict, content: content)) do
+    with xml_element(name: :dict, content: configurations) <-
+           content |> elements() |> pairs(%{}) |> Map.get("UISceneConfigurations"),
+         xml_element(name: :array, content: roles) <-
+           configurations
+           |> elements()
+           |> pairs(%{})
+           |> Map.get("UIWindowSceneSessionRoleApplication") do
+      elements(roles) != []
+    else
+      _ -> false
+    end
+  end
+
+  defp scene_configurations?(_), do: false
+
   @doc """
   The `mix mob.doctor` rows for an app's Info.plist text and `mob.exs`
   config: one `:ok` row when the app can run full-screen on iPad, rotate and
@@ -271,7 +346,8 @@ defmodule MobDev.IosLayoutPlist do
           family_check(family, settings.device_family, keys.device_family),
           orientation_check(orientations, settings.orientations),
           ipad_orientation_check(2 in family, ipad_orientations),
-          full_screen_check(keys.requires_full_screen)
+          full_screen_check(keys.requires_full_screen),
+          multi_window_check(settings.multi_window, keys.scene_configurations?)
         ])
 
       if rows == [], do: [{:ok, label(), summary(family, orientations), nil}], else: rows
@@ -283,6 +359,16 @@ defmodule MobDev.IosLayoutPlist do
         [{:warn, label(), "couldn't check ios/Info.plist: #{message}", nil}]
     end
   end
+
+  defp multi_window_check(true, false) do
+    {:fail, "iOS multi_window (Info.plist)",
+     "mob.exs sets multi_window: true but ios/Info.plist has no UIApplicationSceneManifest → " <>
+       "UISceneConfigurations → UIWindowSceneSessionRoleApplication, so the iOS build refuses it",
+     "Copy the UIApplicationSceneManifest dict from a newly generated app's ios/Info.plist " <>
+       "(mix mob.new), or set multi_window: false"}
+  end
+
+  defp multi_window_check(_, _), do: []
 
   defp label, do: "iOS iPad / Split View (Info.plist)"
 

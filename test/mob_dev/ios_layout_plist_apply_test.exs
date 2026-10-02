@@ -123,4 +123,81 @@ defmodule MobDev.IosLayoutPlistApplyTest do
     {_, absent} = System.cmd("/usr/libexec/PlistBuddy", ["-c", "Print :After", path])
     assert absent != 0
   end
+
+  # The scene manifest mob_new generates (MOB-245 stamps into it).
+  @scene_plist """
+  <?xml version="1.0" encoding="UTF-8"?>
+  <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+  <plist version="1.0">
+  <dict>
+      <key>UIApplicationSceneManifest</key>
+      <dict>
+          <key>UIApplicationSupportsMultipleScenes</key>
+          <false/>
+          <key>UISceneConfigurations</key>
+          <dict>
+              <key>UIWindowSceneSessionRoleApplication</key>
+              <array>
+                  <dict>
+                      <key>UISceneDelegateClassName</key>
+                      <string>SceneDelegate</string>
+                  </dict>
+              </array>
+          </dict>
+      </dict>
+  </dict>
+  </plist>
+  """
+
+  defp print(path, key),
+    do:
+      System.cmd("/usr/libexec/PlistBuddy", ["-c", "Print #{key}", path], stderr_to_stdout: true)
+
+  @multiple ":UIApplicationSceneManifest:UIApplicationSupportsMultipleScenes"
+  @delegate ":UIApplicationSceneManifest:UISceneConfigurations:UIWindowSceneSessionRoleApplication:0:UISceneDelegateClassName"
+
+  test "multi_window: true turns on multiple scenes and keeps the SceneDelegate; false turns it off",
+       %{path: path} do
+    File.write!(path, @scene_plist)
+
+    IosLayoutPlist.apply!(path, multi_window: true)
+    assert {"true\n", 0} = print(path, @multiple)
+    assert {"SceneDelegate\n", 0} = print(path, @delegate)
+
+    IosLayoutPlist.apply!(path, multi_window: false)
+    assert {_, status} = print(path, @multiple)
+    assert status != 0
+    assert {"SceneDelegate\n", 0} = print(path, @delegate)
+  end
+
+  test "multi_window: true refuses a plist without a scene manifest instead of adding one",
+       %{path: path} do
+    assert_raise Mix.Error, ~r/multi_window: true needs .*UISceneConfigurations/, fn ->
+      IosLayoutPlist.apply!(path, multi_window: true)
+    end
+
+    assert File.read!(path) == @old_plist
+
+    # false on the same plist adds no manifest either.
+    IosLayoutPlist.apply!(path, multi_window: false)
+    assert {_, absent} = print(path, ":UIApplicationSceneManifest")
+    assert absent != 0
+  end
+
+  test "release_device.sh's loop stamps multi_window and refuses a manifest-less plist",
+       %{path: path} do
+    {"MOB_IOS_LAYOUT_PLIST_COMMANDS", commands} =
+      MobDev.Release.layout_plist_env(multi_window: true)
+
+    {output, status} = run_release_block(path, commands)
+    assert status != 0
+    assert output =~ "multi_window: true needs UIApplicationSceneManifest"
+    assert {_, absent} = print(path, ":UIApplicationSceneManifest")
+    assert absent != 0
+
+    File.write!(path, @scene_plist)
+    {output, status} = run_release_block(path, commands)
+    assert status == 0, output
+    assert {"true\n", 0} = print(path, @multiple)
+  end
 end

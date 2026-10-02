@@ -384,10 +384,11 @@ defmodule MobDev.Release do
   end
 
   @doc false
-  # `mob.exs` `ios_target_devices` / `ios_orientations` as newline-separated
-  # PlistBuddy commands; `release_device.sh` runs them on the bundle's
-  # Info.plist exactly as the dev build does (`MobDev.IosLayoutPlist.apply!/2`).
-  # Empty when neither key is set. Raises on an invalid value. Pure.
+  # `mob.exs` `ios_target_devices` / `ios_orientations` / `multi_window` as
+  # newline-separated PlistBuddy commands; `release_device.sh` runs them on the
+  # bundle's Info.plist exactly as the dev build does
+  # (`MobDev.IosLayoutPlist.apply!/2`). Empty when no key is set. Raises on an
+  # invalid value. Pure.
   @spec layout_plist_env(keyword()) :: {String.t(), String.t()}
   def layout_plist_env(cfg),
     do:
@@ -739,14 +740,20 @@ defmodule MobDev.Release do
     /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable $APP_NAME"   "$APP/Info.plist"
     /usr/libexec/PlistBuddy -c "Set :CFBundleName $APP_NAME"         "$APP/Info.plist"
 
-    # mob.exs ios_target_devices / ios_orientations (MobDev.IosLayoutPlist):
-    # one PlistBuddy command per line. A Delete of an absent key fails
-    # harmlessly; any other failure stops the build (set -e). Runs before the
-    # UIDeviceFamily default below, which then sees the key and keeps it.
+    # mob.exs ios_target_devices / ios_orientations / multi_window
+    # (MobDev.IosLayoutPlist): one PlistBuddy command per line. A Delete of an
+    # absent key fails harmlessly; a Print checks that multi_window: true has a
+    # scene manifest to extend; any other failure stops the build (set -e).
+    # Runs before the UIDeviceFamily default below, which then sees the key and
+    # keeps it.
     if [ -n "$MOB_IOS_LAYOUT_PLIST_COMMANDS" ]; then
         while IFS= read -r CMD; do
             case "$CMD" in
                 "Delete "*) /usr/libexec/PlistBuddy -c "$CMD" "$APP/Info.plist" 2>/dev/null || true ;;
+                "Print "*)  /usr/libexec/PlistBuddy -c "$CMD" "$APP/Info.plist" >/dev/null 2>&1 || {
+                                echo "error: mob.exs multi_window: true needs UIApplicationSceneManifest -> UISceneConfigurations -> UIWindowSceneSessionRoleApplication (a SceneDelegate) in ios/Info.plist. Copy the UIApplicationSceneManifest dict from a newly generated app's ios/Info.plist (mix mob.new), or set multi_window: false" >&2
+                                exit 1
+                            } ;;
                 *)          /usr/libexec/PlistBuddy -c "$CMD" "$APP/Info.plist" ;;
             esac
         done <<< "$MOB_IOS_LAYOUT_PLIST_COMMANDS"
