@@ -17,7 +17,8 @@ defmodule Mix.Tasks.Mob.Doctor do
   ## What it checks
 
     1. **Tools**   — adb, xcrun (macOS), Java, Android SDK, iOS build tools
-    2. **Project** — mob.exs present, required keys set, paths valid
+    2. **Project** — mob.exs present, required keys set, paths valid, iOS
+       Info.plist ready for iPad and Split View (warning only)
     3. **Build**   — Elixir deps fetched, project compiled, native build tools present,
        installed plugins that ship NIFs but aren't activated
     4. **OTP cache** — pre-built runtimes downloaded and structurally valid
@@ -545,7 +546,8 @@ defmodule Mix.Tasks.Mob.Doctor do
           "      or add to mob.exs: config :mob_dev, mob_dir: \"/path/to/mob\""
       ),
       __mob_dir_dep_check__(cfg[:mob_dir], MobDev.MobDirCheck.dep_path()),
-      check_bundle_id(cfg)
+      check_bundle_id(cfg),
+      check_ios_layout_plist(cfg)
     ])
   end
 
@@ -602,6 +604,17 @@ defmodule Mix.Tasks.Mob.Doctor do
       id ->
         {:ok, "bundle_id", id, nil}
     end
+  end
+
+  # MOB-206: an Info.plist that keeps the app off iPad, pins its orientation or
+  # opts out of Split View is a warning, never a failure — an iPhone-only or
+  # portrait app is legitimate, and mob.exs records that choice (see
+  # MobDev.IosLayoutPlist). Only an invalid mob.exs value fails: the build
+  # refuses it.
+  defp check_ios_layout_plist(cfg) do
+    if has_ios_project?() and File.exists?("ios/Info.plist"),
+      do: MobDev.IosLayoutPlist.audit(File.read!("ios/Info.plist"), cfg),
+      else: []
   end
 
   # ── Build checks ─────────────────────────────────────────────────────────────
