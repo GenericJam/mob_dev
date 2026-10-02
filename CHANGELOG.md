@@ -21,6 +21,20 @@
   made in `mob.exs` (`ios_target_devices: [:iphone]`,
   `ios_orientations: :portrait`) isn't warned about.
 
+- **`mix mob.doctor` reports the Xcode and iOS SDK it will build with, and
+  whether they can build for iPhone Duo (MOB-201).** The Tools section now
+  shows `Xcode — 27.0 (27A266a) — /Applications/Xcode-27.0.app` and
+  `iOS SDK — 27.0` for the Xcode selected by `DEVELOPER_DIR`, else
+  `xcode-select -s` (the same one `mix mob.deploy --native` uses), and warns
+  `iPhone Duo — unsupported (needs Xcode 27.1+)` when the Xcode or its iOS SDK
+  is older than 27.1. The Duo row is a warning, never a failure; Xcode older
+  than 15 still fails. A missing iOS platform (Xcode 15+ downloads it
+  separately) is now a warning with `xcodebuild -downloadPlatform iOS` as the
+  fix, and an unparseable `xcodebuild -version` warns instead of passing. See
+  `decisions/2026-10-01-doctor-reports-xcode-and-duo-readiness.md`.
+- CI: an `xcode` lane runs those rows against real Xcode 27.1 and 27.0
+  (GitHub's `xcode-27` image) and Xcode 26.6 (`macos-26`).
+
 ## [0.7.8] - 2026-10-01
 
 ### Upgrading

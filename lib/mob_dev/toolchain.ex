@@ -5,11 +5,23 @@ defmodule MobDev.Toolchain do
   # Hex archives. The source test keeps both release authorities in lockstep.
   @required_zig_version "0.17.0-dev.269+ebff43698"
 
+  # iPhone Duo needs the iOS 27.1 SDK, which ships with Xcode 27.1 (MOB-201).
+  @duo_min_version {27, 1, 0}
+
   @type zig_status ::
           :missing
           | {:ok, String.t()}
           | {:version_mismatch, String.t()}
           | {:version_command_failed, String.t(), non_neg_integer()}
+
+  @type version :: {non_neg_integer(), non_neg_integer(), non_neg_integer()}
+  @type cmd_result :: {String.t(), non_neg_integer()}
+  @type xcode :: %{version: version(), build: String.t() | nil, beta?: boolean()}
+  @type xcode_probe :: %{
+          xcodebuild: cmd_result(),
+          ios_sdk: cmd_result(),
+          developer_dir: String.t() | nil
+        }
 
   @spec required_zig_version() :: String.t()
   def required_zig_version, do: @required_zig_version
@@ -45,5 +57,104 @@ defmodule MobDev.Toolchain do
     "Install the exact Zig build toolchain with mise:\n" <>
       "      mise install zig@#{@required_zig_version}\n" <>
       "      mise use zig@#{@required_zig_version}"
+  end
+
+  # ── Xcode / iOS SDK ─────────────────────────────────────────────────────────
+  #
+  # Every probe goes through xcrun / xcodebuild / xcode-select, which resolve
+  # the toolchain from DEVELOPER_DIR, then `xcode-select -s`. That is the same
+  # resolution MobDev.NativeBuild's `xcrun --show-sdk-path` uses, so doctor
+  # reports the Xcode a build would actually use.
+
+  @doc "Runs the commands the Xcode checks parse. macOS only."
+  @spec xcode_probe() :: xcode_probe()
+  def xcode_probe do
+    developer_dir =
+      case safe_cmd("xcode-select", ["-p"]) do
+        {out, 0} -> String.trim(out)
+        _ -> nil
+      end
+
+    %{
+      xcodebuild: safe_cmd("xcodebuild", ["-version"]),
+      ios_sdk: safe_cmd("xcrun", ["--sdk", "iphoneos", "--show-sdk-version"]),
+      developer_dir: developer_dir
+    }
+  end
+
+  @doc """
+  Parses `xcodebuild -version` output:
+
+      Xcode 27.1
+      Build version 27A9269
+
+  `beta?` is true when the version line says beta (the build number alone
+  doesn't tell a beta from a release).
+  """
+  @spec parse_xcodebuild_version(String.t()) :: {:ok, xcode()} | :error
+  def parse_xcodebuild_version(output) do
+    lines = output |> String.split("\n") |> Enum.map(&String.trim/1)
+
+    with "Xcode " <> rest <- Enum.find(lines, "", &String.starts_with?(&1, "Xcode ")),
+         {:ok, version} <- parse_version(rest) do
+      build =
+        Enum.find_value(lines, fn
+          "Build version " <> build -> String.trim(build)
+          _ -> nil
+        end)
+
+      {:ok, %{version: version, build: build, beta?: rest =~ ~r/beta/i}}
+    else
+      _ -> :error
+    end
+  end
+
+  @doc """
+  Parses a dotted version (`27`, `27.1`, `27.1.2`); text after the first
+  whitespace (`27.1 beta 2`) is ignored.
+  """
+  @spec parse_version(String.t()) :: {:ok, version()} | :error
+  def parse_version(text) do
+    token = text |> String.trim() |> String.split(~r/\s+/, parts: 2) |> List.first()
+
+    parts =
+      token
+      |> String.split(".")
+      |> Enum.take(3)
+      |> Enum.map(&Integer.parse/1)
+
+    if parts != [] and Enum.all?(parts, &match?({_, ""}, &1)) do
+      [major, minor, patch] = (Enum.map(parts, &elem(&1, 0)) ++ [0, 0]) |> Enum.take(3)
+      {:ok, {major, minor, patch}}
+    else
+      :error
+    end
+  end
+
+  @spec format_version(version()) :: String.t()
+  def format_version({major, minor, 0}), do: "#{major}.#{minor}"
+  def format_version({major, minor, patch}), do: "#{major}.#{minor}.#{patch}"
+
+  @doc "The Xcode and iOS SDK version iPhone Duo builds need."
+  @spec duo_min_version() :: version()
+  def duo_min_version, do: @duo_min_version
+
+  @doc """
+  Whether the given versions can build for iPhone Duo. `nil` means unknown and
+  doesn't count; every known version must be at least #{inspect(@duo_min_version)}.
+  """
+  @spec duo_supported?([version() | nil]) :: boolean()
+  def duo_supported?(versions) do
+    versions
+    |> Enum.reject(&is_nil/1)
+    |> Enum.all?(&(&1 >= @duo_min_version))
+  end
+
+  # xcodebuild / xcode-select can be missing on a CLT-less Mac; report that as
+  # a failed command rather than crash the doctor run.
+  defp safe_cmd(cmd, args) do
+    System.cmd(cmd, args, stderr_to_stdout: true)
+  rescue
+    e in ErlangError -> {"#{cmd}: #{inspect(e.original)}", 127}
   end
 end

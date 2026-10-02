@@ -79,6 +79,62 @@ jobs:
         # Both run by default on a maintainer's laptop; CI explicitly skips.
         run: mix test --exclude macos_only --exclude requires_zig
 
+  # MOB-201: `mix mob.doctor`'s Xcode / iOS SDK / iPhone Duo rows, run against
+  # real Xcodes selected through DEVELOPER_DIR (the same resolution
+  # MobDev.NativeBuild's `xcrun --show-sdk-path` uses). The 27.1 row is the
+  # only Xcode 27.1 + iOS 27.1 SDK the project can run today: GitHub's
+  # `xcode-27` image (preview) has it; it has no iOS 27.1 simulator runtime and
+  # no iPhone Duo simulator. The 26.6 row keeps the Xcode 26 lane alive.
+  xcode:
+    name: Xcode ${{ matrix.xcode }} (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    env:
+      MIX_ENV: test
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+      DEVELOPER_DIR: /Applications/Xcode_${{ matrix.xcode }}.app/Contents/Developer
+      MOB_EXPECT_XCODE: ${{ matrix.xcode }}
+      MOB_EXPECT_IOS_SDK: ${{ matrix.ios_sdk }}
+      MOB_EXPECT_DUO: ${{ matrix.duo }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: xcode-27
+            xcode: '27.1'
+            ios_sdk: '27.1'
+            duo: ok
+          - runner: xcode-27
+            xcode: '27.0'
+            ios_sdk: '27.0'
+            duo: warn
+          - runner: macos-26
+            xcode: '26.6'
+            ios_sdk: '26.5'
+            duo: warn
+    steps:
+      - uses: actions/checkout@v4
+
+      # erlef/setup-beam has no macOS support; Homebrew's bottles are recent
+      # enough for mob_dev's `elixir: "~> 1.19"`.
+      - name: Install Elixir
+        run: |
+          brew install elixir
+          mix local.hex --force
+          mix local.rebar --force
+
+      - name: Cache deps + _build
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: mix-${{ matrix.runner }}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: mix-${{ matrix.runner }}-
+
+      - run: xcodebuild -version && xcrun --sdk iphoneos --show-sdk-version
+      - run: mix deps.get
+      - run: mix test --only xcode_live test/mob_dev/xcode_live_test.exs
+
   security_scan:
     name: Security scan
     needs: test

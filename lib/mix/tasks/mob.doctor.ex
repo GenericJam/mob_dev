@@ -267,31 +267,104 @@ defmodule Mix.Tasks.Mob.Doctor do
            "Install Xcode command-line tools:\n      xcode-select --install"}
 
         _ ->
-          case System.cmd("xcodebuild", ["-version"], stderr_to_stdout: true) do
-            {out, 0} ->
-              version_line = out |> String.split("\n") |> List.first() |> String.trim()
-
-              major =
-                Regex.run(Regex.compile!("Xcode (\\d+)"), version_line)
-                |> case do
-                  [_, v] -> String.to_integer(v)
-                  nil -> 99
-                end
-
-              if major >= 15 do
-                {:ok, "xcrun", version_line, nil}
-              else
-                {:fail, "xcrun", "Xcode #{major} found — Xcode 15 or later required",
-                 "Update Xcode from the App Store or developer.apple.com"}
-              end
-
-            _ ->
-              {:warn, "xcrun", "found but xcodebuild -version failed", nil}
-          end
+          __xcode_checks__(Toolchain.xcode_probe())
       end
     else
       {:ok, "xcrun", "skipped (not macOS)", nil}
     end
+  end
+
+  @min_xcode_major 15
+
+  # Rows for the selected Xcode (DEVELOPER_DIR, else `xcode-select -s`), its
+  # iOS SDK and iPhone Duo readiness (MOB-201). Only an Xcode older than 15
+  # fails; anything that just limits Duo support is a warning.
+  @doc false
+  @spec __xcode_checks__(Toolchain.xcode_probe()) :: [
+          {:ok | :warn | :fail, String.t(), String.t(), String.t() | nil}
+        ]
+  def __xcode_checks__(%{xcodebuild: xcodebuild, ios_sdk: ios_sdk, developer_dir: developer_dir}) do
+    {xcode_row, xcode_version} = xcode_row(xcodebuild, developer_dir)
+    {sdk_row, sdk_version} = ios_sdk_row(ios_sdk)
+
+    [xcode_row, sdk_row | duo_row(xcode_version, sdk_version)]
+  end
+
+  defp xcode_row({out, 0}, developer_dir) do
+    case Toolchain.parse_xcodebuild_version(out) do
+      {:ok, %{version: {major, _, _} = version}} when major < @min_xcode_major ->
+        {{:fail, "Xcode",
+          "Xcode #{Toolchain.format_version(version)} found — Xcode #{@min_xcode_major} or later required",
+          "Update Xcode from the App Store or developer.apple.com"}, version}
+
+      {:ok, xcode} ->
+        {{:ok, "Xcode", xcode_detail(xcode, developer_dir), nil}, xcode.version}
+
+      :error ->
+        {{:warn, "Xcode", "could not parse `xcodebuild -version`: #{first_line(out)}", nil}, nil}
+    end
+  end
+
+  defp xcode_row({out, _}, _developer_dir) do
+    {{:warn, "Xcode", "xcodebuild -version failed: #{first_line(out)}",
+      "Install Xcode and select it:\n  sudo xcode-select -s /Applications/Xcode.app"}, nil}
+  end
+
+  defp xcode_detail(xcode, developer_dir) do
+    app = developer_dir && String.replace_suffix(developer_dir, "/Contents/Developer", "")
+    beta? = xcode.beta? or (app != nil and app =~ ~r/beta/i)
+
+    Enum.join(
+      [
+        Toolchain.format_version(xcode.version),
+        beta? && "beta",
+        xcode.build && "(#{xcode.build})",
+        app && "— #{app}"
+      ]
+      |> Enum.filter(& &1),
+      " "
+    )
+  end
+
+  defp ios_sdk_row({out, 0}) do
+    case Toolchain.parse_version(out) do
+      {:ok, version} -> {{:ok, "iOS SDK", Toolchain.format_version(version), nil}, version}
+      :error -> {{:warn, "iOS SDK", "could not parse SDK version: #{first_line(out)}", nil}, nil}
+    end
+  end
+
+  defp ios_sdk_row({out, _}) do
+    {{:warn, "iOS SDK", "not found (#{first_line(out)})",
+      "Install the iOS platform for the selected Xcode:\n" <>
+        "  xcodebuild -downloadPlatform iOS"}, nil}
+  end
+
+  defp duo_row(nil, nil), do: []
+
+  defp duo_row(xcode_version, sdk_version) do
+    min = Toolchain.format_version(Toolchain.duo_min_version())
+
+    found =
+      [{"Xcode", xcode_version}, {"iOS SDK", sdk_version}]
+      |> Enum.reject(fn {_, v} -> is_nil(v) end)
+      |> Enum.map_join(", ", fn {name, v} -> "#{name} #{Toolchain.format_version(v)}" end)
+
+    if Toolchain.duo_supported?([xcode_version, sdk_version]) do
+      [{:ok, "iPhone Duo", "supported (#{found})", nil}]
+    else
+      [
+        {:warn, "iPhone Duo", "unsupported (needs Xcode #{min}+) — selected: #{found}",
+         "Builds still work; only iPhone Duo support needs Xcode #{min}. Install it and select it\n" <>
+           "(use the path you installed it at):\n" <>
+           "  sudo xcode-select -s /Applications/Xcode-#{min}.app\n" <>
+           "or for one shell:\n" <>
+           "  export DEVELOPER_DIR=/Applications/Xcode-#{min}.app/Contents/Developer"}
+      ]
+    end
+  end
+
+  defp first_line(out) do
+    out |> String.trim() |> String.split("\n", parts: 2) |> List.first()
   end
 
   @min_jdk 17
