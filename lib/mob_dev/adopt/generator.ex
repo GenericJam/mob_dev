@@ -31,7 +31,8 @@ defmodule MobDev.Adopt.Generator do
   ## Compile-time regex
 
   Compiles regexes at runtime via `Regex.compile!/1`, never `~r//`
-  literals (OTP 28.0 dropped `:re.import/1`). See mob `AGENTS.md` rule #9.
+  literals (OTP 28.0 dropped `:re.import/1`). See mob `AGENTS.md`,
+  pre-empt-failure rule "Compile-time `~r//` literals are unsafe on OTP 28".
   """
 
   alias MobDev.NdkVersion

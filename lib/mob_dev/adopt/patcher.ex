@@ -21,7 +21,7 @@ defmodule MobDev.Adopt.Patcher do
   `Regex.compile!/1` rather than `~r//` literals — the `~r//` form bakes
   a bytecode pattern that calls `:re.import/1`, removed in OTP 28.0 (the
   version Mob's bundled iOS/Android tarballs ship). See mob `AGENTS.md`
-  rule #9.
+  pre-empt-failure rule "Compile-time `~r//` literals are unsafe on OTP 28".
   """
 
   @mob_hook_js ~S"""
