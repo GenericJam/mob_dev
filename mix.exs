@@ -56,7 +56,7 @@ defmodule MobDev.MixProject do
   defp elixirc_paths(_), do: ["lib"]
 
   def application do
-    [extra_applications: [:crypto, :logger]]
+    [extra_applications: [:crypto, :logger, :xmerl]]
   end
 
   defp aliases do

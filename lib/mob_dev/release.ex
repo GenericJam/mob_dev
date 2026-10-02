@@ -378,9 +378,21 @@ defmodule MobDev.Release do
       {"MOB_IOS_PROFILE_UUID", cfg[:ios_dist_profile_uuid]},
       {"MOB_APP_NAME", app_name},
       {"MOB_APP_MODULE", app_module},
-      screenshot_build_env(cfg)
+      screenshot_build_env(cfg),
+      layout_plist_env(cfg)
     ] ++ plugin_ios_build_env(MobDev.Plugin.activated())
   end
+
+  @doc false
+  # `mob.exs` `ios_target_devices` / `ios_orientations` as newline-separated
+  # PlistBuddy commands; `release_device.sh` runs them on the bundle's
+  # Info.plist exactly as the dev build does (`MobDev.IosLayoutPlist.apply!/2`).
+  # Empty when neither key is set. Raises on an invalid value. Pure.
+  @spec layout_plist_env(keyword()) :: {String.t(), String.t()}
+  def layout_plist_env(cfg),
+    do:
+      {"MOB_IOS_LAYOUT_PLIST_COMMANDS",
+       Enum.join(MobDev.IosLayoutPlist.plist_commands(cfg), "\n")}
 
   @doc false
   # Opt-in to shipping mob's public-API `screenshot` NIF in the release build (stripped
@@ -727,6 +739,19 @@ defmodule MobDev.Release do
     /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable $APP_NAME"   "$APP/Info.plist"
     /usr/libexec/PlistBuddy -c "Set :CFBundleName $APP_NAME"         "$APP/Info.plist"
 
+    # mob.exs ios_target_devices / ios_orientations (MobDev.IosLayoutPlist):
+    # one PlistBuddy command per line. A Delete of an absent key fails
+    # harmlessly; any other failure stops the build (set -e). Runs before the
+    # UIDeviceFamily default below, which then sees the key and keeps it.
+    if [ -n "$MOB_IOS_LAYOUT_PLIST_COMMANDS" ]; then
+        while IFS= read -r CMD; do
+            case "$CMD" in
+                "Delete "*) /usr/libexec/PlistBuddy -c "$CMD" "$APP/Info.plist" 2>/dev/null || true ;;
+                *)          /usr/libexec/PlistBuddy -c "$CMD" "$APP/Info.plist" ;;
+            esac
+        done <<< "$MOB_IOS_LAYOUT_PLIST_COMMANDS"
+    fi
+
     # Apple's App Store validator requires MinimumOSVersion and DTPlatformName
     # in the bundle Info.plist (codes 90065/90507/90530). Both are derived
     # from the build target — set them defensively here so any app gets
@@ -775,9 +800,10 @@ defmodule MobDev.Release do
             || /usr/libexec/PlistBuddy -c "Set :$K $V" "$APP/Info.plist"
     done
     # UIDeviceFamily is required when MinimumOSVersion >= 3.2 (always, in
-    # practice). 1 = iPhone, 2 = iPad. Default to iPhone-only; apps that
-    # want universal can set the array explicitly in their Info.plist
-    # before this script runs (the `Add` will fail and we won't overwrite).
+    # practice). 1 = iPhone, 2 = iPad. Default to iPhone-only for a plist that
+    # declares none (an app generated before mob_new declared [1, 2]); an app
+    # that sets the key in ios/Info.plist or mob.exs ios_target_devices keeps
+    # its value (the `Add` fails and we don't overwrite).
     /usr/libexec/PlistBuddy -c "Add :UIDeviceFamily array" "$APP/Info.plist" 2>/dev/null \
         && /usr/libexec/PlistBuddy -c "Add :UIDeviceFamily:0 integer 1" "$APP/Info.plist"
 
