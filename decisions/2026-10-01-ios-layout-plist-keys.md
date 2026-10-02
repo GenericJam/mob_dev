@@ -82,3 +82,18 @@ Facts this rests on, checked 2026-10-01 against Xcode 27.0:
 - Not covered: Android (no manifest change in MOB-206), and the iOS 27.1 SDK
   behaviours (edge-to-edge, side toolbar), which come from building against
   that SDK rather than from a plist key.
+
+## Addendum 2026-10-02: `multi_window` (MOB-245)
+
+A third key uses the same mechanism: `multi_window: true` stamps
+`UIApplicationSceneManifest` → `UIApplicationSupportsMultipleScenes` `true`,
+`false` deletes it (iOS reads an absent key as `false`), unset leaves the plist
+alone. The runtime side, one `Mob.Router` per window scene, is mob's
+(`decisions/2026-10-02-one-router-per-window-scene.md` in mob, PR #184).
+
+PlistBuddy's `Add` creates a missing parent dict, so on a plist with no scene
+manifest it would put the app on the scene lifecycle with no delegate (a blank
+window). The commands therefore start with `Print
+:UIApplicationSceneManifest:UISceneConfigurations`, which must succeed: the dev
+build raises and `release_device.sh` exits with the fix, and `mix mob.doctor`
+fails the same combination. Every app mob_new has generated has the manifest.
