@@ -35,6 +35,16 @@
 - CI: an `xcode` lane runs those rows against real Xcode 27.1 and 27.0
   (GitHub's `xcode-27` image) and Xcode 26.6 (`macos-26`).
 
+### Fixed
+
+- **A plugin activated twice is built once (MOB-325).** Listing a plugin
+  twice in `config :mob, :plugins` passed the plugin-collision check but merged
+  the plugin twice, so its NIF sources compiled and linked twice (duplicate
+  symbols) and its Kotlin/Swift sources, manifest snippets and native
+  registrations were added twice. The activated plugins are now deduplicated
+  by plugin directory, the rule the collision check uses, before any build step
+  reads them.
+
 ## [0.7.8] - 2026-10-01
 
 ### Upgrading
