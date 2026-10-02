@@ -937,9 +937,10 @@ Add to `~/.claude.json`:
 
 With these installed, Claude Code can take screenshots, inspect the accessibility tree, and simulate gestures on the native device — useful when you need to verify layout or test native gesture paths.
 
-### Recommended CLAUDE.md for Mob projects
+### Recommended AGENTS.md for Mob projects
 
-Add a `CLAUDE.md` to your Mob project root to give an agent the context it needs:
+Add an `AGENTS.md` to your Mob project root to give an agent the context it needs
+(Claude Code, Codex and others read it; a one-line `CLAUDE.md` pointing at it is enough):
 
 ````markdown
 # MyApp — Agent Instructions

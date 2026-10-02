@@ -61,7 +61,7 @@ defmodule MobDev.PythonAppleSupport do
   Validates that the extracted bundle has the `Python.xcframework` layout
   this module expects (both device and simulator slices, plus shared stdlib).
 
-  Public to enable testing (per AGENTS.md convention) and to let
+  Public to enable testing (per the "Public-but-undocumented seams" convention in AGENTS.md) and to let
   `MobDev.NativeBuild` cheaply detect a partial cache.
   """
   @spec valid_dir?(String.t()) :: boolean()

@@ -87,7 +87,8 @@ defmodule MobDev.PythonAndroidSupport do
   jniLibs/<abi>/libpython3.13.so, lib-dynload/<abi>/, headers, and
   the shared stdlib.
 
-  Public for testing (per AGENTS.md convention).
+  Public for testing (per the "Public-but-undocumented seams"
+  convention in AGENTS.md).
   """
   @spec valid_dir?(String.t()) :: boolean()
   def valid_dir?(dir) do

@@ -1,10 +1,16 @@
-# AGENTS.md — mob_dev
+# mob_dev — Agent Instructions
 
 You're in **mob_dev**, the build/deploy/devices toolkit. Read
 [`~/code/mob/AGENTS.md`](../mob/AGENTS.md) first for the system view, the
 three-repo topology, the cross-cutting pre-empt-failure rules, and the
 **"Don't write this slop"** list (AI-generated patterns to avoid at write
-time, not after credo flags them). The notes below are mob_dev-specific.
+time, not after credo flags them). The notes below are mob_dev-specific;
+they also cover the repo's public-but-undocumented seams (parsers/predicates
+kept public for testing).
+
+For the in-flight build-system refactor (Mix → Igniter → Zig build),
+see [`~/code/mob/build_system_migration.md`](../mob/build_system_migration.md) —
+multi-month sequenced plan; phase ownership lives there.
 
 ## What this repo is
 
@@ -20,6 +26,44 @@ OTP source for iOS-device compatibility live at
 `scripts/release/patches/` (`forker_start` skip, EPMD `NO_DAEMON` guard).
 See `build_release.md` for the full release walkthrough.
 
+## Worktrees
+
+**Default assumption: work happens in a git worktree.** The user runs
+multiple agents in parallel; each task in its own worktree prevents conflicts
+between agents and keeps `master` clean while work is in flight.
+
+If you're assigned a task and worktree usage **isn't mentioned**, ask:
+
+> "Should I use a worktree for this?"
+
+The user will answer:
+
+- **yes** — long task, or other agents may be working in parallel; create a
+  worktree (use `EnterWorktree` or spawn the work via Agent with
+  `isolation: "worktree"`)
+- **no** — quick change with no parallel agent work; work in-place on the
+  current branch
+
+If the user explicitly says "use worktrees" up front, do so without asking.
+If the task is trivially small (single-file doc edit, one-line config change)
+and clearly won't conflict with anything, working in-place is acceptable —
+but if in doubt, ask.
+
+## Issue tracking — status lives in Linear
+
+Status lives in **Linear** (team `MOB`), which is the single board across `mob`,
+`mob_dev` and `mob_new` — see `mob/AGENTS.md` for the full split of
+responsibilities. The short version, because work in this repo routinely starts
+from an issue filed against another one:
+
+- **Linear (`MOB`)** — live status and worklist. One issue per thread.
+- **`decisions/`** — durable rationale. Link it from the issue; don't copy it in.
+- **PRs / git** — the code. Reference the issue id.
+
+Keep the issue current as you go, not at the end. An issue that says what was
+tried and ruled out is worth more than one that says "done" — most of what this
+project has learned lives in the ruled-out half.
+
 ## TDD is the practice here
 
 Write tests before or alongside new code. Every new function should have
@@ -29,6 +73,80 @@ stay green at all times.
 ```bash
 mix test                       # all tests
 mix test --exclude integration # skip the device-dependent ones
+mix test --watch               # (with mix_test_watch dep, if added)
+```
+
+**Tests are not just for runtime code.** Every Mix task and every build
+tool in this repo gets the same treatment as application code:
+
+- Argument parsing, flag handling, `--help` output
+- Output formatting (preview, summary, error messages)
+- Decision logic (which device, which build target, which strip set)
+- External-tool output classification (adb, simctl, devicectl, gh, xcrun)
+
+The goal is to **find bugs in CI before users hit them.** Real failure
+modes encountered this session that were caught (or should have been
+caught) by tests:
+
+- `mix mob.uninstall --all-devices` crashing on `nil and bool` because
+  the test suite only covered `--help` and `format_summary/4`, not the
+  decision path. Backfilled `should_skip_prompt?/2` as a pure helper.
+- `mix mob.deploy --device defd4bdc` passing the prefix straight to
+  `xcrun simctl install` which only accepts full UDIDs. Now
+  `NativeBuild.resolve_booted_udid/2` is pure-and-tested.
+- The "Failed on 5 device(s)" mis-tally when skipped-not-installed
+  was bucketed as failed. Caught only by manual driving until
+  `format_summary/4` and `categorize_results/1` got extracted.
+
+**Pattern to apply:**
+
+1. Identify the pure decision/transform inside a Mix task or
+   build-tool function.
+2. Extract it to a `def` (not `defp`) — `@doc false` if it's
+   for-testing-only, or fully documented if useful to callers.
+3. Test the matrix: happy path, every error branch, edge cases
+   surfaced by real-world output (paste actual `adb` /
+   `xcrun` / `gh` output into fixtures rather than guessing format).
+4. The Mix task and external-tool I/O wrappers stay thin and
+   unstubbed; the testable kernel is what you assert on.
+
+If something in mob_dev isn't tested today, that's a bug-discovery
+opportunity in waiting — list it as a follow-up rather than letting
+the next user find it.
+
+## Tests are part of the change, not a follow-up
+
+New behaviour ships with a test unless the change is small enough that a test
+would only restate it — a rename, a doc string, a formatting pass. "I'll add
+coverage later" is how the untested paths in this repo got there.
+
+The bar is not coverage percentage, it is: **would this test fail if the fix
+were reverted?** Check by reverting it. A test that passes either way is worse
+than none, because it is claimed as evidence. More than one fix here shipped
+with a test that could not fail — including a headline fix whose entire clause
+could be deleted with the full suite still green.
+
+## What to test
+
+**Always testable (pure functions, no hardware):**
+- `MobDev.Device` — `short_id/1`, `node_name/1`, `summary/1`
+- `MobDev.Tunnel` — `base_port/2`, `assign_dist_port/3`, `in_use_ports/4`, `stale_dist_forwards/4`
+- `MobDev.Discovery.Android.parse_devices_output/1`
+- `MobDev.Discovery.IOS.parse_simctl_json/1`, `parse_simctl_text/1`, `parse_runtime_version/1`
+- `MobDev.HotPush.snapshot_beams/0`, `push_changed/2`
+- `MobDev.IconGenerator.android_sizes/0`, `ios_sizes/0`, `generate_from_source/2`
+- `MobDev.Toolchain.zig_status_from_result/1`
+
+**Hardware-dependent (skip gracefully when devices absent):**
+- `Discovery.Android.list_devices/0` — requires adb + connected device
+- `Discovery.IOS.list_simulators/0` — requires xcrun
+- `Deployer.deploy_all/1` — requires running device
+- `HotPush.connect/1` — requires running BEAM node
+
+For hardware tests, use `@tag :integration` and skip them in CI:
+```elixir
+@tag :integration
+test "lists connected Android devices" do ...
 ```
 
 ## Verification fidelity ladder
@@ -71,6 +189,218 @@ Two rules that outrank the list:
 - **Verify effects, not exit codes.** This repo is where that rule was learned
   and it is the repo most able to break it: every task here should prove its
   effect happened rather than reporting that it returned.
+
+## Trust the instrument last
+
+Every rung of the fidelity ladder assumes the thing measuring is honest. When it
+is not, the failure does not look like an error — it looks like a result.
+
+Two from one session, both of which were believed for a while:
+
+* A navigation benchmark reported a 6.5x improvement. The tree was installed by
+  a `LaunchedEffect`, which runs *after* composition, so the frame being timed
+  still showed the old screen. The real figure was about half that, and the
+  published numbers had to be retracted.
+* An on-device check printed `PASS` against a build that had failed to compile,
+  because the deploy before it had failed and the previous build was still
+  installed. The screen it claimed proved the fix had never scrolled.
+
+So:
+
+- **A number better than the theory allows is a bug in the measurement.**
+  Navigation cannot be cheaper than re-rendering the same tree. When the result
+  is too good, go and find out why before reporting it.
+- **Make a probe fail loudly when its own precondition does not hold.** A check
+  that silently passes when the setup did not happen is worse than no check.
+- **Corroborate against something you did not build.** Platform counters,
+  `Davey!` frame reports, `Skipped N frames`, a screenshot. Agreement within
+  30% of an independent source is evidence; your own instrument agreeing with
+  itself is not.
+- **When you publish a number that turns out wrong, retract it in place** and
+  say what was wrong. Someone will otherwise act on it.
+
+## Pre-commit checklist
+
+Before committing changes, run **all** in this order:
+
+```bash
+mix test                   # full suite must pass (call out any pre-existing flake explicitly)
+mix format                 # apply Elixir formatting
+mix credo --strict         # **whole tree, not just changed files** — includes ExSlop (catches AI-generated patterns: blanket rescue, narrator docs, etc). Pre-existing issues are tracked separately, but new ones (including in tests) must be fixed
+mix erlfmt --check priv/android/crypto.erl     # Erlang formatting
+mix mob.security_scan --strict                 # surface new CVEs / drift before they ship
+```
+
+Available but **not run by default** (refactoring queues, not blockers):
+
+```bash
+mix ex_dna             # code duplication report (22 clones baseline, ~581 dup lines)
+mix reach.check --smells   # 132 style/refactor findings
+mix reach.check --dead-code  # 71 findings (some macro DSL false positives)
+mix reach                  # interactive HTML architecture report
+```
+
+Auto-fix:
+```bash
+mix erlfmt --write priv/android/crypto.erl
+```
+
+`mix mob.security_scan` covers Hex deps, Android Gradle deps, iOS
+Swift Package deps, the **bundled OpenSSL/OTP/Elixir/SQLite versions**
+(via fingerprint of `~/.mob/cache/otp-*-{hash}/` against
+`priv/security/bundled_versions.exs`), and C/Kotlin/Swift static
+analysis. See [`README.md`](README.md#security-scan-mix-mobsecurity_scan)
+for the full layer list and the one-time `brew install` of external
+scanners.
+
+### Decision log — check both directions
+
+Before committing, ask two questions, not one.
+
+**Does this need a new record?** Anything non-obvious: a tradeoff, a workaround,
+a convention, a "why X and not Y". The test is whether a reader six months from
+now would ask why it is like this. If the commit message is explaining a
+decision, that decision belongs in `decisions/` where it is findable, not only
+in `git log`. Record it in the same commit, not as a follow-up.
+
+**Does this INVALIDATE an existing record?** This is the half that gets missed,
+and it is the more dangerous one. A record asserting a property the code no
+longer has is worse than no record: it is a claim a maintainer will act on.
+Grep `decisions/` for the mechanism you are changing before you commit.
+
+Both failed in one session, on the same change:
+
+* A decision record claimed "the frame-registry generation is untouched because
+  the parked slot stops re-registering once it stops laying out." It reasoned
+  about the outgoing direction only. The returning direction was broken —
+  silently, for exactly the screens the change optimised for — and the record
+  said it was fine.
+* Source comments elsewhere stated invariants the same change inverted:
+  `MobLazyList`'s latch reasoned that "only navigation changes the container's
+  identity", which had just stopped being true.
+
+When you correct a record, correct it **in place** with a note saying what was
+wrong, rather than quietly deleting the claim. The wrong version is the part a
+future reader needs to recognise, and `decisions/` is append-only for
+superseding whole decisions, not for silently editing away a mistake inside one.
+
+### Adversarial review — before the commit, by a subagent
+
+**Non-trivial work gets an adversarial review before it is committed.** Spawn a
+subagent, point it at the actual diff, and tell it to find defects rather than
+to approve. Act on what it finds, then commit.
+
+It must be a **separate agent**, not a re-read of your own work. The thing that
+is wrong is usually the author's mental model of the change, and that model is
+exactly what a self-review carries into the second pass.
+
+Give the reviewer: the diff to read (`git diff <base>..HEAD`, and the base
+explicitly, since a diverged local branch will otherwise sweep in the whole
+tree), what the change claims to do, and the specific things you are least sure
+about. Tell it to cite `file:line` for every finding, to rank them
+blocking / should-fix / nitpick, and to separate what it verified in source from
+what it is reasoning about platform semantics. Ask it to say plainly if the
+change is sound rather than inventing problems — but only after it has looked
+hard.
+
+**Skip it for** mechanical or trivial changes: formatting, a typo, a version
+bump, a changelog edit, moving a file. Reach for it when the change has
+behaviour, touches native code, or spans a platform boundary.
+
+This is not ceremony. In one session, pre-commit reviews caught the following
+in `mob` — the examples are from there because that is where the session ran,
+and this repo builds and deploys exactly that native code — each of which would
+otherwise have shipped:
+
+* a helper defined inside `#if !MOB_RELEASE` but called unconditionally from
+  Swift, which linked in debug and would have failed **every iOS release
+  build**;
+* a cache whose tests asserted the write path and nothing about the read, so
+  deleting the lookup, or reading under a constant key, passed the whole suite;
+* a fix that covered 3 of 7 call sites on one platform while claiming parity
+  with the other;
+* a comment and a decision record asserting a race was closed when the code
+  only narrowed it;
+* generated source telling every user that a feature does nothing, in the
+  release that made it work.
+
+The one substantial change that skipped review that session was the largest one
+in the batch. Do not let size be the reason to skip.
+
+### Before the merge — a second review, on the PR
+
+The pre-commit review reads a diff. This one reads a diff **that claims to be
+finished**, against a master that has moved since you started. Those are
+different questions, and the second one has caught more.
+
+Both frame-timing PRs in one session passed pre-commit review. The pre-merge
+review then found that one of them shipped its headline fix untested — it
+deleted the conversion and all 1545 tests still passed — and blocked the other
+outright over per-widget state that navigation had silently stopped resetting.
+Neither was visible in the diff alone; both needed someone asking "is this
+actually done, and does it still fit?"
+
+Give the reviewer the PR, what it claims, and what you are least sure of, and
+ask for a verdict — MERGE or DO NOT MERGE, with reasons. Then act on it. A
+review you overrule is fine if you say why; a review you skip because the work
+felt done is the case this exists for.
+
+**Check the mechanical preconditions yourself; do not delegate them:**
+
+- **CI is green AND the run is newer than the last commit.** A green check from
+  before your latest push proves nothing. One PR here carried a month-old green
+  run from 40 commits of master ago.
+- **The branch is not behind master.** The `pre-push` hook says how far.
+- **Cross-repo claims are true now, not eventually.** Documentation that names
+  a sibling's version — "requires mob_new 0.4.32" — is false until that version
+  exists. Land the sibling first, or make the claim true in the same session.
+- **Stacked PRs merge base-first**, and the child gets retargeted and re-checked
+  after the base lands.
+
+## Recurring device gotchas — read these before debugging device issues
+
+**iOS sim launches, BEAM dies fast, sim returns to home screen.** Almost
+always a host-port collision with `adb`, not a BEAM bug. An Android
+device's `adb forward tcp:<port> tcp:<port>` binds `127.0.0.1:<port>` on
+the Mac, and iOS sims share the Mac's network stack. `mix mob.deploy`
+starts the sim's BEAM on `MobDev.Tunnel.dist_port_for/1` (crc32 of app +
+udid into `9100..9899`, bumped past ports registered in EPMD or forwarded to
+another device), but a non-BEAM listener or another sim's non-registered
+process can still hold it, and then the sim can't bind it. The OTP boot exits
+cleanly on `eaddrinuse` and there is no crash report. First diagnostic:
+
+```bash
+lsof -nP -iTCP:9100-9899 -sTCP:LISTEN | grep adb
+```
+
+…and read `Documents/beam_stdout.log` inside the sim's app container — look
+for `Protocol 'inet_tcp': register/listen error: eaddrinuse`. Workaround:
+`mix mob.deploy --device <sim-udid> --dist-port 9200`. Full writeup in
+`guides/troubleshooting.md` ("iOS simulator: BEAM dies silently…"). This
+trap has bitten the iOS sim path several times — Android tooling and iOS
+sims compete for the same `127.0.0.1` namespace; check host-port collisions
+before suspecting sim or BEAM bugs.
+
+**iOS sim stuck on "Starting BEAM…" forever.** Read
+`beam_stdout.log` inside the sim's Documents dir. If you see:
+
+```
+step 2 => {error,{"no such file or directory","elixir.app"}}
+step 5 => {error,undef}
+```
+
+…it's a runtime-path mismatch. `MobDev.Paths.sim_runtime_dir/0` falls back
+to `/tmp/otp-ios-sim` when `ios/build.sh` is missing (zig-based iOS builds),
+but the build syncs OTP + Elixir stdlib to `~/.mob/runtime/ios-sim`. Workaround
+when launching manually:
+
+```bash
+SIMCTL_CHILD_MOB_SIM_RUNTIME_DIR="$HOME/.mob/runtime/ios-sim" \
+  xcrun simctl launch <udid> com.example.<app>
+```
+
+Real fix: `sim_runtime_dir/0` should detect `ios/build.zig` and use
+`default_runtime_dir()` for it, so build and launch agree.
 
 ## Things that bite specifically in mob_dev
 
@@ -225,7 +555,7 @@ narrowing functions). Don't make them private:
 - `Discovery.Android.parse_devices_output/1`
 - `Discovery.IOS.parse_simctl_json/1`, `parse_simctl_text/1`, `parse_runtime_version/1`
 - `OtpDownloader.valid_otp_dir?/2`, `ios_device_extras_present?/1`
-- `PythonAppleSupport.valid_dir?/1`
+- `PythonAppleSupport.valid_dir?/1`, `PythonAndroidSupport.valid_dir?/1`
 - `NativeBuild.narrow_platforms_for_device/2`, `ios_toolchain_available?/0`, `read_sdk_dir/1`, `fallback_entitlements_plist/3`
 - `NativeBuild.pythonx_in_project?/1`, `python_apple_support_env/2`
 - `NativeBuild.__prune_plugin_artifacts__/2` (the plugin-removal prune; ledger-tracked per merge concern)
@@ -357,7 +687,218 @@ make that call, the help text in both task @moduledoc blocks
 should call out the scope difference explicitly. Don't quietly
 rename — users have muscle memory by now.
 
+## Key files
+
+- `lib/mob_dev/device.ex` — device struct + `node_name/1`, `short_id/1`
+- `lib/mob_dev/tunnel.ex` — adb tunnel setup, serial + app derived dist ports (`base_port/2`, `assign_dist_port/3`, `dist_port_for/1`)
+- `lib/mob_dev/hot_push.ex` — BEAM snapshot + RPC push
+- `lib/mob_dev/deployer.ex` — full BEAM push + app restart
+- `lib/mob_dev/connector.ex` — discover → tunnel → restart → wait → connect
+- `lib/mob_dev/discovery/android.ex` — adb device discovery
+- `lib/mob_dev/discovery/ios.ex` — xcrun simctl discovery
+- `lib/mix/tasks/mob.deploy.ex` — `mix mob.deploy`
+- `lib/mix/tasks/mob.push.ex` — `mix mob.push`
+- `lib/mix/tasks/mob.watch.ex` — `mix mob.watch`
+- `lib/mix/tasks/mob.connect.ex` — `mix mob.connect`
+- `lib/mix/tasks/mob.devices.ex` — `mix mob.devices`
+- `lib/mob_dev/icon_generator.ex` — robot avatar generation + platform icon resizing
+- `lib/mix/tasks/mob.icon.ex` — `mix mob.icon [--source PATH]`
+- `lib/mix/tasks/mob/adopt.ex` — `mix mob.adopt` orchestrator (install Mob into an existing Phoenix project)
+- `lib/mix/tasks/mob/adopt/` — the adopt sub-installers (`deps`, `bridge`, `screen`, `mob_app`, `mob_exs`, `native[/android,/ios]`, `finalize`)
+- `lib/mob_dev/adopt_guard.ex` — `MobDev.AdoptGuard`, the pre-1.0 detect-and-refuse for `mob.adopt`
+- `lib/mob_dev/adopt/patcher.ex` / `lib/mob_dev/adopt/generator.ex` — `MobDev.Adopt.{Patcher,Generator}`, the shared LV-bridge patches + EEx assigns/dep-resolution (duplicated from mob_new; see the adopt ADR)
+- `lib/mob_dev/toolchain.ex` — `MobDev.Toolchain`, the exact Zig pin (lockstep with `.tool-versions` via `test/mob_dev/toolchain_test.exs`)
+
+## Connecting an IEx session to a running mob app (Mac → device BEAM)
+
+Drive any running mob app from a Mac-side IEx via Erlang
+distribution. Beats `adb shell input tap` for anything
+state-related — you get full RPC into the device BEAM.
+
+### The happy path (single device)
+
+```bash
+cd /path/to/your_mob_app
+
+mix mob.connect            # starts IEx connected to all devices
+# or
+mix mob.connect --no-iex   # sets up tunnels, prints node names, exits
+```
+
+Another IEx (or one-shot script) needs the app's private cookie. Load it
+inside the VM, from the project directory, so it never appears in the
+process arguments:
+
+```bash
+elixir --name probe@127.0.0.1 -S mix run --no-start -e '
+Node.set_cookie(MobDev.DistCookie.for_project!())
+node = :"your_app_android_<suffix>@127.0.0.1"
+Node.connect(node)
+:rpc.call(node, YourApp.Module, :function, [args])
+'
+```
+
+In an `iex --name me@127.0.0.1 -S mix` session, run
+`Node.set_cookie(MobDev.DistCookie.for_project!())` first.
+
+The cookie is per app, kept under `~/.mob/dist_cookies/` and handed to the app
+at deploy/connect time (Android: a file in its private storage; iOS: the launch
+environment). An app built against a mob from before MOB-49 still uses the
+public `mob_secret`; mob_dev's tasks fall back to it with a warning. `--name`
+(long names) is required when the device node uses a numeric host like
+`@10.0.0.120`.
+
+### Multi-Android — node naming (FIXED 2026-05-28, commit `7497f4b`)
+
+`mob_dev` now derives the Android dist node-name suffix from the device
+**serial** (matching what `Mob.Dist` actually registers), not the IP.
+Emulators get distinct suffixes like `emulator_5554` / `emulator_5556`,
+so two emulators no longer collide in EPMD. The bug was in
+`discovery/android.ex` `enrich/1` — it had a duplicated half-implementation
+of `device_node_suffix/1` that was IP-based, while the correct serial-based
+helper already existed and was used in `restart_app/4`. See ADR
+`decisions/2026-05-28-android-node-name-by-serial.md`.
+
+Physical (USB/Wi-Fi) Android is unchanged: still keyed off `ro.serialno`.
+iOS untouched.
+
+### Dist ports are serial + app derived (0.6.7; app added in 0.7.5)
+
+Dist ports are no longer assigned by per-run index (which made *every*
+project's first device claim 9100 → cross-project collisions in the one
+shared Mac EPMD → silent timeouts). `Tunnel.base_port/2` maps a device
+serial plus the app name to a stable port in `9100..9899` (crc32 hash), and
+`assign_dist_port/3` bumps past any port another live node or another
+device's forward already holds. Keying on the serial alone gave two apps on
+one device the same port, and the second one's dist failed with
+`:nodistribution` (N18). Deploy and connect both resolve the port through
+`Tunnel.dist_port_for/1`, so they agree. The device-side BEAM listens on that
+port (via `MOB_DIST_PORT` / the `mob_dist` file), so the forward is 1:1 and
+EPMD's broadcast matches. `setup` removes the device's stale dist forwards
+first, but never one another app on the same device is live on.
+
+If `mix mob.connect` still fails, it now tells you *why* (app not running /
+Standby-killed, dist not registered, port mismatch, no forward, cookie
+mismatch) instead of a bare "timed out". To inspect by hand:
+
+```bash
+epmd -names           # registered nodes + their ports
+adb forward --list    # host→device forwards (should be 1:1, no dupes)
+```
+
+For physical-device-on-Wi-Fi targets (iPhone, real Android), the
+node name uses the device IP directly (`@10.0.0.120`) and dist
+goes through real network — no adb-forward dance required.
+
+### Inspecting state that contains opaque resources
+
+Several mob/Pigeon operations return values containing opaque NIF
+resources (e.g. `Pythonx.Object`, ETS table refs). These cannot
+cross Erlang distribution: `:rpc.call/4` will fail with `:badrpc`
+on the way back. Pattern: do the resource-touching work *on the
+device side* and return primitives (strings, maps, ints).
+
+Example — bad (returns `Pythonx.Object`, dies on dist boundary):
+
+```elixir
+:rpc.call(node, Pythonx, :eval, [src, %{}])  # returns {Pythonx.Object, _}; cannot serialize
+```
+
+Good — wrap in a helper module compiled into the app:
+
+```elixir
+defmodule YourApp.IexHelpers do
+  def python_state do
+    {obj, _} = Pythonx.eval("...", %{})
+    Jason.decode!(Pythonx.decode(obj))   # plain map; safe to ship
+  end
+end
+```
+
+Then `:rpc.call(node, YourApp.IexHelpers, :python_state, [])` works.
+Pigeon has `Pigeon.IexHelpers` exactly for this purpose — copy
+that pattern when adding device-side debugging surfaces.
+
+### What to reach for first
+
+Write small named functions in `<your_app>.IexHelpers`, push with
+`mix mob.deploy`, call by RPC. That keeps the Mac-side script
+minimal and debuggable, and the helpers double as documentation
+of the operations you actually need.
+
+---
+
+## Release flow
+
+Canonical process lives in
+[`mob/RELEASE.md`](https://github.com/GenericJam/mob/blob/master/RELEASE.md)
+— trigger model (mix.exs as source of truth), patch-bump default with
+mandatory permission, CHANGELOG conventions, per-step idempotency of
+`release.yml`.
+
+> **Review gate is on by default.** Everything that landed since the
+> last published version gets a code review *before* you publish —
+> scoped at `v<last-published>..HEAD`, not per-PR — plus the
+> version-sanity checks (is this version already published? did
+> anything merge after the bump commit?). Skip only if the user says
+> so. See RELEASE.md → "Review gate".
+
+**mob_dev specifics:**
+
+- The pre-push hook (below) additionally runs `mix mob.security_scan`
+  in this repo — the scanner ships from here, so we get the
+  highest-fidelity check before pushing.
+- OTP runtime tarballs (`otp-<hash>` releases on the `mob` repo) are
+  built and published manually via `scripts/release/` — they are NOT
+  driven by `mix.exs` bumps. See `## Releasing a new OTP runtime`
+  below for the tarball workflow. The `mix.exs` bump that ships a
+  `@otp_hash` change in `lib/mob_dev/otp_downloader.ex` follows the
+  standard release flow.
+
+**Pre-push hook**: `.githooks/pre-push` runs `mix format
+--check-formatted`, `mix credo --strict`, `mix compile
+--warnings-as-errors` on every push (fast). When the push touches
+`mix.exs` it additionally runs the full test suite + `mix
+mob.security_scan` as the release preflight. Activate once per clone
+or worktree:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+## Releasing a new OTP runtime
+
+When upgrading OTP, you need to rebuild the pre-built tarballs that
+`MobDev.OtpDownloader` downloads. See [`build_release.md`](build_release.md)
+for the full process (staging, adding headers + static libs, uploading to GitHub,
+updating the hash in `otp_downloader.ex`).
+
+## Decision log
+
+Non-obvious decisions — tradeoffs, workarounds, conventions, "why we chose X
+over Y" — go in `decisions/`, **one file per decision**:
+
+    decisions/YYYY-MM-DD-short-slug.md
+
+Each file is a lightweight ADR:
+
+    # <Title>
+    - Date: YYYY-MM-DD
+    - Status: accepted | superseded by <file> | proposed
+    ## Context        — what prompted this
+    ## Decision       — what we chose
+    ## Consequences   — tradeoffs, follow-ups
+
+**Append new files; never rewrite a decision.** If a decision changes, add a
+new file and mark the old one `Status: superseded by <new-file>`. If a record
+was *wrong*, correct it in place with a note saying what was wrong (see
+"Decision log — check both directions" above). One file per
+decision keeps the log conflict-free across parallel agents/worktrees — the
+date-sorted directory listing is the index. Record a decision the moment you
+make a non-obvious call, not later.
+
 ## Keep this file up to date
 
-When you change repo conventions, add a public seam, or hit a new gotcha —
-update this file in the same commit. Stale guidance is worse than none.
+When you change repo conventions, add a public seam, or hit a gotcha that
+should have been on the list — update this file in the same commit, not as a
+follow-up. Stale guidance is worse than none.

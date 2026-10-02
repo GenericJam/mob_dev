@@ -776,7 +776,8 @@ defmodule Mix.Tasks.Mob.Doctor do
   # String.contains? on the one-line form flagged a correctly hand-ported
   # fix as still broken forever, since mix mob.doctor only warns and never
   # re-checks itself. Regex.compile!/1 (runtime), not a ~r// literal — see
-  # mob's AGENTS.md rule #9: compile-time ~r// bakes a call to
+  # mob's AGENTS.md pre-empt-failure rule "Compile-time `~r//` literals are
+  # unsafe on OTP 28": compile-time ~r// bakes a call to
   # :re.import/1, removed in OTP 28.
   @spec __component_event_jni_mismatched__(String.t()) :: boolean()
   def __component_event_jni_mismatched__(content) do
