@@ -35,7 +35,11 @@ defmodule MobDev.IosLayoutPlist do
     Record.extract(:xmlElement, from_lib: "xmerl/include/xmerl.hrl")
   )
 
-  Record.defrecordp(:xml_text, :xmlText, Record.extract(:xmlText, from_lib: "xmerl/include/xmerl.hrl"))
+  Record.defrecordp(
+    :xml_text,
+    :xmlText,
+    Record.extract(:xmlText, from_lib: "xmerl/include/xmerl.hrl")
+  )
 
   @portrait ["UIInterfaceOrientationPortrait", "UIInterfaceOrientationPortraitUpsideDown"]
   @landscape ["UIInterfaceOrientationLandscapeLeft", "UIInterfaceOrientationLandscapeRight"]
@@ -92,7 +96,8 @@ defmodule MobDev.IosLayoutPlist do
     do: {:ok, @orientation_sets[value]}
 
   defp orientations(other) do
-    {:error, "mob.exs ios_orientations must be :all, :portrait or :landscape, got #{inspect(other)}"}
+    {:error,
+     "mob.exs ios_orientations must be :all, :portrait or :landscape, got #{inspect(other)}"}
   end
 
   @doc """

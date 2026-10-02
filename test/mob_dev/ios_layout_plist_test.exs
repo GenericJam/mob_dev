@@ -11,8 +11,8 @@ defmodule MobDev.IosLayoutPlistTest do
   defp plist(keys) do
     body =
       Enum.map_join(keys, "\n", fn
-        {key, :true} -> "<key>#{key}</key><true/>"
-        {key, :false} -> "<key>#{key}</key><false/>"
+        {key, true} -> "<key>#{key}</key><true/>"
+        {key, false} -> "<key>#{key}</key><false/>"
         {key, ints} when is_integer(hd(ints)) -> array(key, "integer", ints)
         {key, strings} -> array(key, "string", strings)
       end)
@@ -187,7 +187,8 @@ defmodule MobDev.IosLayoutPlistTest do
     end
 
     test "UIRequiresFullScreen true warns, and no mob.exs key silences it" do
-      xml = plist(List.keyreplace(@new, "UIRequiresFullScreen", 0, {"UIRequiresFullScreen", true}))
+      xml =
+        plist(List.keyreplace(@new, "UIRequiresFullScreen", 0, {"UIRequiresFullScreen", true}))
 
       assert levels(IosLayoutPlist.audit(xml, ios_target_devices: [:iphone])) == [
                {:warn, "iOS UIRequiresFullScreen"}

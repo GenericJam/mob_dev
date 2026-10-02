@@ -52,7 +52,10 @@ defmodule MobDev.IosLayoutPlistApplyTest do
 
     assert %{
              device_family: [1, 2],
-             orientations: ["UIInterfaceOrientationPortrait", "UIInterfaceOrientationPortraitUpsideDown"],
+             orientations: [
+               "UIInterfaceOrientationPortrait",
+               "UIInterfaceOrientationPortraitUpsideDown"
+             ],
              ipad_orientations: @all
            } = keys!(path)
 
@@ -76,18 +79,25 @@ defmodule MobDev.IosLayoutPlistApplyTest do
 
     [block] =
       Regex.run(~r/^ *if \[ -n "\$MOB_IOS_LAYOUT_PLIST_COMMANDS" \]; then\n.*?^ *fi\n/ms, sh)
+
     {var, commands} = MobDev.Release.layout_plist_env(@cfg)
     app = Path.dirname(path)
     File.rename!(path, Path.join(app, "Info.plist"))
 
     {output, status} =
-      System.cmd("bash", ["-e", "-c", block], env: [{var, commands}, {"APP", app}], stderr_to_stdout: true)
+      System.cmd("bash", ["-e", "-c", block],
+        env: [{var, commands}, {"APP", app}],
+        stderr_to_stdout: true
+      )
 
     assert status == 0, output
 
     assert %{
              device_family: [1, 2],
-             orientations: ["UIInterfaceOrientationPortrait", "UIInterfaceOrientationPortraitUpsideDown"],
+             orientations: [
+               "UIInterfaceOrientationPortrait",
+               "UIInterfaceOrientationPortraitUpsideDown"
+             ],
              ipad_orientations: @all
            } = keys!(path)
   end

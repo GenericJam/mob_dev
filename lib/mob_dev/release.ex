@@ -390,7 +390,9 @@ defmodule MobDev.Release do
   # Empty when neither key is set. Raises on an invalid value. Pure.
   @spec layout_plist_env(keyword()) :: {String.t(), String.t()}
   def layout_plist_env(cfg),
-    do: {"MOB_IOS_LAYOUT_PLIST_COMMANDS", Enum.join(MobDev.IosLayoutPlist.plist_commands(cfg), "\n")}
+    do:
+      {"MOB_IOS_LAYOUT_PLIST_COMMANDS",
+       Enum.join(MobDev.IosLayoutPlist.plist_commands(cfg), "\n")}
 
   @doc false
   # Opt-in to shipping mob's public-API `screenshot` NIF in the release build (stripped
