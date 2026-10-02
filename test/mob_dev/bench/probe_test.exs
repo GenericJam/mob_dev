@@ -69,7 +69,9 @@ defmodule MobDev.Bench.ProbeTest do
       {:ok, port} = :inet.port(sock)
 
       try do
-        assert Probe.tcp_open?("127.0.0.1", port, 200)
+        # A generous timeout: it is only spent if the connect fails, and a
+        # loaded machine has missed 200 ms on loopback (MOB-32).
+        assert Probe.tcp_open?("127.0.0.1", port, 5_000)
       after
         :gen_tcp.close(sock)
       end
