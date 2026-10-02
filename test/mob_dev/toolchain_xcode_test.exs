@@ -228,14 +228,16 @@ defmodule MobDev.ToolchainXcodeTest do
       assert duo =~ "unconfirmed — iOS SDK version unreadable (selected: Xcode 27.1)"
     end
 
-    test "command line tools only: warnings, no Duo row" do
+    test "command line tools only: warnings, one fix (select Xcode), no Duo row" do
       clt =
         "xcode-select: error: tool 'xcodebuild' requires Xcode, but active developer directory"
 
-      assert [{:warn, "Xcode", _, _}, {:warn, "iOS SDK", _, _}] =
+      assert [{:warn, "Xcode", _, xcode_fix}, {:warn, "iOS SDK", _, nil}] =
                Doctor.__xcode_checks__(
                  probe({clt, 1}, {clt, 1}, "/Library/Developer/CommandLineTools")
                )
+
+      assert xcode_fix =~ "xcode-select -s"
     end
 
     test "no Xcode row ever fails for a modern Xcode" do

@@ -285,7 +285,7 @@ defmodule Mix.Tasks.Mob.Doctor do
         ]
   def __xcode_checks__(%{xcodebuild: xcodebuild, ios_sdk: ios_sdk, developer_dir: developer_dir}) do
     {xcode_row, xcode_version} = xcode_row(xcodebuild, developer_dir)
-    {sdk_row, sdk_version} = ios_sdk_row(ios_sdk)
+    {sdk_row, sdk_version} = ios_sdk_row(ios_sdk, elem(xcodebuild, 1) == 0)
 
     [xcode_row, sdk_row | duo_row(xcode_version, sdk_version)]
   end
@@ -326,17 +326,21 @@ defmodule Mix.Tasks.Mob.Doctor do
     )
   end
 
-  defp ios_sdk_row({out, 0}) do
+  defp ios_sdk_row({out, 0}, _xcodebuild_ok?) do
     case Toolchain.parse_sdk_version(out) do
       {:ok, version} -> {{:ok, "iOS SDK", Toolchain.format_version(version), nil}, version}
       :error -> {{:warn, "iOS SDK", "could not parse SDK version: #{first_line(out)}", nil}, nil}
     end
   end
 
-  defp ios_sdk_row({out, _}) do
-    {{:warn, "iOS SDK", "not found (#{first_line(out)})",
-      "Install the iOS platform for the selected Xcode:\n" <>
-        "  xcodebuild -downloadPlatform iOS"}, nil}
+  # `-downloadPlatform` needs a working xcodebuild; when it failed (no Xcode, or
+  # only the Command Line Tools selected) the Xcode row's fix comes first.
+  defp ios_sdk_row({out, _}, xcodebuild_ok?) do
+    fix =
+      if xcodebuild_ok?,
+        do: "Install the iOS platform for the selected Xcode:\n  xcodebuild -downloadPlatform iOS"
+
+    {{:warn, "iOS SDK", "not found (#{first_line(out)})", fix}, nil}
   end
 
   defp duo_row(nil, nil), do: []
