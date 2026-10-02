@@ -24,9 +24,10 @@ defmodule MobDev.IosLayoutPlist do
       `UIApplicationSceneManifest` → `UIApplicationSupportsMultipleScenes`, so
       iPad users can open several windows of the app, each with its own
       navigation (`Mob.Scene` in mob). It needs the plist's existing
-      `UISceneConfigurations` (the generated `SceneDelegate`); the build
-      refuses a plist without them rather than add a manifest that would
-      switch the app to a scene lifecycle with no delegate. `false` removes the
+      `UISceneConfigurations` → `UIWindowSceneSessionRoleApplication` entry
+      (the generated `SceneDelegate`); the build refuses a plist without one
+      rather than add a manifest that would switch the app to a scene
+      lifecycle with no delegate. `false` removes the
       key, which iOS reads as `false`. Needs a mob release with `Mob.Scene`.
 
   Unset keys leave `ios/Info.plist` as written. `UIRequiresFullScreen` has no
@@ -56,7 +57,7 @@ defmodule MobDev.IosLayoutPlist do
 
   @orientation_sets %{all: @all_orientations, portrait: @portrait, landscape: @landscape}
 
-  @scene_configurations ":UIApplicationSceneManifest:UISceneConfigurations"
+  @scene_configurations ":UIApplicationSceneManifest:UISceneConfigurations:UIWindowSceneSessionRoleApplication:0"
   @multiple_scenes ":UIApplicationSceneManifest:UIApplicationSupportsMultipleScenes"
 
   @typedoc "One `mix mob.doctor` row."
@@ -128,8 +129,8 @@ defmodule MobDev.IosLayoutPlist do
   The PlistBuddy commands that stamp the `mob.exs` overrides into a bundle's
   Info.plist, in order. A `Delete` of a key the plist lacks fails harmlessly;
   every other command must succeed, including the `Print` that checks a
-  `multi_window: true` plist has `UISceneConfigurations`. Raises `Mix.Error`
-  on an invalid setting.
+  `multi_window: true` plist has an application scene configuration. Raises
+  `Mix.Error` on an invalid setting.
   """
   @spec plist_commands(keyword()) :: [String.t()]
   def plist_commands(cfg) do
@@ -209,9 +210,10 @@ defmodule MobDev.IosLayoutPlist do
   # The error for `multi_window: true` on a plist without a scene manifest;
   # release_device.sh prints the same advice.
   defp missing_scene_configurations(path) do
-    "mob.exs multi_window: true needs UIApplicationSceneManifest → UISceneConfigurations " <>
-      "(a SceneDelegate) in #{path}. Copy the UIApplicationSceneManifest dict from a " <>
-      "newly generated app's ios/Info.plist (mix mob.new), or set multi_window: false"
+    "mob.exs multi_window: true needs UIApplicationSceneManifest → UISceneConfigurations → " <>
+      "UIWindowSceneSessionRoleApplication (a SceneDelegate) in #{path}. Copy the " <>
+      "UIApplicationSceneManifest dict from a newly generated app's ios/Info.plist " <>
+      "(mix mob.new), or set multi_window: false"
   end
 
   @doc """
@@ -303,8 +305,20 @@ defmodule MobDev.IosLayoutPlist do
   defp boolean(xml_element(name: false)), do: false
   defp boolean(_), do: nil
 
-  defp scene_configurations?(xml_element(name: :dict, content: content)),
-    do: content |> elements() |> pairs(%{}) |> Map.has_key?("UISceneConfigurations")
+  # An application-role scene configuration (the SceneDelegate) to extend.
+  defp scene_configurations?(xml_element(name: :dict, content: content)) do
+    with xml_element(name: :dict, content: configurations) <-
+           content |> elements() |> pairs(%{}) |> Map.get("UISceneConfigurations"),
+         xml_element(name: :array, content: roles) <-
+           configurations
+           |> elements()
+           |> pairs(%{})
+           |> Map.get("UIWindowSceneSessionRoleApplication") do
+      elements(roles) != []
+    else
+      _ -> false
+    end
+  end
 
   defp scene_configurations?(_), do: false
 
@@ -348,8 +362,8 @@ defmodule MobDev.IosLayoutPlist do
 
   defp multi_window_check(true, false) do
     {:fail, "iOS multi_window (Info.plist)",
-     "mob.exs sets multi_window: true but ios/Info.plist has no " <>
-       "UIApplicationSceneManifest → UISceneConfigurations, so the iOS build refuses it",
+     "mob.exs sets multi_window: true but ios/Info.plist has no UIApplicationSceneManifest → " <>
+       "UISceneConfigurations → UIWindowSceneSessionRoleApplication, so the iOS build refuses it",
      "Copy the UIApplicationSceneManifest dict from a newly generated app's ios/Info.plist " <>
        "(mix mob.new), or set multi_window: false"}
   end

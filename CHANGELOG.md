@@ -9,8 +9,9 @@
   reads as false; unset leaves the plist as written). The feature itself, one
   navigation stack per window in one BEAM (`Mob.Scene`), needs mob#184
   (unreleased); with an older mob, keep the key unset or `false`. A plist
-  without `UISceneConfigurations` (a `SceneDelegate`) stops the build rather
-  than gain a scene manifest with no delegate, and `mix mob.doctor` fails that
+  without an application scene configuration (`UISceneConfigurations` →
+  `UIWindowSceneSessionRoleApplication`, the `SceneDelegate`) stops the build
+  rather than gain a scene manifest with no delegate, and `mix mob.doctor` fails that
   combination with the fix. A non-boolean value stops the build.
 
 - **`mob.exs` chooses the iOS devices and orientations (MOB-206).**

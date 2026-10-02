@@ -52,12 +52,16 @@ defmodule MobDev.IosLayoutPlistTest do
 
   # The template's scene manifest (the generated SceneDelegate), in place of
   # the stub manifest plist/1 writes.
-  defp with_scene_configurations(xml) do
+  defp with_scene_configurations(
+         xml,
+         roles \\ "<dict><key>UISceneDelegateClassName</key><string>SceneDelegate</string></dict>"
+       ) do
     String.replace(
       xml,
       "<dict><key>UIDeviceFamily</key><array><integer>9</integer></array></dict>",
       "<dict><key>UIApplicationSupportsMultipleScenes</key><false/>" <>
-        "<key>UISceneConfigurations</key><dict/></dict>"
+        "<key>UISceneConfigurations</key><dict>" <>
+        "<key>UIWindowSceneSessionRoleApplication</key><array>#{roles}</array></dict></dict>"
     )
   end
 
@@ -81,11 +85,14 @@ defmodule MobDev.IosLayoutPlistTest do
       assert {:error, _} = IosLayoutPlist.read("bplist00\x01\x02")
     end
 
-    test "sees whether the scene manifest has UISceneConfigurations" do
+    test "sees whether the scene manifest has an application scene configuration" do
       assert {:ok, %{scene_configurations?: false}} = IosLayoutPlist.read(plist(@new))
 
       assert {:ok, %{scene_configurations?: true}} =
                IosLayoutPlist.read(with_scene_configurations(plist(@new)))
+
+      assert {:ok, %{scene_configurations?: false}} =
+               IosLayoutPlist.read(with_scene_configurations(plist(@new), ""))
     end
   end
 
@@ -125,7 +132,7 @@ defmodule MobDev.IosLayoutPlistTest do
 
     test "multi_window stamps UIApplicationSupportsMultipleScenes into the scene manifest" do
       assert IosLayoutPlist.plist_commands(multi_window: true) == [
-               "Print :UIApplicationSceneManifest:UISceneConfigurations",
+               "Print :UIApplicationSceneManifest:UISceneConfigurations:UIWindowSceneSessionRoleApplication:0",
                "Delete :UIApplicationSceneManifest:UIApplicationSupportsMultipleScenes",
                "Add :UIApplicationSceneManifest:UIApplicationSupportsMultipleScenes bool true"
              ]

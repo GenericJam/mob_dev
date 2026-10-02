@@ -751,7 +751,7 @@ defmodule MobDev.Release do
             case "$CMD" in
                 "Delete "*) /usr/libexec/PlistBuddy -c "$CMD" "$APP/Info.plist" 2>/dev/null || true ;;
                 "Print "*)  /usr/libexec/PlistBuddy -c "$CMD" "$APP/Info.plist" >/dev/null 2>&1 || {
-                                echo "error: mob.exs multi_window: true needs UIApplicationSceneManifest -> UISceneConfigurations (a SceneDelegate) in ios/Info.plist. Copy the UIApplicationSceneManifest dict from a newly generated app's ios/Info.plist (mix mob.new), or set multi_window: false" >&2
+                                echo "error: mob.exs multi_window: true needs UIApplicationSceneManifest -> UISceneConfigurations -> UIWindowSceneSessionRoleApplication (a SceneDelegate) in ios/Info.plist. Copy the UIApplicationSceneManifest dict from a newly generated app's ios/Info.plist (mix mob.new), or set multi_window: false" >&2
                                 exit 1
                             } ;;
                 *)          /usr/libexec/PlistBuddy -c "$CMD" "$APP/Info.plist" ;;

@@ -34,7 +34,8 @@ Facts this rests on, checked 2026-10-01 against Xcode 27.0:
 
 ## Decision
 
-- **Two `config :mob_dev` keys, applied to the bundle at build time**:
+- **Two `config :mob_dev` keys (a third, `multi_window`, in the addendum
+  below), applied to the bundle at build time**:
   `ios_target_devices` (`[:iphone, :ipad]` or `[:iphone]`) sets
   `UIDeviceFamily`; `ios_orientations` (`:all`, `:portrait`, `:landscape`) sets
   the iPhone `UISupportedInterfaceOrientations` (removing any `~iphone`
@@ -94,6 +95,8 @@ alone. The runtime side, one `Mob.Router` per window scene, is mob's
 PlistBuddy's `Add` creates a missing parent dict, so on a plist with no scene
 manifest it would put the app on the scene lifecycle with no delegate (a blank
 window). The commands therefore start with `Print
-:UIApplicationSceneManifest:UISceneConfigurations`, which must succeed: the dev
-build raises and `release_device.sh` exits with the fix, and `mix mob.doctor`
-fails the same combination. Every app mob_new has generated has the manifest.
+:UIApplicationSceneManifest:UISceneConfigurations:UIWindowSceneSessionRoleApplication:0`
+(an application scene configuration, i.e. the `SceneDelegate`), which must
+succeed: the dev build raises and `release_device.sh` exits with the fix, and
+`mix mob.doctor` fails the same combination. Every app mob_new has generated
+has the manifest.
