@@ -67,17 +67,41 @@ defmodule MobDev.ToolchainXcodeTest do
     end
   end
 
-  describe "duo_supported?/1" do
-    test "27.1 and later, by numeric (not string) comparison" do
-      assert Toolchain.duo_supported?([{27, 1, 0}, {27, 1, 0}])
-      assert Toolchain.duo_supported?([{27, 10, 0}, nil])
-      assert Toolchain.duo_supported?([{28, 0, 0}, {28, 0, 0}])
-      refute Toolchain.duo_supported?([{27, 0, 9}, {27, 0, 0}])
-      refute Toolchain.duo_supported?([{26, 6, 0}, {26, 5, 0}])
+  describe "parse_sdk_version/1" do
+    test "plain xcrun output" do
+      assert {:ok, {27, 0, 0}} = Toolchain.parse_sdk_version("27.0\n")
+      assert {:ok, {26, 5, 0}} = Toolchain.parse_sdk_version("26.5")
     end
 
-    test "every known version must qualify" do
-      refute Toolchain.duo_supported?([{27, 1, 0}, {27, 0, 0}])
+    test "skips warnings xcrun prints before the version (stderr is merged)" do
+      out =
+        "2026-10-01 xcrun[42:7] [MT] DVTSDK: Warning: SDK path collision for path 'x': SDK 27.0\n" <>
+          "27.0\n"
+
+      assert {:ok, {27, 0, 0}} = Toolchain.parse_sdk_version(out)
+    end
+
+    test "rejects output with no version line" do
+      assert :error =
+               Toolchain.parse_sdk_version("xcrun: error: SDK \"iphoneos\" cannot be located\n")
+
+      assert :error = Toolchain.parse_sdk_version("")
+    end
+  end
+
+  describe "duo_supported?/2" do
+    test "27.1 and later, by numeric (not string) comparison" do
+      assert Toolchain.duo_supported?({27, 1, 0}, {27, 1, 0})
+      assert Toolchain.duo_supported?({27, 10, 0}, {27, 10, 0})
+      assert Toolchain.duo_supported?({28, 0, 0}, {28, 0, 0})
+      refute Toolchain.duo_supported?({27, 0, 9}, {27, 0, 0})
+      refute Toolchain.duo_supported?({26, 6, 0}, {26, 5, 0})
+    end
+
+    test "both the Xcode and its iOS SDK must qualify, and be known" do
+      refute Toolchain.duo_supported?({27, 1, 0}, {27, 0, 0})
+      refute Toolchain.duo_supported?({27, 1, 0}, nil)
+      refute Toolchain.duo_supported?(nil, {27, 1, 0})
     end
   end
 
@@ -189,6 +213,19 @@ defmodule MobDev.ToolchainXcodeTest do
       assert detail =~ "cannot be located"
       assert fix =~ "-downloadPlatform iOS"
       assert duo =~ "selected: Xcode 27.0"
+    end
+
+    test "Xcode 27.1 without a readable iOS SDK is not reported as Duo-ready" do
+      rows =
+        Doctor.__xcode_checks__(
+          probe(
+            {"Xcode 27.1\nBuild version 27A9269", 0},
+            {"xcrun: error: SDK \"iphoneos\" cannot be located", 1}
+          )
+        )
+
+      assert {:warn, "iPhone Duo", duo, nil} = List.last(rows)
+      assert duo =~ "unconfirmed — iOS SDK version unreadable (selected: Xcode 27.1)"
     end
 
     test "command line tools only: warnings, no Duo row" do

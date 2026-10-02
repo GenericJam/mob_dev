@@ -23,18 +23,21 @@ line counted as Xcode 99.
   `xcode-select -s`: every probe goes through `xcodebuild`, `xcrun` and
   `xcode-select -p`, which resolve it the same way.
 - `iPhone Duo` warns `unsupported (needs Xcode 27.1+)` when the Xcode or its
-  iOS SDK is older than 27.1, and is OK when every version that could be read
-  is 27.1 or later. It is never a failure: an older Xcode still builds every
-  app, only without Duo support.
+  iOS SDK is older than 27.1. It is OK only when both versions were read and
+  both are 27.1 or later; if the one that was read is 27.1+ and the other
+  couldn't be read, it warns `unconfirmed`. It is never a failure: an older
+  Xcode still builds every app, only without Duo support.
 - Xcode older than 15 still fails. A missing iOS SDK (the iOS platform is a
   separate download since Xcode 15) and an unparseable `xcodebuild -version`
   warn; neither stops the run.
 - Versions are compared as integer tuples, so 27.10 is newer than 27.9. The
   parser reads the `Xcode N[.N[.N]]` line wherever it is in the output and
-  ignores text after the version (`27.1 beta 3`). Apple's beta build numbers
-  can't be told from release ones (16.2 shipped as 16C5032a), so the row says
-  `beta` only when the version line or the selected app's name does
-  (`Xcode-beta.app`).
+  ignores text after the version (`27.1 beta 3`); the SDK version is the first
+  output line that is only a version, so warnings xcrun prints first (stderr is
+  merged) are skipped. Apple's beta build numbers can't be told from release
+  ones (16.2 shipped as 16C5032a), so the row says `beta` only when the
+  version line or the selected app's name does (`Xcode-beta.app`). No regex
+  literals: this repo avoids them for OTP 28.0.
 - SDK detection in `MobDev.NativeBuild` needs no change. It asks
   `xcrun -sdk iphonesimulator|iphoneos --show-sdk-path` for every build (sim
   app, device app, exqlite/pythonx and Zigler NIF cross-compiles); the
@@ -49,16 +52,16 @@ line counted as Xcode 99.
   Swift step (new `swift_mob.o`, `sdk 26.5`) and linked `sdk 26.5`; both apps
   ran on an iOS 27.0 and an iOS 26.5 simulator. `minos` stayed 17.0.
 - Deployment target: keep the iOS 17 floor and gate Duo API at each use site
-  with `@available(iOS 27.1, *)`, as MOB-201 recommends. It is recorded with
-  the rest of the fold design in mob's
+  with `@available` (`iOS 27.1` for `ReservedRegion` and `ArrangementView`), as
+  MOB-201 recommends. It is recorded with the rest of the fold design in mob's
   `decisions/2026-10-01-fold-aware-layouts.md`, section 8 (MOB-208).
 - CI: GitHub's `xcode-27` image (preview, macOS 27) has Xcode 27.0, 27.1
   (27A9269) and 27.2 beta with their iOS SDKs, but only the iOS 27.0
   simulator runtime and no iPhone Duo simulator. The `xcode` job in
   `.github/workflows/test.yml` runs `test/mob_dev/xcode_live_test.exs`
   (`:xcode_live`, excluded by default) against Xcode 27.1 and 27.0 on
-  `xcode-27` and Xcode 26.6 on `macos-26`, asserting the versions and Duo
-  level doctor reports from the real tools.
+  `xcode-27` and Xcode 26.6 on `macos-26`. It runs `mix mob.doctor` itself
+  and asserts the Xcode, iOS SDK and Duo rows it prints from the real tools.
 
 ## Consequences
 

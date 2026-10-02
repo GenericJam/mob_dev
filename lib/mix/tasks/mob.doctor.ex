@@ -312,7 +312,7 @@ defmodule Mix.Tasks.Mob.Doctor do
 
   defp xcode_detail(xcode, developer_dir) do
     app = developer_dir && String.replace_suffix(developer_dir, "/Contents/Developer", "")
-    beta? = xcode.beta? or (app != nil and app =~ ~r/beta/i)
+    beta? = xcode.beta? or (app != nil and Toolchain.beta?(app))
 
     Enum.join(
       [
@@ -327,7 +327,7 @@ defmodule Mix.Tasks.Mob.Doctor do
   end
 
   defp ios_sdk_row({out, 0}) do
-    case Toolchain.parse_version(out) do
+    case Toolchain.parse_sdk_version(out) do
       {:ok, version} -> {{:ok, "iOS SDK", Toolchain.format_version(version), nil}, version}
       :error -> {{:warn, "iOS SDK", "could not parse SDK version: #{first_line(out)}", nil}, nil}
     end
@@ -344,22 +344,33 @@ defmodule Mix.Tasks.Mob.Doctor do
   defp duo_row(xcode_version, sdk_version) do
     min = Toolchain.format_version(Toolchain.duo_min_version())
 
-    found =
-      [{"Xcode", xcode_version}, {"iOS SDK", sdk_version}]
-      |> Enum.reject(fn {_, v} -> is_nil(v) end)
-      |> Enum.map_join(", ", fn {name, v} -> "#{name} #{Toolchain.format_version(v)}" end)
+    versions = [{"Xcode", xcode_version}, {"iOS SDK", sdk_version}]
+    {known, unknown} = Enum.split_with(versions, fn {_, v} -> v != nil end)
 
-    if Toolchain.duo_supported?([xcode_version, sdk_version]) do
-      [{:ok, "iPhone Duo", "supported (#{found})", nil}]
-    else
-      [
-        {:warn, "iPhone Duo", "unsupported (needs Xcode #{min}+) — selected: #{found}",
-         "Builds still work; only iPhone Duo support needs Xcode #{min}. Install it and select it\n" <>
-           "(use the path you installed it at):\n" <>
-           "  sudo xcode-select -s /Applications/Xcode-#{min}.app\n" <>
-           "or for one shell:\n" <>
-           "  export DEVELOPER_DIR=/Applications/Xcode-#{min}.app/Contents/Developer"}
-      ]
+    found =
+      Enum.map_join(known, ", ", fn {name, v} -> "#{name} #{Toolchain.format_version(v)}" end)
+
+    cond do
+      Toolchain.duo_supported?(xcode_version, sdk_version) ->
+        [{:ok, "iPhone Duo", "supported (#{found})", nil}]
+
+      Enum.all?(known, fn {_, v} -> v >= Toolchain.duo_min_version() end) ->
+        unread = Enum.map_join(unknown, " and ", &elem(&1, 0))
+
+        [
+          {:warn, "iPhone Duo", "unconfirmed — #{unread} version unreadable (selected: #{found})",
+           nil}
+        ]
+
+      true ->
+        [
+          {:warn, "iPhone Duo", "unsupported (needs Xcode #{min}+) — selected: #{found}",
+           "Builds still work; only iPhone Duo support needs Xcode #{min}. Install it and select it\n" <>
+             "(use the path you installed it at):\n" <>
+             "  sudo xcode-select -s /Applications/Xcode-#{min}.app\n" <>
+             "or for one shell:\n" <>
+             "  export DEVELOPER_DIR=/Applications/Xcode-#{min}.app/Contents/Developer"}
+        ]
     end
   end
 

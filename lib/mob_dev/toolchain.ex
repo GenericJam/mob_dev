@@ -93,7 +93,7 @@ defmodule MobDev.Toolchain do
   """
   @spec parse_xcodebuild_version(String.t()) :: {:ok, xcode()} | :error
   def parse_xcodebuild_version(output) do
-    lines = output |> String.split("\n") |> Enum.map(&String.trim/1)
+    lines = trimmed_lines(output)
 
     with "Xcode " <> rest <- Enum.find(lines, "", &String.starts_with?(&1, "Xcode ")),
          {:ok, version} <- parse_version(rest) do
@@ -103,10 +103,26 @@ defmodule MobDev.Toolchain do
           _ -> nil
         end)
 
-      {:ok, %{version: version, build: build, beta?: rest =~ ~r/beta/i}}
+      {:ok, %{version: version, build: build, beta?: beta?(rest)}}
     else
       _ -> :error
     end
+  end
+
+  @doc """
+  Parses `xcrun --sdk iphoneos --show-sdk-version` output: the first line
+  that is only a version, so warnings xcrun prints first are skipped.
+  """
+  @spec parse_sdk_version(String.t()) :: {:ok, version()} | :error
+  def parse_sdk_version(output) do
+    output
+    |> trimmed_lines()
+    |> Enum.find_value(:error, fn line ->
+      case {String.split(line), parse_version(line)} do
+        {[_single_token], {:ok, _} = ok} -> ok
+        _ -> nil
+      end
+    end)
   end
 
   @doc """
@@ -115,21 +131,19 @@ defmodule MobDev.Toolchain do
   """
   @spec parse_version(String.t()) :: {:ok, version()} | :error
   def parse_version(text) do
-    token = text |> String.trim() |> String.split(~r/\s+/, parts: 2) |> List.first()
-
-    parts =
-      token
-      |> String.split(".")
-      |> Enum.take(3)
-      |> Enum.map(&Integer.parse/1)
-
-    if parts != [] and Enum.all?(parts, &match?({_, ""}, &1)) do
+    with [token | _] <- String.split(text),
+         parts = token |> String.split(".") |> Enum.take(3) |> Enum.map(&Integer.parse/1),
+         true <- Enum.all?(parts, &match?({_, ""}, &1)) do
       [major, minor, patch] = (Enum.map(parts, &elem(&1, 0)) ++ [0, 0]) |> Enum.take(3)
       {:ok, {major, minor, patch}}
     else
-      :error
+      _ -> :error
     end
   end
+
+  @doc "Whether a version line or an Xcode app path names a beta."
+  @spec beta?(String.t()) :: boolean()
+  def beta?(text), do: text |> String.downcase() |> String.contains?("beta")
 
   @spec format_version(version()) :: String.t()
   def format_version({major, minor, 0}), do: "#{major}.#{minor}"
@@ -140,15 +154,16 @@ defmodule MobDev.Toolchain do
   def duo_min_version, do: @duo_min_version
 
   @doc """
-  Whether the given versions can build for iPhone Duo. `nil` means unknown and
-  doesn't count; every known version must be at least #{inspect(@duo_min_version)}.
+  Whether this Xcode and iOS SDK can build for iPhone Duo: both known and at
+  least #{inspect(@duo_min_version)}. An unreadable version (`nil`) is not
+  support.
   """
-  @spec duo_supported?([version() | nil]) :: boolean()
-  def duo_supported?(versions) do
-    versions
-    |> Enum.reject(&is_nil/1)
-    |> Enum.all?(&(&1 >= @duo_min_version))
+  @spec duo_supported?(version() | nil, version() | nil) :: boolean()
+  def duo_supported?(xcode, ios_sdk) do
+    Enum.all?([xcode, ios_sdk], &(&1 != nil and &1 >= @duo_min_version))
   end
+
+  defp trimmed_lines(output), do: output |> String.split("\n") |> Enum.map(&String.trim/1)
 
   # xcodebuild / xcode-select can be missing on a CLT-less Mac; report that as
   # a failed command rather than crash the doctor run.
