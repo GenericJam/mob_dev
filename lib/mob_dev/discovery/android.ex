@@ -362,6 +362,15 @@ defmodule MobDev.Discovery.Android do
     Enum.find_value(candidates, fn name -> List.keyfind(registered, name, 0) end)
   end
 
+  @doc """
+  The EPMD entry listening on `port`, or nil. mob_dev launches each app on a
+  per-device, per-app dist port, so the entry there is the app's node whatever
+  base name its `Mob.Dist.ensure_started/1` call chose.
+  """
+  @spec registered_at_port([{String.t(), pos_integer()}], pos_integer()) ::
+          {String.t(), pos_integer()} | nil
+  def registered_at_port(registered, port), do: List.keyfind(registered, port, 1)
+
   # Pure-Elixir timeout via Task — avoids depending on the GNU `timeout`
   # binary, which doesn't ship with macOS or BSD by default. Calls adb
   # directly via System.cmd/3 (no shell, no quoting concerns).

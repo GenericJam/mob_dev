@@ -428,7 +428,7 @@ defmodule MobDev.Connector do
     # Total wall time = max(individual connect times), not sum.
     tasks =
       Enum.map(devices, fn device ->
-        candidates = node_candidates(device)
+        candidates = fn -> node_candidates(device) end
 
         {device, Task.async(fn -> wait_for_any_node(candidates, cookies, timeout) end)}
       end)
@@ -470,6 +470,19 @@ defmodule MobDev.Connector do
       [node, fallback]
     else
       [node]
+    end
+  end
+
+  # Android: the deploy-time name, plus whatever registered on this device's
+  # dist port. An app whose Mob.Dist base name isn't `<app>_android` (e.g.
+  # `crosscourt@127.0.0.1` → `crosscourt_<serial>`) registers a name mob_dev
+  # can't predict, but the port is the one mob_dev launched it with and is
+  # unique per device and app, so the EPMD entry on it is this app's node.
+  defp node_candidates(%Device{platform: :android, node: node, dist_port: port})
+       when is_integer(port) do
+    case Android.registered_at_port(Tunnel.epmd_names(), port) do
+      {name, ^port} -> Enum.uniq([node, :"#{name}@127.0.0.1"])
+      nil -> [node]
     end
   end
 
@@ -552,18 +565,24 @@ defmodule MobDev.Connector do
     end
   end
 
-  defp wait_for_any_node(candidates, _cookies, timeout) when timeout <= 0 do
-    {:error, "timed out waiting for any of #{inspect(candidates)}"}
+  defp wait_for_any_node(candidates, cookies, timeout) do
+    wait_for_any_node(candidates, cookies, timeout, candidates.())
   end
 
-  defp wait_for_any_node(candidates, cookies, timeout) do
-    case try_connect_each(candidates, cookies) do
+  defp wait_for_any_node(_candidates, _cookies, timeout, tried) when timeout <= 0 do
+    {:error, "timed out waiting for any of #{inspect(tried)}"}
+  end
+
+  defp wait_for_any_node(candidates, cookies, timeout, _tried) do
+    current = candidates.()
+
+    case try_connect_each(current, cookies) do
       {:ok, _} = ok ->
         ok
 
       :none ->
         :timer.sleep(@connect_interval)
-        wait_for_any_node(candidates, cookies, timeout - @connect_interval)
+        wait_for_any_node(candidates, cookies, timeout - @connect_interval, current)
 
       {:error, _} = err ->
         err
