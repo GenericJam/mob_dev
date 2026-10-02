@@ -282,6 +282,11 @@ narrowing functions). Don't make them private:
   and `partition/2` (which agent-device claims block auto-selection), and
   `MobDev.Plugin.TrustStore.trust_stanza/1` / `Mix.Tasks.Mob.Plugin.Trust.version/3`
   (the one-entry-per-line trust map and the version shown for review)
+- `NativeBuild.with_temp_build_dir/2`, `ios_build_inputs_dir/1` and
+  `write_build_input!/2` (MOB-313: the iOS `.app` goes in a temp dir removed
+  on every exit path; the sources zig compiles stay at stable paths so its
+  cache hits; see
+  `decisions/2026-10-01-ios-build-sources-stable-app-dir-removed.md`)
 
 If you make any of these private, every downstream test breaks loudly — but
 you'll lose the ability to evolve the parsers safely.

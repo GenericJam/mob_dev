@@ -1856,15 +1856,15 @@ defmodule MobDev.NativeBuild do
            :ok <- sync_otp_runtime_sim(otp_root),
            :ok <- copy_mob_logos_sim(mob_dir, otp_root),
            :ok <- spot_check_app_beams(otp_root, app_module, display_name),
-           {:ok, build_dir} <- create_native_build_dir("ios_sim"),
-           :ok <- generate_enif_keepalive(otp_root, erts_vsn, build_dir),
+           inputs_dir = ios_build_inputs_dir(:ios_sim),
+           :ok <- generate_enif_keepalive(otp_root, erts_vsn, inputs_dir),
            :ok <-
              zig_build_binary_ios_sim(
                mob_dir,
                otp_root,
                erts_vsn,
                sdkroot,
-               build_dir,
+               inputs_dir,
                display_name,
                project_swift_sources,
                mlx_dir,
@@ -1874,14 +1874,18 @@ defmodule MobDev.NativeBuild do
            {:ok, sim_ids} <- resolve_ios_sim_targets(device_ids),
            binary_path = "ios/zig-out/#{display_name}",
            :ok <- check_path(binary_path, "iOS binary"),
-           {:ok, app_path} <- bundle_ios_app(binary_path, display_name, cfg),
            :ok <-
-             copy_tflite_frameworks_ios(
-               tflite_build,
-               "ios-arm64_x86_64-simulator",
-               Path.join(app_path, "Frameworks")
-             ),
-           :ok <- install_ios_sims(sim_ids, app_path) do
+             with_temp_build_dir("ios_sim", fn build_dir ->
+               with {:ok, app_path} <- bundle_ios_app(binary_path, display_name, cfg, build_dir),
+                    :ok <-
+                      copy_tflite_frameworks_ios(
+                        tflite_build,
+                        "ios-arm64_x86_64-simulator",
+                        Path.join(app_path, "Frameworks")
+                      ) do
+                 install_ios_sims(sim_ids, app_path)
+               end
+             end) do
         {:ok, "iOS"}
       else
         {:error, reason} -> {:error, "iOS", reason}
@@ -2639,12 +2643,6 @@ defmodule MobDev.NativeBuild do
     :ok
   end
 
-  defp create_native_build_dir(suffix) do
-    dir = Path.join(System.tmp_dir!(), "mob_#{suffix}_#{System.unique_integer([:positive])}")
-    File.mkdir_p!(dir)
-    {:ok, dir}
-  end
-
   defp generate_enif_keepalive(otp_root, erts_vsn, build_dir) do
     # Pull every `T _enif_*` symbol out of erl_nif.o inside libbeam.a and
     # generate a __attribute__((used)) reference for each. -dead_strip on
@@ -2699,7 +2697,7 @@ defmodule MobDev.NativeBuild do
             end)
         ]
 
-      File.write!(Path.join(build_dir, "enif_keepalive.c"), content)
+      write_build_input!(Path.join(build_dir, "enif_keepalive.c"), content)
       IO.puts("  #{length(symbols)} enif_* symbols pinned")
       :ok
     after
@@ -2725,7 +2723,7 @@ defmodule MobDev.NativeBuild do
   defp generate_ios_plugin_bootstrap(build_dir) do
     out_path = Path.join(build_dir, "mob_plugin_bootstrap.swift")
     source = MobDev.Plugin.IOSBootstrap.swift_source(MobDev.Plugin.activated())
-    File.write!(out_path, source)
+    write_build_input!(out_path, source)
     out_path
   end
 
@@ -2800,7 +2798,7 @@ defmodule MobDev.NativeBuild do
          otp_root,
          erts_vsn,
          sdkroot,
-         build_dir,
+         inputs_dir,
          display_name,
          project_swift_sources,
          mlx_dir,
@@ -2831,7 +2829,7 @@ defmodule MobDev.NativeBuild do
     {plugin_swift_files, plugin_frameworks} =
       ios_plugin_swift_and_frameworks(
         activated_plugins,
-        build_dir,
+        inputs_dir,
         Path.expand("ios/build.zig")
       )
 
@@ -2855,7 +2853,7 @@ defmodule MobDev.NativeBuild do
       "-Derts_vsn=#{erts_vsn}",
       "-Dsdkroot=#{sdkroot}",
       "-Ddriver_tab=#{driver_tab}",
-      "-Denif_keepalive=#{Path.join(build_dir, "enif_keepalive.c")}",
+      "-Denif_keepalive=#{Path.join(inputs_dir, "enif_keepalive.c")}",
       "-Dproject_ios_dir=#{Path.expand("ios")}",
       "-Dmodule_name=#{display_name}",
       "-Dproject_swift_sources=#{project_swift_sources}"
@@ -3356,61 +3354,57 @@ defmodule MobDev.NativeBuild do
       out_a = Path.join([otp_root, "lib/exqlite-#{vsn}/priv/sqlite3_nif.a"])
       IO.puts("  === Building sqlite3_nif.a (static NIF for iOS device)")
 
-      build_dir_tmp =
-        Path.join(System.tmp_dir!(), "mob_exqlite_#{System.unique_integer([:positive])}")
+      with_temp_build_dir("exqlite", fn build_dir_tmp ->
+        nif_o = Path.join(build_dir_tmp, "sqlite3_nif.o")
+        sqlite_o = Path.join(build_dir_tmp, "sqlite3.o")
 
-      File.mkdir_p!(build_dir_tmp)
-      nif_o = Path.join(build_dir_tmp, "sqlite3_nif.o")
-      sqlite_o = Path.join(build_dir_tmp, "sqlite3.o")
+        common_cc = [
+          "-arch",
+          "arm64",
+          "-miphoneos-version-min=17.0",
+          "-isysroot",
+          sdkroot,
+          "-Os",
+          "-ffunction-sections",
+          "-fdata-sections"
+        ]
 
-      common_cc = [
-        "-arch",
-        "arm64",
-        "-miphoneos-version-min=17.0",
-        "-isysroot",
-        sdkroot,
-        "-Os",
-        "-ffunction-sections",
-        "-fdata-sections"
-      ]
-
-      with :ok <-
-             run_cc(
-               common_cc ++
-                 [
-                   "-I",
-                   "deps/exqlite/c_src",
-                   "-I",
-                   "#{otp_root}/#{erts_vsn}/include",
-                   "-I",
-                   "#{otp_root}/#{erts_vsn}/include/internal",
-                   "-DSQLITE_THREADSAFE=1",
-                   "-DSTATIC_ERLANG_NIF_LIBNAME=sqlite3_nif",
-                   "-Wno-#warnings",
-                   "-c",
-                   "deps/exqlite/c_src/sqlite3_nif.c",
-                   "-o",
-                   nif_o
-                 ]
-             ),
-           :ok <-
-             run_cc(
-               common_cc ++
-                 [
-                   "-I",
-                   "deps/exqlite/c_src",
-                   "-DSQLITE_THREADSAFE=1",
-                   "-Wno-#warnings",
-                   "-c",
-                   "deps/exqlite/c_src/sqlite3.c",
-                   "-o",
-                   sqlite_o
-                 ]
-             ),
-           :ok <- run_ar(["rcs", out_a, nif_o, sqlite_o]) do
-        File.rm_rf!(build_dir_tmp)
-        :ok
-      end
+        with :ok <-
+               run_cc(
+                 common_cc ++
+                   [
+                     "-I",
+                     "deps/exqlite/c_src",
+                     "-I",
+                     "#{otp_root}/#{erts_vsn}/include",
+                     "-I",
+                     "#{otp_root}/#{erts_vsn}/include/internal",
+                     "-DSQLITE_THREADSAFE=1",
+                     "-DSTATIC_ERLANG_NIF_LIBNAME=sqlite3_nif",
+                     "-Wno-#warnings",
+                     "-c",
+                     "deps/exqlite/c_src/sqlite3_nif.c",
+                     "-o",
+                     nif_o
+                   ]
+               ),
+             :ok <-
+               run_cc(
+                 common_cc ++
+                   [
+                     "-I",
+                     "deps/exqlite/c_src",
+                     "-DSQLITE_THREADSAFE=1",
+                     "-Wno-#warnings",
+                     "-c",
+                     "deps/exqlite/c_src/sqlite3.c",
+                     "-o",
+                     sqlite_o
+                   ]
+               ) do
+          run_ar(["rcs", out_a, nif_o, sqlite_o])
+        end
+      end)
     else
       :ok
     end
@@ -4255,7 +4249,7 @@ defmodule MobDev.NativeBuild do
 
   @spec generate_erl_errno_compat_stub(Path.t()) :: :ok
   def generate_erl_errno_compat_stub(build_dir) do
-    File.write!(
+    write_build_input!(
       Path.join(build_dir, "erl_errno_id_compat.c"),
       """
       __attribute__((weak)) const char *erl_errno_id_unknown(int error) {
@@ -4264,8 +4258,6 @@ defmodule MobDev.NativeBuild do
       }
       """
     )
-
-    :ok
   end
 
   defp zig_build_binary_ios_device(
@@ -4275,7 +4267,7 @@ defmodule MobDev.NativeBuild do
          otp_release,
          sdkroot,
          epmd_build_src,
-         build_dir,
+         inputs_dir,
          display_name,
          project_swift_sources,
          sqlite_static_lib,
@@ -4298,7 +4290,7 @@ defmodule MobDev.NativeBuild do
     {plugin_swift_files, plugin_frameworks} =
       ios_plugin_swift_and_frameworks(
         activated_plugins,
-        build_dir,
+        inputs_dir,
         Path.expand("ios/build_device.zig")
       )
 
@@ -4317,11 +4309,11 @@ defmodule MobDev.NativeBuild do
       "-Dotp_release=#{otp_release}",
       "-Dsdkroot=#{sdkroot}",
       "-Ddriver_tab=#{driver_tab}",
-      "-Denif_keepalive=#{Path.join(build_dir, "enif_keepalive.c")}",
+      "-Denif_keepalive=#{Path.join(inputs_dir, "enif_keepalive.c")}",
       "-Dproject_ios_dir=#{Path.expand("ios")}",
       "-Dmodule_name=#{display_name}",
       "-Depmd_build_src=#{epmd_build_src}",
-      "-Derrno_compat=#{Path.join(build_dir, "erl_errno_id_compat.c")}",
+      "-Derrno_compat=#{Path.join(inputs_dir, "erl_errno_id_compat.c")}",
       "-Dproject_swift_sources=#{project_swift_sources}"
     ]
 
@@ -4352,15 +4344,11 @@ defmodule MobDev.NativeBuild do
           tflite_zig_args_ios(tflite_build) ++
           plugin_static_lib_args(plugin_archives)
 
-      with :ok <-
-             MobDev.ZigBuild.run(
-               args,
-               "zig build binary (iOS device)",
-               MobDev.ZigBuild.plugin_nif_sources(activated_plugins, :ios)
-             ) do
-        File.cp!("ios/zig-out/#{display_name}", Path.join(build_dir, display_name))
-        :ok
-      end
+      MobDev.ZigBuild.run(
+        args,
+        "zig build binary (iOS device)",
+        MobDev.ZigBuild.plugin_nif_sources(activated_plugins, :ios)
+      )
     end
   end
 
@@ -4468,13 +4456,8 @@ defmodule MobDev.NativeBuild do
   # builds of one project installing under different ids, so
   # `xcrun simctl launch <udid> <configured-id>` failed and callers had to
   # guess which id a given build had used.
-  defp bundle_ios_app(binary_path, display_name, cfg) do
+  defp bundle_ios_app(binary_path, display_name, cfg, build_dir) do
     bundle_id = ios_bundle_id(cfg)
-
-    build_dir =
-      Path.join(System.tmp_dir!(), "mob_ios_bundle_#{System.unique_integer([:positive])}")
-
-    File.mkdir_p!(build_dir)
     app_path = Path.join(build_dir, "#{display_name}.app")
     File.rm_rf!(app_path)
     File.mkdir_p!(app_path)
@@ -4603,6 +4586,14 @@ defmodule MobDev.NativeBuild do
   defp build_ios_physical(cfg, udid) do
     IO.puts("  Building iOS app for physical device #{udid}...")
 
+    # `build_dir` holds the ~190 MB .app (OTP runtime included) and codesign
+    # scratch; nothing reads it once devicectl has installed the app, so it
+    # goes away with the build (MOB-313). The sources zig compiles live in
+    # `ios_build_inputs_dir(:ios_device)` so its cache stays warm.
+    with_temp_build_dir("ios_device", &build_ios_physical_in(cfg, udid, &1))
+  end
+
+  defp build_ios_physical_in(cfg, udid, build_dir) do
     with {:ok, cfg} <- check_device_signing_config(cfg),
          {:ok, otp_root} <- MobDev.OtpDownloader.ensure_ios_device(),
          {:ok, python_bundle} <- maybe_ensure_python_bundle(),
@@ -4618,9 +4609,6 @@ defmodule MobDev.NativeBuild do
          app_module = Mix.Project.config() |> Keyword.fetch!(:app) |> Atom.to_string(),
          display_name = ios_display_name(),
          project_swift_sources = project_swift_sources_arg(cfg),
-         build_dir =
-           Path.join(System.tmp_dir!(), "mob_ios_device_#{System.unique_integer([:positive])}"),
-         _ = File.mkdir_p!(build_dir),
          :ok <- compile_elixir_for_ios(),
          :ok <- copy_app_beams(otp_root, app_module),
          :ok <- install_exqlite_otp_lib(otp_root),
@@ -4640,8 +4628,9 @@ defmodule MobDev.NativeBuild do
          :ok <- install_app_in_otp_lib(otp_root, app_module),
          :ok <- copy_mob_logos_to_otp_root(mob_dir, otp_root),
          :ok <- patch_epmd_source(epmd_build_src),
-         :ok <- generate_erl_errno_compat_stub(build_dir),
-         :ok <- generate_enif_keepalive(otp_root, erts_vsn, build_dir),
+         inputs_dir = ios_build_inputs_dir(:ios_device),
+         :ok <- generate_erl_errno_compat_stub(inputs_dir),
+         :ok <- generate_enif_keepalive(otp_root, erts_vsn, inputs_dir),
          :ok <-
            zig_build_binary_ios_device(
              mob_dir,
@@ -4650,7 +4639,7 @@ defmodule MobDev.NativeBuild do
              otp_release,
              sdkroot,
              epmd_build_src,
-             build_dir,
+             inputs_dir,
              display_name,
              project_swift_sources,
              sqlite_static_lib,
@@ -4658,7 +4647,7 @@ defmodule MobDev.NativeBuild do
              nxeigen_archive,
              tflite_build
            ),
-         binary_path = Path.join(build_dir, display_name),
+         binary_path = "ios/zig-out/#{display_name}",
          :ok <- check_path(binary_path, "iOS device binary"),
          {:ok, app_path} <- bundle_ios_device_app(binary_path, otp_root, cfg, build_dir),
          :ok <-
@@ -4677,6 +4666,82 @@ defmodule MobDev.NativeBuild do
     end
   end
 
+  @doc """
+  Runs `fun` with a fresh output directory,
+  `<System.tmp_dir!/0>/mob_<label>_<os pid>_<n>`, and deletes it when `fun`
+  returns, raises, throws or exits. Returns what `fun` returns.
+
+  The iOS builds bundle the `.app` and write codesign scratch here; none of it
+  is read after install. The OS pid keeps concurrent deploys apart:
+  `System.unique_integer/1` restarts low in every VM, so two `mix mob.deploy`
+  runs could otherwise pick the same name and the first to finish would
+  delete the other's bundle. The sources zig compiles go in
+  `ios_build_inputs_dir/1` instead, where their paths stay stable. See
+  `decisions/2026-10-01-ios-build-sources-stable-app-dir-removed.md` (MOB-313).
+
+  Public for testing.
+  """
+  @spec with_temp_build_dir(String.t(), (Path.t() -> result)) :: result when result: var
+  def with_temp_build_dir(label, fun) when is_binary(label) and is_function(fun, 1) do
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "mob_#{label}_#{:os.getpid()}_#{System.unique_integer([:positive])}"
+      )
+
+    # A dir that already has this name was left by a dead process.
+    File.rm_rf!(dir)
+    File.mkdir_p!(dir)
+
+    try do
+      fun.(dir)
+    after
+      File.rm_rf(dir)
+    end
+  end
+
+  @doc """
+  The project's directory for the sources mob_dev generates for an iOS
+  `zig build` (`enif_keepalive.c`, `erl_errno_id_compat.c`,
+  `mob_plugin_bootstrap.swift`): `<Mix.Project.build_path/0>/mob_ios/<target>`,
+  created if missing.
+
+  zig keys its cache on these files' paths as well as their contents, and one
+  swiftc step compiles the bootstrap together with every Swift source, so a
+  path that changed each build recompiled all the Swift and relinked every
+  time. Kept per target and shared by every device of that target; write into
+  it with `write_build_input!/2` so concurrent builds never read a half-written
+  file.
+
+  Public for testing.
+  """
+  @spec ios_build_inputs_dir(:ios_sim | :ios_device) :: Path.t()
+  def ios_build_inputs_dir(target) when target in [:ios_sim, :ios_device] do
+    dir = Path.join([Mix.Project.build_path(), "mob_ios", Atom.to_string(target)])
+    File.mkdir_p!(dir)
+    dir
+  end
+
+  @doc """
+  Writes a generated build source. Leaves the file alone when it already holds
+  `content`; otherwise writes a sibling temp file and renames it over `path`,
+  so a concurrent build sees the old file or the new one, never a partial one.
+
+  Public for testing.
+  """
+  @spec write_build_input!(Path.t(), iodata()) :: :ok
+  def write_build_input!(path, content) do
+    content = IO.iodata_to_binary(content)
+
+    if File.read(path) != {:ok, content} do
+      tmp = "#{path}.#{:os.getpid()}_#{System.unique_integer([:positive])}.tmp"
+      File.write!(tmp, content)
+      File.rename!(tmp, path)
+    end
+
+    :ok
+  end
+
   defp sqlite_device_static_path(otp_root) do
     case detect_dep_version("exqlite") do
       nil ->
@@ -4689,9 +4754,10 @@ defmodule MobDev.NativeBuild do
   end
 
   # Phase 2 iter 12d: bundle + codesign + devicectl install moved out of
-  # build_device.sh. The shell script now ends after `zig build binary`
-  # produces the Mach-O at MOB_BUILD_DIR/<app_name>; everything below used
-  # to live as the `# ── Bundle / Code signing / Installing ──` blocks.
+  # build_device.sh, which ended once `zig build binary` had produced the
+  # Mach-O; everything below used to live as its
+  # `# ── Bundle / Code signing / Installing ──` blocks. The binary is read
+  # from `ios/zig-out/<app_name>`, as on the simulator.
 
   defp bundle_ios_device_app(binary_path, otp_root, cfg, build_dir) do
     app_name = ios_display_name()
