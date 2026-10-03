@@ -175,6 +175,11 @@ defmodule MobDev.UrlSchemesTest do
       # A longer class name that merely ends the same way is another activity.
       assert alias_error([{"com.ex.app.OtherMainActivity", single_task}], ".MainActivity") =~
                "no <activity> there has that android:name"
+
+      # Two relative names resolve against the same package: .MainActivity is
+      # not .ui.MainActivity, so the check reaches the real target.
+      activities = [{".MainActivity", single_task}, {"com.ex.app.ui.MainActivity", ""}]
+      assert alias_error(activities, ".ui.MainActivity") =~ "needs android:launchMode"
     end
 
     test "an exact android:name wins over a package-relative match" do

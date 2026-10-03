@@ -333,12 +333,15 @@ defmodule MobDev.UrlSchemes do
 
   defp same_activity?(nil, _target), do: false
 
+  # Two relative names resolve against the same package, so they match only
+  # when equal (".MainActivity" is not ".ui.MainActivity"); a relative name
+  # matches a fully qualified one that ends with it.
   defp same_activity?(name, target) do
     a = package_relative(name)
     b = package_relative(target)
 
-    a == b or (relative?(b) and String.ends_with?(a, b)) or
-      (relative?(a) and String.ends_with?(b, a))
+    a == b or (relative?(b) and not relative?(a) and String.ends_with?(a, b)) or
+      (relative?(a) and not relative?(b) and String.ends_with?(b, a))
   end
 
   defp package_relative("." <> _ = name), do: name
