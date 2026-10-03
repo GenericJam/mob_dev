@@ -15,6 +15,18 @@
   The built-in sqlite / EMLX / NxEigen / TFLite switches are unchanged. See
   `decisions/2026-10-03-guarded-project-nifs-select-by-target-arch.md`.
 
+### Changed
+
+- **A project NIF's `:guard` selects by `:archs`; it is no longer an off
+  switch.** An entry whose `:archs` cover the whole platform is now always
+  registered (`#if 1` / `true`), where a 0.7.11 C table wrapped it in
+  `#ifdef <guard>` that no dev build defined, so it was left out. If you used a
+  `:guard` to keep a NIF out of a build, remove the entry or narrow its
+  `:archs` instead. An app with a project guard will see its committed
+  `priv/generated/driver_tab_*` files change on the next
+  `mix mob.deploy --native`; commit them. Until that build, `mix mob.doctor`
+  reports the C table as stale.
+
 ## [0.7.11] - 2026-10-03
 
 ### Fixed
