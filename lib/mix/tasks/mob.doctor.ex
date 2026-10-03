@@ -606,13 +606,17 @@ defmodule Mix.Tasks.Mob.Doctor do
 
   defp check_project do
     if File.exists?("mix.exs") do
-      do_check_project()
+      __project_checks__()
     else
       [{:warn, "project", "not in a Mix project directory — skipping project checks", nil}]
     end
   end
 
-  defp do_check_project do
+  @doc false
+  # The Project section's rows for the project in the current directory.
+  # Public for testing.
+  @spec __project_checks__() :: [tuple()]
+  def __project_checks__ do
     mob_exs_check =
       if File.exists?("mob.exs") do
         {:ok, "mob.exs", "found", nil}

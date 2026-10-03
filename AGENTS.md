@@ -439,14 +439,19 @@ Real fix: `sim_runtime_dir/0` should detect `ios/build.zig` and use
   the iOS `copy_app_beams/2` (sim + device) and the iOS release script's
   `_build/dev` copy. A new path that ships the app's ebin some other way must
   call it too, or that platform boots with nil config. mob applies it at start.
-- **`mob.exs` `url_schemes` is stamped on every native build path.**
-  `MobDev.UrlSchemes.apply_android_manifest!/2` runs in the dev Android build
-  and in `ReleaseAndroid.build_aab/1` (the plugin manifest merges run in the
-  dev build only); `apply_plist!/3` runs in the iOS sim and device bundles and
+- **`mob.exs` `url_schemes` is stamped on every native build path.** The dev
+  Android build and `ReleaseAndroid.build_aab/1` call
+  `NativeBuild.apply_android_url_schemes!/1` (the plugin manifest merges run
+  in the dev build only). The iOS sim and device bundles get their
+  Info.plist from `NativeBuild.write_bundle_info_plist!/3`, and
   `Release.url_types_plist_env/2` feeds `release_device.sh`. A new path that
-  builds an APK/AAB or an `.app` from the project must call the matching one,
-  or that build ignores the setting. Unset still runs the Android merge, which
-  is what removes an earlier block. See `decisions/2026-10-03-url-schemes.md`.
+  builds an APK/AAB or an `.app` from the project must go through the
+  matching one, or that build ignores the setting.
+  `test/mob_dev/url_schemes_build_paths_test.exs` covers the existing paths.
+  Unset still runs the Android merge, which is what removes an earlier block.
+  Android de-dupe is coverage-based: only a broad `VIEW` + `DEFAULT` +
+  `BROWSABLE` filter on the launcher itself suppresses the managed one. See
+  `decisions/2026-10-03-url-schemes.md`.
 - **Android deploys relabel `otp/` once, last.** Anything written as root
   (`adb root` push, `ln -s`) keeps root's SELinux categories until
   `relabel_otp_android/1` in `deploy_android/3` runs. Add new device writes
@@ -643,11 +648,15 @@ narrowing functions). Don't make them private:
   on every exit path; the sources zig compiles stay at stable paths so its
   cache hits; see
   `decisions/2026-10-01-ios-build-sources-stable-app-dir-removed.md`)
-- `MobDev.UrlSchemes.schemes/1`, `merge_manifest/2`, `plist_commands/3`,
-  `bundle_plist_commands!/3` and `audit/1` (documented: `mob.exs`
-  `url_schemes` validation, the Android launcher-activity intent filter, the
-  iOS `CFBundleURLTypes` commands and the doctor row) and
-  `Release.url_types_plist_env/2` (the same commands for `release_device.sh`)
+- `MobDev.UrlSchemes.schemes/1`, `merge_manifest/2`, `declared_elsewhere/2`,
+  `plist_commands/3`, `bundle_plist_commands!/3` and `audit/1` (documented:
+  `mob.exs` `url_schemes` validation, the Android launcher-activity intent
+  filter and its other-activity warning, the iOS `CFBundleURLTypes` commands
+  and the doctor row), `Release.url_types_plist_env/2` (the same commands for
+  `release_device.sh`), and the build-path seams
+  `NativeBuild.apply_android_url_schemes!/1`,
+  `NativeBuild.write_bundle_info_plist!/3` and
+  `Mix.Tasks.Mob.Doctor.__project_checks__/0`
 
 If you make any of these private, every downstream test breaks loudly — but
 you'll lose the ability to evolve the parsers safely.

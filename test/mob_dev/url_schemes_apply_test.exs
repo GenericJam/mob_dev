@@ -67,7 +67,11 @@ defmodule MobDev.UrlSchemesApplyTest do
     "CFBundleURLName" => "google",
     "CFBundleURLSchemes" => ["com.googleusercontent.apps.123", "Legacy"]
   }
-  @ours %{"CFBundleURLName" => "com.example.app", "CFBundleURLSchemes" => ["operator"]}
+  @ours %{
+    "CFBundleURLName" => "com.example.app",
+    "CFBundleTypeRole" => "Viewer",
+    "CFBundleURLSchemes" => ["operator"]
+  }
 
   test "apply_plist!/3 appends an entry after the app's and skips its schemes", %{path: path} do
     File.write!(path, @oauth_plist)
@@ -87,6 +91,7 @@ defmodule MobDev.UrlSchemesApplyTest do
     assert url_types!(path) == [
              %{
                "CFBundleURLName" => "com.example.app",
+               "CFBundleTypeRole" => "Viewer",
                "CFBundleURLSchemes" => ["operator", "myapp"]
              }
            ]

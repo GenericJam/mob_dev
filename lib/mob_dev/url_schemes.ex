@@ -15,16 +15,20 @@ defmodule MobDev.UrlSchemes do
       `android/app/src/main/AndroidManifest.xml`, fenced by
       `mob:url-schemes` markers (`MobDev.Plugin.ManagedBlock`). The dev build
       (`mix mob.deploy --native`) and `mix mob.release --android` regenerate it;
-      unset or `[]` removes it.
-    * iOS — a `CFBundleURLTypes` entry (`CFBundleURLName` = the iOS bundle id)
-      appended to the built bundle's Info.plist by the simulator and device
-      builds and `mix mob.release --ios`. `ios/Info.plist` is never rewritten.
+      unset, `nil` or `[]` removes it.
+    * iOS — a `CFBundleURLTypes` entry (`CFBundleURLName` = the iOS bundle id,
+      `CFBundleTypeRole` `Viewer`) appended to the built bundle's Info.plist by
+      the simulator and device builds and `mix mob.release --ios`.
+      `ios/Info.plist` is never rewritten.
 
-  A scheme the project already declares itself is left to it: on Android, one
-  in any `VIEW` intent filter outside the managed block (a second filter for
-  the same scheme in another activity makes Android ask which activity should
-  open the link); on iOS, one in any existing `CFBundleURLTypes` entry, compared
-  case-insensitively as iOS does. The app's own entries are never changed.
+  A scheme the project already routes to the app is left to it. On Android
+  that is a `VIEW` + `DEFAULT` + `BROWSABLE` intent filter on the launcher
+  activity, outside the managed block, declaring the scheme with no host,
+  path or other narrowing. A scheme in a `VIEW` filter on another activity is
+  still added to the launcher, with a build warning: Android may then ask
+  which activity opens the link. On iOS it is a scheme in any existing
+  `CFBundleURLTypes` entry, compared case-insensitively as iOS does. The app's
+  own entries are never changed.
 
   Schemes must be lowercase RFC 3986 schemes. `http` and `https` are refused:
   verified App Links and universal links need a host and domain verification,
@@ -60,8 +64,9 @@ defmodule MobDev.UrlSchemes do
   @type check :: {:ok | :fail, String.t(), String.t(), String.t() | nil}
 
   @doc """
-  Validates `mob.exs` `url_schemes`. Unset and `[]` are `{:ok, []}` (no
-  deep-link scheme); duplicates are dropped, order kept.
+  Validates `mob.exs` `url_schemes`. Unset, `nil` (read as unset, like
+  `MobDev.IosLayoutPlist`'s keys) and `[]` are `{:ok, []}` (no deep-link
+  scheme); duplicates are dropped, order kept.
   """
   @spec schemes(keyword()) :: {:ok, [String.t()]} | {:error, String.t()}
   def schemes(cfg) do
@@ -144,24 +149,64 @@ defmodule MobDev.UrlSchemes do
   @doc """
   Regenerates the managed deep-link `<intent-filter>` inside the launcher
   activity (the one with a `MAIN` + `LAUNCHER` intent filter; the first, if
-  several), just before its `</activity>`. Schemes declared in a `VIEW` intent
-  filter outside the managed block are skipped; with nothing left to declare
-  the block is removed. Idempotent. Raises `Mix.Error` when there is a scheme
-  to declare and no launcher activity, or its `</activity>` shares a line with
-  other markup (the managed block occupies whole lines).
+  several), just before its `</activity>`. A scheme the launcher activity
+  already routes in full outside the managed block is skipped: one in a
+  `VIEW` filter with the `DEFAULT` and `BROWSABLE` categories whose `<data>`
+  elements set no `android:` attribute besides `android:scheme`. A filter
+  narrowed by a host, port, path, ssp or MIME type, one missing a category,
+  or one on another activity doesn't count. With nothing left to declare the
+  block is removed.
+  Idempotent. Raises `Mix.Error` when `schemes` is non-empty and there is no
+  launcher activity, or its `</activity>` shares a line with other markup (the
+  managed block occupies whole lines).
   """
   @spec merge_manifest(String.t(), [String.t()]) :: String.t()
   def merge_manifest(manifest, schemes) do
     stripped = MobDev.Plugin.ManagedBlock.strip(manifest, @markers)
-    declared = stripped |> blank_comments() |> declared_view_schemes()
 
     body =
-      case Enum.reject(schemes, &(&1 in declared)) do
+      case added_schemes(stripped, schemes) do
         [] -> ""
-        missing -> intent_filter(missing)
+        added -> intent_filter(added)
       end
 
     MobDev.Plugin.ManagedBlock.upsert(stripped, @markers, body, &place_in_launcher_activity/2)
+  end
+
+  @doc """
+  The schemes `merge_manifest/2` adds that a `VIEW` intent filter on another
+  activity also declares. Android may then ask the user which activity opens
+  the link, so the build warns about each.
+  """
+  @spec declared_elsewhere(String.t(), [String.t()]) :: [String.t()]
+  def declared_elsewhere(manifest, schemes) do
+    stripped = MobDev.Plugin.ManagedBlock.strip(manifest, @markers)
+
+    case added_schemes(stripped, schemes) do
+      [] ->
+        []
+
+      added ->
+        text = blank_comments(stripped)
+        launcher = launcher!(text)
+
+        others =
+          text
+          |> activities()
+          |> Enum.reject(&(&1.close == launcher.close))
+          |> Enum.flat_map(&view_schemes(&1.body))
+
+        Enum.filter(added, &(&1 in others))
+    end
+  end
+
+  defp added_schemes(_stripped, []), do: []
+
+  defp added_schemes(stripped, schemes) do
+    covered =
+      stripped |> blank_comments() |> launcher!() |> Map.fetch!(:body) |> covered_schemes()
+
+    Enum.reject(schemes, &(&1 in covered))
   end
 
   defp intent_filter(schemes) do
@@ -178,9 +223,8 @@ defmodule MobDev.UrlSchemes do
   end
 
   defp place_in_launcher_activity(manifest, region) do
-    close = launcher_activity_close(blank_comments(manifest))
-    before_close = binary_part(manifest, 0, close)
-    line = before_close |> String.split("\n") |> List.last()
+    %{close: close} = launcher!(blank_comments(manifest))
+    line = binary_part(manifest, 0, close) |> String.split("\n") |> List.last()
 
     if String.trim(line) != "" do
       Mix.raise(
@@ -193,19 +237,8 @@ defmodule MobDev.UrlSchemes do
     MobDev.Plugin.ManagedBlock.insert_before_index(manifest, close, region)
   end
 
-  # Byte index of the launcher activity's closing tag in comment-blanked text.
-  defp launcher_activity_close(text) do
-    opening = Regex.compile!("<(activity-alias|activity)(?=[\\s/>])[^>]*>")
-
-    launcher =
-      opening
-      |> Regex.scan(text, return: :index, capture: :all)
-      |> Enum.find_value(fn [{start, len}, {name_start, name_len}] ->
-        unless String.ends_with?(binary_part(text, start, len), "/>"),
-          do: launcher_close(text, start + len, binary_part(text, name_start, name_len))
-      end)
-
-    launcher ||
+  defp launcher!(text) do
+    Enum.find(activities(text), &launcher?(&1.body)) ||
       Mix.raise(
         "mob.exs url_schemes is set, but AndroidManifest.xml has no launcher activity (an " <>
           "<activity> with an <intent-filter> holding android.intent.action.MAIN and " <>
@@ -213,15 +246,24 @@ defmodule MobDev.UrlSchemes do
       )
   end
 
-  defp launcher_close(text, body_start, name) do
-    rest = binary_part(text, body_start, byte_size(text) - body_start)
+  # Every <activity> / <activity-alias> with a body, in comment-blanked text:
+  # the body and the byte index of its closing tag.
+  defp activities(text) do
+    "<(activity-alias|activity)(?=[\\s/>])[^>]*>"
+    |> Regex.compile!()
+    |> Regex.scan(text, return: :index)
+    |> Enum.flat_map(fn [{start, len}, {name_start, name_len}] ->
+      body_start = start + len
+      rest = binary_part(text, body_start, byte_size(text) - body_start)
+      close = Regex.compile!("</" <> binary_part(text, name_start, name_len) <> "\\s*>")
 
-    with {offset, _} <- :binary.match(rest, "</#{name}>"),
-         true <- launcher?(binary_part(rest, 0, offset)) do
-      body_start + offset
-    else
-      _ -> nil
-    end
+      with false <- String.ends_with?(binary_part(text, start, len), "/>"),
+           [{offset, _}] <- Regex.run(close, rest, return: :index) do
+        [%{body: binary_part(rest, 0, offset), close: body_start + offset}]
+      else
+        _ -> []
+      end
+    end)
   end
 
   defp launcher?(activity_body) do
@@ -233,21 +275,61 @@ defmodule MobDev.UrlSchemes do
     )
   end
 
-  defp declared_view_schemes(text) do
-    scheme = Regex.compile!(~S{android:scheme\s*=\s*["']([^"']*)["']})
+  # A browser's or another app's implicit intent needs both DEFAULT and
+  # BROWSABLE. Android merges every <data> in a filter, so one android:host
+  # (or port, path*, ssp*, mimeType) narrows all of its schemes to part of
+  # their URIs.
+  defp covered_schemes(activity_body) do
+    activity_body
+    |> intent_filters()
+    |> Enum.filter(
+      &(has_name?(&1, "android.intent.action.VIEW") and
+          has_name?(&1, "android.intent.category.DEFAULT") and
+          has_name?(&1, "android.intent.category.BROWSABLE"))
+    )
+    |> Enum.flat_map(fn filter ->
+      attributes = filter |> data_elements() |> Enum.flat_map(&attributes/1)
 
-    text
+      if Enum.all?(attributes, fn {name, _} -> scheme_only?(name) end),
+        do: for({"android:scheme", scheme} <- attributes, do: scheme),
+        else: []
+    end)
+  end
+
+  defp scheme_only?(name),
+    do: name == "android:scheme" or not String.starts_with?(name, "android:")
+
+  defp view_schemes(activity_body) do
+    activity_body
     |> intent_filters()
     |> Enum.filter(&has_name?(&1, "android.intent.action.VIEW"))
-    |> Enum.flat_map(&Regex.scan(scheme, &1, capture: :all_but_first))
-    |> List.flatten()
+    |> Enum.flat_map(&data_elements/1)
+    |> Enum.flat_map(&attributes/1)
+    |> Enum.flat_map(fn
+      {"android:scheme", scheme} -> [scheme]
+      _ -> []
+    end)
   end
 
   defp intent_filters(text) do
-    "<intent-filter(?=[\\s>])[^>]*>(.*?)</intent-filter>"
+    "<intent-filter(?=[\\s>])[^>]*>(.*?)</intent-filter\\s*>"
     |> Regex.compile!("s")
     |> Regex.scan(text, capture: :all_but_first)
     |> List.flatten()
+  end
+
+  defp data_elements(filter) do
+    "<data(?=[\\s/>])[^>]*>"
+    |> Regex.compile!()
+    |> Regex.scan(filter)
+    |> List.flatten()
+  end
+
+  defp attributes(tag) do
+    ~S{([A-Za-z_][\w:.-]*)\s*=\s*(["'])(.*?)\2}
+    |> Regex.compile!("s")
+    |> Regex.scan(tag, capture: :all_but_first)
+    |> Enum.map(fn [name, _quote, value] -> {name, value} end)
   end
 
   defp has_name?(filter, name),
@@ -276,6 +358,14 @@ defmodule MobDev.UrlSchemes do
     case File.read(path) do
       {:ok, content} ->
         patched = merge_manifest(content, schemes)
+
+        for scheme <- declared_elsewhere(content, schemes) do
+          IO.puts(
+            "  warning: url_schemes #{scheme}:// is also in a VIEW intent filter on another " <>
+              "activity in #{path}; Android may ask which activity opens the link"
+          )
+        end
+
         if patched != content, do: File.write!(path, patched)
         :ok
 
@@ -293,9 +383,10 @@ defmodule MobDev.UrlSchemes do
 
   @doc """
   The PlistBuddy commands that add `schemes` to an Info.plist whose XML text
-  is `xml`: one new `CFBundleURLTypes` entry named `url_name`, appended after
-  the plist's own entries (creating the array when absent), holding the
-  schemes the plist doesn't already declare. `[]` when there is nothing to
+  is `xml`: one new `CFBundleURLTypes` entry named `url_name`, role `Viewer`
+  (Apple requires `CFBundleTypeRole` in each entry), appended after the
+  plist's own entries (creating the array when absent), holding the schemes
+  the plist doesn't already declare. `[]` when there is nothing to
   add. Every command must succeed. Raises `Mix.Error` when `xml` isn't an XML
   property list or its `CFBundleURLTypes` isn't an array.
   """
@@ -327,6 +418,7 @@ defmodule MobDev.UrlSchemes do
     [
       "Add #{entry} dict",
       "Add #{entry}:CFBundleURLName string #{url_name}",
+      "Add #{entry}:CFBundleTypeRole string Viewer",
       "Add #{entry}:CFBundleURLSchemes array"
     ] ++
       (schemes

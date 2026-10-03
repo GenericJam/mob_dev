@@ -48,11 +48,7 @@ defmodule MobDev.ReleaseAndroid do
     MobDev.Plugin.Validator.raise_on_cross_plugin_conflicts!(MobDev.Plugin.activated())
 
     with :ok <- check_android_project(),
-         :ok <-
-           MobDev.UrlSchemes.apply_android_manifest!(
-             "android/app/src/main/AndroidManifest.xml",
-             MobDev.Config.load_mob_config()
-           ),
+         :ok <- MobDev.NativeBuild.apply_android_url_schemes!(MobDev.Config.load_mob_config()),
          log("Ensuring Android OTP runtime..."),
          {:ok, otp_arm64} <- MobDev.OtpDownloader.ensure_android("arm64-v8a"),
          log("Staging OTP tree + app BEAMs..."),

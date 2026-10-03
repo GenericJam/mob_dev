@@ -4,8 +4,9 @@ defmodule MobDev.UrlSchemesTest do
   alias MobDev.UrlSchemes
 
   describe "schemes/1" do
-    test "unset and [] turn deep links off" do
+    test "unset, nil and [] turn deep links off" do
       assert UrlSchemes.schemes([]) == {:ok, []}
+      assert UrlSchemes.schemes(url_schemes: nil) == {:ok, []}
       assert UrlSchemes.schemes(url_schemes: []) == {:ok, []}
     end
 
@@ -98,6 +99,41 @@ defmodule MobDev.UrlSchemesTest do
     body
   end
 
+  defp block(merged) do
+    case Regex.run(Regex.compile!("mob:url-schemes BEGIN.*mob:url-schemes END", "s"), merged) do
+      [block] -> block
+      nil -> ""
+    end
+  end
+
+  defp view_filter(data) do
+    """
+                <intent-filter>
+                    <action android:name="android.intent.action.VIEW"/>
+                    <category android:name="android.intent.category.DEFAULT"/>
+                    <category android:name="android.intent.category.BROWSABLE"/>
+                    #{data}
+                </intent-filter>
+    """
+  end
+
+  # After the launcher's MAIN/LAUNCHER filter, before its </activity>.
+  defp in_launcher(manifest, xml) do
+    String.replace(
+      manifest,
+      "            </intent-filter>\n        </activity>\n    </application>",
+      "            </intent-filter>\n" <> xml <> "        </activity>\n    </application>"
+    )
+  end
+
+  defp in_settings(manifest, xml) do
+    String.replace(
+      manifest,
+      "            -->\n        </activity>",
+      "            -->\n" <> xml <> "        </activity>"
+    )
+  end
+
   describe "merge_manifest/2" do
     test "puts the VIEW filter inside the launcher activity, before </activity>" do
       merged = UrlSchemes.merge_manifest(@manifest, ["operator", "myapp"])
@@ -143,37 +179,55 @@ defmodule MobDev.UrlSchemesTest do
       assert UrlSchemes.merge_manifest(@manifest, []) == @manifest
     end
 
-    test "skips a scheme a host-written VIEW filter already declares, in any activity" do
-      host =
-        String.replace(
-          @manifest,
-          "        </activity>\n    </application>",
-          """
-                      <intent-filter>
-                          <action android:name="android.intent.action.VIEW"/>
-                          <category android:name="android.intent.category.DEFAULT"/>
-                          <category android:name="android.intent.category.BROWSABLE"/>
-                          <data android:scheme="operator"/>
-                      </intent-filter>
-                  </activity>
-                  <activity android:name=".Other" android:exported="true">
-                      <intent-filter>
-                          <action android:name='android.intent.action.VIEW'/>
-                          <data android:scheme='legacy' android:host="x"/>
-                      </intent-filter>
-                  </activity>
-              </application>\
-          """
-        )
+    test "skips a scheme the launcher activity already routes in full" do
+      host = in_launcher(@manifest, view_filter(~s(<data android:scheme="operator"/>)))
 
-      merged = UrlSchemes.merge_manifest(host, ["operator", "legacy", "myapp"])
-      [block] = Regex.run(~r/mob:url-schemes BEGIN.*mob:url-schemes END/s, merged)
+      assert block(UrlSchemes.merge_manifest(host, ["operator", "myapp"])) =~
+               ~s(<data android:scheme="myapp" />)
 
-      assert block =~ ~s(android:scheme="myapp")
-      refute block =~ "operator"
-      refute block =~ "legacy"
+      refute block(UrlSchemes.merge_manifest(host, ["operator", "myapp"])) =~ "operator"
+      assert UrlSchemes.merge_manifest(host, ["operator"]) == host
+    end
 
-      assert UrlSchemes.merge_manifest(host, ["operator", "legacy"]) == host
+    test "a launcher filter narrowed by host, path, port or MIME type doesn't cover the scheme" do
+      for data <- [
+            ~s(<data android:scheme="operator" android:host="auth" />),
+            ~s(<data android:scheme='operator' android:pathPrefix='/x' />),
+            # <data> elements of one filter merge: the host narrows "operator".
+            ~s(<data android:scheme="operator" />\n<data android:host="auth" />),
+            ~s(<data android:scheme="operator" android:port="8080" />),
+            ~s(<data android:scheme="operator" android:mimeType="text/plain" />)
+          ] do
+        host = in_launcher(@manifest, view_filter(data))
+        assert block(UrlSchemes.merge_manifest(host, ["operator"])) =~ "operator", data
+      end
+    end
+
+    test "a launcher filter missing DEFAULT or BROWSABLE doesn't cover the scheme" do
+      for category <- ["DEFAULT", "BROWSABLE"] do
+        filter =
+          String.replace(
+            view_filter(~s(<data android:scheme="operator"/>)),
+            ~s(<category android:name="android.intent.category.#{category}"/>),
+            ""
+          )
+
+        host = in_launcher(@manifest, filter)
+        assert block(UrlSchemes.merge_manifest(host, ["operator"])) =~ "operator", category
+      end
+    end
+
+    test "a filter on another activity doesn't cover the scheme, and is reported" do
+      host = in_settings(@manifest, view_filter(~s(<data android:scheme="operator"/>)))
+      merged = UrlSchemes.merge_manifest(host, ["operator", "myapp"])
+
+      assert main_activity(merged) =~ ~s(<data android:scheme="operator" />)
+      assert UrlSchemes.declared_elsewhere(host, ["operator", "myapp"]) == ["operator"]
+
+      # Nothing to report about a scheme the launcher covers itself.
+      both = in_launcher(host, view_filter(~s(<data android:scheme="operator"/>)))
+      assert UrlSchemes.declared_elsewhere(both, ["operator"]) == []
+      assert UrlSchemes.declared_elsewhere(@manifest, ["operator"]) == []
     end
 
     test "a scheme in <queries> or in a commented-out filter isn't a declaration" do
@@ -183,21 +237,24 @@ defmodule MobDev.UrlSchemesTest do
           ~s(<data android:scheme="https" />),
           ~s(<data android:scheme="operator" />)
         )
-        |> String.replace(
-          "        </activity>\n    </application>",
-          """
-                      <!-- <intent-filter><action android:name="android.intent.action.VIEW"/>
-                           <data android:scheme="myapp"/></intent-filter> -->
-                  </activity>
-              </application>\
-          """
-        )
+        |> in_launcher("<!-- " <> view_filter(~s(<data android:scheme="myapp"/>)) <> " -->\n")
 
       merged = UrlSchemes.merge_manifest(commented, ["operator", "myapp"])
-      [block] = Regex.run(~r/mob:url-schemes BEGIN.*mob:url-schemes END/s, merged)
 
-      assert block =~ ~s(<data android:scheme="operator" />)
-      assert block =~ ~s(<data android:scheme="myapp" />)
+      assert block(merged) =~ ~s(<data android:scheme="operator" />)
+      assert block(merged) =~ ~s(<data android:scheme="myapp" />)
+    end
+
+    test "finds a launcher whose closing tag has whitespace before >" do
+      spaced =
+        String.replace(
+          @manifest,
+          "            </intent-filter>\n        </activity>",
+          "            </intent-filter>\n        </activity >"
+        )
+
+      assert UrlSchemes.merge_manifest(spaced, ["operator"]) =~
+               "<!-- mob:url-schemes END -->\n        </activity >"
     end
 
     test "places the filter in an activity-alias that is the launcher" do
@@ -264,6 +321,24 @@ defmodule MobDev.UrlSchemesTest do
       assert File.read!(path) == @manifest
     end
 
+    test "warns about a scheme another activity also declares", %{tmp_dir: dir} do
+      path = Path.join(dir, "AndroidManifest.xml")
+
+      File.write!(
+        path,
+        in_settings(@manifest, view_filter(~s(<data android:scheme="operator"/>)))
+      )
+
+      output =
+        ExUnit.CaptureIO.capture_io(fn ->
+          UrlSchemes.apply_android_manifest!(path, url_schemes: ["operator", "myapp"])
+        end)
+
+      assert output =~ "warning: url_schemes operator:// is also in a VIEW intent filter"
+      refute output =~ "myapp"
+      assert main_activity(File.read!(path)) =~ ~s(android:scheme="operator")
+    end
+
     test "raises on an invalid setting without touching the file", %{tmp_dir: dir} do
       path = Path.join(dir, "AndroidManifest.xml")
       File.write!(path, @manifest)
@@ -326,6 +401,7 @@ defmodule MobDev.UrlSchemesTest do
                "Add :CFBundleURLTypes array",
                "Add :CFBundleURLTypes:0 dict",
                "Add :CFBundleURLTypes:0:CFBundleURLName string com.example.app",
+               "Add :CFBundleURLTypes:0:CFBundleTypeRole string Viewer",
                "Add :CFBundleURLTypes:0:CFBundleURLSchemes array",
                "Add :CFBundleURLTypes:0:CFBundleURLSchemes:0 string operator",
                "Add :CFBundleURLTypes:0:CFBundleURLSchemes:1 string myapp"
@@ -337,6 +413,7 @@ defmodule MobDev.UrlSchemesTest do
                [
                  "Add :CFBundleURLTypes:2 dict",
                  "Add :CFBundleURLTypes:2:CFBundleURLName string com.example.app",
+                 "Add :CFBundleURLTypes:2:CFBundleTypeRole string Viewer",
                  "Add :CFBundleURLTypes:2:CFBundleURLSchemes array",
                  "Add :CFBundleURLTypes:2:CFBundleURLSchemes:0 string myapp"
                ]

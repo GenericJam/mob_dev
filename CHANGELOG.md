@@ -9,11 +9,15 @@
   `mix mob.deploy --native` and `mix mob.release --android` keep a managed
   `VIEW` intent filter (`DEFAULT` + `BROWSABLE`) inside the launcher activity
   of `AndroidManifest.xml`. On iOS, the sim and device builds and
-  `mix mob.release --ios` append a `CFBundleURLTypes` entry, named after the
-  iOS bundle id, to the built bundle's Info.plist. The app's own entries are
-  kept, and `ios/Info.plist` is never rewritten. A scheme the app already
-  declares is skipped on both platforms. Removing the key removes the filter
-  and the entry. Schemes must be lowercase. `http`/`https` are refused, since
+  `mix mob.release --ios` append a `CFBundleURLTypes` entry (named after the
+  iOS bundle id, role `Viewer`) to the built bundle's Info.plist. The app's
+  own entries are kept, and `ios/Info.plist` is never rewritten. A scheme the
+  app already routes is skipped: on Android, only when a broad
+  `VIEW` + `DEFAULT` + `BROWSABLE` filter on the launcher activity declares
+  it. A scheme a `VIEW` filter on another activity also declares is added
+  with a build warning. On iOS, a scheme in any existing entry is skipped.
+  Removing the key removes the filter and the entry. Schemes must be
+  lowercase. `http`/`https` are refused, since
   verified App Links and universal links need a host and verification. An
   invalid value fails the build and `mix mob.doctor`. The launcher activity
   should be `android:launchMode="singleTask"`; mob_new's template sets it. See

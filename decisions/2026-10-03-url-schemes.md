@@ -20,7 +20,8 @@ scheme: an Android `VIEW` intent filter on an activity, an iOS
   `multi_window` (`decisions/2026-10-01-ios-layout-plist-keys.md`): settings
   mob_dev stamps into native files on every build, not runtime config. Nothing
   on the BEAM needs the list, since mob delivers whatever URL the OS hands it.
-  Unset or `[]` means no scheme. `MobDev.UrlSchemes` owns validation and both
+  Unset, `nil` or `[]` means no scheme (`nil` reads as unset, as it does for
+  `IosLayoutPlist`'s keys). `MobDev.UrlSchemes` owns validation and both
   transforms.
 - **Validation, at build time.** Each entry must be a lowercase RFC 3986
   scheme (`[a-z][a-z0-9+.-]*`). Lowercase is required because Android matches
@@ -43,17 +44,19 @@ scheme: an Android `VIEW` intent filter on an activity, an iOS
   or `<activity-alias>` with a `MAIN` + `LAUNCHER` intent filter. Commented-out
   markup doesn't count. The block is regenerated every build (applying twice
   equals applying once), removed when the key is unset or empty, and the file
-  is written only when it changed. Both Android build paths run it: the dev
-  build (`NativeBuild.build_android/2`, after the plugin manifest merge) and
+  is written only when it changed. Both Android build paths run it through
+  `NativeBuild.apply_android_url_schemes!/1`: the dev build
+  (`NativeBuild.build_android/2`, after the plugin manifest merge) and
   `mix mob.release --android` (`ReleaseAndroid.build_aab/1`, before Gradle).
   The plugin manifest merges don't run in a release. This one does, so a
   release never depends on an earlier dev build having stamped the current
-  setting. With schemes to declare and no launcher activity, the build raises.
+  setting. With schemes set and no launcher activity, the build raises.
   It also raises when the launcher's `</activity>` shares a line with other
   markup: a managed block occupies whole lines, and splitting the host's line
   would make removal leave the file changed.
 - **iOS: one appended `CFBundleURLTypes` entry in the built bundle.** The sim
-  and device builds (`apply_plist!/3`, after `IosLayoutPlist.apply!/2`) and
+  and device builds (`NativeBuild.write_bundle_info_plist!/3`, which both
+  share, calls `apply_plist!/3` after `IosLayoutPlist.apply!/2`) and
   `mix mob.release --ios` (`Release.url_types_plist_env/2` →
   `MOB_IOS_URL_TYPES_PLIST_COMMANDS`, a loop in `release_device.sh` after the
   layout loop) run the same PlistBuddy `Add` commands. Elixir computes them
@@ -73,20 +76,41 @@ scheme: an Android `VIEW` intent filter on an activity, an iOS
   `apply_plist!/3` and the shell loop (`set -e`). Unlike the layout commands,
   no failure is tolerated, because none is expected. A `CFBundleURLTypes` that
   isn't an array raises.
-- **`CFBundleURLName` is the iOS bundle id** (`NativeBuild.ios_bundle_id/1`,
-  the id every iOS build path already stamps). This is Apple's recommended
-  reverse-DNS name for a URL type, and every path has it at hand.
-- **De-dupe: a scheme the project declares itself belongs to the project.**
-  On Android, mob_dev skips a scheme found in a `VIEW` `<intent-filter>`
-  outside the managed block, in any activity, including a plugin's managed
-  components. A second filter for the same scheme on another activity makes
-  Android show a chooser between two activities of one app. A host filter
-  restricted by `android:host` still counts: the host has taken the scheme,
-  and mob_dev doesn't guess at partial coverage. `<queries>` entries are not
-  declarations. On iOS, mob_dev skips a scheme found in any existing
-  `CFBundleURLTypes` entry, compared case-insensitively as iOS matches
-  schemes. When every scheme is already declared, nothing is added: no
-  Android block, no iOS entry.
+- **The entry is `CFBundleURLName` = the iOS bundle id, `CFBundleTypeRole` =
+  `Viewer`.** The bundle id (`NativeBuild.ios_bundle_id/1`) is the id every
+  iOS build path already stamps, and Apple recommends a reverse-DNS name for
+  a URL type. Apple's Info.plist key reference marks `CFBundleTypeRole` as
+  required in each `CFBundleURLTypes` dictionary. `Viewer` is the role for an
+  app that opens the URL.
+- **Android de-dupe: only full coverage on the launcher suppresses the
+  managed filter.** A scheme is skipped only when the launcher activity
+  itself, outside the managed block, has a `VIEW` filter with both the
+  `DEFAULT` and `BROWSABLE` categories whose `<data>` elements declare the
+  scheme and set no other `android:` attribute (no host, port, path*, ssp* or
+  MIME type). Android merges every `<data>` in a filter, so a single
+  `android:host` anywhere in it narrows all of its schemes. Such a filter
+  routes every URI of the scheme to the launcher, which is exactly what the
+  managed filter would add. Anything less doesn't suppress it: a host- or
+  path-restricted filter covers part of the scheme, a filter without
+  `DEFAULT` doesn't match ordinary implicit intents, one without
+  `BROWSABLE` doesn't match links from a browser, and a filter on another
+  activity routes the scheme to that activity, not to the one mob delivers
+  from. Silently skipping in those cases would leave `url_schemes` set and
+  some of its URLs unroutable, which was the defect in the first version of
+  this rule. It treated a scheme in any `VIEW` filter, in any activity, as
+  declared.
+- **A scheme another activity also declares is added anyway, with a
+  warning.** The build prints one line per scheme
+  (`UrlSchemes.declared_elsewhere/2`). Android may then show a chooser
+  between two activities of the same app. That is the host's arrangement to
+  resolve, and the setting still has to take effect on the launcher.
+  Plugin-contributed activities (the `mob:plugin-components` block) count as
+  other activities. `<queries>` entries and commented-out markup are not
+  declarations.
+- **iOS de-dupe:** a scheme found in any existing `CFBundleURLTypes` entry is
+  skipped, compared case-insensitively as iOS matches schemes. There is one
+  app target, so any entry routes the scheme to the app. When every scheme is
+  already covered, nothing is added: no Android block, no iOS entry.
 - **`launchMode` is guidance, not something mob_dev rewrites.** The launcher
   activity should be `android:launchMode="singleTask"`. Otherwise a `VIEW`
   intent from another app's task (a QR scanner, a browser that doesn't add
@@ -101,7 +125,8 @@ scheme: an Android `VIEW` intent filter on an activity, an iOS
 - After a build with `url_schemes` set, `AndroidManifest.xml` (host-owned and
   committed) carries the managed block, as it already does for plugin
   permissions and components. Editing inside the markers is lost on the next
-  build. A filter written outside them wins over the setting for its scheme.
+  build. A broad filter on the launcher written outside them takes over its
+  scheme. A narrower one sits alongside the managed filter, and both apply.
 - The marker lines are matched exactly. Re-indenting them by hand (an IDE
   reformat) stops the build from recognising the old block and adds a second
   one. This risk is shared with every `ManagedBlock` region.
