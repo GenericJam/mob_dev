@@ -1,3 +1,20 @@
+## [Unreleased]
+
+### Fixed
+
+- **A guarded project NIF no longer breaks `mix mob.deploy --native`
+  (MOB-376).** A `mob.exs` `:static_nifs` entry with a `:guard` failed every
+  dev build of a platform it covers with `invalid option: -D<module>_static`:
+  mob_dev passed a zig option no mob_new build file declares, and the
+  generated Zig driver table read a `build_options` field none of them
+  provides. The driver table now selects a guarded project NIF by the target
+  it is compiled for, from the entry's `:archs` (the simulator ABI on iOS, the
+  CPU on Android; `TARGET_OS_SIMULATOR` / `__aarch64__` / `__arm__` in a C
+  table), so it works with every app's existing build files. The next native
+  build regenerates the table; tables without project guards are unchanged.
+  The built-in sqlite / EMLX / NxEigen / TFLite switches are unchanged. See
+  `decisions/2026-10-03-guarded-project-nifs-select-by-target-arch.md`.
+
 ## [0.7.11] - 2026-10-03
 
 ### Fixed

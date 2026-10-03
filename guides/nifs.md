@@ -556,8 +556,18 @@ fallback), see [`python_embedding.md`](python_embedding.md).
 ```elixir
 %{module: :nif_name, archs: [:all]}        # link on all targets
 %{module: :nif_name, archs: [:ios]}        # link only on iOS targets
-%{module: :nif_name, archs: [:android_arm64]}  # narrow to one Android ABI
+%{module: :nif_name, archs: [:android_arm64], guard: "MOB_STATIC_NIF_NAME_NIF"}
+                                           # narrow to one Android ABI
 ```
+
+An entry whose `:archs` narrows a platform (`[:ios_device]`, `[:ios_sim]`,
+`[:android_arm64]`, `[:android_arm32]`) also needs a `:guard`: any C macro
+name, conventionally `MOB_STATIC_<NAME>_NIF`. The generated driver table then
+registers the NIF only on the targets `:archs` names, by the compiler's own
+target, so a simulator or other-ABI build doesn't reference a NIF it never
+compiled. Your build files need nothing for this. (Before mob_dev 0.7.12, a
+guarded entry failed `mix mob.deploy --native` with
+`invalid option: -D<name>_static`.)
 
 See [`MobDev.StaticNifs`](`MobDev.StaticNifs`) for the full schema,
 arch atoms, and the per-arch `_nif_init` symbol-name mapping. The
@@ -565,9 +575,9 @@ order in the list determines link order, which matters if NIFs have
 inter-symbol dependencies (rare) but is otherwise cosmetic.
 
 `mob.add_nif` always appends with `archs: [:all]` and assumes you'll
-narrow that manually if needed. Hand-editing `mob.exs` and re-running
-`mix mob.regen_driver_tab` is the supported way to adjust arch
-guards after the fact.
+narrow that manually if needed. Hand-editing `mob.exs` is the supported way
+to adjust `:archs` and `:guard` after the fact; the next
+`mix mob.deploy --native` regenerates the driver table.
 
 ---
 

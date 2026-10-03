@@ -39,9 +39,16 @@ defmodule MobDev.StaticNifs do
   `:ios_device`, `:android_arm64`, `:android_arm32`.
 
   When `:archs` is a strict subset of a target platform's archs (e.g.
-  `[:ios_device]` for iOS), set `:guard` to a preprocessor macro that the
-  build defines only on those archs. The generated C file wraps both the
-  forward declaration and the table row in `#ifdef <guard>`.
+  `[:ios_device]` for iOS), set `:guard` to a C-identifier macro name. The
+  generated tables select a guarded project entry on exactly the targets its
+  `:archs` cover, by the compiler's own target: the Zig table gates it on
+  `@import("builtin").target` (the simulator ABI on iOS, the CPU on Android),
+  and the C table wraps the forward declaration and row in
+  `#if defined(<guard>) || <arch test>` (`TARGET_OS_SIMULATOR`, `__aarch64__`,
+  `__arm__`). No build option is involved, so it works with any app's
+  build files (MOB-376). The guards of the built-in NIFs in `default_nifs/0`
+  are different: each is a feature switch that mob_new's build files set
+  (`build_options.<flag>` for Zig, `-D<guard>` for C).
 
   ## Defaults
 
@@ -306,6 +313,10 @@ defmodule MobDev.StaticNifs do
 
     [
       header(platform),
+      if(uses_target_conditionals?(applicable, platform),
+        do: "#include <TargetConditionals.h>\n\n",
+        else: []
+      ),
       driver_tab_block(),
       forward_decls(applicable, platform),
       "\n",
@@ -415,10 +426,9 @@ defmodule MobDev.StaticNifs do
         _ ->
           flag_decls =
             guarded
-            |> Enum.map(& &1.guard)
-            |> Enum.uniq()
-            |> Enum.map(fn guard ->
-              "const #{guard_flag_name(guard)} = build_options.#{guard_flag_name(guard)};\n"
+            |> Enum.uniq_by(& &1.guard)
+            |> Enum.map(fn nif ->
+              "const #{guard_flag_name(nif.guard)} = #{zig_guard_value(nif, platform)};\n"
             end)
 
           [
@@ -427,6 +437,7 @@ defmodule MobDev.StaticNifs do
             "// Each per-feature flag defaults to false; the build sets it to true\n",
             "// when the project opts into the corresponding statically-linked NIF.\n",
             "const build_options = @import(\"build_options\");\n",
+            project_guard_import(guarded),
             flag_decls,
             "\n",
             Enum.map(guarded, fn nif ->
@@ -438,8 +449,79 @@ defmodule MobDev.StaticNifs do
     [plain, guard_imports]
   end
 
+  # Only a table with a project-NIF guard needs `builtin`; the rest stay
+  # byte-identical to what earlier versions generated.
+  defp project_guard_import(guarded) do
+    if Enum.all?(guarded, &template_guard?(&1.guard)) do
+      []
+    else
+      [
+        "// A project NIF's :guard flag is true on the targets its :archs cover.\n",
+        "const builtin = @import(\"builtin\");\n"
+      ]
+    end
+  end
+
   defp needs_guard_in_zig?(nif, platform) do
     guarded?(nif) and on_platform?(nif, platform)
+  end
+
+  # The guards mob_new's build files define: each built-in NIF's feature switch
+  # (zig `build_options.<flag>`, C `-D<guard>`). Any other guard is a project's
+  # own and selects its entry by target arch instead.
+  defp template_guard?(guard), do: Enum.any?(default_nifs(), &(&1[:guard] == guard))
+
+  # Which of the platform's archs the entry covers: :all, or the one arch.
+  defp arch_scope(nif, platform) do
+    entry_archs = Map.get(nif, :archs, [:all]) |> expand_archs() |> MapSet.new()
+
+    case Enum.filter(platform_archs(platform), &MapSet.member?(entry_archs, &1)) do
+      [arch] -> arch
+      _ -> :all
+    end
+  end
+
+  defp zig_guard_value(nif, platform) do
+    if template_guard?(nif.guard) do
+      "build_options.#{guard_flag_name(nif.guard)}"
+    else
+      case arch_scope(nif, platform) do
+        :all -> "true"
+        :ios_sim -> "builtin.target.abi == .simulator"
+        :ios_device -> "builtin.target.abi != .simulator"
+        :android_arm64 -> "builtin.target.cpu.arch == .aarch64"
+        :android_arm32 -> "(builtin.target.cpu.arch == .arm or builtin.target.cpu.arch == .thumb)"
+      end
+    end
+  end
+
+  # The preprocessor line that opens a guarded entry in the C table:
+  # `#ifdef <guard>` for a built-in feature switch (unchanged from earlier
+  # versions); for a project NIF also the target-arch test, so a build that
+  # defines nothing still gets the entry exactly where its :archs say (and a
+  # build that defines the guard, like `mix mob.release --ios`, keeps it too).
+  defp c_guard_open(nif, platform) do
+    if template_guard?(nif.guard) do
+      "#ifdef #{nif.guard}\n"
+    else
+      arch_test =
+        case arch_scope(nif, platform) do
+          :all -> "1"
+          :ios_sim -> "TARGET_OS_SIMULATOR"
+          :ios_device -> "!TARGET_OS_SIMULATOR"
+          :android_arm64 -> "defined(__aarch64__)"
+          :android_arm32 -> "defined(__arm__)"
+        end
+
+      "#if defined(#{nif.guard}) || #{arch_test}\n"
+    end
+  end
+
+  defp uses_target_conditionals?(nifs, platform) do
+    Enum.any?(nifs, fn nif ->
+      guarded?(nif) and not template_guard?(nif.guard) and
+        arch_scope(nif, platform) in [:ios_sim, :ios_device]
+    end)
   end
 
   @doc """
@@ -676,7 +758,7 @@ defmodule MobDev.StaticNifs do
       decl = "void *#{init_fn(nif)}(void);\n"
 
       if guarded?(nif) and on_platform?(nif, platform) do
-        "#ifdef #{nif.guard}\n#{decl}#endif\n"
+        "#{c_guard_open(nif, platform)}#{decl}#endif\n"
       else
         decl
       end
@@ -689,7 +771,7 @@ defmodule MobDev.StaticNifs do
         row = format_row(nif)
 
         if guarded?(nif) and on_platform?(nif, platform) do
-          "#ifdef #{nif.guard}\n    #{row}\n#endif\n"
+          "#{c_guard_open(nif, platform)}    #{row}\n#endif\n"
         else
           "    #{row}\n"
         end

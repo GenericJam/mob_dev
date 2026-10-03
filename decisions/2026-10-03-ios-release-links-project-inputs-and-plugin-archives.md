@@ -58,6 +58,11 @@ but the stock mob_new `build_device.zig` declares only the sqlite / mlx /
 nxeigen / tflite `_static` options, so a device build of a guarded project NIF
 gets an unknown zig option. That dev-path gap is MOB-376.
 
+> **Fixed (MOB-376):** the zig args no longer carry `-D<module>_static=true`,
+> and the generated tables select a guarded project NIF by target arch, so dev
+> builds now match the release here. See
+> `2026-10-03-guarded-project-nifs-select-by-target-arch.md`.
+
 `Release.project_release_env/3` maps the three results to env vars (pure,
 tested), and `release_env/4` takes that result as a required argument next to
 the plugin env, so a release can't leave the project inputs out.
