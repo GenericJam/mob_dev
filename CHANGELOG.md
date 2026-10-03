@@ -19,9 +19,12 @@
   Removing the key removes the filter and the entry. Schemes must be
   lowercase. `http`/`https` are refused, since
   verified App Links and universal links need a host and verification. An
-  invalid value fails the build and `mix mob.doctor`. The launcher activity
-  should be `android:launchMode="singleTask"`; mob_new's template sets it. See
-  `decisions/2026-10-03-url-schemes.md`.
+  invalid value fails the build and `mix mob.doctor`. With `url_schemes` set,
+  the launcher activity must be `android:launchMode="singleTask"` (or
+  `singleInstance`). Without it, a link from another app's task starts a
+  second `MainActivity`. The Android build and `mix mob.doctor` refuse any
+  other launch mode. mob_new's template uses `singleTop`, so an app opts in
+  when it adds deep links. See `decisions/2026-10-03-url-schemes.md`.
 
 ### Fixed
 

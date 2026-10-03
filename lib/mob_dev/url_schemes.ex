@@ -34,9 +34,13 @@ defmodule MobDev.UrlSchemes do
   verified App Links and universal links need a host and domain verification,
   which a bare scheme can't express.
 
-  The launcher activity should be `android:launchMode="singleTask"` (mob_new's
-  template is), or a link opened from another app's task starts a second
-  `MainActivity` there. The build doesn't rewrite `launchMode`.
+  The launcher activity must be `android:launchMode="singleTask"` (or
+  `singleInstance`) when `url_schemes` is set; the build refuses anything
+  else rather than rewrite `launchMode`. Otherwise a link opened from another
+  app's task starts a second `MainActivity` there, and two activities drive
+  one BEAM. mob_new's template uses `singleTop`, since `singleTask` also
+  finishes the activities stacked above `MainActivity` whenever the app is
+  reopened from its icon, so an app that takes deep links opts in.
 
   See `decisions/2026-10-03-url-schemes.md`.
   """
@@ -59,6 +63,9 @@ defmodule MobDev.UrlSchemes do
     "            <!-- mob:url-schemes BEGIN (managed — regenerated each build; do not edit) -->",
     "            <!-- mob:url-schemes END -->"
   }
+
+  @android_manifest "android/app/src/main/AndroidManifest.xml"
+  @launch_modes ["singleTask", "singleInstance"]
 
   @typedoc "One `mix mob.doctor` row."
   @type check :: {:ok | :fail, String.t(), String.t(), String.t() | nil}
@@ -124,17 +131,26 @@ defmodule MobDev.UrlSchemes do
   end
 
   @doc """
-  The `mix mob.doctor` row: none when `url_schemes` is unset or empty, `:ok`
-  listing the schemes, or `:fail` on a value the build refuses.
+  The `mix mob.doctor` row for `mob.exs`'s `url_schemes` and the text of the
+  project's `AndroidManifest.xml` (`nil` when there is none): none when
+  `url_schemes` is unset or empty, `:ok` listing the schemes, or `:fail` on a
+  value the build refuses or a launcher activity it refuses
+  (`launch_mode_error/2`).
   """
-  @spec audit(keyword()) :: [check()]
-  def audit(cfg) do
+  @spec audit(keyword(), String.t() | nil) :: [check()]
+  def audit(cfg, manifest) do
     case schemes(cfg) do
       {:ok, []} ->
         []
 
       {:ok, schemes} ->
-        [{:ok, "deep-link URL schemes", Enum.map_join(schemes, ", ", &"#{&1}://"), nil}]
+        case manifest && launch_mode_error(manifest, @android_manifest) do
+          nil ->
+            [{:ok, "deep-link URL schemes", Enum.map_join(schemes, ", ", &"#{&1}://"), nil}]
+
+          message ->
+            [{:fail, "deep-link URL schemes", message, "Fix #{@android_manifest}"}]
+        end
 
       {:error, message} ->
         [
@@ -238,16 +254,17 @@ defmodule MobDev.UrlSchemes do
   end
 
   defp launcher!(text) do
-    Enum.find(activities(text), &launcher?(&1.body)) ||
-      Mix.raise(
-        "mob.exs url_schemes is set, but AndroidManifest.xml has no launcher activity (an " <>
-          "<activity> with an <intent-filter> holding android.intent.action.MAIN and " <>
-          "android.intent.category.LAUNCHER) to add the deep-link intent filter to"
-      )
+    Enum.find(activities(text), &launcher?(&1.body)) || Mix.raise(no_launcher_message())
+  end
+
+  defp no_launcher_message do
+    "mob.exs url_schemes is set, but AndroidManifest.xml has no launcher activity (an " <>
+      "<activity> with an <intent-filter> holding android.intent.action.MAIN and " <>
+      "android.intent.category.LAUNCHER) to add the deep-link intent filter to"
   end
 
   # Every <activity> / <activity-alias> with a body, in comment-blanked text:
-  # the body and the byte index of its closing tag.
+  # its element name, start tag, body and the byte index of its closing tag.
   defp activities(text) do
     "<(activity-alias|activity)(?=[\\s/>])[^>]*>"
     |> Regex.compile!()
@@ -255,15 +272,83 @@ defmodule MobDev.UrlSchemes do
     |> Enum.flat_map(fn [{start, len}, {name_start, name_len}] ->
       body_start = start + len
       rest = binary_part(text, body_start, byte_size(text) - body_start)
-      close = Regex.compile!("</" <> binary_part(text, name_start, name_len) <> "\\s*>")
+      tag = binary_part(text, start, len)
+      name = binary_part(text, name_start, name_len)
+      close = Regex.compile!("</" <> name <> "\\s*>")
 
-      with false <- String.ends_with?(binary_part(text, start, len), "/>"),
+      with false <- String.ends_with?(tag, "/>"),
            [{offset, _}] <- Regex.run(close, rest, return: :index) do
-        [%{body: binary_part(rest, 0, offset), close: body_start + offset}]
+        [%{name: name, tag: tag, body: binary_part(rest, 0, offset), close: body_start + offset}]
       else
         _ -> []
       end
     end)
+  end
+
+  @doc """
+  Why the launcher activity in `manifest` (the text of the file at `path`)
+  can't take deep links, or `nil` when it can: its `android:launchMode` must
+  be `singleTask` or `singleInstance`. For an `<activity-alias>` launcher
+  that is the launch mode of its `android:targetActivity`. A manifest with no
+  launcher activity, or an alias whose target isn't declared, is an error
+  too.
+  """
+  @spec launch_mode_error(String.t(), Path.t()) :: String.t() | nil
+  def launch_mode_error(manifest, path) do
+    text = manifest |> MobDev.Plugin.ManagedBlock.strip(@markers) |> blank_comments()
+
+    case Enum.find(activities(text), &launcher?(&1.body)) do
+      nil -> no_launcher_message()
+      launcher -> launcher |> launched_activity_tag(text) |> launch_mode_problem(path)
+    end
+  end
+
+  defp launched_activity_tag(%{name: "activity", tag: tag}, _text), do: {:ok, tag}
+
+  defp launched_activity_tag(%{tag: alias_tag}, text) do
+    target = attribute(alias_tag, "android:targetActivity")
+
+    "<activity(?=[\\s/>])[^>]*>"
+    |> Regex.compile!()
+    |> Regex.scan(text)
+    |> List.flatten()
+    |> Enum.find(&(target != nil and attribute(&1, "android:name") == target))
+    |> case do
+      nil -> {:missing_target, target}
+      tag -> {:ok, tag}
+    end
+  end
+
+  defp launch_mode_problem({:missing_target, target}, path) do
+    "mob.exs url_schemes: the launcher <activity-alias> in #{path} targets " <>
+      "#{inspect(target)}, but no <activity> there has that android:name, so its " <>
+      "android:launchMode (which must be singleTask) can't be checked. Point " <>
+      "android:targetActivity at the activity exactly as its android:name spells it"
+  end
+
+  defp launch_mode_problem({:ok, tag}, path) do
+    mode = attribute(tag, "android:launchMode")
+
+    if mode in @launch_modes do
+      nil
+    else
+      name = attribute(tag, "android:name") || ".MainActivity"
+      short = name |> String.split(".") |> List.last()
+      current = if mode, do: "it is #{inspect(mode)}", else: "it has none, so it is \"standard\""
+
+      "mob.exs url_schemes needs android:launchMode=\"singleTask\" on " <>
+        "<activity android:name=\"#{name}\"> in #{path} (#{current}): a link opened from " <>
+        "another app's task (a QR scanner, some browsers) would otherwise start a second " <>
+        "#{short} there, and two activities would drive one BEAM. singleTask also finishes " <>
+        "activities stacked above #{short} when the app is reopened from its icon"
+    end
+  end
+
+  defp attribute(tag, name) do
+    case List.keyfind(attributes(tag), name, 0) do
+      {_, value} -> value
+      nil -> nil
+    end
   end
 
   defp launcher?(activity_body) do
@@ -349,7 +434,9 @@ defmodule MobDev.UrlSchemes do
   Applies `merge_manifest/2` with `mob.exs`'s schemes to the manifest at
   `path`, writing only when it changed. With `url_schemes` unset the merge
   still runs, which removes a block an earlier build added. Raises `Mix.Error`
-  on an invalid setting, or when schemes are set and `path` doesn't exist.
+  on an invalid setting, when schemes are set and `path` doesn't exist, or
+  when schemes are set and `launch_mode_error/2` objects to the launcher
+  activity.
   """
   @spec apply_android_manifest!(Path.t(), keyword()) :: :ok
   def apply_android_manifest!(path, cfg) do
@@ -357,6 +444,7 @@ defmodule MobDev.UrlSchemes do
 
     case File.read(path) do
       {:ok, content} ->
+        if schemes != [], do: launch_mode!(content, path)
         patched = merge_manifest(content, schemes)
 
         for scheme <- declared_elsewhere(content, schemes) do
@@ -376,6 +464,13 @@ defmodule MobDev.UrlSchemes do
         Mix.raise(
           "mob.exs url_schemes is set but #{path} can't be read (#{:file.format_error(reason)})"
         )
+    end
+  end
+
+  defp launch_mode!(manifest, path) do
+    case launch_mode_error(manifest, path) do
+      nil -> :ok
+      message -> Mix.raise(message)
     end
   end
 

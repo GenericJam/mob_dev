@@ -12,7 +12,8 @@ defmodule MobDev.UrlSchemesBuildPathsTest do
   @manifest """
   <manifest xmlns:android="http://schemas.android.com/apk/res/android">
       <application>
-          <activity android:name=".MainActivity" android:exported="true">
+          <activity android:name=".MainActivity" android:exported="true"
+              android:launchMode="singleTask">
               <intent-filter>
                   <action android:name="android.intent.action.MAIN"/>
                   <category android:name="android.intent.category.LAUNCHER"/>

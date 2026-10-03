@@ -641,7 +641,7 @@ defmodule Mix.Tasks.Mob.Doctor do
       __mob_dir_dep_check__(cfg[:mob_dir], MobDev.MobDirCheck.dep_path()),
       check_bundle_id(cfg),
       check_ios_layout_plist(cfg),
-      MobDev.UrlSchemes.audit(cfg)
+      check_url_schemes(cfg)
     ])
   end
 
@@ -710,6 +710,11 @@ defmodule Mix.Tasks.Mob.Doctor do
     if has_ios_project?() and File.exists?("ios/Info.plist"),
       do: MobDev.IosLayoutPlist.audit(File.read!("ios/Info.plist"), cfg),
       else: []
+  end
+
+  defp check_url_schemes(cfg) do
+    manifest = "android/app/src/main/AndroidManifest.xml"
+    MobDev.UrlSchemes.audit(cfg, if(File.exists?(manifest), do: File.read!(manifest)))
   end
 
   # ── Build checks ─────────────────────────────────────────────────────────────

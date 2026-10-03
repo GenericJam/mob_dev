@@ -111,14 +111,27 @@ scheme: an Android `VIEW` intent filter on an activity, an iOS
   skipped, compared case-insensitively as iOS matches schemes. There is one
   app target, so any entry routes the scheme to the app. When every scheme is
   already covered, nothing is added: no Android block, no iOS entry.
-- **`launchMode` is guidance, not something mob_dev rewrites.** The launcher
-  activity should be `android:launchMode="singleTask"`. Otherwise a `VIEW`
+- **`launchMode` is enforced, not rewritten.** With `url_schemes` set, the
+  launcher activity must be `android:launchMode="singleTask"` or
+  `singleInstance`. For an `<activity-alias>` launcher this means the
+  launch mode of its `android:targetActivity`. Both Android build paths
+  (`apply_android_manifest!/2`) raise otherwise, and `mix mob.doctor` fails
+  the same manifest (`UrlSchemes.launch_mode_error/2`). The reason: a `VIEW`
   intent from another app's task (a QR scanner, a browser that doesn't add
-  `FLAG_ACTIVITY_NEW_TASK`) creates a second `MainActivity` in that task, and
-  two activities compose against one `MobBridge` and BEAM. mob_new's template
-  sets it. mob_dev leaves an existing app's `launchMode` to its author: changing
-  it alters back-stack behaviour for the whole app. On iOS the URL reaches the
-  existing scene through `scene:openURLContexts:`, so there is no equivalent.
+  `FLAG_ACTIVITY_NEW_TASK`) would otherwise create a second `MainActivity` in
+  that task, and two activities would compose against one `MobBridge` and
+  BEAM. `singleTask` has a cost, though: an intent that reaches the existing
+  instance, including a tap on the launcher icon, finishes every activity
+  stacked above `MainActivity` (an open picker or scanner). So mob_new's
+  template stays `singleTop`, and an app that takes deep links opts in by
+  setting `singleTask` itself. mob_dev doesn't rewrite `launchMode`: the
+  change alters back-stack behaviour for the whole app, so it is the
+  author's decision, and the error says what to set and why. The check runs
+  only while `url_schemes` is non-empty, so an app can drop the key and go
+  back to `singleTop`. The managed block is still stripped then. An earlier
+  draft of this record only recommended `singleTask`, assuming the template
+  set it. On iOS the URL reaches the existing scene through
+  `scene:openURLContexts:`, so there is no equivalent.
 
 ## Consequences
 

@@ -44,23 +44,9 @@ defmodule MobDev.UrlSchemesTest do
     end
   end
 
-  describe "audit/1" do
-    test "no row when unset, ok listing the schemes, fail on an invalid value" do
-      assert UrlSchemes.audit([]) == []
-
-      assert [{:ok, "deep-link URL schemes", "operator://, myapp://", nil}] =
-               UrlSchemes.audit(url_schemes: ["operator", "myapp"])
-
-      assert [{:fail, "deep-link URL schemes", message, fix}] =
-               UrlSchemes.audit(url_schemes: ["https"])
-
-      assert message =~ "can't claim"
-      assert fix =~ "mob.exs"
-    end
-  end
-
-  # mob_new's manifest shape, with a second activity ahead of the launcher one
-  # and a commented-out launcher filter in it.
+  # mob_new's manifest shape, opted in to deep links (singleTask), with a
+  # second activity ahead of the launcher one and a commented-out launcher
+  # filter in it.
   @manifest """
   <?xml version="1.0" encoding="utf-8"?>
   <manifest xmlns:android="http://schemas.android.com/apk/res/android">
@@ -98,6 +84,105 @@ defmodule MobDev.UrlSchemesTest do
     [body, _] = String.split(main, "</activity>", parts: 2)
     body
   end
+
+  describe "audit/2" do
+    test "no row when unset, ok listing the schemes, fail on an invalid value" do
+      assert UrlSchemes.audit([], nil) == []
+      assert UrlSchemes.audit([], single_top()) == []
+
+      assert [{:ok, "deep-link URL schemes", "operator://, myapp://", nil}] =
+               UrlSchemes.audit([url_schemes: ["operator", "myapp"]], nil)
+
+      assert [{:ok, _, _, nil}] = UrlSchemes.audit([url_schemes: ["operator"]], @manifest)
+
+      assert [{:fail, "deep-link URL schemes", message, fix}] =
+               UrlSchemes.audit([url_schemes: ["https"]], nil)
+
+      assert message =~ "can't claim"
+      assert fix =~ "mob.exs"
+    end
+
+    test "fails a launcher activity the build refuses" do
+      assert [{:fail, "deep-link URL schemes", message, fix}] =
+               UrlSchemes.audit([url_schemes: ["operator"]], single_top())
+
+      assert message =~ ~s(needs android:launchMode="singleTask")
+      assert fix =~ "android/app/src/main/AndroidManifest.xml"
+    end
+  end
+
+  describe "launch_mode_error/2" do
+    test "accepts singleTask and singleInstance" do
+      assert UrlSchemes.launch_mode_error(@manifest, "M.xml") == nil
+
+      assert UrlSchemes.launch_mode_error(
+               launch_mode(~s(android:launchMode="singleInstance")),
+               "M.xml"
+             ) == nil
+    end
+
+    test "refuses singleTop and a missing launchMode, naming the activity and file" do
+      message = UrlSchemes.launch_mode_error(single_top(), "android/x/AndroidManifest.xml")
+
+      assert message =~
+               ~s|needs android:launchMode="singleTask" on <activity android:name=".MainActivity"> in android/x/AndroidManifest.xml (it is "singleTop")|
+
+      assert message =~ "start a second MainActivity there"
+
+      assert UrlSchemes.launch_mode_error(launch_mode(""), "M.xml") =~
+               ~s(it has none, so it is "standard")
+    end
+
+    test "only the launcher activity's own launchMode counts" do
+      commented =
+        launch_mode(~s(android:launchMode="singleTop"))
+        |> String.replace(
+          ~s(<activity android:name=".Splash" android:exported="false" />),
+          ~s(<activity android:name=".Splash" android:launchMode="singleTask" />\n        <!-- android:launchMode="singleTask" -->)
+        )
+
+      assert UrlSchemes.launch_mode_error(commented, "M.xml") =~ ~s(it is "singleTop")
+    end
+
+    test "an activity-alias launcher is checked through its targetActivity" do
+      alias_manifest = fn target_mode, target ->
+        """
+        <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+            <application>
+                <activity android:name=".MainActivity" #{target_mode} android:exported="true" />
+                <activity-alias android:name=".Launcher" android:targetActivity="#{target}">
+                    <intent-filter>
+                        <action android:name="android.intent.action.MAIN"/>
+                        <category android:name="android.intent.category.LAUNCHER"/>
+                    </intent-filter>
+                </activity-alias>
+            </application>
+        </manifest>
+        """
+      end
+
+      single_task = ~s(android:launchMode="singleTask")
+
+      assert UrlSchemes.launch_mode_error(alias_manifest.(single_task, ".MainActivity"), "M.xml") ==
+               nil
+
+      assert UrlSchemes.launch_mode_error(alias_manifest.("", ".MainActivity"), "M.xml") =~
+               ~s(on <activity android:name=".MainActivity">)
+
+      assert UrlSchemes.launch_mode_error(alias_manifest.(single_task, ".Gone"), "M.xml") =~
+               ~s(targets ".Gone", but no <activity> there has that android:name)
+    end
+
+    test "a manifest without a launcher activity is refused" do
+      no_launcher = String.replace(@manifest, "category.LAUNCHER", "category.DEFAULT")
+      assert UrlSchemes.launch_mode_error(no_launcher, "M.xml") =~ "has no launcher activity"
+    end
+  end
+
+  defp launch_mode(attribute),
+    do: String.replace(@manifest, ~s(android:launchMode="singleTask"), attribute)
+
+  defp single_top, do: launch_mode(~s(android:launchMode="singleTop"))
 
   defp block(merged) do
     case Regex.run(Regex.compile!("mob:url-schemes BEGIN.*mob:url-schemes END", "s"), merged) do
@@ -337,6 +422,32 @@ defmodule MobDev.UrlSchemesTest do
       assert output =~ "warning: url_schemes operator:// is also in a VIEW intent filter"
       refute output =~ "myapp"
       assert main_activity(File.read!(path)) =~ ~s(android:scheme="operator")
+    end
+
+    test "refuses a launcher without singleTask when schemes are set, and only then",
+         %{tmp_dir: dir} do
+      path = Path.join(dir, "AndroidManifest.xml")
+
+      for manifest <- [single_top(), launch_mode("")] do
+        File.write!(path, manifest)
+
+        assert_raise Mix.Error, ~r/needs android:launchMode="singleTask"/, fn ->
+          UrlSchemes.apply_android_manifest!(path, url_schemes: ["operator"])
+        end
+
+        assert File.read!(path) == manifest
+        assert UrlSchemes.apply_android_manifest!(path, []) == :ok
+        assert File.read!(path) == manifest
+      end
+
+      # Dropping url_schemes and going back to singleTop still strips the block.
+      File.write!(path, UrlSchemes.merge_manifest(single_top(), ["operator"]))
+      UrlSchemes.apply_android_manifest!(path, [])
+      assert File.read!(path) == single_top()
+
+      File.write!(path, launch_mode(~s(android:launchMode="singleInstance")))
+      assert UrlSchemes.apply_android_manifest!(path, url_schemes: ["operator"]) == :ok
+      assert block(File.read!(path)) =~ ~s(android:scheme="operator")
     end
 
     test "raises on an invalid setting without touching the file", %{tmp_dir: dir} do

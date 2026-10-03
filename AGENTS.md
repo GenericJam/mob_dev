@@ -450,7 +450,9 @@ Real fix: `sim_runtime_dir/0` should detect `ios/build.zig` and use
   `test/mob_dev/url_schemes_build_paths_test.exs` covers the existing paths.
   Unset still runs the Android merge, which is what removes an earlier block.
   Android de-dupe is coverage-based: only a broad `VIEW` + `DEFAULT` +
-  `BROWSABLE` filter on the launcher itself suppresses the managed one. See
+  `BROWSABLE` filter on the launcher itself suppresses the managed one. With
+  schemes set, the launcher must be `singleTask`/`singleInstance` (enforced,
+  never rewritten; mob_new's template is `singleTop`). See
   `decisions/2026-10-03-url-schemes.md`.
 - **Android deploys relabel `otp/` once, last.** Anything written as root
   (`adb root` push, `ln -s`) keeps root's SELinux categories until
@@ -649,10 +651,11 @@ narrowing functions). Don't make them private:
   cache hits; see
   `decisions/2026-10-01-ios-build-sources-stable-app-dir-removed.md`)
 - `MobDev.UrlSchemes.schemes/1`, `merge_manifest/2`, `declared_elsewhere/2`,
-  `plist_commands/3`, `bundle_plist_commands!/3` and `audit/1` (documented:
-  `mob.exs` `url_schemes` validation, the Android launcher-activity intent
-  filter and its other-activity warning, the iOS `CFBundleURLTypes` commands
-  and the doctor row), `Release.url_types_plist_env/2` (the same commands for
+  `launch_mode_error/2`, `plist_commands/3`, `bundle_plist_commands!/3` and
+  `audit/2` (documented: `mob.exs` `url_schemes` validation, the Android
+  launcher-activity intent filter, its other-activity warning and launchMode
+  check, the iOS `CFBundleURLTypes` commands and the doctor row),
+  `Release.url_types_plist_env/2` (the same commands for
   `release_device.sh`), and the build-path seams
   `NativeBuild.apply_android_url_schemes!/1`,
   `NativeBuild.write_bundle_info_plist!/3` and
