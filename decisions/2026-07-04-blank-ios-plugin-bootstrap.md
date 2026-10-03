@@ -47,6 +47,12 @@ The presence of the `plugin_swift_files` option and the AppDelegate's call to
 "this app expects the bootstrap symbol." Both iOS paths share one helper,
 `ios_plugin_swift_and_frameworks/3`.
 
+> **2026-10-03 correction:** "Both iOS paths" missed the third: `mix mob.release
+> --ios` builds through its own `release_device.sh`, which never compiled the
+> bootstrap, so the same blank app still failed to link in a release. The release
+> now applies this same rule (`ios_plugin_swift_mode/2` over `build_device.zig`);
+> see `2026-10-03-ios-release-compiles-plugin-swift-and-bootstrap.md`.
+
 ## Consequences
 
 - `--blank --ios` apps link again; verified end-to-end on a physical iPhone SE

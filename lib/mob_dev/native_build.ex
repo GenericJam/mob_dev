@@ -2735,6 +2735,7 @@ defmodule MobDev.NativeBuild do
   # file ⇒ false (treat as legacy: omit the flags rather than risk an unknown
   # -D option on an old build.zig). Public (@doc false) so the missing-file
   # branch is testable.
+  # Also read by `MobDev.Release.plugin_ios_swift_env_written/3`.
   @spec ios_build_file_supports_plugins?(String.t()) :: boolean()
   def ios_build_file_supports_plugins?(path) do
     case File.read(path) do
@@ -2750,6 +2751,8 @@ defmodule MobDev.NativeBuild do
   # mob_register_plugins) is unit-testable without file I/O or the plugin
   # registry. A regression flipping that branch back to `:none` reintroduces
   # MOB-7, so it must be pinned.
+  # Also the rule `MobDev.Release.plugin_ios_swift_env/3` applies to the iOS
+  # release script, so a change here changes `mix mob.release --ios` too.
   @spec ios_plugin_swift_mode([term()], boolean()) :: :with_plugins | :bootstrap_only | :none
   def ios_plugin_swift_mode([], true), do: :bootstrap_only
   def ios_plugin_swift_mode([], false), do: :none

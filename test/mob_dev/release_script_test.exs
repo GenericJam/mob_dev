@@ -194,6 +194,27 @@ defmodule MobDev.ReleaseScriptTest do
     end
   end
 
+  describe "plugin Swift sources + bootstrap are compiled into the app module" do
+    # AppDelegate.m calls mob_register_plugins() unconditionally; the generated
+    # bootstrap defines it. The script compiled only $MOB_DIR/ios/*.swift, so
+    # `mix mob.release --ios` of a fresh app died at link with "Undefined
+    # symbols: _mob_register_plugins". The dev builds pass the same files as
+    # -Dplugin_swift_files.
+
+    test "MOB_PLUGIN_IOS_SWIFT_SOURCES is on the same swiftc call as mob's Swift sources",
+         %{sh: sh} do
+      # Same invocation as the glob: one module (-wmo), so a plugin view can see
+      # mob's MobNativeViewRegistry and the bootstrap can see the plugin views.
+      assert sh =~
+               ~r/"\$MOB_DIR"\/ios\/\*\.swift \\\n\s*\$MOB_PLUGIN_IOS_SWIFT_SOURCES \\\n\s*-c -o "\$BUILD_DIR\/swift_mob\.o"/
+    end
+
+    test "the list is left unquoted so the space-joined paths word-split", %{sh: sh} do
+      assert sh =~ ~s|$MOB_PLUGIN_IOS_SWIFT_SOURCES \\|
+      refute sh =~ ~s|"$MOB_PLUGIN_IOS_SWIFT_SOURCES"|
+    end
+  end
+
   describe "test harness compiled out of release builds" do
     # Apple error code 50 — non-public selectors. Mob's synthetic-touch
     # NIFs (`tap_xy`, `swipe_xy`, …) use private UIKit APIs. mob 0.5.12
