@@ -403,7 +403,8 @@ defmodule MobDev.Release do
       {"MOB_APP_NAME", app_name},
       {"MOB_APP_MODULE", app_module},
       screenshot_build_env(cfg),
-      layout_plist_env(cfg)
+      layout_plist_env(cfg),
+      url_types_plist_env(cfg, "ios/Info.plist")
     ] ++ plugin_env ++ project_env
   end
 
@@ -489,6 +490,25 @@ defmodule MobDev.Release do
     do:
       {"MOB_IOS_LAYOUT_PLIST_COMMANDS",
        Enum.join(MobDev.IosLayoutPlist.plist_commands(cfg), "\n")}
+
+  @doc false
+  # `mob.exs` `url_schemes` as newline-separated PlistBuddy commands computed
+  # from `plist_path` (the project's `ios/Info.plist`, which release_device.sh
+  # copies into the bundle unchanged as far as CFBundleURLTypes goes):
+  # `MobDev.UrlSchemes.bundle_plist_commands!/3`, the dev build's commands, under
+  # the iOS bundle id as CFBundleURLName. Empty without reading the plist when
+  # `url_schemes` is unset. Raises on an invalid value.
+  @spec url_types_plist_env(keyword(), Path.t()) :: {String.t(), String.t()}
+  def url_types_plist_env(cfg, plist_path) do
+    commands =
+      MobDev.UrlSchemes.bundle_plist_commands!(
+        plist_path,
+        cfg,
+        MobDev.NativeBuild.ios_bundle_id(cfg)
+      )
+
+    {"MOB_IOS_URL_TYPES_PLIST_COMMANDS", Enum.join(commands, "\n")}
+  end
 
   @doc false
   # Opt-in to shipping mob's public-API `screenshot` NIF in the release build (stripped
@@ -902,6 +922,15 @@ defmodule MobDev.Release do
                 *)          /usr/libexec/PlistBuddy -c "$CMD" "$APP/Info.plist" ;;
             esac
         done <<< "$MOB_IOS_LAYOUT_PLIST_COMMANDS"
+    fi
+
+    # mob.exs url_schemes (MobDev.UrlSchemes): PlistBuddy Adds computed from
+    # ios/Info.plist, appending one CFBundleURLTypes entry after the app's own
+    # and skipping schemes it declares. Every command must succeed (set -e).
+    if [ -n "$MOB_IOS_URL_TYPES_PLIST_COMMANDS" ]; then
+        while IFS= read -r CMD; do
+            /usr/libexec/PlistBuddy -c "$CMD" "$APP/Info.plist"
+        done <<< "$MOB_IOS_URL_TYPES_PLIST_COMMANDS"
     fi
 
     # Apple's App Store validator requires MinimumOSVersion and DTPlatformName

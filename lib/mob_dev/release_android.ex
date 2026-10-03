@@ -4,7 +4,10 @@ defmodule MobDev.ReleaseAndroid do
 
   Called by `mix mob.release --android`. The pipeline:
 
-    1. Download the Android OTP runtime (arm64) if not already cached.
+    1. Regenerate the `mob.exs` `url_schemes` intent filter in
+       `AndroidManifest.xml` (`MobDev.UrlSchemes`), so the release doesn't
+       depend on a dev build having stamped the current setting. Then
+       download the Android OTP runtime (arm64) if not already cached.
     2. Copy the OTP tree to a temp staging dir and add:
        - App + dep BEAMs (flattened into `{app_name}/`)
        - App `priv/` → `{app_name}/priv/`
@@ -45,6 +48,7 @@ defmodule MobDev.ReleaseAndroid do
     MobDev.Plugin.Validator.raise_on_cross_plugin_conflicts!(MobDev.Plugin.activated())
 
     with :ok <- check_android_project(),
+         :ok <- MobDev.NativeBuild.apply_android_url_schemes!(MobDev.Config.load_mob_config()),
          log("Ensuring Android OTP runtime..."),
          {:ok, otp_arm64} <- MobDev.OtpDownloader.ensure_android("arm64-v8a"),
          log("Staging OTP tree + app BEAMs..."),

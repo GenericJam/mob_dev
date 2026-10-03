@@ -18,7 +18,8 @@ defmodule Mix.Tasks.Mob.Doctor do
 
     1. **Tools**   — adb, xcrun (macOS), Java, Android SDK, iOS build tools
     2. **Project** — mob.exs present, required keys set, paths valid, iOS
-       Info.plist ready for iPad and Split View (warning only)
+       Info.plist ready for iPad and Split View (warning only), `url_schemes`
+       valid
     3. **Build**   — Elixir deps fetched, project compiled, native build tools present,
        installed plugins that ship NIFs but aren't activated
     4. **OTP cache** — pre-built runtimes downloaded and structurally valid
@@ -605,13 +606,17 @@ defmodule Mix.Tasks.Mob.Doctor do
 
   defp check_project do
     if File.exists?("mix.exs") do
-      do_check_project()
+      __project_checks__()
     else
       [{:warn, "project", "not in a Mix project directory — skipping project checks", nil}]
     end
   end
 
-  defp do_check_project do
+  @doc false
+  # The Project section's rows for the project in the current directory.
+  # Public for testing.
+  @spec __project_checks__() :: [tuple()]
+  def __project_checks__ do
     mob_exs_check =
       if File.exists?("mob.exs") do
         {:ok, "mob.exs", "found", nil}
@@ -635,7 +640,8 @@ defmodule Mix.Tasks.Mob.Doctor do
       ),
       __mob_dir_dep_check__(cfg[:mob_dir], MobDev.MobDirCheck.dep_path()),
       check_bundle_id(cfg),
-      check_ios_layout_plist(cfg)
+      check_ios_layout_plist(cfg),
+      check_url_schemes(cfg)
     ])
   end
 
@@ -704,6 +710,11 @@ defmodule Mix.Tasks.Mob.Doctor do
     if has_ios_project?() and File.exists?("ios/Info.plist"),
       do: MobDev.IosLayoutPlist.audit(File.read!("ios/Info.plist"), cfg),
       else: []
+  end
+
+  defp check_url_schemes(cfg) do
+    manifest = "android/app/src/main/AndroidManifest.xml"
+    MobDev.UrlSchemes.audit(cfg, if(File.exists?(manifest), do: File.read!(manifest)))
   end
 
   # ── Build checks ─────────────────────────────────────────────────────────────
