@@ -39,8 +39,9 @@ that registers it compile together, as they do under zig).
   builds run before linking plugin code. `build_ipa/1` calls it before
   signing resolution, the OTP download, the script rewrite or the bootstrap
   write (only the empty `_build` inputs dir is created first), and
-  `release_env/3` takes its result as an argument, so a release can neither
-  skip the gate nor leave the plugin inputs out.
+  `release_env/3` (now `release_env/4`, MOB-373) takes its result as an
+  argument, so a release can neither skip the gate nor leave the plugin inputs
+  out.
 - **The rule is the dev path's.** Which files go in is decided by
   `NativeBuild.ios_plugin_swift_mode/2`, so release and dev agree: plugins
   activated → their Swift files plus the bootstrap; none, and the app's
@@ -102,6 +103,9 @@ that registers it compile together, as they do under zig).
   `project_swift_sources` from `mob.exs`, `project_c_nifs`, and plugin
   `static_archives` (`:cpp_archive`). A Swift file configured through
   `project_swift_sources` is in dev builds and missing from a release. Follow-up.
+
+  > **Resolved (MOB-373):** the release now links all three; see
+  > `2026-10-03-ios-release-links-project-inputs-and-plugin-archives.md`.
 - Verified on the host, not on a device. Two apps, `mix mob.release --ios`
   against master and against this change, with an Apple Distribution identity
   and an App Store profile for the bundle id:

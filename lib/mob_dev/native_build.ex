@@ -3052,9 +3052,11 @@ defmodule MobDev.NativeBuild do
   def plugin_static_lib_args(paths) when is_list(paths),
     do: ["-Dplugin_static_libs=#{Enum.join(paths, ",")}"]
 
+  @doc false
   # Build every activated cpp_archive plugin NIF for one target ABI. Returns
   # `{:ok, archive_paths}` (empty when no such plugin is active), or a tagged
-  # error string from the cross-compile.
+  # error string from the cross-compile. Also called by `mix mob.release --ios`
+  # (MOB-373), so a release links the same archives as the device build.
   #
   # When a cpp_archive plugin IS active but `target_id` is an ABI CppArchive
   # can't build (today the x86_64 Android emulator → :android_x86_64), this is
@@ -3067,7 +3069,7 @@ defmodule MobDev.NativeBuild do
   # fine.
   @spec build_plugin_static_archives(atom(), :ios | :android, Path.t()) ::
           {:ok, [Path.t()]} | {:error, String.t()}
-  defp build_plugin_static_archives(target_id, platform, otp_dir) do
+  def build_plugin_static_archives(target_id, platform, otp_dir) do
     specs = MobDev.Plugin.Merge.static_archives(MobDev.Plugin.activated(), platform)
 
     case cpp_archive_target_decision(specs, target_id) do
@@ -3864,6 +3866,39 @@ defmodule MobDev.NativeBuild do
           {:ok, [String.t()]} | {:error, String.t()}
   @doc false
   def project_nif_zig_args(platform) do
+    with {:ok, inputs} <- project_nif_build_inputs(platform) do
+      {:ok,
+       [
+         "-Dproject_root=#{inputs.root}",
+         "-Dproject_c_nifs=#{Enum.map_join(inputs.c_sources, ",", &elem(&1, 0))}",
+         "-Dproject_rust_libs=#{Enum.join(inputs.static_libs, ",")}"
+       ] ++ for(entry <- inputs.guarded, do: "-D#{entry.module}_static=true")}
+    end
+  end
+
+  @doc false
+  # The project's own NIFs (`mob.exs` `:static_nifs`) for one build target, as
+  # data: `c_sources` (`{name, c_src/<name>.c}`, in mob.exs order), `static_libs`
+  # (cross-compiled Rust and Zig archives, then `:extra_static_libs`) and the
+  # `guarded` entries whose `:guard` macro gates their driver-table row. Runs the
+  # Rust/Zig cross-compiles. Shared by the zig builds (`project_nif_zig_args/1`)
+  # and `mix mob.release --ios`, so both link the same project NIFs (MOB-373).
+  @spec project_nif_build_inputs(
+          :ios_device
+          | :ios_sim
+          | :android_arm64
+          | :android_arm32
+          | :android_x86_64
+        ) ::
+          {:ok,
+           %{
+             root: Path.t(),
+             c_sources: [{String.t(), Path.t()}],
+             static_libs: [Path.t()],
+             guarded: [MobDev.StaticNifs.nif_entry()]
+           }}
+          | {:error, String.t()}
+  def project_nif_build_inputs(platform) do
     project_root = File.cwd!()
     # Respect each entry's `:archs` field — a NIF with
     # `archs: [:ios]` (in mob.exs `:static_nifs`) should be skipped on
@@ -3885,11 +3920,11 @@ defmodule MobDev.NativeBuild do
       project_nif_user_entries()
       |> Enum.filter(&MobDev.StaticNifs.on_platform?(&1, target_arch))
 
-    {c_names, rust_manifests, zig_modules} =
+    {c_sources, rust_manifests, zig_modules} =
       Enum.reduce(entries, {[], [], []}, fn entry, {c_acc, rust_acc, zig_acc} ->
         case classify_project_nif(entry, project_root) do
-          {:c, _path} ->
-            {[to_string(entry.module) | c_acc], rust_acc, zig_acc}
+          {:c, path} ->
+            {[{to_string(entry.module), path} | c_acc], rust_acc, zig_acc}
 
           {:rust, manifest} ->
             {c_acc, [{to_string(entry.module), manifest} | rust_acc], zig_acc}
@@ -3914,22 +3949,15 @@ defmodule MobDev.NativeBuild do
         end
       end)
 
-    nif_static_flags =
-      for entry <- entries, Map.has_key?(entry, :guard), do: "-D#{entry.module}_static=true"
-
     with {:ok, rust_libs} <- cross_compile_rust_nifs(rust_manifests, platform),
          {:ok, zig_libs} <- cross_compile_zig_nifs(zig_modules, platform) do
-      # Pass both Rust and Zig static archives via the same flag
-      # (they go to the same linker step). Name kept legacy-flavored
-      # for the build template's existing consumer; sweep up later.
-      static_libs = Enum.reverse(rust_libs) ++ Enum.reverse(zig_libs) ++ extra_static_libs
-
       {:ok,
-       [
-         "-Dproject_root=#{project_root}",
-         "-Dproject_c_nifs=#{Enum.join(Enum.reverse(c_names), ",")}",
-         "-Dproject_rust_libs=#{Enum.join(static_libs, ",")}"
-       ] ++ nif_static_flags}
+       %{
+         root: project_root,
+         c_sources: Enum.reverse(c_sources),
+         static_libs: Enum.reverse(rust_libs) ++ Enum.reverse(zig_libs) ++ extra_static_libs,
+         guarded: Enum.filter(entries, &Map.has_key?(&1, :guard))
+       }}
     end
   end
 
@@ -6973,6 +7001,14 @@ defmodule MobDev.NativeBuild do
   @spec __project_swift_sources_arg__(keyword()) :: String.t()
   def __project_swift_sources_arg__(cfg), do: project_swift_sources_arg(cfg)
 
+  @doc false
+  # The project's extra Swift sources (`mob.exs` `project_swift_sources`) as
+  # absolute paths: what the zig builds pass as `-Dproject_swift_sources` and
+  # `mix mob.release --ios` compiles into the app module (MOB-373).
+  @spec project_swift_sources(keyword()) :: [Path.t()]
+  def project_swift_sources(cfg),
+    do: cfg |> Keyword.get(:project_swift_sources, []) |> normalize_project_swift_sources!()
+
   defp load_config do
     config_file = Path.join(File.cwd!(), "mob.exs")
 
@@ -7078,12 +7114,7 @@ defmodule MobDev.NativeBuild do
     """
   end
 
-  defp project_swift_sources_arg(cfg) do
-    cfg
-    |> Keyword.get(:project_swift_sources, [])
-    |> normalize_project_swift_sources!()
-    |> Enum.join(",")
-  end
+  defp project_swift_sources_arg(cfg), do: cfg |> project_swift_sources() |> Enum.join(",")
 
   defp normalize_project_swift_sources!(nil), do: []
 

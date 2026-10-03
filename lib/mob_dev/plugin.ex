@@ -7,8 +7,10 @@ defmodule MobDev.Plugin do
   Ash domains, or a `mob_ecto` plugin reading its schemas — read that
   config through this function rather than calling `Application.get_env/3`
   directly. Routing every host-config read through one named surface is
-  what later lets the plugin audit (see `MOB_PLUGINS.md` and
-  `MOB_PLUGIN_SECURITY.md`) verify exactly which keys a generator touches.
+  what later lets the plugin audit (see
+  [`MOB_PLUGINS.md`](https://github.com/GenericJam/mob/blob/master/MOB_PLUGINS.md) and
+  [`MOB_PLUGIN_SECURITY.md`](https://github.com/GenericJam/mob/blob/master/MOB_PLUGIN_SECURITY.md))
+  verify exactly which keys a generator touches.
 
   When a generator runs under `with_host_config_audit/3` (which the
   build-time generator runner uses), every read is checked against the
@@ -79,7 +81,7 @@ defmodule MobDev.Plugin do
   @doc """
   The activated plugin names — `config :mob, :plugins` from `mob.exs`.
 
-  Activation is the second opt-in step (see `MOB_PLUGINS.md`): a plugin in
+  Activation is the second opt-in step (see [`MOB_PLUGINS.md`](https://github.com/GenericJam/mob/blob/master/MOB_PLUGINS.md)): a plugin in
   `deps` contributes nothing until it appears here. When there is no
   `mob.exs`, falls back to the loaded Application env, then `[]`. A
   `mob.exs` that fails to evaluate raises the reader's error (MOB-280) —

@@ -9,7 +9,7 @@ defmodule MobDev.Plugin.SignatureGate do
   `Validator.raise_on_capability_drift!/1` so the iOS-sim, iOS-device,
   and Android paths all enforce them as a one-liner.
 
-  Three distinct failure modes are surfaced (per `MOB_PLUGIN_SECURITY.md`,
+  Three distinct failure modes are surfaced (per [`MOB_PLUGIN_SECURITY.md`](https://github.com/GenericJam/mob/blob/master/MOB_PLUGIN_SECURITY.md),
   Phase 2):
 
   - **Missing signature** — author hasn't run `mix mob.plugin.sign`.
@@ -243,7 +243,8 @@ defmodule MobDev.Plugin.SignatureGate do
       |> Enum.uniq()
       |> Enum.map_join("\n\n", &format_error/1)
 
-    "plugin signature check failed — refusing to build (see MOB_PLUGIN_SECURITY.md, Phase 2):\n\n" <>
+    "plugin signature check failed — refusing to build (see Phase 2 of " <>
+      "https://github.com/GenericJam/mob/blob/master/MOB_PLUGIN_SECURITY.md):\n\n" <>
       bullets
   end
 

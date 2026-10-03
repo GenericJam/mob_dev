@@ -1,6 +1,6 @@
 defmodule MobDev.Plugin.Validator do
   @moduledoc """
-  Validates plugin manifests, in two stages (see `MOB_PLUGINS.md`).
+  Validates plugin manifests, in two stages (see [`MOB_PLUGINS.md`](https://github.com/GenericJam/mob/blob/master/MOB_PLUGINS.md)).
 
   **Single-plugin** (`validate_plugin/3`, behind `mix mob.validate_plugin`): a
   plugin author's pre-publish check — required fields, referenced files exist,
@@ -77,7 +77,7 @@ defmodule MobDev.Plugin.Validator do
   Verifies every `import X` in the plugin's Swift sources resolves to either
   a base iOS framework or one declared in `manifest.ios.frameworks`.
 
-  See `MOB_PLUGIN_SECURITY.md` (Layer 2 — capability enforcement at compile
+  See [`MOB_PLUGIN_SECURITY.md`](https://github.com/GenericJam/mob/blob/master/MOB_PLUGIN_SECURITY.md) (Layer 2 — capability enforcement at compile
   time): the manifest is the contract; the plugin's source cannot reach for a
   framework that isn't manifest-declared. Catches drift at validate time
   rather than at link time, where the error points at the linker invocation
@@ -156,7 +156,8 @@ defmodule MobDev.Plugin.Validator do
 
         Mix.raise(
           "plugin capability check failed — undeclared framework or permission " <>
-            "in an activated plugin (see MOB_PLUGIN_SECURITY.md, Layer 2):\n" <> bullets
+            "in an activated plugin (see Layer 2 of " <>
+            "https://github.com/GenericJam/mob/blob/master/MOB_PLUGIN_SECURITY.md):\n" <> bullets
         )
     end
   end
@@ -176,7 +177,7 @@ defmodule MobDev.Plugin.Validator do
   Scope (deliberate): scans `priv/native/android/**/*.xml` for
   `<uses-permission/>` entries — declarations the plugin author explicitly
   wrote. Does not attempt to infer permissions from Kotlin/Java API usage
-  (the static-analysis rabbit hole `MOB_PLUGIN_SECURITY.md` warns against).
+  (the static-analysis rabbit hole [`MOB_PLUGIN_SECURITY.md`](https://github.com/GenericJam/mob/blob/master/MOB_PLUGIN_SECURITY.md) warns against).
   Returns `[]` when the plugin ships no AndroidManifest fragment.
   """
   @spec validate_android_permissions(map() | nil, Path.t()) :: [String.t()]

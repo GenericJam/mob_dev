@@ -5,7 +5,7 @@ defmodule Mix.Tasks.Mob.AuditPlugins do
 
   @moduledoc """
   Scans every activated Mob plugin's Elixir + C source for risky patterns
-  (see `MOB_PLUGIN_SECURITY.md`'s default ruleset).
+  (see the default ruleset in [`MOB_PLUGIN_SECURITY.md`](https://github.com/GenericJam/mob/blob/master/MOB_PLUGIN_SECURITY.md)).
 
       mix mob.audit_plugins
       mix mob.audit_plugins --plugin mob_demo_haptic_extras

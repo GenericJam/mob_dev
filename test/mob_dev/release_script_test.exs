@@ -178,7 +178,7 @@ defmodule MobDev.ReleaseScriptTest do
       # -fmodules autolinks every framework the source @imports (a plugin may
       # import frameworks beyond its manifest set, e.g. Accelerate).
       assert sh =~ ~s|*.m) ARC="-fobjc-arc" ;;|
-      assert sh =~ ~s|$CC $ARC -fmodules $IFLAGS|
+      assert sh =~ ~s|$CC $ARC -Os -fmodules $IFLAGS|
     end
 
     test "adds the compiled plugin objects to the final link line", %{sh: sh} do
@@ -201,17 +201,42 @@ defmodule MobDev.ReleaseScriptTest do
     # symbols: _mob_register_plugins". The dev builds pass the same files as
     # -Dplugin_swift_files.
 
-    test "MOB_PLUGIN_IOS_SWIFT_SOURCES is on the same swiftc call as mob's Swift sources",
+    test "plugin and project Swift sources are on the same swiftc call as mob's Swift sources",
          %{sh: sh} do
       # Same invocation as the glob: one module (-wmo), so a plugin view can see
       # mob's MobNativeViewRegistry and the bootstrap can see the plugin views.
       assert sh =~
-               ~r/"\$MOB_DIR"\/ios\/\*\.swift \\\n\s*\$MOB_PLUGIN_IOS_SWIFT_SOURCES \\\n\s*-c -o "\$BUILD_DIR\/swift_mob\.o"/
+               ~r/"\$MOB_DIR"\/ios\/\*\.swift \\\n\s*\$MOB_PLUGIN_IOS_SWIFT_SOURCES \\\n\s*\$MOB_PROJECT_SWIFT_SOURCES \\\n\s*-c -o "\$BUILD_DIR\/swift_mob\.o"/
     end
 
     test "the list is left unquoted so the space-joined paths word-split", %{sh: sh} do
       assert sh =~ ~s|$MOB_PLUGIN_IOS_SWIFT_SOURCES \\|
       refute sh =~ ~s|"$MOB_PLUGIN_IOS_SWIFT_SOURCES"|
+    end
+  end
+
+  describe "project NIFs and cpp_archive plugin archives are compiled + linked (MOB-373)" do
+    # priv/generated/driver_tab_ios.c declares each project NIF's and cpp_archive
+    # plugin NIF's <module>_nif_init. The device build compiles c_src/<name>.c
+    # and links the Rust/Zig/extra and plugin archives; the release has to as
+    # well, or the link dies with "Undefined symbols: _<module>_nif_init".
+
+    test "project C NIF sources go through the same NIF compile loop", %{sh: sh} do
+      assert sh =~ ~s|for SRC in $MOB_PLUGIN_IOS_NIF_SOURCES $MOB_PROJECT_NIF_SOURCES; do|
+    end
+
+    test "project and plugin static archives follow the OTP libs on the link line, as on device",
+         %{sh: sh} do
+      # The device build's addLink links OTP's archives first, then these; ld64
+      # takes a symbol from the first archive that defines it, so the order
+      # decides which copy wins when an archive bundles one OTP also has.
+      assert sh =~
+               ~r/\$LIBS \\\n\s*"\$SQLITE_STATIC_LIB" \\\n\s*\$MOB_PROJECT_STATIC_LIBS \\\n\s*\$MOB_PLUGIN_STATIC_LIBS \\/
+    end
+
+    test "guard macros of guarded project NIFs reach the driver table compile", %{sh: sh} do
+      assert sh =~
+               ~r/\$SQLITE_FLAG \$MOB_DRIVER_TAB_DEFINES \\\n\s*-c "priv\/generated\/driver_tab_ios\.c"/
     end
   end
 

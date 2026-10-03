@@ -993,7 +993,8 @@ defmodule MobDev.Plugin.Scaffold do
 
       # Whole screens the host can navigate to. Registered by default_route at
       # boot; two distinct plugins may not claim the same route (cross-plugin
-      # validation rejects it — see MOB_PLUGINS.md "Cross-plugin conflict detection").
+      # validation rejects it — see "Cross-plugin conflict detection" in
+      # https://github.com/GenericJam/mob/blob/master/MOB_PLUGINS.md).
       screens: [
         %{module: #{mod}.ListScreen, default_route: "/#{name}/list"},
         %{module: #{mod}.DetailScreen, default_route: "/#{name}/detail"}

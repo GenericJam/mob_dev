@@ -168,10 +168,12 @@ the highest rung the change actually reaches, and say which rung you stopped at.
    emulator, then attach and confirm the BEAM is up and a screen renders.
    Deploy success is the tool's opinion; a reachable node is evidence.
 5. **Physical device, and the release variant.** Release changes linkage and
-   packaging: iOS release links plugin NIFs, and compiles plugin Swift and the
-   `mob_register_plugins` bootstrap, by a separate path
+   packaging: iOS release links plugin NIFs and cpp_archive NIFs, compiles
+   plugin Swift, the `mob_register_plugins` bootstrap, project Swift and project
+   NIFs, by a separate path that reuses the device build's input functions
    (`decisions/2026-07-07-ios-release-links-plugin-nifs.md`,
-   `decisions/2026-10-03-ios-release-compiles-plugin-swift-and-bootstrap.md`), and release
+   `decisions/2026-10-03-ios-release-compiles-plugin-swift-and-bootstrap.md`,
+   `decisions/2026-10-03-ios-release-links-project-inputs-and-plugin-archives.md`), and release
    `otp.zip` handling is variant-scoped
    (`decisions/2026-07-24-release-otp-zip-variant-scoped-assets.md`). A release
    also leaves an `assets/otp.zip` that crash-loops the next debug deploy.
@@ -620,8 +622,14 @@ narrowing functions). Don't make them private:
   `NativeBuild.ios_plugin_swift_mode/2` rule, which `ios_build_file_supports_plugins?/1`
   feeds; the second is the I/O edge), `Release.plugin_release_env/3` (every
   plugin env var, behind the plugin signature/trust/capability gate) and
-  `Release.release_env/3` (the assembled script env). See
+  `Release.release_env/4` (the assembled script env). See
   `decisions/2026-10-03-ios-release-compiles-plugin-swift-and-bootstrap.md`
+- `NativeBuild.project_nif_build_inputs/1`, `project_swift_sources/1` and
+  `build_plugin_static_archives/3`, plus `Release.project_release_env/3` (MOB-373:
+  the project NIFs, project Swift and cpp_archive plugin archives a device build
+  links, as data the zig builds and `mix mob.release --ios` both consume;
+  `project_nif_zig_args/1` renders its `-D` args from the first). See
+  `decisions/2026-10-03-ios-release-links-project-inputs-and-plugin-archives.md`
 - `NativeBuild.with_temp_build_dir/2`, `ios_build_inputs_dir/1` and
   `write_build_input!/2` (MOB-313: the iOS `.app` goes in a temp dir removed
   on every exit path; the sources zig compiles stay at stable paths so its
