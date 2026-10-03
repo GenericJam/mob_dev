@@ -464,6 +464,11 @@ Builds a release-signed `.ipa` at `_build/mob_release/<App>.ipa`:
 - Builds native sources with `-DMOB_RELEASE` to drop the Erlang
   distribution surface, EPMD, AND the test harness (whose synthetic
   touch NIFs use private UIKit selectors that App Store auto-rejects)
+- Runs the plugin signature, trust and capability checks `mix mob.deploy
+  --native` runs, then compiles the activated plugins' iOS NIF and Swift
+  sources and the generated plugin bootstrap (`mob_register_plugins`, which
+  `AppDelegate.m` calls) into the app. A release links the same plugin code as
+  a dev device build; a plugin the dev build refuses stops the release too
 - Synthesizes the full set of `DT*` build-environment plist keys
   (`DTSDKName`, `DTSDKBuild`, `DTPlatformName`, `DTPlatformVersion`,
   `DTPlatformBuild`, `DTXcode`, `DTXcodeBuild`, `DTCompiler`,
@@ -646,6 +651,14 @@ The full list of stage-2 error codes Apple uses lives in the
 ---
 
 ## Troubleshooting
+
+### `Undefined symbols: "_mob_register_plugins", referenced from: ___mob_boot_runtime_block_invoke in AppDelegate.o`
+
+The generated `AppDelegate.m` calls `mob_register_plugins()`, which the
+generated plugin bootstrap defines. Before mob_dev 0.7.10 the release build
+never compiled that bootstrap, so every app from a current `mix mob.new`
+(plugins or not) failed to link here while `mix mob.deploy --native` worked.
+mob_dev 0.7.10+ compiles it. Upgrade.
 
 ### `xcodebuild: error: The flag -scheme is required when specifying -archivePath but not -exportArchive`
 

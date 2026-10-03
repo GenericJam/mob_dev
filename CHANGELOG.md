@@ -3,7 +3,7 @@
 ### Fixed
 
 - **`mix mob.release --ios` links a fresh app (and one whose plugins ship
-  Swift).** The release build failed with `Undefined symbols: _mob_register_plugins`
+  Swift) (MOB-372).** The release build failed with `Undefined symbols: _mob_register_plugins`
   for an app with no plugins at all, because the release script compiled mob's
   Swift sources but never the generated bootstrap that defines that function
   (`AppDelegate.m` calls it unconditionally); `mix mob.deploy --native --ios` of
@@ -12,6 +12,17 @@
   scaffolded before plugins existed still builds as before. Swift files listed
   in `mob.exs` `project_swift_sources` are still not part of a release build.
   See `decisions/2026-10-03-ios-release-compiles-plugin-swift-and-bootstrap.md`.
+
+### Changed
+
+- **`mix mob.release --ios` runs the plugin signature, trust and capability
+  gate, as the dev builds do.** Before it starts signing, downloading or
+  building, a release now stops on an unsigned plugin not listed in
+  `acknowledge_unsafe_plugins`, a plugin signed by a key not in
+  `trusted_plugins`, a tampered plugin (previously left out of the binary
+  without a word), or plugin Swift that imports a framework its manifest
+  doesn't declare. A plugin that builds with `mix mob.deploy --native` releases
+  unchanged.
 
 ## [0.7.9] - 2026-10-02
 

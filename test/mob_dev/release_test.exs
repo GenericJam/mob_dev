@@ -338,6 +338,51 @@ defmodule MobDev.ReleaseTest do
     end
   end
 
+  describe "release_env/3 + plugin_release_env/3 (the env release_device.sh runs with)" do
+    @describetag :tmp_dir
+
+    setup %{tmp_dir: dir} do
+      build_file = Path.join(dir, "build_device.zig")
+      File.write!(build_file, ~s|const s = b.option([]const u8, "plugin_swift_files", "");|)
+      inputs = Path.join(dir, "inputs")
+      File.mkdir_p!(inputs)
+      cfg = [mob_dir: "/mob", elixir_lib: "/elixir/lib", ios_bundle_id: "com.example.app"]
+
+      {:ok,
+       build_file: build_file,
+       inputs: inputs,
+       cfg: cfg,
+       bootstrap: Path.join(inputs, "mob_plugin_bootstrap.swift")}
+    end
+
+    test "a blank app's release env carries the bootstrap that defines mob_register_plugins",
+         %{build_file: build_file, inputs: inputs, cfg: cfg, bootstrap: bootstrap} do
+      env = Release.release_env(cfg, "/otp", Release.plugin_release_env([], build_file, inputs))
+
+      assert {"MOB_PLUGIN_IOS_SWIFT_SOURCES", bootstrap} in env
+      assert {"MOB_PLUGIN_IOS_NIF_SOURCES", ""} in env
+      assert {"MOB_IOS_DEVICE_OTP_ROOT", "/otp"} in env
+      assert File.read!(bootstrap) =~ ~s|@_cdecl("mob_register_plugins")|
+    end
+
+    test "an unsigned plugin is refused before anything is written for it",
+         %{tmp_dir: dir, build_file: build_file, inputs: inputs, bootstrap: bootstrap} do
+      plugin = Path.join(dir, "mob_unsigned_release")
+      File.mkdir_p!(Path.join(plugin, "priv"))
+
+      File.write!(
+        Path.join(plugin, "priv/mob_plugin.exs"),
+        "%{name: :mob_unsigned_release, plugin_spec_version: 1}"
+      )
+
+      assert_raise Mix.Error, ~r/plugin signature check failed.*mob_unsigned_release/s, fn ->
+        Release.plugin_release_env([{plugin, nil}], build_file, inputs)
+      end
+
+      refute File.exists?(bootstrap)
+    end
+  end
+
   # A parsed-profile map in the shape parse_mobileprovision/1 returns; App Store by
   # default (no provisioned devices, not provisions-all).
   defp profile(overrides) do

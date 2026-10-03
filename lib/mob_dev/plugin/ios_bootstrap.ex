@@ -73,7 +73,8 @@ defmodule MobDev.Plugin.IOSBootstrap do
     // mob_init_ui() so the registry is populated by the time the BEAM
     // mounts any plugin-contributed node.
     //
-    // Regenerated on every `mix mob.deploy --native`. Do not edit by hand.
+    // Regenerated on every `mix mob.deploy --native` and `mix mob.release --ios`.
+    // Do not edit by hand.
 
     import Foundation
     import SwiftUI

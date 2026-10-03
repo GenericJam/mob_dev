@@ -45,7 +45,17 @@ defmodule MobDev.Release do
     MobDev.MobDirCheck.check!(cfg[:mob_dir])
     slim = Keyword.get(opts, :slim, true)
 
-    MobDev.Plugin.Validator.raise_on_cross_plugin_conflicts!(MobDev.Plugin.activated())
+    activated = MobDev.Plugin.activated()
+    MobDev.Plugin.Validator.raise_on_cross_plugin_conflicts!(activated)
+
+    # Before signing resolution, the OTP download and any project write, so a
+    # plugin the gate refuses changes nothing.
+    plugin_env =
+      plugin_release_env(
+        activated,
+        Path.expand("ios/build_device.zig"),
+        MobDev.NativeBuild.ios_build_inputs_dir(:ios_device)
+      )
 
     with :ok <- check_macos(),
          :ok <- check_xcrun(),
@@ -62,7 +72,7 @@ defmodule MobDev.Release do
       app = to_string(Mix.Project.config()[:app])
       MobDev.AppConfig.write!(Path.join(["_build", "dev", "lib", app, "ebin"]))
 
-      env = release_env(cfg, otp_root)
+      env = release_env(cfg, otp_root, plugin_env)
       output_dir = Path.expand("_build/mob_release")
       File.mkdir_p!(output_dir)
 
@@ -360,13 +370,18 @@ defmodule MobDev.Release do
 
   # ── Env for release_device.sh ────────────────────────────────────────────────
 
-  defp release_env(cfg, otp_root) do
+  @doc false
+  # The whole env `release_device.sh` runs with, minus the two output vars
+  # `build_ipa/1` adds. `plugin_env` is `plugin_release_env/3`'s result, so the
+  # plugin inputs can't be left out of a release. Public for testing.
+  @spec release_env(keyword(), Path.t(), [{String.t(), String.t()}]) ::
+          [{String.t(), String.t()}]
+  def release_env(cfg, otp_root, plugin_env) do
     app_atom = Mix.Project.config()[:app]
     app_name = app_atom |> to_string() |> Macro.camelize()
     app_module = to_string(app_atom)
     elixir_lib = MobDev.NativeBuild.__resolve_elixir_lib__(cfg[:elixir_lib])
     epmd_src = cfg[:ios_epmd_build_src] || otp_root
-    activated = MobDev.Plugin.activated()
 
     [
       {"MOB_DIR", Path.expand(cfg[:mob_dir])},
@@ -381,15 +396,25 @@ defmodule MobDev.Release do
       {"MOB_APP_MODULE", app_module},
       screenshot_build_env(cfg),
       layout_plist_env(cfg)
-    ] ++
-      plugin_ios_build_env(activated) ++
-      [
-        plugin_ios_swift_env_written(
-          activated,
-          Path.expand("ios/build_device.zig"),
-          MobDev.NativeBuild.ios_build_inputs_dir(:ios_device)
-        )
-      ]
+    ] ++ plugin_env
+  end
+
+  @doc false
+  # Every activated-plugin env var `release_device.sh` reads: the NIF sources and
+  # frameworks (`plugin_ios_build_env/1`) and the Swift sources plus bootstrap
+  # (`plugin_ios_swift_env_written/3`). Runs the plugin signature, trust and
+  # capability gate first, the one the iOS sim, iOS device and Android builds
+  # run before linking plugin code (MOB_PLUGIN_SECURITY.md, Layer 2), so a
+  # release refuses an unsigned, untrusted or tampered plugin, or one whose
+  # Swift imports a framework its manifest doesn't declare, and writes nothing
+  # for it.
+  @spec plugin_release_env([MobDev.Plugin.Merge.plugin()], Path.t(), Path.t()) ::
+          [{String.t(), String.t()}]
+  def plugin_release_env(activated, build_file, inputs_dir) do
+    MobDev.Plugin.Validator.raise_on_capability_drift!(activated)
+
+    plugin_ios_build_env(activated) ++
+      [plugin_ios_swift_env_written(activated, build_file, inputs_dir)]
   end
 
   @doc false

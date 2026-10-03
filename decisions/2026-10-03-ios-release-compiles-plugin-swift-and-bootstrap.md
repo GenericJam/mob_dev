@@ -11,7 +11,7 @@ no code changes) failed to link:
 ```
 Undefined symbols for architecture arm64:
   "_mob_register_plugins", referenced from:
-      -[AppDelegate application:didFinishLaunchingWithOptions:] in AppDelegate.o
+      ___mob_boot_runtime_block_invoke in AppDelegate.o
 ```
 
 `mix mob.deploy --native --ios` of the same app links. This is MOB-7
@@ -28,10 +28,18 @@ app whose plugins ship SwiftUI views both failed.
 
 ## Decision
 
-`release_env/2` adds `MOB_PLUGIN_IOS_SWIFT_SOURCES` and the script passes it to
-that same swiftc call (one `-wmo` module, so a plugin view and the bootstrap
+`MOB_PLUGIN_IOS_SWIFT_SOURCES` joins the release env and the script passes it
+to that same swiftc call (one `-wmo` module, so a plugin view and the bootstrap
 that registers it compile together, as they do under zig).
 
+- **Behind the dev builds' plugin gate.** `Release.plugin_release_env/3`
+  builds every plugin env var the script reads (NIF sources, frameworks, Swift
+  sources) and first runs `Validator.raise_on_capability_drift!/1`, the
+  signature, trust and capability gate the iOS sim, iOS device and Android
+  builds run before linking plugin code. `build_ipa/1` calls it before
+  signing resolution, the OTP download or any project write, and
+  `release_env/3` takes its result as an argument, so a release can neither
+  skip the gate nor leave the plugin inputs out.
 - **The rule is the dev path's.** Which files go in is decided by
   `NativeBuild.ios_plugin_swift_mode/2`, so release and dev agree: plugins
   activated → their Swift files plus the bootstrap; none, and the app's
@@ -77,20 +85,18 @@ that registers it compile together, as they do under zig).
   plugins gets their views and the registration in the binary.
 - Paths are space-joined and word-split unquoted by the script, exactly like
   `MOB_PLUGIN_IOS_NIF_SOURCES`, so a plugin path containing a space is
-  unsupported for this variable as for that one. The bootstrap lives under the
-  project's `_build`, so a *project directory* containing a space also fails
-  here, which includes a blank app (it fails at the swiftc step instead of the
-  link; before this change it already failed at the link). The dev path joins
-  with commas and has its own limit (no commas). Passing the bootstrap as its
-  own quoted variable would lift the project-directory case; not done, to stay
-  consistent with the NIF variable.
-- The release path still does not run the plugin signature and capability-drift
-  gate (`Validator.raise_on_capability_drift!/1`) that the iOS sim, iOS device
-  and Android builds run before linking plugins. That was already true for
-  plugin NIF sources; compiling plugin Swift widens it, since the Swift-import
-  vs manifest-frameworks check has nothing to guard in a release. Closing it
-  would make releases refuse unsigned or untrusted plugins, a behaviour change
-  left to the maintainers. Follow-up.
+  unsupported for this variable as for that one. A *project directory*
+  containing a space was already unsupported before this change: the script's
+  `IFLAGS` holds `-I$MOB_DIR/ios`, expanded unquoted at the first C compile,
+  and the template puts `mob_dir` under the project (`deps/mob`). Supporting
+  such paths means converting every path list in the script to arrays at once.
+- A release now refuses what the dev builds refuse: an unsigned plugin not in
+  `acknowledge_unsafe_plugins`, a plugin signed by a key not in
+  `trusted_plugins`, a tampered one (before, its manifest loaded as `nil` and
+  it was silently left out of the binary), and plugin Swift importing a
+  framework its manifest doesn't declare. Before this change the release ran
+  none of these checks, for plugin NIFs either; an app that released only
+  because of that now stops with the gate's message.
 - Still not in the release path, all of which the dev path handles:
   `project_swift_sources` from `mob.exs`, `project_c_nifs`, and plugin
   `static_archives` (`:cpp_archive`). A Swift file configured through
@@ -109,5 +115,7 @@ that registers it compile together, as they do under zig).
     and registry key.
   Nothing was uploaded or launched on a device, and a plugin whose Swift needs
   frameworks beyond the link line's defaults was not tried.
-- Tests: the mode matrix and the I/O edge in `release_test.exs`; the script
-  shape in `release_script_test.exs`.
+- Tests: the mode matrix and the I/O edge in `release_test.exs`, plus the
+  assembled release env (a blank app's env carries the bootstrap) and the gate
+  (an unsigned plugin is refused before anything is written); the script shape
+  in `release_script_test.exs`.

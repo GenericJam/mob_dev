@@ -69,7 +69,9 @@ link line, and each declared framework is also passed explicitly.
   > an app with *no* plugins failed to link. Plugin `swift_files` and the
   > bootstrap are now compiled by the release script
   > (`2026-10-03-ios-release-compiles-plugin-swift-and-bootstrap.md`).
-  > `static_archives` are still a follow-up.
+  > `static_archives` are still a follow-up. The release also now runs the
+  > plugin signature, trust and capability gate before building these env vars
+  > (`plugin_release_env/3`; `release_env/2` above is now `release_env/3`).
 - Tests: `plugin_ios_build_env/1` gets a pure matrix (none / one / many /
   platform-filtered) in `release_test.exs`; `release_script_test.exs` asserts the
   script shape (compile loop, libname derivation, `$PLUGIN_OBJS` on the link,
