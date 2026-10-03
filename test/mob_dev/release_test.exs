@@ -403,6 +403,7 @@ defmodule MobDev.ReleaseTest do
         )
 
       assert {"MOB_PLUGIN_IOS_SWIFT_SOURCES", bootstrap} in env
+      assert {"MOB_PLUGIN_IOS_NIF_SOURCES", ""} in env
       assert {"MOB_PROJECT_NIF_SOURCES", "/app/c_src/fastmath.c"} in env
       assert {"MOB_IOS_DEVICE_OTP_ROOT", "/otp"} in env
       assert File.read!(bootstrap) =~ ~s|@_cdecl("mob_register_plugins")|
