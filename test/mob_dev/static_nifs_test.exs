@@ -393,6 +393,140 @@ defmodule MobDev.StaticNifsTest do
       assert out =~ ".nif_init = my_extra_nif_init"
     end
 
+    # MOB-376: a project NIF's :guard used to become `build_options.<flag>`,
+    # which no mob_new build file declares, so the table didn't compile.
+    test "a guarded project NIF's flag comes from the target arch, not build_options" do
+      user = [
+        %{module: :vendor_vt, archs: [:ios_device], guard: "MOB_STATIC_VENDOR_VT_NIF"},
+        %{module: :sim_only, archs: [:ios_sim], guard: "MOB_STATIC_SIM_ONLY_NIF"},
+        %{module: :both_ios, archs: [:ios], guard: "MOB_STATIC_BOTH_IOS_NIF"}
+      ]
+
+      ios =
+        StaticNifs.generate(:ios, StaticNifs.resolve(user), format: :zig) |> IO.iodata_to_binary()
+
+      assert ios =~ ~s|const builtin = @import("builtin");|
+      assert ios =~ "const vendor_vt_on = builtin.target.abi != .simulator;"
+      assert ios =~ "const sim_only_on = builtin.target.abi == .simulator;"
+      assert ios =~ "const both_ios_on = true;"
+      refute ios =~ "build_options.vendor_vt"
+      # Built-in NIFs keep their build_options switch.
+      assert ios =~ "const sqlite_static = build_options.sqlite_static;"
+
+      android =
+        StaticNifs.generate(
+          :android,
+          StaticNifs.resolve([
+            %{module: :vt64, archs: [:android_arm64], guard: "MOB_STATIC_VT64_NIF"},
+            %{module: :vt32, archs: [:android_arm32], guard: "MOB_STATIC_VT32_NIF"}
+          ]),
+          format: :zig
+        )
+        |> IO.iodata_to_binary()
+
+      assert android =~ "const vt64_on = builtin.target.cpu.arch == .aarch64;"
+
+      assert android =~
+               "const vt32_on = (builtin.target.cpu.arch == .arm or builtin.target.cpu.arch == .thumb);"
+    end
+
+    test "project entries sharing a guard each keep their own arch test" do
+      user = [
+        %{module: :shared_dev, archs: [:ios_device], guard: "MOB_STATIC_SHARED_NIF"},
+        %{module: :shared_sim, archs: [:ios_sim], guard: "MOB_STATIC_SHARED_NIF"}
+      ]
+
+      ios =
+        StaticNifs.generate(:ios, StaticNifs.resolve(user), format: :zig) |> IO.iodata_to_binary()
+
+      assert ios =~ "const shared_dev_on = builtin.target.abi != .simulator;"
+      assert ios =~ "const shared_sim_on = builtin.target.abi == .simulator;"
+    end
+
+    test "a project guard alone (built-in guarded NIFs dropped) uses its own flag in the N=1 table" do
+      drop_builtin_guarded =
+        for %{guard: _} = nif <- StaticNifs.default_nifs(), do: %{module: nif.module, archs: []}
+
+      user = [%{module: :sim_only, archs: [:ios_sim], guard: "MOB_STATIC_SIM_ONLY_NIF"}]
+
+      ios =
+        StaticNifs.generate(:ios, StaticNifs.resolve(drop_builtin_guarded ++ user), format: :zig)
+        |> IO.iodata_to_binary()
+
+      assert ios =~ "const sim_only_on = builtin.target.abi == .simulator;"
+      assert ios =~ "    if (sim_only_on) {\n"
+    end
+
+    test "a table without project guards is unchanged: no builtin import" do
+      for platform <- [:ios, :android] do
+        out =
+          StaticNifs.generate(platform, StaticNifs.default_nifs(), format: :zig)
+          |> IO.iodata_to_binary()
+
+        refute out =~ "@import(\"builtin\")"
+      end
+    end
+
+    # Compiles the generated tables for each target and checks which NIF init
+    # symbols each object references: the behaviour, not the text.
+    @tag :requires_zig
+    @tag :tmp_dir
+    test "compiled tables reference a guarded project NIF only on the targets its :archs cover",
+         %{tmp_dir: dir} do
+      File.write!(Path.join(dir, "build_options.zig"), """
+      pub const sqlite_static = false;
+      pub const emlx_static = false;
+      pub const nx_eigen_static = false;
+      pub const tflite_static = false;
+      """)
+
+      shared = [
+        %{module: :shared_dev, archs: [:ios_device], guard: "MOB_STATIC_SHARED_NIF"},
+        %{module: :shared_sim, archs: [:ios_sim], guard: "MOB_STATIC_SHARED_NIF"}
+      ]
+
+      # {platform, entries, [{target, modules whose init the object must reference}]}
+      cases = [
+        {:ios, [%{module: :vendor_vt, archs: [:ios_device], guard: "MOB_STATIC_VENDOR_VT_NIF"}],
+         [{"aarch64-ios", [:vendor_vt]}, {"aarch64-ios-simulator", []}]},
+        {:ios, shared,
+         [{"aarch64-ios", [:shared_dev]}, {"aarch64-ios-simulator", [:shared_sim]}]},
+        {:android, [%{module: :vt64, archs: [:android_arm64], guard: "MOB_STATIC_VT64_NIF"}],
+         [{"aarch64-linux-android", [:vt64]}, {"arm-linux-androideabi", []}]}
+      ]
+
+      for {{platform, entries, targets}, i} <- Enum.with_index(cases),
+          {target, expected} <- targets do
+        src = Path.join(dir, "tab_#{i}_#{platform}.zig")
+        obj = Path.join(dir, "tab_#{i}_#{target}.o")
+        File.write!(src, StaticNifs.generate(platform, StaticNifs.resolve(entries), format: :zig))
+
+        {out, status} =
+          System.cmd(
+            "zig",
+            [
+              "build-obj",
+              "-target",
+              target,
+              "--dep",
+              "build_options",
+              "-Mroot=#{src}",
+              "-Mbuild_options=#{Path.join(dir, "build_options.zig")}",
+              "-femit-bin=#{obj}"
+            ],
+            stderr_to_stdout: true
+          )
+
+        assert status == 0, "zig build-obj #{target} failed:\n#{out}"
+        {symbols, 0} = System.cmd("nm", [obj])
+
+        for %{module: module} <- entries do
+          assert String.contains?(symbols, "#{module}_nif_init") == module in expected,
+                 "#{target}: #{module}"
+        end
+      end
+    end
+
     test "format: :c default produces C source (backward compat)" do
       c_out = StaticNifs.generate(:ios, StaticNifs.default_nifs()) |> IO.iodata_to_binary()
 
@@ -402,6 +536,70 @@ defmodule MobDev.StaticNifsTest do
       assert c_out == c_out2
       assert c_out =~ "ErtsStaticNif erts_static_nif_tab"
       refute c_out =~ "export var erts_static_nif_tab"
+    end
+
+    test "C table: each project guard is kept by its target-arch test or its macro" do
+      ios =
+        StaticNifs.generate(
+          :ios,
+          StaticNifs.resolve([
+            %{module: :dev_only, archs: [:ios_device], guard: "MOB_STATIC_DEV_ONLY_NIF"},
+            %{module: :sim_only, archs: [:ios_sim], guard: "MOB_STATIC_SIM_ONLY_NIF"},
+            %{module: :both_ios, archs: [:ios], guard: "MOB_STATIC_BOTH_IOS_NIF"}
+          ])
+        )
+        |> IO.iodata_to_binary()
+
+      assert ios =~ "#include <TargetConditionals.h>"
+      assert ios =~ "#if defined(MOB_STATIC_DEV_ONLY_NIF) || !TARGET_OS_SIMULATOR\n"
+      assert ios =~ "#if defined(MOB_STATIC_SIM_ONLY_NIF) || TARGET_OS_SIMULATOR\n"
+      assert ios =~ "#if defined(MOB_STATIC_BOTH_IOS_NIF) || 1\n"
+      # Built-in feature switches are unchanged.
+      assert ios =~ "#ifdef MOB_STATIC_SQLITE_NIF\n"
+
+      whole_platform_only =
+        StaticNifs.generate(
+          :ios,
+          StaticNifs.resolve([
+            %{module: :both_ios, archs: [:ios], guard: "MOB_STATIC_BOTH_IOS_NIF"}
+          ])
+        )
+        |> IO.iodata_to_binary()
+
+      refute whole_platform_only =~ "TargetConditionals"
+
+      sim_only =
+        StaticNifs.generate(
+          :ios,
+          StaticNifs.resolve([
+            %{module: :sim_only, archs: [:ios_sim], guard: "MOB_STATIC_SIM_ONLY_NIF"}
+          ])
+        )
+        |> IO.iodata_to_binary()
+
+      assert sim_only =~ "#include <TargetConditionals.h>"
+
+      android =
+        StaticNifs.generate(
+          :android,
+          StaticNifs.resolve([
+            %{module: :vt64, archs: [:android_arm64], guard: "MOB_STATIC_VT64_NIF"},
+            %{module: :vt32, archs: [:android_arm32], guard: "MOB_STATIC_VT32_NIF"}
+          ])
+        )
+        |> IO.iodata_to_binary()
+
+      assert android =~ "#if defined(MOB_STATIC_VT64_NIF) || defined(__aarch64__)\n"
+      assert android =~ "#if defined(MOB_STATIC_VT32_NIF) || defined(__arm__)\n"
+      refute android =~ "TargetConditionals"
+    end
+
+    test "a C table without project guards is unchanged: only #ifdef switches" do
+      for platform <- [:ios, :android] do
+        out = StaticNifs.generate(platform, StaticNifs.default_nifs()) |> IO.iodata_to_binary()
+        refute out =~ "TargetConditionals"
+        refute out =~ "#if defined("
+      end
     end
   end
 end

@@ -1611,7 +1611,7 @@ defmodule MobDev.NativeBuildTest do
       :ok
     end
 
-    test "adds per-ABI extra static archives to project_rust_libs and emits guard flag" do
+    test "adds per-ABI extra static archives to project_rust_libs, and no per-NIF guard flag" do
       Application.put_env(:mob_dev, :static_nifs, [
         %{
           module: :ghostty_vt,
@@ -1627,10 +1627,13 @@ defmodule MobDev.NativeBuildTest do
 
       expected_lib = Path.expand("native/ghostty_vt/lib-android-arm64/libghostty-vt.a")
       assert "-Dproject_rust_libs=#{expected_lib}" in args
-      assert "-Dghostty_vt_static=true" in args
+      # mob_new's build files declare no `<module>_static` option, so zig would
+      # reject it as an invalid option (MOB-376); the driver table selects the
+      # entry by target arch instead.
+      refute Enum.any?(args, &String.contains?(&1, "_static"))
     end
 
-    test "does not add extra static archives or guard flags on non-matching ABIs" do
+    test "does not add extra static archives on non-matching ABIs" do
       Application.put_env(:mob_dev, :static_nifs, [
         %{
           module: :ghostty_vt,
@@ -1645,7 +1648,7 @@ defmodule MobDev.NativeBuildTest do
       assert {:ok, args} = NativeBuild.project_nif_zig_args(:android_arm32)
 
       assert "-Dproject_rust_libs=" in args
-      refute "-Dghostty_vt_static=true" in args
+      refute Enum.any?(args, &String.contains?(&1, "_static"))
     end
 
     test "iOS device: C source, guard and per-ABI archive are the same data the zig args and the release use (MOB-373)" do
@@ -1670,7 +1673,7 @@ defmodule MobDev.NativeBuildTest do
       assert {:ok, args} = NativeBuild.project_nif_zig_args(:ios_device)
       assert "-Dproject_c_nifs=fastmath" in args
       assert "-Dproject_rust_libs=#{Path.expand("native/vendor_vt/libvendor-vt.a")}" in args
-      assert "-Dvendor_vt_static=true" in args
+      refute Enum.any?(args, &String.contains?(&1, "_static"))
     end
   end
 

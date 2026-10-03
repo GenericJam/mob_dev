@@ -3854,8 +3854,10 @@ defmodule MobDev.NativeBuild do
   end
 
   # Build args to pass to `zig build`. Returns
-  # `{:ok, ["-Dproject_c_nifs=…", "-Dproject_rust_libs=…", "-Dproject_root=…"]}`
-  # or `{:error, reason}` if a Rust cross-compile fails.
+  # `{:ok, ["-Dproject_root=…", "-Dproject_c_nifs=…", "-Dproject_rust_libs=…"]}`
+  # or `{:error, reason}` if a Rust cross-compile fails. No flag for a guarded
+  # entry: the generated driver table selects it by target arch, and mob_new's
+  # build files declare no per-NIF option to receive one (MOB-376).
   @spec project_nif_zig_args(
           :ios_device
           | :ios_sim
@@ -3872,7 +3874,7 @@ defmodule MobDev.NativeBuild do
          "-Dproject_root=#{inputs.root}",
          "-Dproject_c_nifs=#{Enum.map_join(inputs.c_sources, ",", &elem(&1, 0))}",
          "-Dproject_rust_libs=#{Enum.join(inputs.static_libs, ",")}"
-       ] ++ for(entry <- inputs.guarded, do: "-D#{entry.module}_static=true")}
+       ]}
     end
   end
 
