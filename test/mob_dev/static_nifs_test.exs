@@ -443,6 +443,20 @@ defmodule MobDev.StaticNifsTest do
       assert ios =~ "const shared_sim_on = builtin.target.abi == .simulator;"
     end
 
+    test "a project guard alone (built-in guarded NIFs dropped) uses its own flag in the N=1 table" do
+      drop_builtin_guarded =
+        for %{guard: _} = nif <- StaticNifs.default_nifs(), do: %{module: nif.module, archs: []}
+
+      user = [%{module: :sim_only, archs: [:ios_sim], guard: "MOB_STATIC_SIM_ONLY_NIF"}]
+
+      ios =
+        StaticNifs.generate(:ios, StaticNifs.resolve(drop_builtin_guarded ++ user), format: :zig)
+        |> IO.iodata_to_binary()
+
+      assert ios =~ "const sim_only_on = builtin.target.abi == .simulator;"
+      assert ios =~ "    if (sim_only_on) {\n"
+    end
+
     test "a table without project guards is unchanged: no builtin import" do
       for platform <- [:ios, :android] do
         out =
