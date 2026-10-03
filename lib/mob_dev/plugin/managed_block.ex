@@ -1,7 +1,8 @@
 defmodule MobDev.Plugin.ManagedBlock do
   @moduledoc """
   Reversible insertion of plugin-contributed fragments into host-owned build
-  files (`AndroidManifest.xml`, `build.gradle`).
+  files (`AndroidManifest.xml`, `build.gradle`). `MobDev.UrlSchemes` uses the
+  same fencing for the `mob.exs` `url_schemes` intent filter.
 
   The problem: plugin permissions, AndroidManifest `<application>` components,
   and Gradle dependencies are spliced into files the host also hand-edits. A

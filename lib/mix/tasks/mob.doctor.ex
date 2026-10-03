@@ -18,7 +18,8 @@ defmodule Mix.Tasks.Mob.Doctor do
 
     1. **Tools**   — adb, xcrun (macOS), Java, Android SDK, iOS build tools
     2. **Project** — mob.exs present, required keys set, paths valid, iOS
-       Info.plist ready for iPad and Split View (warning only)
+       Info.plist ready for iPad and Split View (warning only), `url_schemes`
+       valid
     3. **Build**   — Elixir deps fetched, project compiled, native build tools present,
        installed plugins that ship NIFs but aren't activated
     4. **OTP cache** — pre-built runtimes downloaded and structurally valid
@@ -635,7 +636,8 @@ defmodule Mix.Tasks.Mob.Doctor do
       ),
       __mob_dir_dep_check__(cfg[:mob_dir], MobDev.MobDirCheck.dep_path()),
       check_bundle_id(cfg),
-      check_ios_layout_plist(cfg)
+      check_ios_layout_plist(cfg),
+      MobDev.UrlSchemes.audit(cfg)
     ])
   end
 

@@ -300,6 +300,7 @@ defmodule MobDev.NativeBuild do
          :ok <- install_nx_eigen_otp_lib(otp_arm32),
          :ok <- zig_build_android_objects(mob_dir, otp_arm64, otp_arm32, otp_x86_64),
          :ok <- apply_plugin_android_manifest!(),
+         :ok <- apply_url_schemes_android!(cfg),
          :ok <- apply_plugin_gradle_deps!(),
          :ok <- apply_plugin_android_kotlin!(),
          :ok <- apply_plugin_android_res!(),
@@ -4499,6 +4500,7 @@ defmodule MobDev.NativeBuild do
         File.cp!("ios/Info.plist", info_plist)
         apply_plugin_plist_keys!(info_plist)
         MobDev.IosLayoutPlist.apply!(info_plist, cfg)
+        MobDev.UrlSchemes.apply_plist!(info_plist, cfg, bundle_id)
         apply_fonts_to_ios_bundle!(info_plist, app_path)
         plist_set!(info_plist, ":CFBundleIdentifier", bundle_id)
         if File.dir?("ios/Assets.xcassets/AppIcon.appiconset"), do: compile_ios_icons(app_path)
@@ -4808,6 +4810,7 @@ defmodule MobDev.NativeBuild do
         File.cp!("ios/Info.plist", info_plist)
         apply_plugin_plist_keys!(info_plist)
         MobDev.IosLayoutPlist.apply!(info_plist, cfg)
+        MobDev.UrlSchemes.apply_plist!(info_plist, cfg, bundle_id)
         apply_fonts_to_ios_bundle!(info_plist, app_path)
         plist_set!(info_plist, ":CFBundleIdentifier", bundle_id)
         plist_set!(info_plist, ":CFBundleExecutable", app_name)
@@ -5033,6 +5036,9 @@ defmodule MobDev.NativeBuild do
         :ok
     end
   end
+
+  defp apply_url_schemes_android!(cfg),
+    do: MobDev.UrlSchemes.apply_android_manifest!(@android_manifest_path, cfg)
 
   # Inserts `implementation "<dep>"` lines for each gradle dependency declared
   # by activated plugins into the app-level `build.gradle`'s `dependencies { }`

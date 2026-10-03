@@ -55,7 +55,9 @@ defmodule Mix.Tasks.Mob.Release do
 
   ## What --android does
 
-    1. Ensures the Android OTP runtime is cached (`~/.mob/cache/otp-android-*`).
+    1. Regenerates the `mob.exs` `url_schemes` deep-link intent filter in
+       `AndroidManifest.xml`, then ensures the Android OTP runtime is cached
+       (`~/.mob/cache/otp-android-*`).
     2. Stages a temp tree: OTP runtime + app BEAMs + exqlite BEAMs.
     3. Runs `MobDev.OtpAssetBundle.build/2` to produce
        `android/app/src/release/assets/otp.zip` — stripped and compressed.

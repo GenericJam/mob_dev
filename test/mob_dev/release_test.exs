@@ -409,6 +409,30 @@ defmodule MobDev.ReleaseTest do
       assert File.read!(bootstrap) =~ ~s|@_cdecl("mob_register_plugins")|
     end
 
+    test "an invalid url_schemes refuses the release before the script runs",
+         %{build_file: build_file, inputs: inputs, cfg: cfg} do
+      empty = %{root: "/app", c_sources: [], static_libs: [], guarded: []}
+
+      env =
+        Release.release_env(
+          cfg,
+          "/otp",
+          Release.plugin_release_env([], build_file, inputs),
+          Release.project_release_env([], empty, [])
+        )
+
+      assert {"MOB_IOS_URL_TYPES_PLIST_COMMANDS", ""} in env
+
+      assert_raise Mix.Error, ~r/url_schemes can't claim "https"/, fn ->
+        Release.release_env(
+          cfg ++ [url_schemes: ["https"]],
+          "/otp",
+          Release.plugin_release_env([], build_file, inputs),
+          Release.project_release_env([], empty, [])
+        )
+      end
+    end
+
     test "an unsigned plugin is refused before anything is written for it",
          %{tmp_dir: dir, build_file: build_file, inputs: inputs, bootstrap: bootstrap} do
       plugin = Path.join(dir, "mob_unsigned_release")

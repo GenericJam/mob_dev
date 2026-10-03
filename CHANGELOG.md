@@ -1,5 +1,24 @@
 ## [Unreleased]
 
+### Added
+
+- **Deep-link URL schemes: `config :mob_dev, url_schemes: ["myapp"]` in
+  `mob.exs` (MOB-379).** The native build makes the OS open the app for
+  `myapp://…` URLs. mob 0.9.11 then delivers them to the root screen as
+  `{:link, %{url: url, source: :launch | :running}}`. On Android,
+  `mix mob.deploy --native` and `mix mob.release --android` keep a managed
+  `VIEW` intent filter (`DEFAULT` + `BROWSABLE`) inside the launcher activity
+  of `AndroidManifest.xml`. On iOS, the sim and device builds and
+  `mix mob.release --ios` append a `CFBundleURLTypes` entry, named after the
+  iOS bundle id, to the built bundle's Info.plist. The app's own entries are
+  kept, and `ios/Info.plist` is never rewritten. A scheme the app already
+  declares is skipped on both platforms. Removing the key removes the filter
+  and the entry. Schemes must be lowercase. `http`/`https` are refused, since
+  verified App Links and universal links need a host and verification. An
+  invalid value fails the build and `mix mob.doctor`. The launcher activity
+  should be `android:launchMode="singleTask"`; mob_new's template sets it. See
+  `decisions/2026-10-03-url-schemes.md`.
+
 ### Fixed
 
 - **A guarded project NIF no longer breaks `mix mob.deploy --native`
