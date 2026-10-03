@@ -561,8 +561,10 @@ fallback), see [`python_embedding.md`](python_embedding.md).
 ```
 
 An entry whose `:archs` narrows a platform (`[:ios_device]`, `[:ios_sim]`,
-`[:android_arm64]`, `[:android_arm32]`) also needs a `:guard`: any C macro
-name, conventionally `MOB_STATIC_<NAME>_NIF`. The generated driver table then
+`[:android_arm64]`, `[:android_arm32]`) also needs a `:guard`: a C macro name,
+conventionally `MOB_STATIC_<NAME>_NIF`, other than the built-in NIFs' own
+(`MOB_STATIC_SQLITE_NIF`, `MOB_STATIC_EMLX_NIF`, `MOB_STATIC_NX_EIGEN_NIF`,
+`MOB_STATIC_TFLITE_NIF`, which are feature switches). The generated driver table then
 registers the NIF only on the targets `:archs` names, by the compiler's own
 target, so a simulator or other-ABI build doesn't reference a NIF it never
 compiled. Your build files need nothing for this. (Before mob_dev 0.7.12, a

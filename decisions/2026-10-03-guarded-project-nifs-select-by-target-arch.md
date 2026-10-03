@@ -31,10 +31,13 @@ compile, so releases worked.
 The generated tables decide a project guard themselves, from the entry's
 `:archs` and the target they are compiled for:
 
-- Zig: `const <flag> = builtin.target.abi != .simulator;` for `[:ios_device]`,
-  `== .simulator` for `[:ios_sim]`, `builtin.target.cpu.arch == .aarch64` for
-  `[:android_arm64]`, `.arm`/`.thumb` for `[:android_arm32]`, `true` when the
-  entry covers the whole platform.
+- Zig: each guarded project entry gets its own flag, `<module>_on` (the module
+  is already a C identifier, `<module>_nif_init`): `builtin.target.abi !=
+  .simulator` for `[:ios_device]`, `== .simulator` for `[:ios_sim]`,
+  `builtin.target.cpu.arch == .aarch64` for `[:android_arm64]`, `.arm`/`.thumb`
+  for `[:android_arm32]`, `true` when the entry covers the whole platform. A
+  flag per entry, not per guard, keeps two entries that share a guard on their
+  own archs, and lets any C macro serve as a guard.
 - C: `#if defined(<guard>) || <test>` with `TARGET_OS_SIMULATOR` (via
   `<TargetConditionals.h>`, emitted only when needed), `__aarch64__`,
   `__arm__` or `1`. Keeping `defined(<guard>)` means a build that defines the
@@ -60,12 +63,14 @@ on their next `mix mob.deploy --native`.
   the 0.7.11 repro app builds and boots on the simulator; compiled tables
   reference the NIF only on the targets its `:archs` name (zig for
   aarch64-ios / aarch64-ios-simulator / aarch64-linux-android /
-  arm-linux-androideabi, Apple clang for both iOS SDKs; pinned by a
-  `:requires_zig` test).
+  arm-linux-androideabi, Apple clang for both iOS SDKs). A `:requires_zig`
+  test compiles the tables on a laptop; CI excludes it (no zig there), and
+  text tests of each generated condition run in CI.
 - `:guard` on a project entry no longer acts as an off switch: an entry whose
   `:archs` cover the platform is always registered (`|| 1`), even if nothing
   defines the macro. Nothing local relied on the old behaviour, and in a dev
   build it either failed (Zig) or always dropped the entry (C).
 - An unguarded entry that narrows a platform still references its init symbol
   on every arch of the platform, as before; the guide says to add a `:guard`.
-- Two project entries sharing one guard name get the first entry's arch test.
+- Two project entries may share a guard name: the C table tests each entry's
+  archs, and the Zig table gives each its own flag.

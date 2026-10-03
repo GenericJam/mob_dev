@@ -32,7 +32,7 @@ defmodule MobDev.StaticNifs do
   | `:init`    | string   | derived   | Init fn name. Defaults to `<mod>_nif_init` |
   | `:builtin` | boolean  | `false`   | True for OTP-shipped libs              |
   | `:archs`   | [atom]   | `[:all]`  | Where this NIF should appear           |
-  | `:guard`   | string   | none      | Preprocessor macro that gates the entry |
+  | `:guard`   | string   | none      | Macro naming a narrowed entry (see below) |
   | `:extra_static_libs` | map | none | Per-ABI archives to link with this NIF |
 
   Valid `:archs` values: `:all`, `:ios`, `:android`, `:ios_sim`,
@@ -254,8 +254,9 @@ defmodule MobDev.StaticNifs do
 
   @doc """
   Returns true if the entry's archs are a *strict* subset of the platform's
-  archs (i.e. it's present on this platform but not all of its arches). When
-  true, the generated entry must be wrapped in `#ifdef <guard>`.
+  archs (i.e. it's present on this platform but not all of its arches). Such
+  an entry needs a `:guard`, so the generated tables register it only on its
+  archs.
   """
   @spec needs_guard?(nif_entry(), platform()) :: boolean()
   def needs_guard?(entry, platform) do
@@ -426,9 +427,9 @@ defmodule MobDev.StaticNifs do
         _ ->
           flag_decls =
             guarded
-            |> Enum.uniq_by(& &1.guard)
+            |> Enum.uniq_by(&zig_flag/1)
             |> Enum.map(fn nif ->
-              "const #{guard_flag_name(nif.guard)} = #{zig_guard_value(nif, platform)};\n"
+              "const #{zig_flag(nif)} = #{zig_guard_value(nif, platform)};\n"
             end)
 
           [
@@ -525,10 +526,11 @@ defmodule MobDev.StaticNifs do
   end
 
   @doc """
-  True when the entry carries a `:guard` key. The guard is the user's
-  explicit opt-in (e.g. `MOB_STATIC_EMLX_NIF`) and gets emitted as a
-  preprocessor `#ifdef` in C output or a comptime const in Zig output,
-  independent of whether the entry's archs narrow the platform.
+  True when the entry carries a `:guard` key. A built-in NIF's guard (e.g.
+  `MOB_STATIC_EMLX_NIF`) is a feature switch the build sets: `#ifdef` in C, a
+  `build_options` flag in Zig. A project NIF's guard selects the entry on the
+  targets its `:archs` cover, by the compiler's target, and is always on when
+  the archs cover the whole platform.
   """
   @spec guarded?(nif_entry()) :: boolean()
   def guarded?(nif), do: Map.has_key?(nif, :guard)
@@ -542,6 +544,14 @@ defmodule MobDev.StaticNifs do
     |> String.replace_suffix("_NIF", "")
     |> String.downcase()
     |> Kernel.<>("_static")
+  end
+
+  # The comptime flag gating a guarded entry in the Zig table. A built-in NIF's
+  # is its build option's name; a project NIF gets its own, named from its
+  # module (already a C identifier: `<module>_nif_init`), so two entries that
+  # share a :guard keep their own arch tests and any C macro works as a guard.
+  defp zig_flag(nif) do
+    if template_guard?(nif.guard), do: guard_flag_name(nif.guard), else: "#{nif.module}_on"
   end
 
   defp zig_driver_tab_block do
@@ -634,7 +644,7 @@ defmodule MobDev.StaticNifs do
 
         [
           "export var erts_static_nif_tab = blk: {\n",
-          "    if (#{guard_flag_name(nif.guard)}) {\n",
+          "    if (#{zig_flag(nif)}) {\n",
           "        break :blk base_nifs ++ [_]ErtsStaticNif{ #{nif_const_name(nif)}, sentinel };\n",
           "    } else {\n",
           "        break :blk base_nifs ++ [_]ErtsStaticNif{sentinel};\n",
@@ -662,7 +672,7 @@ defmodule MobDev.StaticNifs do
 
   defp zig_branch_condition(active, _all) do
     active
-    |> Enum.map(&guard_flag_name(&1.guard))
+    |> Enum.map(&zig_flag/1)
     |> Enum.join(" and ")
   end
 
