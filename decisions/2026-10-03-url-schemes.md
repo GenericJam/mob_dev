@@ -114,7 +114,11 @@ scheme: an Android `VIEW` intent filter on an activity, an iOS
 - **`launchMode` is enforced, not rewritten.** With `url_schemes` set, the
   launcher activity must be `android:launchMode="singleTask"` or
   `singleInstance`. For an `<activity-alias>` launcher this means the
-  launch mode of its `android:targetActivity`. Both Android build paths
+  launch mode of its `android:targetActivity`. The target is resolved the way
+  Android resolves names: `.X`, a dot-less `X` and `<package>.X` name the same
+  activity, and an exact spelling wins when more than one activity matches.
+  An alias with no target, or a target no `<activity>` declares, is refused.
+  Both Android build paths
   (`apply_android_manifest!/2`) raise otherwise, and `mix mob.doctor` fails
   the same manifest (`UrlSchemes.launch_mode_error/2`). The reason: a `VIEW`
   intent from another app's task (a QR scanner, a browser that doesn't add

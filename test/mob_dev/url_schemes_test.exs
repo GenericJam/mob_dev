@@ -145,38 +145,83 @@ defmodule MobDev.UrlSchemesTest do
     end
 
     test "an activity-alias launcher is checked through its targetActivity" do
-      alias_manifest = fn target_mode, target ->
-        """
-        <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-            <application>
-                <activity android:name=".MainActivity" #{target_mode} android:exported="true" />
-                <activity-alias android:name=".Launcher" android:targetActivity="#{target}">
-                    <intent-filter>
-                        <action android:name="android.intent.action.MAIN"/>
-                        <category android:name="android.intent.category.LAUNCHER"/>
-                    </intent-filter>
-                </activity-alias>
-            </application>
-        </manifest>
-        """
-      end
-
       single_task = ~s(android:launchMode="singleTask")
 
-      assert UrlSchemes.launch_mode_error(alias_manifest.(single_task, ".MainActivity"), "M.xml") ==
-               nil
+      assert alias_error([{".MainActivity", single_task}], ".MainActivity") == nil
 
-      assert UrlSchemes.launch_mode_error(alias_manifest.("", ".MainActivity"), "M.xml") =~
+      assert alias_error([{".MainActivity", ""}], ".MainActivity") =~
                ~s(on <activity android:name=".MainActivity">)
 
-      assert UrlSchemes.launch_mode_error(alias_manifest.(single_task, ".Gone"), "M.xml") =~
+      assert alias_error([{".MainActivity", single_task}], ".Gone") =~
                ~s(targets ".Gone", but no <activity> there has that android:name)
+    end
+
+    test "an alias target resolves package-relative names as Android does" do
+      single_task = ~s(android:launchMode="singleTask")
+
+      for {name, target} <- [
+            {"com.ex.app.MainActivity", ".MainActivity"},
+            {".MainActivity", "com.ex.app.MainActivity"},
+            {"MainActivity", ".MainActivity"},
+            {".MainActivity", "MainActivity"},
+            {"MainActivity", "com.ex.app.MainActivity"}
+          ] do
+        assert alias_error([{name, single_task}], target) == nil, "#{name} <- #{target}"
+
+        assert alias_error([{name, ""}], target) =~ "needs android:launchMode",
+               "#{name} <- #{target}"
+      end
+
+      # A longer class name that merely ends the same way is another activity.
+      assert alias_error([{"com.ex.app.OtherMainActivity", single_task}], ".MainActivity") =~
+               "no <activity> there has that android:name"
+    end
+
+    test "an exact android:name wins over a package-relative match" do
+      activities = [
+        {".MainActivity", ~s(android:launchMode="singleTask")},
+        {"com.ex.app.MainActivity", ~s(android:launchMode="singleTop")}
+      ]
+
+      assert alias_error(activities, "com.ex.app.MainActivity") =~ ~s(it is "singleTop")
+      assert alias_error(Enum.reverse(activities), ".MainActivity") == nil
+    end
+
+    test "an alias without android:targetActivity is refused clearly" do
+      assert alias_error([{".MainActivity", ~s(android:launchMode="singleTask")}], nil) =~
+               "has no android:targetActivity"
     end
 
     test "a manifest without a launcher activity is refused" do
       no_launcher = String.replace(@manifest, "category.LAUNCHER", "category.DEFAULT")
       assert UrlSchemes.launch_mode_error(no_launcher, "M.xml") =~ "has no launcher activity"
     end
+  end
+
+  defp alias_error(activities, target) do
+    activity_tags =
+      Enum.map_join(activities, "\n", fn {name, mode} ->
+        ~s(        <activity android:name="#{name}" #{mode} android:exported="true" />)
+      end)
+
+    target_attribute = if target, do: ~s( android:targetActivity="#{target}"), else: ""
+
+    UrlSchemes.launch_mode_error(
+      """
+      <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.ex.app">
+          <application>
+      #{activity_tags}
+              <activity-alias android:name=".Launcher"#{target_attribute}>
+                  <intent-filter>
+                      <action android:name="android.intent.action.MAIN"/>
+                      <category android:name="android.intent.category.LAUNCHER"/>
+                  </intent-filter>
+              </activity-alias>
+          </application>
+      </manifest>
+      """,
+      "M.xml"
+    )
   end
 
   defp launch_mode(attribute),

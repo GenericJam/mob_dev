@@ -289,9 +289,11 @@ defmodule MobDev.UrlSchemes do
   Why the launcher activity in `manifest` (the text of the file at `path`)
   can't take deep links, or `nil` when it can: its `android:launchMode` must
   be `singleTask` or `singleInstance`. For an `<activity-alias>` launcher
-  that is the launch mode of its `android:targetActivity`. A manifest with no
-  launcher activity, or an alias whose target isn't declared, is an error
-  too.
+  that is the launch mode of its `android:targetActivity`, matched against
+  `<activity android:name>` as Android resolves names (`.X`, `X` and
+  `<package>.X` name the same activity; an exact spelling wins). A manifest
+  with no launcher activity, or an alias with no or an undeclared target, is
+  an error too.
   """
   @spec launch_mode_error(String.t(), Path.t()) :: String.t() | nil
   def launch_mode_error(manifest, path) do
@@ -306,24 +308,55 @@ defmodule MobDev.UrlSchemes do
   defp launched_activity_tag(%{name: "activity", tag: tag}, _text), do: {:ok, tag}
 
   defp launched_activity_tag(%{tag: alias_tag}, text) do
-    target = attribute(alias_tag, "android:targetActivity")
-
-    "<activity(?=[\\s/>])[^>]*>"
-    |> Regex.compile!()
-    |> Regex.scan(text)
-    |> List.flatten()
-    |> Enum.find(&(target != nil and attribute(&1, "android:name") == target))
-    |> case do
-      nil -> {:missing_target, target}
-      tag -> {:ok, tag}
+    case attribute(alias_tag, "android:targetActivity") do
+      nil -> :no_target
+      target -> find_activity_tag(text, target)
     end
+  end
+
+  # Android resolves a name with a leading "." or no "." at all against the
+  # package, so ".MainActivity", "MainActivity" and "com.ex.app.MainActivity"
+  # can all name one activity. An exact spelling wins over a resolved one.
+  defp find_activity_tag(text, target) do
+    tags =
+      "<activity(?=[\\s/>])[^>]*>"
+      |> Regex.compile!()
+      |> Regex.scan(text)
+      |> List.flatten()
+
+    found =
+      Enum.find(tags, &(attribute(&1, "android:name") == target)) ||
+        Enum.find(tags, &same_activity?(attribute(&1, "android:name"), target))
+
+    if found, do: {:ok, found}, else: {:missing_target, target}
+  end
+
+  defp same_activity?(nil, _target), do: false
+
+  defp same_activity?(name, target) do
+    a = package_relative(name)
+    b = package_relative(target)
+
+    a == b or (relative?(b) and String.ends_with?(a, b)) or
+      (relative?(a) and String.ends_with?(b, a))
+  end
+
+  defp package_relative("." <> _ = name), do: name
+  defp package_relative(name), do: if(String.contains?(name, "."), do: name, else: "." <> name)
+
+  defp relative?(name), do: String.starts_with?(name, ".")
+
+  defp launch_mode_problem(:no_target, path) do
+    "mob.exs url_schemes: the launcher <activity-alias> in #{path} has no " <>
+      "android:targetActivity, so the activity it opens, whose android:launchMode must " <>
+      "be singleTask, can't be found. Add android:targetActivity naming that <activity>"
   end
 
   defp launch_mode_problem({:missing_target, target}, path) do
     "mob.exs url_schemes: the launcher <activity-alias> in #{path} targets " <>
-      "#{inspect(target)}, but no <activity> there has that android:name, so its " <>
-      "android:launchMode (which must be singleTask) can't be checked. Point " <>
-      "android:targetActivity at the activity exactly as its android:name spells it"
+      "#{inspect(target)}, but no <activity> there has that android:name (relative to the " <>
+      "package or fully qualified), so its android:launchMode (which must be singleTask) " <>
+      "can't be checked. Point android:targetActivity at a declared <activity>"
   end
 
   defp launch_mode_problem({:ok, tag}, path) do
