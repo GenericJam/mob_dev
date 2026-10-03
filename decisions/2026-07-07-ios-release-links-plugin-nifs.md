@@ -71,7 +71,7 @@ link line, and each declared framework is also passed explicitly.
   > (`2026-10-03-ios-release-compiles-plugin-swift-and-bootstrap.md`).
   > `static_archives` are still a follow-up. The release also now runs the
   > plugin signature, trust and capability gate before building these env vars
-  > (`plugin_release_env/3`; `release_env/2` above is now `release_env/3`).
+  > (`plugin_release_env/3`; `release_env/2` above is now `release_env/4`).
 
   > **Later (MOB-373):** `static_archives` are linked too
   > (`2026-10-03-ios-release-links-project-inputs-and-plugin-archives.md`).

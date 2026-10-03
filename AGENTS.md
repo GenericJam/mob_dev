@@ -622,7 +622,7 @@ narrowing functions). Don't make them private:
   `NativeBuild.ios_plugin_swift_mode/2` rule, which `ios_build_file_supports_plugins?/1`
   feeds; the second is the I/O edge), `Release.plugin_release_env/3` (every
   plugin env var, behind the plugin signature/trust/capability gate) and
-  `Release.release_env/3` (the assembled script env). See
+  `Release.release_env/4` (the assembled script env). See
   `decisions/2026-10-03-ios-release-compiles-plugin-swift-and-bootstrap.md`
 - `NativeBuild.project_nif_build_inputs/1`, `project_swift_sources/1` and
   `build_plugin_static_archives/3`, plus `Release.project_release_env/3` (MOB-373:

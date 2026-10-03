@@ -368,7 +368,7 @@ defmodule MobDev.ReleaseTest do
     end
   end
 
-  describe "release_env/3 + plugin_release_env/3 (the env release_device.sh runs with)" do
+  describe "release_env/4 + plugin_release_env/3 (the env release_device.sh runs with)" do
     @describetag :tmp_dir
 
     setup %{tmp_dir: dir} do
@@ -385,12 +385,25 @@ defmodule MobDev.ReleaseTest do
        bootstrap: Path.join(inputs, "mob_plugin_bootstrap.swift")}
     end
 
-    test "a blank app's release env carries the bootstrap that defines mob_register_plugins",
+    test "the release env carries both the plugin inputs and the project inputs",
          %{build_file: build_file, inputs: inputs, cfg: cfg, bootstrap: bootstrap} do
-      env = Release.release_env(cfg, "/otp", Release.plugin_release_env([], build_file, inputs))
+      project_nifs = %{
+        root: "/app",
+        c_sources: [{"fastmath", "/app/c_src/fastmath.c"}],
+        static_libs: [],
+        guarded: []
+      }
+
+      env =
+        Release.release_env(
+          cfg,
+          "/otp",
+          Release.plugin_release_env([], build_file, inputs),
+          Release.project_release_env([], project_nifs, [])
+        )
 
       assert {"MOB_PLUGIN_IOS_SWIFT_SOURCES", bootstrap} in env
-      assert {"MOB_PLUGIN_IOS_NIF_SOURCES", ""} in env
+      assert {"MOB_PROJECT_NIF_SOURCES", "/app/c_src/fastmath.c"} in env
       assert {"MOB_IOS_DEVICE_OTP_ROOT", "/otp"} in env
       assert File.read!(bootstrap) =~ ~s|@_cdecl("mob_register_plugins")|
     end

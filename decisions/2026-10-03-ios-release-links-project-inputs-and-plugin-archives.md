@@ -40,15 +40,28 @@ passes it to `release_device.sh` as an env var:
   the same `swiftc` call as mob's and the plugins' Swift.
 - `NativeBuild.project_nif_build_inputs/1`, split out of `project_nif_zig_args/1`
   (which now renders its `-D` args from it) → `MOB_PROJECT_NIF_SOURCES` (through
-  the existing NIF compile loop, with `-DSTATIC_ERLANG_NIF_LIBNAME=<name>`),
-  `MOB_PROJECT_STATIC_LIBS` (link line) and `MOB_DRIVER_TAB_DEFINES`
-  (`-D<guard>` on the driver-table compile, the C-table equivalent of the zig
-  build's `-D<module>_static=true`).
+  the existing NIF compile loop, now at `-Os` like the device build, with
+  `-DSTATIC_ERLANG_NIF_LIBNAME=<name>`), `MOB_PROJECT_STATIC_LIBS` (link line)
+  and `MOB_DRIVER_TAB_DEFINES` (`-D<guard>` on the driver-table compile).
 - `NativeBuild.build_plugin_static_archives(:ios_device, :ios, otp_root)` →
   `MOB_PLUGIN_STATIC_LIBS` (link line).
 
+Project and plugin archives go after OTP's archives on the link line, the
+device build's order: ld64 takes a symbol from the first archive defining it,
+so the order decides which copy wins when an archive bundles one OTP has too.
+
+`:guard` is defined for every guarded project NIF built for the device, so
+its `#ifdef`'d driver-table row stays: a guard names the macro that selects the
+NIF on the targets it was built for (`MobDev.StaticNifs`). This is not parity
+with the device build: `project_nif_zig_args/1` passes `-D<module>_static=true`,
+but the stock mob_new `build_device.zig` declares only the sqlite / mlx /
+nxeigen / tflite `_static` options, so a device build of a guarded project NIF
+gets an unknown zig option. That dev-path gap is MOB-376.
+
 `Release.project_release_env/3` maps the three results to env vars (pure,
-tested). `build_ipa/1` calls the builders after the OTP download, since the
+tested), and `release_env/4` takes that result as a required argument next to
+the plugin env, so a release can't leave the project inputs out.
+`build_ipa/1` calls the builders after the OTP download, since the
 cpp_archive build needs the device ERTS headers; the Rust/Zig cross-compiles
 and archive builds report errors through the same `with` chain as signing.
 
@@ -58,7 +71,8 @@ the docs' GitHub URLs. Internal code comments keep the bare names.
 ## Consequences
 
 - An app with project Swift, project C/Rust/Zig NIFs (guarded or not) or
-  cpp_archive plugins releases with the same native code as a device build.
+  cpp_archive plugins releases with that native code linked, by the device
+  build's input functions.
 - One rule per input: a change to how the device build gathers project NIFs or
   plugin archives changes the release with it.
 - Still not in the release path: the MLX / NxEigen / TFLite archives the

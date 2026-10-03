@@ -3,12 +3,14 @@
 ### Fixed
 
 - **`mix mob.release --ios` links the project's own Swift and NIFs and plugin
-  `:cpp_archive` NIFs, as `mix mob.deploy --native` does (MOB-373).** A release
-  ignored `mob.exs` `project_swift_sources`, failed to link an app with a project
-  NIF (`c_src/<name>.c`, a Rust or Zig NIF, `:extra_static_libs`) or a
-  cpp_archive plugin (`Undefined symbols: _<module>_nif_init`), and silently
-  dropped a project NIF with a `:guard` from the driver table. The release now
-  builds each of these with the device build's own functions and links them.
+  `:cpp_archive` NIFs (MOB-373).** A release ignored `mob.exs`
+  `project_swift_sources`, failed to link an app with a project NIF
+  (`c_src/<name>.c`, a Rust or Zig NIF, `:extra_static_libs`) or a cpp_archive
+  plugin (`Undefined symbols: _<module>_nif_init`), and silently dropped a
+  project NIF with a `:guard` from the driver table. The release now gathers
+  each of these with the device build's own functions, compiles project C NIFs
+  at `-Os` like the device build, defines each guarded project NIF's `:guard`,
+  and links the archives after OTP's, in the device build's order.
   The MLX / NxEigen / TFLite NIFs (`mix mob.enable mlx|nxeigen|tflite`) are
   still not part of a release build. See
   `decisions/2026-10-03-ios-release-links-project-inputs-and-plugin-archives.md`.

@@ -76,8 +76,8 @@ defmodule MobDev.Release do
       app = to_string(Mix.Project.config()[:app])
       MobDev.AppConfig.write!(Path.join(["_build", "dev", "lib", app, "ebin"]))
 
-      native_env = project_release_env(project_swift_sources, project_nifs, plugin_archives)
-      env = release_env(cfg, otp_root, plugin_env ++ native_env)
+      project_env = project_release_env(project_swift_sources, project_nifs, plugin_archives)
+      env = release_env(cfg, otp_root, plugin_env, project_env)
       output_dir = Path.expand("_build/mob_release")
       File.mkdir_p!(output_dir)
 
@@ -377,11 +377,14 @@ defmodule MobDev.Release do
 
   @doc false
   # The whole env `release_device.sh` runs with, minus the two output vars
-  # `build_ipa/1` adds. `plugin_env` is `plugin_release_env/3`'s result, so the
-  # plugin inputs can't be left out of a release. Public for testing.
-  @spec release_env(keyword(), Path.t(), [{String.t(), String.t()}]) ::
-          [{String.t(), String.t()}]
-  def release_env(cfg, otp_root, plugin_env) do
+  # `build_ipa/1` adds. `plugin_env` is `plugin_release_env/3`'s result and
+  # `project_env` is `project_release_env/3`'s, both required, so neither the
+  # plugin nor the project inputs can be left out of a release. Public for
+  # testing.
+  @spec release_env(keyword(), Path.t(), [{String.t(), String.t()}], [
+          {String.t(), String.t()}
+        ]) :: [{String.t(), String.t()}]
+  def release_env(cfg, otp_root, plugin_env, project_env) do
     app_atom = Mix.Project.config()[:app]
     app_name = app_atom |> to_string() |> Macro.camelize()
     app_module = to_string(app_atom)
@@ -401,7 +404,7 @@ defmodule MobDev.Release do
       {"MOB_APP_MODULE", app_module},
       screenshot_build_env(cfg),
       layout_plist_env(cfg)
-    ] ++ plugin_env
+    ] ++ plugin_env ++ project_env
   end
 
   @doc false
@@ -824,7 +827,7 @@ defmodule MobDev.Release do
     # <name>_nif_init (erl_nif.h derives STATIC_ERLANG_NIF from it; passing both
     # redefines it). -fmodules lets Clang autolink every framework the source
     # @imports (a plugin may import frameworks beyond its manifest's declared set,
-    # e.g. Accelerate).
+    # e.g. Accelerate). -Os as the device build compiles NIF sources.
     PLUGIN_OBJS=""
     for SRC in $MOB_PLUGIN_IOS_NIF_SOURCES $MOB_PROJECT_NIF_SOURCES; do
         NAME=$(basename "$SRC"); NAME="${NAME%.*}"
@@ -833,7 +836,7 @@ defmodule MobDev.Release do
             *)   ARC="" ;;
         esac
         echo "  NIF: $NAME  ($SRC)"
-        $CC $ARC -fmodules $IFLAGS \
+        $CC $ARC -Os -fmodules $IFLAGS \
             -DSTATIC_ERLANG_NIF_LIBNAME="$NAME" \
             -c "$SRC" -o "$BUILD_DIR/$NAME.o"
         PLUGIN_OBJS="$PLUGIN_OBJS $BUILD_DIR/$NAME.o"
@@ -858,10 +861,10 @@ defmodule MobDev.Release do
         "$BUILD_DIR/beam_main.o" \
         "$BUILD_DIR/erl_errno_id_compat.o" \
         $PLUGIN_OBJS \
-        $MOB_PROJECT_STATIC_LIBS \
-        $MOB_PLUGIN_STATIC_LIBS \
         $LIBS \
         "$SQLITE_STATIC_LIB" \
+        $MOB_PROJECT_STATIC_LIBS \
+        $MOB_PLUGIN_STATIC_LIBS \
         -lz -lc++ -lpthread \
         -Xlinker -framework -Xlinker UIKit \
         -Xlinker -framework -Xlinker Foundation \

@@ -178,7 +178,7 @@ defmodule MobDev.ReleaseScriptTest do
       # -fmodules autolinks every framework the source @imports (a plugin may
       # import frameworks beyond its manifest set, e.g. Accelerate).
       assert sh =~ ~s|*.m) ARC="-fobjc-arc" ;;|
-      assert sh =~ ~s|$CC $ARC -fmodules $IFLAGS|
+      assert sh =~ ~s|$CC $ARC -Os -fmodules $IFLAGS|
     end
 
     test "adds the compiled plugin objects to the final link line", %{sh: sh} do
@@ -225,10 +225,13 @@ defmodule MobDev.ReleaseScriptTest do
       assert sh =~ ~s|for SRC in $MOB_PLUGIN_IOS_NIF_SOURCES $MOB_PROJECT_NIF_SOURCES; do|
     end
 
-    test "project and plugin static archives are on the link line with the NIF objects",
+    test "project and plugin static archives follow the OTP libs on the link line, as on device",
          %{sh: sh} do
+      # The device build's addLink links OTP's archives first, then these; ld64
+      # takes a symbol from the first archive that defines it, so the order
+      # decides which copy wins when an archive bundles one OTP also has.
       assert sh =~
-               ~r/\$PLUGIN_OBJS \\\n\s*\$MOB_PROJECT_STATIC_LIBS \\\n\s*\$MOB_PLUGIN_STATIC_LIBS \\\n\s*\$LIBS \\/
+               ~r/\$LIBS \\\n\s*"\$SQLITE_STATIC_LIB" \\\n\s*\$MOB_PROJECT_STATIC_LIBS \\\n\s*\$MOB_PLUGIN_STATIC_LIBS \\/
     end
 
     test "guard macros of guarded project NIFs reach the driver table compile", %{sh: sh} do
