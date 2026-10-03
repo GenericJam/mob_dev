@@ -168,8 +168,10 @@ the highest rung the change actually reaches, and say which rung you stopped at.
    emulator, then attach and confirm the BEAM is up and a screen renders.
    Deploy success is the tool's opinion; a reachable node is evidence.
 5. **Physical device, and the release variant.** Release changes linkage and
-   packaging: iOS release links plugin NIFs by a separate path
-   (`decisions/2026-07-07-ios-release-links-plugin-nifs.md`), and release
+   packaging: iOS release links plugin NIFs, and compiles plugin Swift and the
+   `mob_register_plugins` bootstrap, by a separate path
+   (`decisions/2026-07-07-ios-release-links-plugin-nifs.md`,
+   `decisions/2026-10-03-ios-release-compiles-plugin-swift-and-bootstrap.md`), and release
    `otp.zip` handling is variant-scoped
    (`decisions/2026-07-24-release-otp-zip-variant-scoped-assets.md`). A release
    also leaves an `assets/otp.zip` that crash-loops the next debug deploy.
@@ -612,6 +614,12 @@ narrowing functions). Don't make them private:
   and `partition/2` (which agent-device claims block auto-selection), and
   `MobDev.Plugin.TrustStore.trust_stanza/1` / `Mix.Tasks.Mob.Plugin.Trust.version/3`
   (the one-entry-per-line trust map and the version shown for review)
+- `Release.plugin_ios_swift_env/3` and `plugin_ios_swift_env_written/3` (which
+  Swift files the iOS release script compiles: the plugins' plus the bootstrap
+  that defines `mob_register_plugins`, by the dev path's
+  `NativeBuild.ios_plugin_swift_mode/2` rule, which `ios_build_file_supports_plugins?/1`
+  feeds; the second is the I/O edge. See
+  `decisions/2026-10-03-ios-release-compiles-plugin-swift-and-bootstrap.md`)
 - `NativeBuild.with_temp_build_dir/2`, `ios_build_inputs_dir/1` and
   `write_build_input!/2` (MOB-313: the iOS `.app` goes in a temp dir removed
   on every exit path; the sources zig compiles stay at stable paths so its

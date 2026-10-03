@@ -1,3 +1,18 @@
+## [Unreleased]
+
+### Fixed
+
+- **`mix mob.release --ios` links a fresh app (and one whose plugins ship
+  Swift).** The release build failed with `Undefined symbols: _mob_register_plugins`
+  for an app with no plugins at all, because the release script compiled mob's
+  Swift sources but never the generated bootstrap that defines that function
+  (`AppDelegate.m` calls it unconditionally); `mix mob.deploy --native --ios` of
+  the same app linked. The script now compiles the bootstrap and the activated
+  plugins' Swift sources too, by the rule the dev builds use, so an app
+  scaffolded before plugins existed still builds as before. Swift files listed
+  in `mob.exs` `project_swift_sources` are still not part of a release build.
+  See `decisions/2026-10-03-ios-release-compiles-plugin-swift-and-bootstrap.md`.
+
 ## [0.7.9] - 2026-10-02
 
 ### Added

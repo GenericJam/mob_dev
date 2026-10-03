@@ -366,6 +366,7 @@ defmodule MobDev.Release do
     app_module = to_string(app_atom)
     elixir_lib = MobDev.NativeBuild.__resolve_elixir_lib__(cfg[:elixir_lib])
     epmd_src = cfg[:ios_epmd_build_src] || otp_root
+    activated = MobDev.Plugin.activated()
 
     [
       {"MOB_DIR", Path.expand(cfg[:mob_dir])},
@@ -380,7 +381,39 @@ defmodule MobDev.Release do
       {"MOB_APP_MODULE", app_module},
       screenshot_build_env(cfg),
       layout_plist_env(cfg)
-    ] ++ plugin_ios_build_env(MobDev.Plugin.activated())
+    ] ++
+      plugin_ios_build_env(activated) ++
+      [
+        plugin_ios_swift_env_written(
+          activated,
+          Path.expand("ios/build_device.zig"),
+          MobDev.NativeBuild.ios_build_inputs_dir(:ios_device)
+        )
+      ]
+  end
+
+  @doc false
+  # I/O edge for `plugin_ios_swift_env/3`: reads `build_file` (the app's
+  # `ios/build_device.zig`) and, when the bootstrap is needed, writes it into
+  # `inputs_dir`, then hands the pure function the answers. The write is the
+  # dev device build's idempotent one at the dev build's path
+  # (`NativeBuild.ios_build_inputs_dir(:ios_device)`), so a release neither
+  # leaves a half-written file nor invalidates the dev build's zig cache
+  # (`decisions/2026-10-01-ios-build-sources-stable-app-dir-removed.md`).
+  @spec plugin_ios_swift_env_written([MobDev.Plugin.Merge.plugin()], Path.t(), Path.t()) ::
+          {String.t(), String.t()}
+  def plugin_ios_swift_env_written(activated, build_file, inputs_dir) do
+    bootstrap_path = Path.join(inputs_dir, "mob_plugin_bootstrap.swift")
+    supports_plugins? = MobDev.NativeBuild.ios_build_file_supports_plugins?(build_file)
+
+    if MobDev.NativeBuild.ios_plugin_swift_mode(activated, supports_plugins?) != :none do
+      MobDev.NativeBuild.write_build_input!(
+        bootstrap_path,
+        MobDev.Plugin.IOSBootstrap.swift_source(activated)
+      )
+    end
+
+    plugin_ios_swift_env(activated, supports_plugins?, bootstrap_path)
   end
 
   @doc false
@@ -434,6 +467,48 @@ defmodule MobDev.Release do
       {"MOB_PLUGIN_IOS_NIF_SOURCES", Enum.join(sources, " ")},
       {"MOB_PLUGIN_IOS_FRAMEWORKS", Enum.join(frameworks, " ")}
     ]
+  end
+
+  @doc false
+  # `MOB_PLUGIN_IOS_SWIFT_SOURCES` — the extra Swift files `release_device.sh`
+  # compiles into the app's Swift module (the single swiftc step over
+  # `$MOB_DIR/ios/*.swift`). Pure: `bootstrap_path` is where the caller has
+  # written, or will write, the generated bootstrap; this never touches disk.
+  #
+  # The bootstrap defines `mob_register_plugins()`, which the generated
+  # `AppDelegate.m` calls unconditionally. Without it in the link the release
+  # fails with "Undefined symbols: _mob_register_plugins" — for an app with no
+  # plugins at all, and for one whose plugins ship Swift views. The dev builds
+  # already pass the same files as `-Dplugin_swift_files`; the which-files rule
+  # is `NativeBuild.ios_plugin_swift_mode/2`, shared so the two paths agree
+  # (MOB-7), including for a legacy scaffold whose `ios/build_device.zig` lacks
+  # the `plugin_swift_files` option and whose AppDelegate never calls the symbol:
+  #
+  # - plugins activated → their Swift files (absolute) + the bootstrap
+  # - none, plugin-aware build file → just the bootstrap
+  # - none, legacy build file → empty
+  #
+  # Space-joined like `MOB_PLUGIN_IOS_NIF_SOURCES`, and word-split unquoted by
+  # the script, so a path containing a space is unsupported here as it is there.
+  # Plugin frameworks need nothing new: `MOB_PLUGIN_IOS_FRAMEWORKS` already
+  # reaches the link.
+  @spec plugin_ios_swift_env([MobDev.Plugin.Merge.plugin()], boolean(), Path.t()) ::
+          {String.t(), String.t()}
+  def plugin_ios_swift_env(activated, build_file_supports_plugins?, bootstrap_path) do
+    files =
+      case MobDev.NativeBuild.ios_plugin_swift_mode(activated, build_file_supports_plugins?) do
+        :with_plugins ->
+          Enum.map(MobDev.Plugin.Merge.swift_files(activated), &Path.expand/1) ++
+            [bootstrap_path]
+
+        :bootstrap_only ->
+          [bootstrap_path]
+
+        :none ->
+          []
+      end
+
+    {"MOB_PLUGIN_IOS_SWIFT_SOURCES", Enum.join(files, " ")}
   end
 
   # ── Preflight ────────────────────────────────────────────────────────────────
@@ -629,6 +704,7 @@ defmodule MobDev.Release do
         -parse-as-library -wmo \
         -O \
         "$MOB_DIR"/ios/*.swift \
+        $MOB_PLUGIN_IOS_SWIFT_SOURCES \
         -c -o "$BUILD_DIR/swift_mob.o"
 
     # MOB_RELEASE on mob_nif.m strips the test harness (synthetic-input

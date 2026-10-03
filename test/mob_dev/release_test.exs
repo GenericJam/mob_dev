@@ -236,6 +236,108 @@ defmodule MobDev.ReleaseTest do
     end
   end
 
+  describe "plugin_ios_swift_env/3 (the Swift files release_device.sh compiles)" do
+    # AppDelegate.m calls mob_register_plugins() unconditionally; the generated
+    # bootstrap defines it. Pure: the bootstrap path is an argument and nothing
+    # is read or written. The mode rule is NativeBuild.ios_plugin_swift_mode/2,
+    # the same one the dev builds use.
+    @bootstrap "/proj/_build/dev/mob_ios/ios_device/mob_plugin_bootstrap.swift"
+
+    test "no plugins + plugin-aware build file → just the bootstrap (the blank-app link fix)" do
+      assert Release.plugin_ios_swift_env([], true, @bootstrap) ==
+               {"MOB_PLUGIN_IOS_SWIFT_SOURCES", @bootstrap}
+    end
+
+    test "no plugins + legacy build file → empty, so a pre-plugin scaffold builds as before" do
+      assert Release.plugin_ios_swift_env([], false, @bootstrap) ==
+               {"MOB_PLUGIN_IOS_SWIFT_SOURCES", ""}
+    end
+
+    test "plugins' Swift files (absolute, in manifest order) come first, then the bootstrap" do
+      activated = [
+        {"/deps/a", %{ios: %{swift_files: ["ios/AView.swift", "ios/AHelper.swift"]}}},
+        {"/deps/b", %{ios: %{swift_files: ["ios/BView.swift"]}}}
+      ]
+
+      assert Release.plugin_ios_swift_env(activated, false, @bootstrap) ==
+               {"MOB_PLUGIN_IOS_SWIFT_SOURCES",
+                "/deps/a/ios/AView.swift /deps/a/ios/AHelper.swift " <>
+                  "/deps/b/ios/BView.swift #{@bootstrap}"}
+    end
+
+    test "activated plugins without Swift files still get the bootstrap, whatever the build file says" do
+      activated = [{"/deps/nif_only", %{ios: %{frameworks: ["AVFoundation"]}}}]
+
+      for supports? <- [true, false] do
+        assert Release.plugin_ios_swift_env(activated, supports?, @bootstrap) ==
+                 {"MOB_PLUGIN_IOS_SWIFT_SOURCES", @bootstrap}
+      end
+    end
+  end
+
+  describe "plugin_ios_swift_env_written/3 (reads the build file, writes the bootstrap)" do
+    @describetag :tmp_dir
+
+    setup %{tmp_dir: dir} do
+      plugin_aware = Path.join(dir, "build_device.zig")
+      File.write!(plugin_aware, ~s|const s = b.option([]const u8, "plugin_swift_files", "");|)
+
+      legacy = Path.join(dir, "legacy_build_device.zig")
+      File.write!(legacy, ~s|const mob_dir = b.option([]const u8, "mob_dir", "");|)
+
+      inputs = Path.join(dir, "inputs")
+      File.mkdir_p!(inputs)
+
+      {:ok,
+       plugin_aware: plugin_aware,
+       legacy: legacy,
+       inputs: inputs,
+       bootstrap: Path.join(inputs, "mob_plugin_bootstrap.swift")}
+    end
+
+    test "blank app on a plugin-aware scaffold: writes a bootstrap that defines the symbol",
+         %{plugin_aware: build_file, inputs: inputs, bootstrap: bootstrap} do
+      assert Release.plugin_ios_swift_env_written([], build_file, inputs) ==
+               {"MOB_PLUGIN_IOS_SWIFT_SOURCES", bootstrap}
+
+      assert File.read!(bootstrap) =~ "mob_register_plugins"
+    end
+
+    test "blank app on a legacy scaffold: nothing written, nothing passed",
+         %{legacy: build_file, inputs: inputs, bootstrap: bootstrap} do
+      assert Release.plugin_ios_swift_env_written([], build_file, inputs) ==
+               {"MOB_PLUGIN_IOS_SWIFT_SOURCES", ""}
+
+      refute File.exists?(bootstrap)
+    end
+
+    test "a missing build file reads as legacy",
+         %{tmp_dir: dir, inputs: inputs, bootstrap: bootstrap} do
+      assert Release.plugin_ios_swift_env_written([], Path.join(dir, "nope.zig"), inputs) ==
+               {"MOB_PLUGIN_IOS_SWIFT_SOURCES", ""}
+
+      refute File.exists?(bootstrap)
+    end
+
+    test "activated plugin on a legacy scaffold still gets plugin Swift + bootstrap, as in dev",
+         %{legacy: build_file, inputs: inputs, bootstrap: bootstrap} do
+      activated = [{"/deps/a", %{ios: %{swift_files: ["ios/AView.swift"]}}}]
+
+      assert Release.plugin_ios_swift_env_written(activated, build_file, inputs) ==
+               {"MOB_PLUGIN_IOS_SWIFT_SOURCES", "/deps/a/ios/AView.swift #{bootstrap}"}
+
+      assert File.exists?(bootstrap)
+    end
+
+    test "the bootstrap is the generator's output for the activated plugins, and is rewritten when it changes",
+         %{plugin_aware: build_file, inputs: inputs, bootstrap: bootstrap} do
+      File.write!(bootstrap, "stale")
+      Release.plugin_ios_swift_env_written([], build_file, inputs)
+
+      assert File.read!(bootstrap) == MobDev.Plugin.IOSBootstrap.swift_source([])
+    end
+  end
+
   # A parsed-profile map in the shape parse_mobileprovision/1 returns; App Store by
   # default (no provisioned devices, not provisions-all).
   defp profile(overrides) do
