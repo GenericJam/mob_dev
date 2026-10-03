@@ -42,13 +42,18 @@ three of its assumptions at once:
   per target in the source (mob_whisper's `ggml_arch_*.c[pp]` wrappers
   `#include` the ARM or x86 kernels by `__aarch64__`/`__x86_64__`), since one
   source list serves all Android ABIs.
+- One `:cxxflags_android` list serves every Android ABI, and some Android
+  hardening is Arm-only: clang rejects `-mbranch-protection=` for x86_64
+  (mob_nx_eigen sets it). The builder drops `-mbranch-protection=*` on
+  `:android_x86_64` rather than adding per-ABI flag keys: the flag has no x86
+  meaning, and per-ABI keys would make every plugin author track ABIs.
 - Sources compile in parallel (`Task.async_stream`, one per scheduler, results
   in source order); a 30-file archive builds in ~5 s per ABI instead of ~30 s.
 
 ## Consequences
 
-- mob_nx_eigen now also builds for x86_64 (it used to fail there); it's plain
-  C++ and Eigen supports x86_64, so this should just work, but it isn't
-  device-verified on an emulator.
+- mob_nx_eigen's archive now also builds for x86_64 (checked: the cpp_archive
+  build of its manifest succeeds for `:android_x86_64`); it isn't run on an
+  emulator.
 - There's still no incremental cache: every `--native` deploy rebuilds every
   cpp_archive for every ABI (~15 s for mob_whisper's three Android ABIs).

@@ -66,6 +66,23 @@ defmodule MobDev.Plugin.CppArchiveTest do
 
       refute "-march=armv7-a" in arm64
     end
+
+    test "x86_64 drops Arm-only hardening; Arm targets keep it" do
+      x86 = CppArchive.cxxflags(spec(), :android_x86_64, [])
+      refute Enum.any?(x86, &String.starts_with?(&1, "-mbranch-protection"))
+      assert "-std=c++17" in x86
+
+      assert "-mbranch-protection=standard" in CppArchive.cxxflags(spec(), :android_arm64, [])
+
+      c =
+        CppArchive.cflags(
+          spec(%{cflags_android: ["-mbranch-protection=standard"]}),
+          :android_x86_64,
+          []
+        )
+
+      refute "-mbranch-protection=standard" in c
+    end
   end
 
   describe "cflags/3" do
@@ -268,8 +285,8 @@ defmodule MobDev.Plugin.CppArchiveTest do
       assert "-std=c++17" in argv
       refute "-std=c11" in argv
 
-      assert length(Enum.uniq(info.objects)) == 4
-      assert Enum.map(info.objects, &Path.basename/1) |> Enum.at(3) =~ ~r/^whisper-/
+      assert [_, _, _, last] = Enum.uniq(info.objects)
+      assert Path.basename(last) =~ ~r/^whisper-/
     end
   end
 

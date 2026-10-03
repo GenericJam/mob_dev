@@ -65,28 +65,30 @@ defmodule MobDev.Plugin.CppArchive do
 
   defp target_abi_cxxflags(_), do: []
 
+  # `:cxxflags_android` / `:cflags_android` serve every Android ABI, but some
+  # Android hardening flags exist only for Arm: clang rejects
+  # `-mbranch-protection=` (PAC/BTI) for x86_64 outright. Dropping them on the
+  # x86_64 target lets one flag list keep its arm64 hardening and still build
+  # for the emulator.
+  @arm_only_flag_prefixes ["-mbranch-protection="]
+
+  defp drop_foreign_flags(flags, :android_x86_64),
+    do: Enum.reject(flags, &String.starts_with?(&1, @arm_only_flag_prefixes))
+
+  defp drop_foreign_flags(flags, _target_id), do: flags
+
   @doc """
   Assemble the full CXXFLAGS for one target: forced `-fPIC` + the target's
   intrinsic ABI flags (e.g. armv7 flags for android_arm32), then the plugin's
   base `:cxxflags`, then the target's platform-specific flags
   (`:cxxflags_android` / `:cxxflags_ios`), then `-I` for each resolved include
-  dir (order preserved). Pure — silent flag drops are the regression class this
+  dir (order preserved). Arm-only flags (`-mbranch-protection=`) are dropped on
+  `:android_x86_64`. Pure — silent flag drops are the regression class this
   whole module guards against, so it's directly testable.
   """
   @spec cxxflags(map(), atom(), [Path.t()]) :: [String.t()]
-  def cxxflags(spec, target_id, includes) when is_map(spec) and is_list(includes) do
-    platform_flags =
-      case platform_of(target_id) do
-        :android -> List.wrap(spec[:cxxflags_android])
-        :ios -> List.wrap(spec[:cxxflags_ios])
-      end
-
-    @forced_cxxflags ++
-      target_abi_cxxflags(target_id) ++
-      List.wrap(spec[:cxxflags]) ++
-      platform_flags ++
-      Enum.map(includes, &"-I#{&1}")
-  end
+  def cxxflags(spec, target_id, includes) when is_map(spec) and is_list(includes),
+    do: assemble_flags(spec, target_id, includes, :cxxflags, :cxxflags_android, :cxxflags_ios)
 
   @doc """
   Assemble the full CFLAGS for one target's `.c` sources: the same shape as
@@ -95,17 +97,21 @@ defmodule MobDev.Plugin.CppArchive do
   flag (`-std=c++17`, `-fno-rtti`, …) reaches the C compiler. Pure.
   """
   @spec cflags(map(), atom(), [Path.t()]) :: [String.t()]
-  def cflags(spec, target_id, includes) when is_map(spec) and is_list(includes) do
+  def cflags(spec, target_id, includes) when is_map(spec) and is_list(includes),
+    do: assemble_flags(spec, target_id, includes, :cflags, :cflags_android, :cflags_ios)
+
+  defp assemble_flags(spec, target_id, includes, base_key, android_key, ios_key) do
     platform_flags =
       case platform_of(target_id) do
-        :android -> List.wrap(spec[:cflags_android])
-        :ios -> List.wrap(spec[:cflags_ios])
+        :android -> List.wrap(spec[android_key])
+        :ios -> List.wrap(spec[ios_key])
       end
+
+    plugin_flags = drop_foreign_flags(List.wrap(spec[base_key]) ++ platform_flags, target_id)
 
     @forced_cxxflags ++
       target_abi_cxxflags(target_id) ++
-      List.wrap(spec[:cflags]) ++
-      platform_flags ++
+      plugin_flags ++
       Enum.map(includes, &"-I#{&1}")
   end
 
