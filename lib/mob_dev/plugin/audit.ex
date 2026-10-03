@@ -2,7 +2,7 @@ defmodule MobDev.Plugin.Audit do
   @moduledoc """
   Static-analysis pass over a plugin's source tree.
 
-  Behind `mix mob.audit_plugins` (see `MOB_PLUGIN_SECURITY.md`). Walks the
+  Behind `mix mob.audit_plugins` (see [`MOB_PLUGIN_SECURITY.md`](https://github.com/GenericJam/mob/blob/master/MOB_PLUGIN_SECURITY.md)). Walks the
   plugin's Elixir sources (`lib/**/*.ex{,s}`) with an AST scanner and its C
   NIF sources (`priv/native/**/*.{c,h}`) with a tighter regex pass, flagging
   patterns Mob considers risky:
@@ -28,7 +28,7 @@ defmodule MobDev.Plugin.Audit do
     `:medium` (`socket`) and `:high` (`system`/`popen`/`execve`).
 
   Swift / Kotlin sources are out of scope for this commit — the spec
-  (`MOB_PLUGIN_SECURITY.md`) calls for proper parsers there, and the task
+  ([`MOB_PLUGIN_SECURITY.md`](https://github.com/GenericJam/mob/blob/master/MOB_PLUGIN_SECURITY.md)) calls for proper parsers there, and the task
   surfaces a "not yet audited" summary line instead of guessing with regex.
 
   All checks are pure given file inputs; the only I/O is reading source

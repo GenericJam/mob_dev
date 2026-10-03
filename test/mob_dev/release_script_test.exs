@@ -201,17 +201,39 @@ defmodule MobDev.ReleaseScriptTest do
     # symbols: _mob_register_plugins". The dev builds pass the same files as
     # -Dplugin_swift_files.
 
-    test "MOB_PLUGIN_IOS_SWIFT_SOURCES is on the same swiftc call as mob's Swift sources",
+    test "plugin and project Swift sources are on the same swiftc call as mob's Swift sources",
          %{sh: sh} do
       # Same invocation as the glob: one module (-wmo), so a plugin view can see
       # mob's MobNativeViewRegistry and the bootstrap can see the plugin views.
       assert sh =~
-               ~r/"\$MOB_DIR"\/ios\/\*\.swift \\\n\s*\$MOB_PLUGIN_IOS_SWIFT_SOURCES \\\n\s*-c -o "\$BUILD_DIR\/swift_mob\.o"/
+               ~r/"\$MOB_DIR"\/ios\/\*\.swift \\\n\s*\$MOB_PLUGIN_IOS_SWIFT_SOURCES \\\n\s*\$MOB_PROJECT_SWIFT_SOURCES \\\n\s*-c -o "\$BUILD_DIR\/swift_mob\.o"/
     end
 
     test "the list is left unquoted so the space-joined paths word-split", %{sh: sh} do
       assert sh =~ ~s|$MOB_PLUGIN_IOS_SWIFT_SOURCES \\|
       refute sh =~ ~s|"$MOB_PLUGIN_IOS_SWIFT_SOURCES"|
+    end
+  end
+
+  describe "project NIFs and cpp_archive plugin archives are compiled + linked (MOB-373)" do
+    # priv/generated/driver_tab_ios.c declares each project NIF's and cpp_archive
+    # plugin NIF's <module>_nif_init. The device build compiles c_src/<name>.c
+    # and links the Rust/Zig/extra and plugin archives; the release has to as
+    # well, or the link dies with "Undefined symbols: _<module>_nif_init".
+
+    test "project C NIF sources go through the same NIF compile loop", %{sh: sh} do
+      assert sh =~ ~s|for SRC in $MOB_PLUGIN_IOS_NIF_SOURCES $MOB_PROJECT_NIF_SOURCES; do|
+    end
+
+    test "project and plugin static archives are on the link line with the NIF objects",
+         %{sh: sh} do
+      assert sh =~
+               ~r/\$PLUGIN_OBJS \\\n\s*\$MOB_PROJECT_STATIC_LIBS \\\n\s*\$MOB_PLUGIN_STATIC_LIBS \\\n\s*\$LIBS \\/
+    end
+
+    test "guard macros of guarded project NIFs reach the driver table compile", %{sh: sh} do
+      assert sh =~
+               ~r/\$SQLITE_FLAG \$MOB_DRIVER_TAB_DEFINES \\\n\s*-c "priv\/generated\/driver_tab_ios\.c"/
     end
   end
 

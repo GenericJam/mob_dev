@@ -102,6 +102,9 @@ that registers it compile together, as they do under zig).
   `project_swift_sources` from `mob.exs`, `project_c_nifs`, and plugin
   `static_archives` (`:cpp_archive`). A Swift file configured through
   `project_swift_sources` is in dev builds and missing from a release. Follow-up.
+
+  > **Resolved (MOB-373):** the release now links all three; see
+  > `2026-10-03-ios-release-links-project-inputs-and-plugin-archives.md`.
 - Verified on the host, not on a device. Two apps, `mix mob.release --ios`
   against master and against this change, with an Apple Distribution identity
   and an App Store profile for the bundle id:

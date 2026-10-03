@@ -9,7 +9,7 @@ defmodule Mix.Tasks.Mob.ValidatePlugin do
 
       mix mob.validate_plugin
 
-  Checks (see `MOB_PLUGINS.md`): required top-level fields, every declared file
+  Checks (see [`MOB_PLUGINS.md`](https://github.com/GenericJam/mob/blob/master/MOB_PLUGINS.md)): required top-level fields, every declared file
   path exists, and the installed `:mob` satisfies the manifest's `mob_version`.
   Advisory warnings cover single-platform components and declared
   permissions/plist keys. Exits non-zero if any error is found — never silent.

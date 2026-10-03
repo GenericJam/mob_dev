@@ -466,10 +466,13 @@ Builds a release-signed `.ipa` at `_build/mob_release/<App>.ipa`:
   touch NIFs use private UIKit selectors that App Store auto-rejects)
 - Runs the plugin signature, trust and capability checks `mix mob.deploy
   --native` runs (a plugin the dev build refuses stops the release too), then
-  compiles the activated plugins' iOS C/ObjC NIF and Swift sources and the
+  builds the same app-specific native code as a device build: the activated
+  plugins' iOS C/ObjC NIF and Swift sources, their `:cpp_archive` NIFs, the
   generated plugin bootstrap (`mob_register_plugins`, which `AppDelegate.m`
-  calls) into the app. Plugin `static_archives` (`:cpp_archive` NIFs) are not
-  yet part of a release build
+  calls), and your project's `mob.exs` `project_swift_sources` and
+  `:static_nifs` (C, Rust and Zig NIFs, `:extra_static_libs`, `:guard`s). The
+  MLX / NxEigen / TFLite NIFs (`mix mob.enable mlx|nxeigen|tflite`) are not yet
+  part of a release build
 - Synthesizes the full set of `DT*` build-environment plist keys
   (`DTSDKName`, `DTSDKBuild`, `DTPlatformName`, `DTPlatformVersion`,
   `DTPlatformBuild`, `DTXcode`, `DTXcodeBuild`, `DTCompiler`,

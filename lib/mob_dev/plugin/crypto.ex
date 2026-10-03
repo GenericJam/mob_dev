@@ -2,7 +2,7 @@ defmodule MobDev.Plugin.Crypto do
   @moduledoc """
   Ed25519 sign/verify primitives + canonical-term encoding for plugin signing.
 
-  The signing scheme (see `MOB_PLUGIN_SECURITY.md`, Phase 2):
+  The signing scheme (see [`MOB_PLUGIN_SECURITY.md`](https://github.com/GenericJam/mob/blob/master/MOB_PLUGIN_SECURITY.md), Phase 2):
 
   - Plugin authors generate a per-plugin Ed25519 keypair; the public key
     ships in `priv/mob_plugin.pub` and the manifest+sources are signed

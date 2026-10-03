@@ -18,7 +18,7 @@ defmodule Mix.Tasks.Mob.Plugins do
   A manifest whose signature doesn't verify is not loaded (its tier shows as
   `?`); its row says what is wrong with the signature and how to fix it.
 
-  Activation is two-step by design (see `MOB_PLUGINS.md`): adding a plugin to
+  Activation is two-step by design (see [`MOB_PLUGINS.md`](https://github.com/GenericJam/mob/blob/master/MOB_PLUGINS.md)): adding a plugin to
   `deps` makes it *installed*; adding it to `config :mob, :plugins` makes it
   *activated* — only then are its contributions merged into the build.
 

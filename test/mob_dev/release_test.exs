@@ -338,6 +338,36 @@ defmodule MobDev.ReleaseTest do
     end
   end
 
+  describe "project_release_env/3 (project Swift, project NIFs, cpp_archive plugins; MOB-373)" do
+    test "maps the device build's project inputs onto the script's env vars" do
+      project_nifs = %{
+        root: "/app",
+        c_sources: [{"fastmath", "/app/c_src/fastmath.c"}, {"crc", "/app/c_src/crc.c"}],
+        static_libs: ["/app/native/rnif/librnif.a", "/app/native/vt/libvt.a"],
+        guarded: [%{module: :vt, guard: "MOB_STATIC_VT_NIF"}]
+      }
+
+      assert Release.project_release_env(
+               ["/app/ios/Extra.swift"],
+               project_nifs,
+               ["/app/_build/dev/plugin_archives/ios_device/libnx_eigen_nif.a"]
+             ) == [
+               {"MOB_PROJECT_SWIFT_SOURCES", "/app/ios/Extra.swift"},
+               {"MOB_PROJECT_NIF_SOURCES", "/app/c_src/fastmath.c /app/c_src/crc.c"},
+               {"MOB_PROJECT_STATIC_LIBS", "/app/native/rnif/librnif.a /app/native/vt/libvt.a"},
+               {"MOB_PLUGIN_STATIC_LIBS",
+                "/app/_build/dev/plugin_archives/ios_device/libnx_eigen_nif.a"},
+               {"MOB_DRIVER_TAB_DEFINES", "-DMOB_STATIC_VT_NIF"}
+             ]
+    end
+
+    test "nothing configured → every var empty, so the script adds nothing" do
+      empty = %{root: "/app", c_sources: [], static_libs: [], guarded: []}
+
+      assert Enum.all?(Release.project_release_env([], empty, []), fn {_, v} -> v == "" end)
+    end
+  end
+
   describe "release_env/3 + plugin_release_env/3 (the env release_device.sh runs with)" do
     @describetag :tmp_dir
 

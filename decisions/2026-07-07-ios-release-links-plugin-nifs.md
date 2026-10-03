@@ -72,6 +72,9 @@ link line, and each declared framework is also passed explicitly.
   > `static_archives` are still a follow-up. The release also now runs the
   > plugin signature, trust and capability gate before building these env vars
   > (`plugin_release_env/3`; `release_env/2` above is now `release_env/3`).
+
+  > **Later (MOB-373):** `static_archives` are linked too
+  > (`2026-10-03-ios-release-links-project-inputs-and-plugin-archives.md`).
 - Tests: `plugin_ios_build_env/1` gets a pure matrix (none / one / many /
   platform-filtered) in `release_test.exs`; `release_script_test.exs` asserts the
   script shape (compile loop, libname derivation, `$PLUGIN_OBJS` on the link,

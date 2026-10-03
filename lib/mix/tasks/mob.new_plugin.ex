@@ -8,7 +8,7 @@ defmodule Mix.Tasks.Mob.NewPlugin do
 
       mix mob.new_plugin <name> [--tier <0|1|2|3|4>] [--dest <DIR>]
 
-  Tiers (per `MOB_PLUGINS.md`):
+  Tiers (per [`MOB_PLUGINS.md`](https://github.com/GenericJam/mob/blob/master/MOB_PLUGINS.md)):
 
   - `0` (default) — pure-Elixir helpers. No manifest, no native code.
   - `1` — native NIF + Elixir wrapper. Manifest with `:nifs`; ships an Erlang

@@ -44,6 +44,7 @@ defmodule MobDev.Release do
     cfg = MobDev.NativeBuild.__load_config__()
     MobDev.MobDirCheck.check!(cfg[:mob_dir])
     slim = Keyword.get(opts, :slim, true)
+    project_swift_sources = MobDev.NativeBuild.project_swift_sources(cfg)
 
     activated = MobDev.Plugin.activated()
     MobDev.Plugin.Validator.raise_on_cross_plugin_conflicts!(activated)
@@ -61,7 +62,10 @@ defmodule MobDev.Release do
          :ok <- check_xcrun(),
          :ok <- check_driver_table(),
          {:ok, cfg} <- resolve_distribution_signing(cfg),
-         {:ok, otp_root} <- MobDev.OtpDownloader.ensure_ios_device() do
+         {:ok, otp_root} <- MobDev.OtpDownloader.ensure_ios_device(),
+         {:ok, plugin_archives} <-
+           MobDev.NativeBuild.build_plugin_static_archives(:ios_device, :ios, otp_root),
+         {:ok, project_nifs} <- MobDev.NativeBuild.project_nif_build_inputs(:ios_device) do
       script_path = "ios/release_device.sh"
       File.write!(script_path, release_device_sh())
       File.chmod!(script_path, 0o755)
@@ -72,7 +76,8 @@ defmodule MobDev.Release do
       app = to_string(Mix.Project.config()[:app])
       MobDev.AppConfig.write!(Path.join(["_build", "dev", "lib", app, "ebin"]))
 
-      env = release_env(cfg, otp_root, plugin_env)
+      native_env = project_release_env(project_swift_sources, project_nifs, plugin_archives)
+      env = release_env(cfg, otp_root, plugin_env ++ native_env)
       output_dir = Path.expand("_build/mob_release")
       File.mkdir_p!(output_dir)
 
@@ -418,6 +423,35 @@ defmodule MobDev.Release do
   end
 
   @doc false
+  # The project's own build inputs and the plugins' cpp_archive NIF archives as
+  # the env vars `release_device.sh` reads: what the device build passes as
+  # `-Dproject_swift_sources`, `-Dproject_c_nifs` / `-Dproject_rust_libs` /
+  # `-D<module>_static=true`, and `-Dplugin_static_libs` (MOB-373). Pure over
+  # `NativeBuild.project_swift_sources/1`, `project_nif_build_inputs/1` and
+  # `build_plugin_static_archives/3` results. Space-joined and word-split by the
+  # script like the other path lists.
+  #
+  # - `MOB_PROJECT_SWIFT_SOURCES` — compiled into the app's Swift module.
+  # - `MOB_PROJECT_NIF_SOURCES` — each `c_src/<name>.c`, compiled by the script's
+  #   NIF loop with `-DSTATIC_ERLANG_NIF_LIBNAME=<name>`, so `ERL_NIF_INIT` emits
+  #   the `<name>_nif_init` the driver table references.
+  # - `MOB_PROJECT_STATIC_LIBS` — cross-compiled Rust/Zig NIF archives and
+  #   `:extra_static_libs`; `MOB_PLUGIN_STATIC_LIBS` — cpp_archive plugin
+  #   archives. Both go on the link line.
+  # - `MOB_DRIVER_TAB_DEFINES` — `-D<guard>` per guarded project NIF built for
+  #   this target, so `driver_tab_ios.c` keeps its `#ifdef`'d row.
+  @spec project_release_env([Path.t()], map(), [Path.t()]) :: [{String.t(), String.t()}]
+  def project_release_env(swift_sources, project_nifs, plugin_archives) do
+    [
+      {"MOB_PROJECT_SWIFT_SOURCES", Enum.join(swift_sources, " ")},
+      {"MOB_PROJECT_NIF_SOURCES", Enum.map_join(project_nifs.c_sources, " ", &elem(&1, 1))},
+      {"MOB_PROJECT_STATIC_LIBS", Enum.join(project_nifs.static_libs, " ")},
+      {"MOB_PLUGIN_STATIC_LIBS", Enum.join(plugin_archives, " ")},
+      {"MOB_DRIVER_TAB_DEFINES", Enum.map_join(project_nifs.guarded, " ", &"-D#{&1.guard}")}
+    ]
+  end
+
+  @doc false
   # I/O edge for `plugin_ios_swift_env/3`: reads `build_file` (the app's
   # `ios/build_device.zig`) and, when the bootstrap is needed, writes it into
   # `inputs_dir`, then hands the pure function the answers. The write is the
@@ -730,6 +764,7 @@ defmodule MobDev.Release do
         -O \
         "$MOB_DIR"/ios/*.swift \
         $MOB_PLUGIN_IOS_SWIFT_SOURCES \
+        $MOB_PROJECT_SWIFT_SOURCES \
         -c -o "$BUILD_DIR/swift_mob.o"
 
     # MOB_RELEASE on mob_nif.m strips the test harness (synthetic-input
@@ -755,7 +790,9 @@ defmodule MobDev.Release do
     [ -n "$SQLITE_STATIC_LIB" ] && SQLITE_FLAG="-DMOB_STATIC_SQLITE_NIF"
     # driver_tab now lives in priv/generated (per-app, regenerated via
     # `mix mob.regen_driver_tab --format c`), not $MOB_DIR/ios.
-    $CC $IFLAGS $SQLITE_FLAG \
+    # MOB_DRIVER_TAB_DEFINES: -D<guard> for each guarded project NIF built for
+    # this target, so its #ifdef'd row stays in the table (MOB-373).
+    $CC $IFLAGS $SQLITE_FLAG $MOB_DRIVER_TAB_DEFINES \
         -c "priv/generated/driver_tab_ios.c" -o "$BUILD_DIR/driver_tab_ios.o"
 
     $CC -fobjc-arc -fmodules $IFLAGS \
@@ -776,24 +813,26 @@ defmodule MobDev.Release do
     printf '%s\n' '__attribute__((weak)) const char *erl_errno_id_unknown(int error) { (void)error; return "unknown"; }' > "$BUILD_DIR/erl_errno_id_compat.c"
     $CC $IFLAGS -c "$BUILD_DIR/erl_errno_id_compat.c" -o "$BUILD_DIR/erl_errno_id_compat.o"
 
-    # ── Activated-plugin NIFs ─────────────────────────────────────────────────
-    # driver_tab_ios references each activated plugin's <module>_nif_init; those
-    # definitions live in the plugin's iOS NIF source (priv/native/ios/<module>.m,
-    # lang: :objc). The dev build compiles these via build.zig -Dplugin_c_nifs; the
-    # release build must do the same or the final link dies with "Undefined
-    # symbols: _<module>_nif_init". The source basename is the NIF libname →
-    # -DSTATIC_ERLANG_NIF_LIBNAME=<name> makes ERL_NIF_INIT emit <name>_nif_init
-    # (erl_nif.h derives STATIC_ERLANG_NIF from it; passing both redefines it).
-    # -fmodules lets Clang autolink every framework the source @imports (a plugin
-    # may import frameworks beyond its manifest's declared set, e.g. Accelerate).
+    # ── Activated-plugin and project C/ObjC NIFs ──────────────────────────────
+    # driver_tab_ios references each activated plugin's and each project NIF's
+    # <module>_nif_init; those definitions live in the plugin's iOS NIF source
+    # (priv/native/ios/<module>.m, lang: :objc) or the project's c_src/<name>.c.
+    # The dev build compiles these via build.zig -Dplugin_c_nifs and
+    # -Dproject_c_nifs; the release build must do the same or the final link dies
+    # with "Undefined symbols: _<module>_nif_init". The source basename is the NIF
+    # libname → -DSTATIC_ERLANG_NIF_LIBNAME=<name> makes ERL_NIF_INIT emit
+    # <name>_nif_init (erl_nif.h derives STATIC_ERLANG_NIF from it; passing both
+    # redefines it). -fmodules lets Clang autolink every framework the source
+    # @imports (a plugin may import frameworks beyond its manifest's declared set,
+    # e.g. Accelerate).
     PLUGIN_OBJS=""
-    for SRC in $MOB_PLUGIN_IOS_NIF_SOURCES; do
+    for SRC in $MOB_PLUGIN_IOS_NIF_SOURCES $MOB_PROJECT_NIF_SOURCES; do
         NAME=$(basename "$SRC"); NAME="${NAME%.*}"
         case "$SRC" in
             *.m) ARC="-fobjc-arc" ;;
             *)   ARC="" ;;
         esac
-        echo "  plugin NIF: $NAME  ($SRC)"
+        echo "  NIF: $NAME  ($SRC)"
         $CC $ARC -fmodules $IFLAGS \
             -DSTATIC_ERLANG_NIF_LIBNAME="$NAME" \
             -c "$SRC" -o "$BUILD_DIR/$NAME.o"
@@ -819,6 +858,8 @@ defmodule MobDev.Release do
         "$BUILD_DIR/beam_main.o" \
         "$BUILD_DIR/erl_errno_id_compat.o" \
         $PLUGIN_OBJS \
+        $MOB_PROJECT_STATIC_LIBS \
+        $MOB_PLUGIN_STATIC_LIBS \
         $LIBS \
         "$SQLITE_STATIC_LIB" \
         -lz -lc++ -lpthread \

@@ -1647,6 +1647,31 @@ defmodule MobDev.NativeBuildTest do
       assert "-Dproject_rust_libs=" in args
       refute "-Dghostty_vt_static=true" in args
     end
+
+    test "iOS device: C source, guard and per-ABI archive are the same data the zig args and the release use (MOB-373)" do
+      File.mkdir_p!("c_src")
+      File.write!("c_src/fastmath.c", "/* NIF */")
+
+      Application.put_env(:mob_dev, :static_nifs, [
+        %{module: :fastmath, archs: [:ios]},
+        %{
+          module: :vendor_vt,
+          archs: [:ios_device],
+          guard: "MOB_STATIC_VENDOR_VT_NIF",
+          extra_static_libs: %{ios_device: "native/vendor_vt/libvendor-vt.a"}
+        }
+      ])
+
+      assert {:ok, inputs} = NativeBuild.project_nif_build_inputs(:ios_device)
+      assert inputs.c_sources == [{"fastmath", Path.expand("c_src/fastmath.c")}]
+      assert inputs.static_libs == [Path.expand("native/vendor_vt/libvendor-vt.a")]
+      assert [%{module: :vendor_vt, guard: "MOB_STATIC_VENDOR_VT_NIF"}] = inputs.guarded
+
+      assert {:ok, args} = NativeBuild.project_nif_zig_args(:ios_device)
+      assert "-Dproject_c_nifs=fastmath" in args
+      assert "-Dproject_rust_libs=#{Path.expand("native/vendor_vt/libvendor-vt.a")}" in args
+      assert "-Dvendor_vt_static=true" in args
+    end
   end
 
   # ── NxEigen integration helpers ──────────────────────────────────────────

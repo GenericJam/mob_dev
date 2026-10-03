@@ -9,7 +9,7 @@ defmodule MobDev.Plugin.NifActivation do
 
     * **Installed but not activated.** The plugin is in `mix.exs` deps but not
       in `config :mob, :plugins` in `mob.exs`. Activation is the deliberate
-      second opt-in step (see `MOB_PLUGINS.md`), so the native build compiles
+      second opt-in step (see [`MOB_PLUGINS.md`](https://github.com/GenericJam/mob/blob/master/MOB_PLUGINS.md)), so the native build compiles
       none of its NIFs. `mix mob.deploy --native` and `mix mob.doctor` name
       every such device-runtime dep (not `only: :dev` / `runtime: false`) that
       declares `nifs:` and print the exact `config` line.

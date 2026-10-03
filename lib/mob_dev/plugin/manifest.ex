@@ -2,7 +2,7 @@ defmodule MobDev.Plugin.Manifest do
   @moduledoc """
   Reads, validates, and classifies a plugin's `priv/mob_plugin.exs` manifest.
 
-  The manifest is data, not code (see `MOB_PLUGINS.md`): a plain Elixir map
+  The manifest is data, not code (see [`MOB_PLUGINS.md`](https://github.com/GenericJam/mob/blob/master/MOB_PLUGINS.md)): a plain Elixir map
   describing what a plugin contributes. This module is the single place that
   turns that map into a validated, classified description — tier, hot-push
   status, activation — that `mix mob.plugins` reports and the compile-time
@@ -214,8 +214,8 @@ defmodule MobDev.Plugin.Manifest do
       unknown ->
         Logger.warning(
           "[mob_plugin manifest] unknown key(s) #{inspect(unknown)} — silently ignored. " <>
-            "See MOB_PLUGINS.md for the supported manifest schema (theming does not ride " <>
-            "this manifest — see MOB_STYLES.md)."
+            "See https://github.com/GenericJam/mob/blob/master/MOB_PLUGINS.md for the supported manifest schema (theming does not ride " <>
+            "this manifest — see https://github.com/GenericJam/mob/blob/master/MOB_STYLES.md)."
         )
     end
   end
