@@ -1,4 +1,4 @@
-## [Unreleased]
+## [0.7.11] - 2026-10-03
 
 ### Fixed
 
@@ -8,15 +8,23 @@
   (`c_src/<name>.c`, a Rust or Zig NIF, `:extra_static_libs`) or a cpp_archive
   plugin (`Undefined symbols: _<module>_nif_init`), and silently dropped a
   project NIF with a `:guard` from the driver table. The release now gathers
-  each of these with the device build's own functions, compiles project C NIFs
-  at `-Os` like the device build, defines each guarded project NIF's `:guard`,
-  and links the archives after OTP's, in the device build's order.
-  The MLX / NxEigen / TFLite NIFs (`mix mob.enable mlx|nxeigen|tflite`) are
-  still not part of a release build. See
+  each of these with the device build's own functions, defines each guarded
+  project NIF's `:guard`, and links the archives after OTP's, in the device
+  build's order. The MLX / NxEigen / TFLite NIFs (`mix mob.enable
+  mlx|nxeigen|tflite`) are still not part of a release build, and a *device*
+  build (`mix mob.deploy --native`) of a guarded project NIF still fails on an
+  unknown zig option (MOB-376). See
   `decisions/2026-10-03-ios-release-links-project-inputs-and-plugin-archives.md`.
 - **Plugin gate errors and plugin docs link `MOB_PLUGIN_SECURITY.md` and
   `MOB_PLUGINS.md` on GitHub.** Both live in the mob repo; the messages named
   files a mob_dev user doesn't have.
+
+### Changed
+
+- **A release compiles NIF sources at `-Os`, as the device build does.** This
+  covers the project's C NIFs and the activated plugins' C/ObjC NIFs, which
+  0.7.10 and earlier built at clang's default `-O0` in a release. An `.ipa`'s
+  plugin NIF code is now optimized like a dev device build's.
 
 ## [0.7.10] - 2026-10-03
 
