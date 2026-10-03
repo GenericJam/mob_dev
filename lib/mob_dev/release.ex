@@ -48,8 +48,8 @@ defmodule MobDev.Release do
     activated = MobDev.Plugin.activated()
     MobDev.Plugin.Validator.raise_on_cross_plugin_conflicts!(activated)
 
-    # Before signing resolution, the OTP download and any project write, so a
-    # plugin the gate refuses changes nothing.
+    # Before signing resolution, the OTP download and the script/bootstrap
+    # writes, so a plugin the gate refuses leaves nothing built or downloaded.
     plugin_env =
       plugin_release_env(
         activated,

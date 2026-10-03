@@ -21,8 +21,9 @@
   `acknowledge_unsafe_plugins`, a plugin signed by a key not in
   `trusted_plugins`, a tampered plugin (previously left out of the binary
   without a word), or plugin Swift that imports a framework its manifest
-  doesn't declare. A plugin that builds with `mix mob.deploy --native` releases
-  unchanged.
+  doesn't declare. Plugins the dev builds accept pass the gate unchanged.
+  (Plugin `static_archives`, `:cpp_archive` NIFs, are still not part of a
+  release build.)
 
 ## [0.7.9] - 2026-10-02
 

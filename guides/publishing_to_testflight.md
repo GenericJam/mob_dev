@@ -465,10 +465,11 @@ Builds a release-signed `.ipa` at `_build/mob_release/<App>.ipa`:
   distribution surface, EPMD, AND the test harness (whose synthetic
   touch NIFs use private UIKit selectors that App Store auto-rejects)
 - Runs the plugin signature, trust and capability checks `mix mob.deploy
-  --native` runs, then compiles the activated plugins' iOS NIF and Swift
-  sources and the generated plugin bootstrap (`mob_register_plugins`, which
-  `AppDelegate.m` calls) into the app. A release links the same plugin code as
-  a dev device build; a plugin the dev build refuses stops the release too
+  --native` runs (a plugin the dev build refuses stops the release too), then
+  compiles the activated plugins' iOS C/ObjC NIF and Swift sources and the
+  generated plugin bootstrap (`mob_register_plugins`, which `AppDelegate.m`
+  calls) into the app. Plugin `static_archives` (`:cpp_archive` NIFs) are not
+  yet part of a release build
 - Synthesizes the full set of `DT*` build-environment plist keys
   (`DTSDKName`, `DTSDKBuild`, `DTPlatformName`, `DTPlatformVersion`,
   `DTPlatformBuild`, `DTXcode`, `DTXcodeBuild`, `DTCompiler`,

@@ -37,7 +37,8 @@ that registers it compile together, as they do under zig).
   sources) and first runs `Validator.raise_on_capability_drift!/1`, the
   signature, trust and capability gate the iOS sim, iOS device and Android
   builds run before linking plugin code. `build_ipa/1` calls it before
-  signing resolution, the OTP download or any project write, and
+  signing resolution, the OTP download, the script rewrite or the bootstrap
+  write (only the empty `_build` inputs dir is created first), and
   `release_env/3` takes its result as an argument, so a release can neither
   skip the gate nor leave the plugin inputs out.
 - **The rule is the dev path's.** Which files go in is decided by
