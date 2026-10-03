@@ -68,6 +68,45 @@ defmodule MobDev.Plugin.CppArchiveTest do
     end
   end
 
+  describe "cflags/3" do
+    test "takes :cflags + the platform's cflags, never the C++ flags" do
+      s =
+        spec(%{
+          cflags: ["-std=c11", "-O3"],
+          cflags_android: ["-android-c"],
+          cflags_ios: ["-ios-c"]
+        })
+
+      flags = CppArchive.cflags(s, :android_arm64, ["/inc"])
+
+      assert hd(flags) == "-fPIC"
+      assert "-std=c11" in flags
+      assert "-android-c" in flags
+      assert "-I/inc" in flags
+      refute "-std=c++17" in flags
+      refute "-mbranch-protection=standard" in flags
+      refute "-ios-c" in flags
+
+      assert "-ios-c" in CppArchive.cflags(s, :ios_sim, [])
+    end
+
+    test "android_arm32 C objects get the armv7 ABI flags too" do
+      assert "-mfloat-abi=softfp" in CppArchive.cflags(spec(), :android_arm32, [])
+    end
+  end
+
+  describe "object_name/1" do
+    test "same basename in different directories gives different objects" do
+      a = CppArchive.object_name("/p/ggml-cpu/quants.c")
+      b = CppArchive.object_name("/p/ggml-cpu/arch/arm/quants.c")
+
+      assert a =~ ~r/^quants-[0-9a-f]{8}\.o$/
+      assert b =~ ~r/^quants-[0-9a-f]{8}\.o$/
+      refute a == b
+      assert a == CppArchive.object_name("/p/ggml-cpu/quants.c")
+    end
+  end
+
   describe "resolve_deps/2" do
     test "resolves {:dep, name, sub} tokens against deps_path, passes strings through" do
       entries = ["/plug/c_src", {:dep, :nx_eigen, "eigen-3.4.0"}, {:dep, :fine, "c_include"}]
@@ -174,6 +213,63 @@ defmodule MobDev.Plugin.CppArchiveTest do
       assert info.module == :nx_eigen_nif
       assert info.archive == "/fake/out/libnx_eigen_nif.a"
       assert [_, _] = info.objects
+    end
+
+    test "a .c source compiles with clang and CFLAGS; same-named sources keep separate objects" do
+      s =
+        spec(%{
+          sources: ["/p/ggml.c", "/p/cpu/quants.c", "/p/cpu/arm/quants.c", "/p/whisper.cpp"],
+          cflags: ["-std=c11"]
+        })
+
+      Mox.stub(MobDev.Release.ShellMock, :file?, fn _ -> true end)
+      Mox.stub(MobDev.Release.ShellMock, :mkdir_p, fn _ -> :ok end)
+      Mox.stub(MobDev.Release.ShellMock, :rm_f, fn _ -> :ok end)
+      test_pid = self()
+
+      Mox.stub(MobDev.Release.ShellMock, :cmd, fn argv, _ ->
+        cond do
+          "-c" in argv ->
+            send(test_pid, {:compile, Enum.at(argv, 3), List.last(argv), argv})
+            {:ok, ""}
+
+          Enum.at(argv, 3) == "nm" ->
+            {:ok, "0000000000000000 T _nx_eigen_nif_init\n"}
+
+          true ->
+            {:ok, ""}
+        end
+      end)
+
+      assert {:ok, info} =
+               CppArchive.build(s, :ios_device,
+                 out_dir: "/o",
+                 erts_include: "/e",
+                 deps_path: "/d"
+               )
+
+      compiles =
+        for _ <- 1..4 do
+          assert_receive {:compile, driver, src, argv}
+          {src, {driver, argv}}
+        end
+        |> Map.new()
+
+      for c <- ["/p/ggml.c", "/p/cpu/quants.c", "/p/cpu/arm/quants.c"] do
+        {driver, argv} = compiles[c]
+        assert driver == "clang"
+        assert "-std=c11" in argv
+        refute "-std=c++17" in argv
+        refute "-stdlib=libc++" in argv
+      end
+
+      {driver, argv} = compiles["/p/whisper.cpp"]
+      assert driver == "clang++"
+      assert "-std=c++17" in argv
+      refute "-std=c11" in argv
+
+      assert length(Enum.uniq(info.objects)) == 4
+      assert Enum.map(info.objects, &Path.basename/1) |> Enum.at(3) =~ ~r/^whisper-/
     end
   end
 

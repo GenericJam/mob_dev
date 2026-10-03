@@ -252,6 +252,9 @@ defmodule MobDev.Plugin.Merge do
         cxxflags: List.wrap(nif[:cxxflags]),
         cxxflags_android: List.wrap(nif[:cxxflags_android]),
         cxxflags_ios: List.wrap(nif[:cxxflags_ios]),
+        cflags: List.wrap(nif[:cflags]),
+        cflags_android: List.wrap(nif[:cflags_android]),
+        cflags_ios: List.wrap(nif[:cflags_ios]),
         nm_symbol: nif[:nm_symbol],
         platform: nif[:platform],
         plugin: manifest[:name]
