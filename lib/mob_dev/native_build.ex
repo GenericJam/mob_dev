@@ -3770,8 +3770,21 @@ defmodule MobDev.NativeBuild do
       # C wins if both exist — the user has explicitly written C.
       File.exists?(c_src) -> {:c, c_src}
       File.exists?(rust_manifest) -> {:rust, rust_manifest}
+      dep_manifest = dep_rust_manifest(name, project_root) -> {:rust, dep_manifest}
       true -> classify_via_zig_stub(name, project_root)
     end
+  end
+
+  # A Rustler NIF a dependency ships (e.g. mob_rapier's
+  # deps/mob_rapier/native/lab_physics): the host registers it in
+  # :static_nifs and the crate is cross-compiled from the dep, so the host
+  # needn't copy or symlink it into its own native/.
+  defp dep_rust_manifest(name, project_root) do
+    project_root
+    |> Path.join("deps/*/native/#{name}/Cargo.toml")
+    |> Path.wildcard()
+    |> Enum.sort()
+    |> List.first()
   end
 
   # Detect Zigler-backed NIFs by `use Zig` in the generated stub.
@@ -3943,7 +3956,7 @@ defmodule MobDev.NativeBuild do
 
     case System.cmd("cargo", args, stderr_to_stdout: true, into: IO.stream()) do
       {_, 0} ->
-        a = Path.expand("native/#{name}/target/#{target}/release/lib#{name}.a")
+        a = manifest |> Path.dirname() |> Path.join("target/#{target}/release/lib#{name}.a")
 
         if File.exists?(a) do
           {:ok, a}

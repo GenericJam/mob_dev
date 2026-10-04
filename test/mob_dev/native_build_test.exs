@@ -1572,6 +1572,20 @@ defmodule MobDev.NativeBuildTest do
       assert {:rust, ^cargo_path} = NativeBuild.classify_project_nif(%{module: :foo}, tmp)
     end
 
+    test "finds a Rust crate a dependency ships at deps/<dep>/native/<name>", %{tmp: tmp} do
+      cargo_path = Path.join(tmp, "deps/some_dep/native/foo/Cargo.toml")
+      File.mkdir_p!(Path.dirname(cargo_path))
+      File.write!(cargo_path, "")
+
+      assert {:rust, ^cargo_path} = NativeBuild.classify_project_nif(%{module: :foo}, tmp)
+
+      # The project's own crate wins over a dep's.
+      own = Path.join(tmp, "native/foo/Cargo.toml")
+      File.mkdir_p!(Path.dirname(own))
+      File.write!(own, "")
+      assert {:rust, ^own} = NativeBuild.classify_project_nif(%{module: :foo}, tmp)
+    end
+
     test "C wins if both exist (user has explicitly written C)", %{tmp: tmp} do
       File.mkdir_p!(Path.join(tmp, "c_src"))
       File.mkdir_p!(Path.join(tmp, "native/foo"))
