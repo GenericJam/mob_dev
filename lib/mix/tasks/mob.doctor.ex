@@ -425,7 +425,8 @@ defmodule Mix.Tasks.Mob.Doctor do
     ] ++ maybe_check_rust_android_targets()
   end
 
-  # If the project has any Rust NIFs (native/*/Cargo.toml), make sure both
+  # If the project builds any Rust NIFs (its own native/*/Cargo.toml, or a
+  # crate a dependency ships for a :static_nifs entry), make sure both
   # Android rustup targets are installed. Without these, `cargo build
   # --target=aarch64-linux-android` (or `armv7-linux-androideabi`) fails
   # with "error: toolchain '<x>' is not installed".
@@ -437,7 +438,13 @@ defmodule Mix.Tasks.Mob.Doctor do
     end
   end
 
-  defp has_rust_nif?, do: Path.wildcard("native/*/Cargo.toml") != []
+  defp has_rust_nif? do
+    Path.wildcard("native/*/Cargo.toml") != [] or
+      Enum.any?(
+        MobDev.NativeBuild.project_nif_user_entries(),
+        &match?({:rust, _}, MobDev.NativeBuild.classify_project_nif(&1))
+      )
+  end
 
   defp check_rust_android_targets do
     case System.cmd("rustup", ["target", "list", "--installed"], stderr_to_stdout: true) do

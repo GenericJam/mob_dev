@@ -3759,9 +3759,11 @@ defmodule MobDev.NativeBuild do
   def classify_project_nif(entry), do: classify_project_nif(entry, File.cwd!())
 
   @doc false
-  # `dep_dirs` are the dependency directories searched for a crate the
-  # project doesn't ship itself; they default to `Mix.Project.deps_paths/0`
-  # (hex, git and path deps, wherever MIX_DEPS_PATH puts them).
+  # `dep_dirs` are the dependency directories searched, last, for a crate the
+  # project ships no source for; they default to every dependency
+  # `Mix.Project.deps_paths/0` resolves (hex, git and path deps, wherever
+  # MIX_DEPS_PATH puts them) except activated plugins, whose NIFs their own
+  # build paths compile.
   @spec classify_project_nif(MobDev.StaticNifs.nif_entry(), Path.t(), [Path.t()] | nil) ::
           {:c, Path.t()} | {:rust, Path.t()} | {:zig, atom()} | :elixir_only
   def classify_project_nif(entry, project_root, dep_dirs \\ nil) do
@@ -3777,19 +3779,19 @@ defmodule MobDev.NativeBuild do
       File.exists?(rust_manifest) ->
         {:rust, rust_manifest}
 
-      dep_manifest = dep_rust_manifest(name, dep_dirs || project_dep_dirs()) ->
-        {:rust, dep_manifest}
-
       true ->
-        classify_via_zig_stub(name, project_root)
+        with :elixir_only <- classify_via_zig_stub(name, project_root) do
+          case dep_rust_manifest(name, dep_dirs || project_dep_dirs()) do
+            nil -> :elixir_only
+            manifest -> {:rust, manifest}
+          end
+        end
     end
   end
 
   defp project_dep_dirs do
-    Map.values(Mix.Project.deps_paths())
-  rescue
-    # Outside a Mix project there are no dependencies to search.
-    _ -> []
+    plugin_dirs = MapSet.new(MobDev.Plugin.activated(), fn {dir, _manifest} -> dir end)
+    Mix.Project.deps_paths() |> Map.values() |> Enum.reject(&MapSet.member?(plugin_dirs, &1))
   end
 
   # A Rustler NIF a dependency ships (e.g. mob_rapier's
@@ -3984,12 +3986,14 @@ defmodule MobDev.NativeBuild do
       "--crate-type",
       "staticlib",
       "--manifest-path",
-      manifest
+      manifest,
+      "--target-dir",
+      rust_nif_target_dir(name)
     ]
 
     case System.cmd("cargo", args, stderr_to_stdout: true, into: IO.stream()) do
       {_, 0} ->
-        a = rust_nif_archive(manifest, name, target)
+        a = rust_nif_archive(rust_nif_target_dir(name), name, target)
 
         if File.exists?(a) do
           {:ok, a}
@@ -4009,12 +4013,18 @@ defmodule MobDev.NativeBuild do
     end
   end
 
+  # Cargo builds every Rust NIF into the host's own build dir, never next to
+  # the crate: a dependency's directory may be read-only, and a crate that is a
+  # workspace member or a set CARGO_TARGET_DIR would otherwise put the archive
+  # somewhere this build doesn't look.
+  defp rust_nif_target_dir(name),
+    do: Path.expand(Path.join(Mix.Project.build_path(), "mob_rust_nifs/#{name}"))
+
   @doc false
-  # The static archive `cargo rustc --manifest-path <manifest>` writes: the
-  # crate's own target/ dir, which for a dependency's crate is inside the dep.
+  # The static archive `cargo rustc --target-dir <target_dir>` writes.
   @spec rust_nif_archive(Path.t(), String.t(), String.t()) :: Path.t()
-  def rust_nif_archive(manifest, name, target) do
-    manifest |> Path.dirname() |> Path.join("target/#{target}/release/lib#{name}.a")
+  def rust_nif_archive(target_dir, name, target) do
+    Path.join(target_dir, "#{target}/release/lib#{name}.a")
   end
 
   # Apple toolchains differ between simulator and device targets. Both

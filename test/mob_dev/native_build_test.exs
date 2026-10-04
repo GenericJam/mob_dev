@@ -1572,7 +1572,7 @@ defmodule MobDev.NativeBuildTest do
       assert {:rust, ^cargo_path} = NativeBuild.classify_project_nif(%{module: :foo}, tmp)
     end
 
-    test "finds a Rust crate a dependency ships, wherever the dep lives", %{tmp: tmp} do
+    test "finds a Rust crate one of the given dependencies ships", %{tmp: tmp} do
       # A path dep (or a custom MIX_DEPS_PATH) is not under <root>/deps.
       dep = Path.join(tmp, "elsewhere/some_dep")
       cargo_path = Path.join(dep, "native/foo/Cargo.toml")
@@ -1584,9 +1584,8 @@ defmodule MobDev.NativeBuildTest do
       assert {:rust, ^cargo_path} =
                NativeBuild.classify_project_nif(%{module: :foo}, tmp, [other_dep, dep])
 
-      # The archive is read from the dependency crate's own target/ dir.
-      assert NativeBuild.rust_nif_archive(cargo_path, "foo", "aarch64-apple-ios") ==
-               Path.join(dep, "native/foo/target/aarch64-apple-ios/release/libfoo.a")
+      assert NativeBuild.rust_nif_archive("/b/mob_rust_nifs/foo", "foo", "aarch64-apple-ios") ==
+               "/b/mob_rust_nifs/foo/aarch64-apple-ios/release/libfoo.a"
 
       # The project's own crate wins over a dep's.
       own = Path.join(tmp, "native/foo/Cargo.toml")
@@ -1607,6 +1606,59 @@ defmodule MobDev.NativeBuildTest do
       assert_raise Mix.Error, ~r/more than one dependency ships native\/foo/, fn ->
         NativeBuild.classify_project_nif(%{module: :foo}, tmp, deps)
       end
+    end
+
+    test "the 2-arity form searches the project's resolved path deps", %{tmp: tmp} do
+      # A path dep lives outside <root>/deps; only Mix.Project.deps_paths/0
+      # knows where it is.
+      host = Path.join(tmp, "host")
+      dep = Path.join(tmp, "elsewhere/rdep")
+      cargo_path = Path.join(dep, "native/foo/Cargo.toml")
+      File.mkdir_p!(Path.dirname(cargo_path))
+      File.write!(cargo_path, "")
+      suffix = System.unique_integer([:positive])
+
+      File.write!(Path.join(dep, "mix.exs"), """
+      defmodule RDep#{suffix}.MixProject do
+        use Mix.Project
+        def project, do: [app: :rdep, version: "0.1.0"]
+      end
+      """)
+
+      File.mkdir_p!(host)
+
+      File.write!(Path.join(host, "mix.exs"), """
+      defmodule Host#{suffix}.MixProject do
+        use Mix.Project
+        def project, do: [app: :host, version: "0.1.0", deps: [{:rdep, path: "../elsewhere/rdep"}]]
+      end
+      """)
+
+      # on_clean_slate makes the fixture the top-level project; nested under
+      # mob_dev's own project, Mix resolves its deps from mob_dev's cache.
+      result =
+        Mix.ProjectStack.on_clean_slate(fn ->
+          Mix.Project.in_project(:"host#{suffix}", host, fn _ ->
+            NativeBuild.classify_project_nif(%{module: :foo}, host)
+          end)
+        end)
+
+      assert {:rust, found} = result
+      # deps_paths resolves symlinks (macOS /var → /private/var).
+      assert String.ends_with?(found, Path.relative_to(cargo_path, Path.dirname(tmp)))
+    end
+
+    test "the project's own Zig NIF wins over a dependency's crate", %{tmp: tmp} do
+      dep = Path.join(tmp, "deps/d")
+      File.mkdir_p!(Path.join(dep, "native/foo"))
+      File.write!(Path.join(dep, "native/foo/Cargo.toml"), "")
+      Application.put_env(:mob_dev, :__app_name__, :zapp)
+      on_exit(fn -> Application.delete_env(:mob_dev, :__app_name__) end)
+      stub = Path.join(tmp, "lib/zapp/nifs/foo.ex")
+      File.mkdir_p!(Path.dirname(stub))
+      File.write!(stub, "defmodule Foo do\n  use Zig, otp_app: :zapp\nend\n")
+
+      assert {:zig, _} = NativeBuild.classify_project_nif(%{module: :foo}, tmp, [dep])
     end
 
     test "C wins if both exist (user has explicitly written C)", %{tmp: tmp} do
