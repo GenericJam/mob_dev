@@ -202,28 +202,43 @@ defmodule MobDev.Plugin.Validator do
   ignored). The first element identifies the plugin in error messages: a
   plugin directory (as `MobDev.Plugin.activated/0` returns) is reported as its
   `priv/mob_plugin.exs` path, anything else via `inspect/1`.
+
+  Options:
+    * `:host_plist_keys` — the keys the host's own `ios/Info.plist` sets. The
+      host's value wins over every plugin's (plugin keys only fill gaps), so two
+      plugins declaring one of these keys is not a conflict: neither value lands.
   """
-  @spec cross_validate([{atom() | Path.t(), map() | nil}]) :: result()
-  def cross_validate(plugins) do
+  @spec cross_validate([{atom() | Path.t(), map() | nil}], keyword()) :: result()
+  def cross_validate(plugins, opts \\ []) do
     owned = for {owner, m} <- plugins, is_map(m), do: {manifest_location(owner), m}
+    host_plist_keys = opts |> Keyword.get(:host_plist_keys, []) |> MapSet.new(&to_string/1)
 
     errors =
-      for {_gatherer, {:collision, checks}} <- conflict_surface(),
+      for {gatherer, {:collision, checks}} <- conflict_surface(),
           {label, extractor} <- checks,
+          extractor = exempting(gatherer, extractor, host_plist_keys),
           error <- collisions(owned, extractor, label),
           do: error
 
     %{errors: errors, warnings: []}
   end
 
+  defp exempting(:plist_keys, extractor, host_keys) do
+    fn manifest -> Enum.reject(extractor.(manifest), &(to_string(&1) in host_keys)) end
+  end
+
+  defp exempting(_gatherer, extractor, _host_keys), do: extractor
+
   @doc """
-  Runs `cross_validate/1` over the activated `{plugin_dir, manifest}` pairs and
+  Runs `cross_validate/2` over the activated `{plugin_dir, manifest}` pairs and
   `Mix.raise/1`s on any collision, so a native build stops before codegen
   instead of letting one plugin's registration silently overwrite another's.
+  Info.plist keys the project's own `ios/Info.plist` already sets are exempt
+  (the project's value wins; see `cross_validate/2`).
   """
   @spec raise_on_cross_plugin_conflicts!([{Path.t(), map() | nil}]) :: :ok
   def raise_on_cross_plugin_conflicts!(plugins) do
-    case cross_validate(plugins) do
+    case cross_validate(plugins, host_plist_keys: host_plist_keys("ios/Info.plist")) do
       %{errors: []} ->
         :ok
 
@@ -233,6 +248,31 @@ defmodule MobDev.Plugin.Validator do
             "mob.exs or fix the manifests:\n" <> Enum.map_join(errors, "\n", &"  - #{&1}")
         )
     end
+  end
+
+  @doc """
+  The top-level keys an XML Info.plist sets (`[]` when the file is absent or
+  unreadable). Nested dictionaries' keys are not included.
+  """
+  @spec host_plist_keys(Path.t()) :: [String.t()]
+  def host_plist_keys(path) do
+    with {:ok, xml} <- File.read(path),
+         [_, body] <-
+           Regex.run(Regex.compile!("<plist[^>]*>\\s*<dict>(.*)</dict>\\s*</plist>", "s"), xml) do
+      body
+      |> strip_nested_dicts()
+      |> then(&Regex.scan(Regex.compile!("<key>([^<]*)</key>"), &1))
+      |> Enum.map(&Enum.at(&1, 1))
+    else
+      _ -> []
+    end
+  end
+
+  # Removes innermost <dict>…</dict> blocks until none remain, so only the root
+  # dictionary's own keys are left.
+  defp strip_nested_dicts(body) do
+    stripped = Regex.replace(Regex.compile!("<dict>(?:(?!<dict>).)*?</dict>", "s"), body, "")
+    if stripped == body, do: body, else: strip_nested_dicts(stripped)
   end
 
   defp manifest_location(dir) when is_binary(dir), do: Path.join([dir, "priv", "mob_plugin.exs"])

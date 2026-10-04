@@ -1,3 +1,17 @@
+## [Unreleased]
+
+### Fixed
+
+- **Two plugins declaring the same Info.plist key no longer block the build
+  when the project's own `ios/Info.plist` sets that key (MOB-387).** Plugin
+  plist keys only fill gaps (PlistBuddy `Add` never overrides), so the host's
+  value always wins and the collision is moot. Activating `mob_bluetooth` and
+  `mob_midi` together (both declare `NSBluetoothAlwaysUsageDescription`)
+  raised "activated plugins conflict"; now `Validator.cross_validate/2` takes
+  `:host_plist_keys` and the native build passes the top-level keys of
+  `ios/Info.plist` (`Validator.host_plist_keys/1`). Keys the host doesn't set
+  still conflict.
+
 ## [0.7.13] - 2026-10-03
 
 ### Added

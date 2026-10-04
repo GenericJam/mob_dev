@@ -99,6 +99,56 @@ defmodule MobDev.Plugin.ConflictSurfaceTest do
       assert Enum.any?(errs, &(&1 =~ "Info.plist key"))
     end
 
+    test "a duplicate Info.plist key the host's own Info.plist sets is no conflict" do
+      plugins =
+        two(
+          %{
+            ios: %{
+              plist_keys: %{NSBluetoothAlwaysUsageDescription: "A", NSCameraUsageDescription: "A"}
+            }
+          },
+          %{
+            ios: %{
+              plist_keys: %{NSBluetoothAlwaysUsageDescription: "B", NSCameraUsageDescription: "B"}
+            }
+          }
+        )
+
+      assert %{errors: [err]} =
+               Validator.cross_validate(plugins,
+                 host_plist_keys: ["NSBluetoothAlwaysUsageDescription"]
+               )
+
+      assert err =~ "NSCameraUsageDescription"
+    end
+
+    @tag :tmp_dir
+    test "host_plist_keys/1 lists the root dictionary's keys only", %{tmp_dir: dir} do
+      path = Path.join(dir, "Info.plist")
+
+      File.write!(path, """
+      <?xml version="1.0" encoding="UTF-8"?>
+      <plist version="1.0">
+      <dict>
+          <key>NSCameraUsageDescription</key>
+          <string>camera</string>
+          <key>UIApplicationSceneManifest</key>
+          <dict>
+              <key>UISceneConfigurations</key>
+              <dict><key>Inner</key><string>x</string></dict>
+          </dict>
+          <key>NFCReaderUsageDescription</key>
+          <string>nfc</string>
+      </dict>
+      </plist>
+      """)
+
+      assert Validator.host_plist_keys(path) ==
+               ~w(NSCameraUsageDescription UIApplicationSceneManifest NFCReaderUsageDescription)
+
+      assert Validator.host_plist_keys(Path.join(dir, "missing.plist")) == []
+    end
+
     test "duplicate AndroidManifest component name across plugins" do
       plugins =
         same(%{
