@@ -1572,18 +1572,41 @@ defmodule MobDev.NativeBuildTest do
       assert {:rust, ^cargo_path} = NativeBuild.classify_project_nif(%{module: :foo}, tmp)
     end
 
-    test "finds a Rust crate a dependency ships at deps/<dep>/native/<name>", %{tmp: tmp} do
-      cargo_path = Path.join(tmp, "deps/some_dep/native/foo/Cargo.toml")
+    test "finds a Rust crate a dependency ships, wherever the dep lives", %{tmp: tmp} do
+      # A path dep (or a custom MIX_DEPS_PATH) is not under <root>/deps.
+      dep = Path.join(tmp, "elsewhere/some_dep")
+      cargo_path = Path.join(dep, "native/foo/Cargo.toml")
       File.mkdir_p!(Path.dirname(cargo_path))
       File.write!(cargo_path, "")
+      other_dep = Path.join(tmp, "elsewhere/other_dep")
+      File.mkdir_p!(other_dep)
 
-      assert {:rust, ^cargo_path} = NativeBuild.classify_project_nif(%{module: :foo}, tmp)
+      assert {:rust, ^cargo_path} =
+               NativeBuild.classify_project_nif(%{module: :foo}, tmp, [other_dep, dep])
+
+      # The archive is read from the dependency crate's own target/ dir.
+      assert NativeBuild.rust_nif_archive(cargo_path, "foo", "aarch64-apple-ios") ==
+               Path.join(dep, "native/foo/target/aarch64-apple-ios/release/libfoo.a")
 
       # The project's own crate wins over a dep's.
       own = Path.join(tmp, "native/foo/Cargo.toml")
       File.mkdir_p!(Path.dirname(own))
       File.write!(own, "")
-      assert {:rust, ^own} = NativeBuild.classify_project_nif(%{module: :foo}, tmp)
+      assert {:rust, ^own} = NativeBuild.classify_project_nif(%{module: :foo}, tmp, [dep])
+    end
+
+    test "two dependencies shipping the same crate name is an error", %{tmp: tmp} do
+      deps =
+        for d <- ~w(a b) do
+          dir = Path.join(tmp, "deps/#{d}")
+          File.mkdir_p!(Path.join(dir, "native/foo"))
+          File.write!(Path.join(dir, "native/foo/Cargo.toml"), "")
+          dir
+        end
+
+      assert_raise Mix.Error, ~r/more than one dependency ships native\/foo/, fn ->
+        NativeBuild.classify_project_nif(%{module: :foo}, tmp, deps)
+      end
     end
 
     test "C wins if both exist (user has explicitly written C)", %{tmp: tmp} do
