@@ -122,6 +122,21 @@ defmodule MobDev.Plugin.ConflictSurfaceTest do
       assert err =~ "NSCameraUsageDescription"
     end
 
+    test "a duplicate array Info.plist key still conflicts when the host sets it" do
+      # Plugin arrays are merged into the host's array, and between plugins the
+      # later one wins, so plugin A's modes would be silently lost.
+      plugins =
+        two(
+          %{ios: %{plist_keys: %{"UIBackgroundModes" => ["bluetooth-central"]}}},
+          %{ios: %{plist_keys: %{"UIBackgroundModes" => ["location"]}}}
+        )
+
+      assert %{errors: [err]} =
+               Validator.cross_validate(plugins, host_plist_keys: ["UIBackgroundModes"])
+
+      assert err =~ "UIBackgroundModes"
+    end
+
     @tag :tmp_dir
     test "host_plist_keys/1 lists the root dictionary's keys only", %{tmp_dir: dir} do
       path = Path.join(dir, "Info.plist")
@@ -137,6 +152,7 @@ defmodule MobDev.Plugin.ConflictSurfaceTest do
               <key>UISceneConfigurations</key>
               <dict><key>Inner</key><string>x</string></dict>
           </dict>
+          <!-- <key>NSMicrophoneUsageDescription</key><string>off</string> -->
           <key>NFCReaderUsageDescription</key>
           <string>nfc</string>
       </dict>

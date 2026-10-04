@@ -204,9 +204,11 @@ defmodule MobDev.Plugin.Validator do
   `priv/mob_plugin.exs` path, anything else via `inspect/1`.
 
   Options:
-    * `:host_plist_keys` — the keys the host's own `ios/Info.plist` sets. The
-      host's value wins over every plugin's (plugin keys only fill gaps), so two
-      plugins declaring one of these keys is not a conflict: neither value lands.
+    * `:host_plist_keys` — the keys the host's own `ios/Info.plist` sets. For a
+      scalar value the host's wins over every plugin's (plugin keys only fill
+      gaps), so two plugins declaring one of these keys is not a conflict:
+      neither value lands. Array values are merged into the host's array
+      instead, so two plugins declaring the same array key still conflict.
   """
   @spec cross_validate([{atom() | Path.t(), map() | nil}], keyword()) :: result()
   def cross_validate(plugins, opts \\ []) do
@@ -224,7 +226,13 @@ defmodule MobDev.Plugin.Validator do
   end
 
   defp exempting(:plist_keys, extractor, host_keys) do
-    fn manifest -> Enum.reject(extractor.(manifest), &(to_string(&1) in host_keys)) end
+    fn manifest ->
+      declared = get_in(manifest, [:ios, :plist_keys]) || %{}
+
+      Enum.reject(extractor.(manifest), fn key ->
+        to_string(key) in host_keys and not is_list(Map.get(declared, key))
+      end)
+    end
   end
 
   defp exempting(_gatherer, extractor, _host_keys), do: extractor
@@ -251,12 +259,16 @@ defmodule MobDev.Plugin.Validator do
   end
 
   @doc """
-  The top-level keys an XML Info.plist sets (`[]` when the file is absent or
-  unreadable). Nested dictionaries' keys are not included.
+  The top-level keys an Info.plist sets (`[]` when the file is absent or
+  unreadable). XML comments are ignored and nested dictionaries' keys are not
+  included. A binary plist is converted with `plutil` when it is available;
+  otherwise it yields `[]`, which keeps every collision an error.
   """
   @spec host_plist_keys(Path.t()) :: [String.t()]
   def host_plist_keys(path) do
-    with {:ok, xml} <- File.read(path),
+    with {:ok, raw} <- File.read(path),
+         {:ok, xml} <- plist_xml(raw, path),
+         xml = Regex.replace(Regex.compile!("<!--.*?-->", "s"), xml, ""),
          [_, body] <-
            Regex.run(Regex.compile!("<plist[^>]*>\\s*<dict>(.*)</dict>\\s*</plist>", "s"), xml) do
       body
@@ -267,6 +279,18 @@ defmodule MobDev.Plugin.Validator do
       _ -> []
     end
   end
+
+  defp plist_xml("bplist" <> _, path) do
+    with exe when is_binary(exe) <- System.find_executable("plutil"),
+         {xml, 0} <-
+           System.cmd(exe, ["-convert", "xml1", "-o", "-", path], stderr_to_stdout: true) do
+      {:ok, xml}
+    else
+      _ -> :error
+    end
+  end
+
+  defp plist_xml(xml, _path), do: {:ok, xml}
 
   # Removes innermost <dict>…</dict> blocks until none remain, so only the root
   # dictionary's own keys are left.
