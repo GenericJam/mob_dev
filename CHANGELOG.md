@@ -14,11 +14,13 @@
   plugin declares as an array (merged into the host's array rather than
   yielding to it), still conflict.
 - **A static Rust NIF a dependency ships is built (MOB-392).** A
-  `:static_nifs` entry whose crate lives at `deps/<dep>/native/<name>/Cargo.toml`
-  (e.g. `mob_rapier`'s `lab_physics`) was classified as Elixir-only and never
-  cross-compiled, so the app crashed at launch with
-  `cannot locate symbol lab_physics_nif_init`. The crate is now found in the
-  dependency and its archive is read from the crate's own `target/` directory.
+  `:static_nifs` entry whose crate lives in a dependency at
+  `native/<name>/Cargo.toml` (e.g. `mob_rapier`'s `lab_physics`) was
+  classified as Elixir-only and never cross-compiled, so the app crashed at
+  launch with `cannot locate symbol lab_physics_nif_init`. Every dependency
+  `Mix.Project.deps_paths/0` resolves (hex, git, path) is now searched, the
+  archive is read from the crate's own `target/` directory, and two
+  dependencies shipping the same crate name is a build error.
 
 ## [0.7.13] - 2026-10-03
 
