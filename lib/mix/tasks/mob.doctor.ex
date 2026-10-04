@@ -438,12 +438,18 @@ defmodule Mix.Tasks.Mob.Doctor do
     end
   end
 
-  defp has_rust_nif? do
-    Path.wildcard("native/*/Cargo.toml") != [] or
-      Enum.any?(
-        MobDev.NativeBuild.project_nif_user_entries(),
-        &match?({:rust, _}, MobDev.NativeBuild.classify_project_nif(&1))
+  defp has_rust_nif?, do: Path.wildcard("native/*/Cargo.toml") != [] or dep_rust_nif?()
+
+  defp dep_rust_nif? do
+    dep_dirs_for = MobDev.NativeBuild.nif_dep_dirs()
+    root = File.cwd!()
+
+    Enum.any?(MobDev.NativeBuild.project_nif_user_entries(), fn entry ->
+      match?(
+        {:rust, _},
+        MobDev.NativeBuild.classify_project_nif(entry, root, dep_dirs_for.(entry))
       )
+    end)
   end
 
   defp check_rust_android_targets do

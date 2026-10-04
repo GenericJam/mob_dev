@@ -3762,8 +3762,8 @@ defmodule MobDev.NativeBuild do
   # `dep_dirs` are the dependency directories searched, last, for a crate the
   # project ships no source for; they default to every dependency
   # `Mix.Project.deps_paths/0` resolves (hex, git and path deps, wherever
-  # MIX_DEPS_PATH puts them) except activated plugins, whose NIFs their own
-  # build paths compile.
+  # MIX_DEPS_PATH puts them). Builds pass `nif_dep_dirs/0`'s answer, which
+  # skips the search for plugin-contributed NIFs.
   @spec classify_project_nif(MobDev.StaticNifs.nif_entry(), Path.t(), [Path.t()] | nil) ::
           {:c, Path.t()} | {:rust, Path.t()} | {:zig, atom()} | :elixir_only
   def classify_project_nif(entry, project_root, dep_dirs \\ nil) do
@@ -3781,7 +3781,7 @@ defmodule MobDev.NativeBuild do
 
       true ->
         with :elixir_only <- classify_via_zig_stub(name, project_root) do
-          case dep_rust_manifest(name, dep_dirs || project_dep_dirs()) do
+          case dep_rust_manifest(name, dep_dirs || Map.values(Mix.Project.deps_paths())) do
             nil -> :elixir_only
             manifest -> {:rust, manifest}
           end
@@ -3789,9 +3789,18 @@ defmodule MobDev.NativeBuild do
     end
   end
 
-  defp project_dep_dirs do
-    plugin_dirs = MapSet.new(MobDev.Plugin.activated(), fn {dir, _manifest} -> dir end)
-    Mix.Project.deps_paths() |> Map.values() |> Enum.reject(&MapSet.member?(plugin_dirs, &1))
+  @doc false
+  # The dep dirs to search per static-NIF entry, computed once per build
+  # (activating plugins verifies every manifest, so not once per entry). A
+  # plugin's NIF is compiled by the plugin build paths; searching deps for it
+  # would link a second <module>_nif_init, so it gets none.
+  @spec nif_dep_dirs() :: (MobDev.StaticNifs.nif_entry() -> [Path.t()])
+  def nif_dep_dirs do
+    plugin_modules =
+      MobDev.Plugin.activated() |> MobDev.Plugin.Merge.nifs() |> MapSet.new(& &1.module)
+
+    dep_dirs = Map.values(Mix.Project.deps_paths())
+    fn entry -> if MapSet.member?(plugin_modules, entry.module), do: [], else: dep_dirs end
   end
 
   # A Rustler NIF a dependency ships (e.g. mob_rapier's
@@ -3919,9 +3928,11 @@ defmodule MobDev.NativeBuild do
       project_nif_user_entries()
       |> Enum.filter(&MobDev.StaticNifs.on_platform?(&1, target_arch))
 
+    dep_dirs_for = nif_dep_dirs()
+
     {c_sources, rust_manifests, zig_modules} =
       Enum.reduce(entries, {[], [], []}, fn entry, {c_acc, rust_acc, zig_acc} ->
-        case classify_project_nif(entry, project_root) do
+        case classify_project_nif(entry, project_root, dep_dirs_for.(entry)) do
           {:c, path} ->
             {[{to_string(entry.module), path} | c_acc], rust_acc, zig_acc}
 
@@ -4013,8 +4024,8 @@ defmodule MobDev.NativeBuild do
     end
   end
 
-  # Cargo builds every Rust NIF into the host's own build dir, never next to
-  # the crate: a dependency's directory may be read-only, and a crate that is a
+  # Cargo builds every Rust NIF into the host's own build dir, not next to the
+  # crate (which for a dependency is inside deps/): a crate that is a
   # workspace member or a set CARGO_TARGET_DIR would otherwise put the archive
   # somewhere this build doesn't look.
   defp rust_nif_target_dir(name),

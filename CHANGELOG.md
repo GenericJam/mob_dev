@@ -19,12 +19,13 @@
   classified as Elixir-only and never cross-compiled, so the app crashed at
   launch with `cannot locate symbol lab_physics_nif_init`. When the project
   ships no C, Rust or Zig source for the NIF, every dependency
-  `Mix.Project.deps_paths/0` resolves (hex, git, path; activated plugins
-  excepted) is searched; two dependencies shipping the same crate name is a
-  build error. Every Rust NIF now builds into `_build/<env>/mob_rust_nifs/<name>`
-  (`cargo --target-dir`) instead of the crate's `target/`, so a read-only
-  dependency, a workspace member or `CARGO_TARGET_DIR` no longer misplaces the
-  archive. `mix mob.doctor` checks the Rust Android targets for such crates too.
+  `Mix.Project.deps_paths/0` resolves (hex, git, path) is searched (not for
+  plugin-contributed NIFs, which the plugin build compiles); two dependencies
+  shipping the same crate name is a build error. Every Rust NIF now builds
+  into `_build/<env>/mob_rust_nifs/<name>` (`cargo --target-dir`) instead of
+  the crate's `target/`, so a workspace member or `CARGO_TARGET_DIR` no longer
+  misplaces the archive (existing `native/<name>/target/` dirs can be deleted).
+  `mix mob.doctor` checks the Rust Android targets for such crates too.
 
 ## [0.7.13] - 2026-10-03
 
