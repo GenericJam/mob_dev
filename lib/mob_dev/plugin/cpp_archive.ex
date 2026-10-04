@@ -1,6 +1,6 @@
 defmodule MobDev.Plugin.CppArchive do
   @moduledoc """
-  Cross-compiles a plugin's `lang: :cpp_archive` NIF — a set of C++ sources —
+  Cross-compiles a plugin's `lang: :cpp_archive` NIF — a set of C/C++ sources —
   into `lib<module>.a` for one target ABI, and verifies the NIF-init symbol is
   present. The archive is then static-linked into the app's single signed native
   binary (same slot as `crypto.a` / `libnx_eigen.a`).
@@ -27,7 +27,23 @@ defmodule MobDev.Plugin.CppArchive do
   else — C++ standard, optimization, visibility, exceptions, the
   `-DSTATIC_ERLANG_NIF_LIBNAME=…` that fixes the emitted init symbol, and any
   Android hardening — is the plugin's via `:cxxflags` / `:cxxflags_android` /
-  `:cxxflags_ios`, so a plugin author keeps full control of its own ABI.
+  `:cxxflags_ios` (and `:cflags*` for `.c` sources), so a plugin author keeps
+  control of its own ABI. One exception: Arm-only flags (`-mbranch-protection=`)
+  in the Android lists are dropped on `:android_x86_64`, where clang rejects
+  them, so one Android flag list can serve every ABI.
+
+  ## C sources
+
+  A `.c` entry in `:sources` is compiled as C by the target's C driver (`clang`,
+  not `clang++`) with `:cflags` / `:cflags_android` / `:cflags_ios` in place of
+  the CXXFLAGS (forced `-fPIC`, the target ABI flags and the `-I` includes still
+  apply). Mixed C/C++ libraries such as ggml need this: their `.c` files are not
+  valid C++. Every other extension goes to `clang++`, which picks the language
+  from the extension (`.cpp`/`.cc` C++, `.mm` Objective-C++).
+
+  Object files are named `<basename>-<hash of the source path>.o`, so two sources
+  with the same basename in different directories (ggml's `quants.c` and
+  `arch/arm/quants.c`) both land in the archive. Sources compile in parallel.
   """
 
   alias MobDev.NdkVersion
@@ -40,7 +56,7 @@ defmodule MobDev.Plugin.CppArchive do
 
   @doc "All target ABIs a cpp_archive can be built for."
   @spec targets() :: [atom()]
-  def targets, do: [:android_arm64, :android_arm32, :ios_sim, :ios_device]
+  def targets, do: [:android_arm64, :android_arm32, :android_x86_64, :ios_sim, :ios_device]
 
   # ── Pure surface (unit-tested) ───────────────────────────────────────────
 
@@ -52,28 +68,73 @@ defmodule MobDev.Plugin.CppArchive do
 
   defp target_abi_cxxflags(_), do: []
 
+  # `:cxxflags_android` / `:cflags_android` serve every Android ABI, but some
+  # Android hardening flags exist only for Arm: clang rejects
+  # `-mbranch-protection=` (PAC/BTI) for x86_64 outright. Dropping them on the
+  # x86_64 target lets one flag list keep its arm64 hardening and still build
+  # for the emulator.
+  @arm_only_flag_prefixes ["-mbranch-protection="]
+
+  defp drop_foreign_flags(flags, :android_x86_64),
+    do: Enum.reject(flags, &String.starts_with?(&1, @arm_only_flag_prefixes))
+
+  defp drop_foreign_flags(flags, _target_id), do: flags
+
   @doc """
   Assemble the full CXXFLAGS for one target: forced `-fPIC` + the target's
   intrinsic ABI flags (e.g. armv7 flags for android_arm32), then the plugin's
   base `:cxxflags`, then the target's platform-specific flags
   (`:cxxflags_android` / `:cxxflags_ios`), then `-I` for each resolved include
-  dir (order preserved). Pure — silent flag drops are the regression class this
+  dir (order preserved). Arm-only flags (`-mbranch-protection=`) are dropped on
+  `:android_x86_64`. Pure — silent flag drops are the regression class this
   whole module guards against, so it's directly testable.
   """
   @spec cxxflags(map(), atom(), [Path.t()]) :: [String.t()]
-  def cxxflags(spec, target_id, includes) when is_map(spec) and is_list(includes) do
+  def cxxflags(spec, target_id, includes) when is_map(spec) and is_list(includes),
+    do: assemble_flags(spec, target_id, includes, :cxxflags, :cxxflags_android, :cxxflags_ios)
+
+  @doc """
+  Assemble the full CFLAGS for one target's `.c` sources: the same shape as
+  `cxxflags/3` (forced `-fPIC`, target ABI flags, plugin flags, `-I` includes in
+  order) but reading `:cflags` and `:cflags_android` / `:cflags_ios`, so no C++
+  flag (`-std=c++17`, `-fno-rtti`, …) reaches the C compiler. Pure.
+  """
+  @spec cflags(map(), atom(), [Path.t()]) :: [String.t()]
+  def cflags(spec, target_id, includes) when is_map(spec) and is_list(includes),
+    do: assemble_flags(spec, target_id, includes, :cflags, :cflags_android, :cflags_ios)
+
+  defp assemble_flags(spec, target_id, includes, base_key, android_key, ios_key) do
     platform_flags =
       case platform_of(target_id) do
-        :android -> List.wrap(spec[:cxxflags_android])
-        :ios -> List.wrap(spec[:cxxflags_ios])
+        :android -> List.wrap(spec[android_key])
+        :ios -> List.wrap(spec[ios_key])
       end
+
+    plugin_flags = drop_foreign_flags(List.wrap(spec[base_key]) ++ platform_flags, target_id)
 
     @forced_cxxflags ++
       target_abi_cxxflags(target_id) ++
-      List.wrap(spec[:cxxflags]) ++
-      platform_flags ++
+      plugin_flags ++
       Enum.map(includes, &"-I#{&1}")
   end
+
+  @doc """
+  Object-file name for a source: `<basename>-<8 hex of the source path's
+  SHA-256>.o`. Stable across builds, and distinct for same-named sources in
+  different directories (a plain `<basename>.o` let the second overwrite the
+  first, silently dropping its symbols from the archive). Pure.
+  """
+  @spec object_name(Path.t()) :: String.t()
+  def object_name(source) when is_binary(source) do
+    hash =
+      :crypto.hash(:sha256, source) |> Base.encode16(case: :lower) |> binary_part(0, 8)
+
+    Path.basename(source, Path.extname(source)) <> "-" <> hash <> ".o"
+  end
+
+  @doc "Whether a source compiles as C (`.c`) rather than through `clang++`. Pure."
+  @spec c_source?(Path.t()) :: boolean()
+  def c_source?(source) when is_binary(source), do: Path.extname(source) == ".c"
 
   @doc """
   Resolve a spec's `:sources`/`:includes` (a mix of absolute strings and
@@ -130,7 +191,8 @@ defmodule MobDev.Plugin.CppArchive do
   """
   @spec build(map(), atom(), keyword()) :: {:ok, map()} | Errors.t()
   def build(spec, target_id, opts \\ [])
-      when is_map(spec) and target_id in [:android_arm64, :android_arm32, :ios_sim, :ios_device] do
+      when is_map(spec) and
+             target_id in [:android_arm64, :android_arm32, :android_x86_64, :ios_sim, :ios_device] do
     shell = Shell.impl()
 
     with {:ok, out_dir} <- require_opt(opts, :out_dir),
@@ -146,7 +208,12 @@ defmodule MobDev.Plugin.CppArchive do
       arch_dir = arch_dir(target_id)
       obj_dir = Path.join([out_dir, "obj", arch_dir])
       archive = Path.join(out_dir, archive_name(spec.module))
-      flags = cxxflags(spec, target_id, includes)
+
+      flags = %{
+        cxx: cxxflags(spec, target_id, includes),
+        cc: cflags(spec, target_id, includes)
+      }
+
       tools = tools(target_id, opts)
 
       with :ok <- precheck(sources, target_id, shell, opts),
@@ -171,15 +238,30 @@ defmodule MobDev.Plugin.CppArchive do
     end
   end
 
+  # Compiles every source (in parallel, results kept in source order) and
+  # returns the object paths, or the first failure. `.c` goes to the C driver
+  # with CFLAGS, everything else to clang++ with CXXFLAGS.
   defp compile_sources(shell, tools, flags, sources, obj_dir) do
     sources
-    |> Enum.reduce_while({:ok, []}, fn src, {:ok, acc} ->
-      obj = Path.join(obj_dir, Path.basename(src, Path.extname(src)) <> ".o")
+    |> Task.async_stream(
+      fn src ->
+        obj = Path.join(obj_dir, object_name(src))
 
-      case shell.cmd(tools.cxx ++ flags ++ ["-c", "-o", obj, src], []) do
-        {:ok, _} -> {:cont, {:ok, [obj | acc]}}
-        err -> {:halt, err}
-      end
+        {driver, driver_flags} =
+          if c_source?(src), do: {tools.cc, flags.cc}, else: {tools.cxx, flags.cxx}
+
+        case shell.cmd(driver ++ driver_flags ++ ["-c", "-o", obj, src], []) do
+          {:ok, _} -> {:ok, obj}
+          err -> err
+        end
+      end,
+      ordered: true,
+      timeout: :infinity,
+      max_concurrency: System.schedulers_online()
+    )
+    |> Enum.reduce_while({:ok, []}, fn
+      {:ok, {:ok, obj}}, {:ok, acc} -> {:cont, {:ok, [obj | acc]}}
+      {:ok, err}, _acc -> {:halt, err}
     end)
     |> case do
       {:ok, objs} -> {:ok, Enum.reverse(objs)}
@@ -241,19 +323,23 @@ defmodule MobDev.Plugin.CppArchive do
 
   defp platform_of(:android_arm64), do: :android
   defp platform_of(:android_arm32), do: :android
+  defp platform_of(:android_x86_64), do: :android
   defp platform_of(:ios_sim), do: :ios
   defp platform_of(:ios_device), do: :ios
 
   defp arch_dir(:android_arm64), do: "aarch64-unknown-linux-android"
   defp arch_dir(:android_arm32), do: "arm-unknown-linux-androideabi"
+  defp arch_dir(:android_x86_64), do: "x86_64-unknown-linux-android"
   defp arch_dir(:ios_sim), do: "aarch64-apple-iossimulator"
   defp arch_dir(:ios_device), do: "aarch64-apple-ios"
 
-  defp tools(target_id, opts) when target_id in [:android_arm64, :android_arm32] do
+  defp tools(target_id, opts)
+       when target_id in [:android_arm64, :android_arm32, :android_x86_64] do
     bin = android_toolchain_bin(opts)
 
     %{
       cxx: [Path.join(bin, android_cxx_name(target_id))],
+      cc: [Path.join(bin, String.trim_trailing(android_cxx_name(target_id), "++"))],
       ar: [Path.join(bin, "llvm-ar")],
       ranlib: [Path.join(bin, "llvm-ranlib")],
       nm: [Path.join(bin, "llvm-nm")]
@@ -262,18 +348,11 @@ defmodule MobDev.Plugin.CppArchive do
 
   defp tools(target_id, _opts) when target_id in [:ios_sim, :ios_device] do
     sdk = ios_sdk_name(target_id)
+    target = ["-arch", "arm64", ios_min_flag(target_id)]
 
     %{
-      cxx: [
-        "xcrun",
-        "-sdk",
-        sdk,
-        "clang++",
-        "-arch",
-        "arm64",
-        ios_min_flag(target_id),
-        "-stdlib=libc++"
-      ],
+      cxx: ["xcrun", "-sdk", sdk, "clang++"] ++ target ++ ["-stdlib=libc++"],
+      cc: ["xcrun", "-sdk", sdk, "clang"] ++ target,
       ar: ["xcrun", "-sdk", sdk, "ar"],
       ranlib: ["xcrun", "-sdk", sdk, "ranlib"],
       nm: ["xcrun", "-sdk", sdk, "nm"]
@@ -282,6 +361,7 @@ defmodule MobDev.Plugin.CppArchive do
 
   defp android_cxx_name(:android_arm64), do: "aarch64-linux-android#{@android_api}-clang++"
   defp android_cxx_name(:android_arm32), do: "armv7a-linux-androideabi#{@android_api}-clang++"
+  defp android_cxx_name(:android_x86_64), do: "x86_64-linux-android#{@android_api}-clang++"
 
   defp ios_sdk_name(:ios_sim), do: "iphonesimulator"
   defp ios_sdk_name(:ios_device), do: "iphoneos"

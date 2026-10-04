@@ -1,3 +1,30 @@
+## [Unreleased]
+
+### Added
+
+- **`:cpp_archive` plugin NIFs can mix C and C++ sources (MOB-381).** A `.c`
+  entry in `:sources` is compiled by the target's C driver (`clang`) with the
+  new `:cflags` / `:cflags_android` / `:cflags_ios`; everything else still goes
+  to `clang++` with the CXXFLAGS. Libraries such as ggml (whisper.cpp, the
+  `mob_whisper` plugin) ship `.c` files that aren't valid C++, so they couldn't
+  be built before.
+- **`:cpp_archive` plugin NIFs build for the x86_64 Android emulator ABI.**
+  Every Android native build compiles arm64, armv7 and x86_64, and an active
+  cpp_archive plugin used to stop it with "cannot be built for
+  :android_x86_64". The archive is now cross-compiled for x86_64 too
+  (`x86_64-linux-android28-clang++`; Arm-only `-mbranch-protection=` flags are
+  dropped there), so such a plugin works on an emulator and no longer blocks
+  every build.
+
+### Fixed
+
+- **Two cpp_archive sources with the same file name no longer overwrite each
+  other's object.** Objects were named `<basename>.o`, so ggml's
+  `ggml-cpu/quants.c` and `ggml-cpu/arch/arm/quants.c` collided and one set of
+  symbols silently vanished from the archive. Objects are now
+  `<basename>-<hash of the path>.o`. Sources also compile in parallel (a
+  ~30-file archive builds in ~5 s instead of serially).
+
 ## [0.7.12] - 2026-10-03
 
 ### Upgrading

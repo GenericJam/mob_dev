@@ -1748,47 +1748,15 @@ defmodule MobDev.NativeBuildTest do
       assert NativeBuild.android_abi_to_cpp_target("arm32") == :android_arm32
     end
 
-    test "x86_64 → :android_x86_64 (a real target id CppArchive can't build yet)" do
+    test "x86_64 → :android_x86_64 (the emulator ABI)" do
       assert NativeBuild.android_abi_to_cpp_target("x86_64") == :android_x86_64
+      assert :android_x86_64 in MobDev.Plugin.CppArchive.targets()
     end
 
     test "unknown ABI strings → nil" do
       assert NativeBuild.android_abi_to_cpp_target("riscv64") == nil
       assert NativeBuild.android_abi_to_cpp_target("") == nil
       assert NativeBuild.android_abi_to_cpp_target("x86") == nil
-    end
-  end
-
-  describe "cpp_archive_target_decision/2 + unsupported_cpp_archive_target_error/2" do
-    @cpp_spec %{plugin: :nx_cpu, module: :nx_cpu_nif}
-
-    test ":none when no cpp_archive spec is present (unsupported ABI is harmless then)" do
-      # The x86_64 emulator ABI gap only matters when a plugin actually needs it.
-      assert NativeBuild.cpp_archive_target_decision([], :android_x86_64) == :none
-    end
-
-    test "{:error, _} when a cpp_archive spec is present on an unsupported ABI (x86_64)" do
-      assert {:error, msg} =
-               NativeBuild.cpp_archive_target_decision([@cpp_spec], :android_x86_64)
-
-      # Names the unsupported ABI and the plugin/module, explains arm-only support.
-      assert msg =~ ":android_x86_64"
-      assert msg =~ "nx_cpu/nx_cpu_nif"
-      assert msg =~ ":android_arm64"
-      assert msg =~ ":android_arm32"
-    end
-
-    test ":build when a cpp_archive spec is present on a supported ABI" do
-      assert NativeBuild.cpp_archive_target_decision([@cpp_spec], :android_arm64) == :build
-      assert NativeBuild.cpp_archive_target_decision([@cpp_spec], :android_arm32) == :build
-      assert NativeBuild.cpp_archive_target_decision([@cpp_spec], :ios_sim) == :build
-    end
-
-    test "error message lists every active plugin/module" do
-      specs = [@cpp_spec, %{plugin: :other, module: :other_nif}]
-      msg = NativeBuild.unsupported_cpp_archive_target_error(specs, :android_x86_64)
-      assert msg =~ "nx_cpu/nx_cpu_nif"
-      assert msg =~ "other/other_nif"
     end
   end
 
