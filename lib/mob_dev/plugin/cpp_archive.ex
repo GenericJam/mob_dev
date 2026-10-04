@@ -1,6 +1,6 @@
 defmodule MobDev.Plugin.CppArchive do
   @moduledoc """
-  Cross-compiles a plugin's `lang: :cpp_archive` NIF — a set of C++ sources —
+  Cross-compiles a plugin's `lang: :cpp_archive` NIF — a set of C/C++ sources —
   into `lib<module>.a` for one target ABI, and verifies the NIF-init symbol is
   present. The archive is then static-linked into the app's single signed native
   binary (same slot as `crypto.a` / `libnx_eigen.a`).
@@ -27,7 +27,10 @@ defmodule MobDev.Plugin.CppArchive do
   else — C++ standard, optimization, visibility, exceptions, the
   `-DSTATIC_ERLANG_NIF_LIBNAME=…` that fixes the emitted init symbol, and any
   Android hardening — is the plugin's via `:cxxflags` / `:cxxflags_android` /
-  `:cxxflags_ios`, so a plugin author keeps full control of its own ABI.
+  `:cxxflags_ios` (and `:cflags*` for `.c` sources), so a plugin author keeps
+  control of its own ABI. One exception: Arm-only flags (`-mbranch-protection=`)
+  in the Android lists are dropped on `:android_x86_64`, where clang rejects
+  them, so one Android flag list can serve every ABI.
 
   ## C sources
 
