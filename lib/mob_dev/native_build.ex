@@ -3760,10 +3760,10 @@ defmodule MobDev.NativeBuild do
 
   @doc false
   # `dep_dirs` are the dependency directories searched, last, for a crate the
-  # project ships no source for; they default to every dependency
-  # `Mix.Project.deps_paths/0` resolves (hex, git and path deps, wherever
-  # MIX_DEPS_PATH puts them). Builds pass `nif_dep_dirs/0`'s answer, which
-  # skips the search for plugin-contributed NIFs.
+  # project ships no source for; they default to `nif_dep_dirs/0`'s answer for
+  # the entry (every dependency `Mix.Project.deps_paths/0` resolves, or none
+  # for a plugin-contributed NIF). Callers classifying many entries should
+  # compute `nif_dep_dirs/0` once and pass its answer.
   @spec classify_project_nif(MobDev.StaticNifs.nif_entry(), Path.t(), [Path.t()] | nil) ::
           {:c, Path.t()} | {:rust, Path.t()} | {:zig, atom()} | :elixir_only
   def classify_project_nif(entry, project_root, dep_dirs \\ nil) do
