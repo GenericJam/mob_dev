@@ -207,32 +207,40 @@ defmodule MobDev.Plugin.Validator do
     * `:host_plist_keys` — the keys the host's own `ios/Info.plist` sets. For a
       scalar value the host's wins over every plugin's (plugin keys only fill
       gaps), so two plugins declaring one of these keys is not a conflict:
-      neither value lands. Array values are merged into the host's array
-      instead, so two plugins declaring the same array key still conflict.
+      neither value lands. A key any plugin declares as an array still
+      conflicts: arrays merge into the host's array instead of yielding to it.
   """
   @spec cross_validate([{atom() | Path.t(), map() | nil}], keyword()) :: result()
   def cross_validate(plugins, opts \\ []) do
     owned = for {owner, m} <- plugins, is_map(m), do: {manifest_location(owner), m}
-    host_plist_keys = opts |> Keyword.get(:host_plist_keys, []) |> MapSet.new(&to_string/1)
+    exempt = exempt_plist_keys(owned, Keyword.get(opts, :host_plist_keys, []))
 
     errors =
       for {gatherer, {:collision, checks}} <- conflict_surface(),
           {label, extractor} <- checks,
-          extractor = exempting(gatherer, extractor, host_plist_keys),
+          extractor = exempting(gatherer, extractor, exempt),
           error <- collisions(owned, extractor, label),
           do: error
 
     %{errors: errors, warnings: []}
   end
 
-  defp exempting(:plist_keys, extractor, host_keys) do
-    fn manifest ->
-      declared = get_in(manifest, [:ios, :plist_keys]) || %{}
+  # Host keys every plugin declares as a scalar. One array declaration anywhere
+  # keeps the key a collision: arrays merge into the host's array, so a later
+  # plugin's value (array or scalar) would silently drop an earlier one's array.
+  defp exempt_plist_keys(owned, host_keys) do
+    array_keys =
+      for {_, m} <- owned,
+          {key, value} <- get_in(m, [:ios, :plist_keys]) || %{},
+          is_list(value),
+          into: MapSet.new(),
+          do: to_string(key)
 
-      Enum.reject(extractor.(manifest), fn key ->
-        to_string(key) in host_keys and not is_list(Map.get(declared, key))
-      end)
-    end
+    host_keys |> MapSet.new(&to_string/1) |> MapSet.difference(array_keys)
+  end
+
+  defp exempting(:plist_keys, extractor, exempt) do
+    fn manifest -> Enum.reject(extractor.(manifest), &(to_string(&1) in exempt)) end
   end
 
   defp exempting(_gatherer, extractor, _host_keys), do: extractor
@@ -260,21 +268,16 @@ defmodule MobDev.Plugin.Validator do
 
   @doc """
   The top-level keys an Info.plist sets (`[]` when the file is absent or
-  unreadable). XML comments are ignored and nested dictionaries' keys are not
-  included. A binary plist is converted with `plutil` when it is available;
-  otherwise it yields `[]`, which keeps every collision an error.
+  unparseable, which keeps every collision an error). The XML is parsed
+  structurally (`MobDev.IosLayoutPlist.top_level_keys/1`); a binary plist is
+  converted with `plutil` first when it is available.
   """
   @spec host_plist_keys(Path.t()) :: [String.t()]
   def host_plist_keys(path) do
     with {:ok, raw} <- File.read(path),
          {:ok, xml} <- plist_xml(raw, path),
-         xml = Regex.replace(Regex.compile!("<!--.*?-->", "s"), xml, ""),
-         [_, body] <-
-           Regex.run(Regex.compile!("<plist[^>]*>\\s*<dict>(.*)</dict>\\s*</plist>", "s"), xml) do
-      body
-      |> strip_nested_dicts()
-      |> then(&Regex.scan(Regex.compile!("<key>([^<]*)</key>"), &1))
-      |> Enum.map(&Enum.at(&1, 1))
+         {:ok, keys} <- MobDev.IosLayoutPlist.top_level_keys(xml) do
+      keys
     else
       _ -> []
     end
@@ -282,8 +285,7 @@ defmodule MobDev.Plugin.Validator do
 
   defp plist_xml("bplist" <> _, path) do
     with exe when is_binary(exe) <- System.find_executable("plutil"),
-         {xml, 0} <-
-           System.cmd(exe, ["-convert", "xml1", "-o", "-", path], stderr_to_stdout: true) do
+         {xml, 0} <- System.cmd(exe, ["-convert", "xml1", "-o", "-", path]) do
       {:ok, xml}
     else
       _ -> :error
@@ -291,13 +293,6 @@ defmodule MobDev.Plugin.Validator do
   end
 
   defp plist_xml(xml, _path), do: {:ok, xml}
-
-  # Removes innermost <dict>…</dict> blocks until none remain, so only the root
-  # dictionary's own keys are left.
-  defp strip_nested_dicts(body) do
-    stripped = Regex.replace(Regex.compile!("<dict>(?:(?!<dict>).)*?</dict>", "s"), body, "")
-    if stripped == body, do: body, else: strip_nested_dicts(stripped)
-  end
 
   defp manifest_location(dir) when is_binary(dir), do: Path.join([dir, "priv", "mob_plugin.exs"])
   defp manifest_location(other), do: inspect(other)

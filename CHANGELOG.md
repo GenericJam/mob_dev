@@ -9,9 +9,10 @@
   `mob_midi` together (both declare `NSBluetoothAlwaysUsageDescription`)
   raised "activated plugins conflict"; now `Validator.cross_validate/2` takes
   `:host_plist_keys` and the native build passes the top-level keys of
-  `ios/Info.plist` (`Validator.host_plist_keys/1`; XML or, where `plutil`
-  exists, binary). Keys the host doesn't set, and array values (merged into
-  the host's array rather than replaced by it), still conflict.
+  `ios/Info.plist` (`Validator.host_plist_keys/1`, parsed with xmerl; a binary
+  plist via `plutil` where it exists). Keys the host doesn't set, and keys any
+  plugin declares as an array (merged into the host's array rather than
+  yielding to it), still conflict.
 
 ## [0.7.13] - 2026-10-03
 

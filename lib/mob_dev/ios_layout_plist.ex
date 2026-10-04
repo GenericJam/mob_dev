@@ -237,6 +237,15 @@ defmodule MobDev.IosLayoutPlist do
     end
   end
 
+  @doc """
+  The keys of an XML property list's top-level `<dict>`, parsed structurally
+  (comments, CDATA and nested dictionaries contribute nothing).
+  """
+  @spec top_level_keys(String.t()) :: {:ok, [String.t()]} | {:error, String.t()}
+  def top_level_keys(xml) do
+    with {:ok, dict} <- top_level_dict(xml), do: {:ok, Map.keys(dict)}
+  end
+
   defp top_level_dict(xml) do
     {doc, _rest} =
       :xmerl_scan.string(:binary.bin_to_list(xml),
