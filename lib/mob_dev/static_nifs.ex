@@ -43,9 +43,9 @@ defmodule MobDev.StaticNifs do
   generated tables select a guarded project entry on exactly the targets its
   `:archs` cover, by the compiler's own target: the Zig table gates it on
   `@import("builtin").target` (the simulator ABI on iOS, the CPU on Android),
-  and the C table wraps the forward declaration and row in
-  `#if defined(<guard>) || <arch test>` (`TARGET_OS_SIMULATOR`, `__aarch64__`,
-  `__arm__`). No build option is involved, so it works with any app's
+  and the C table wraps the forward declaration and row in `#if <arch test>`
+  (`TARGET_OS_SIMULATOR`, `__aarch64__`, `__arm__`, or `1` when the entry covers
+  the platform). No build option is involved, so it works with any app's
   build files (MOB-376). The guards of the built-in NIFs in `default_nifs/0`
   are different: each is a feature switch that mob_new's build files set
   (`build_options.<flag>` for Zig, `-D<guard>` for C).
@@ -498,9 +498,10 @@ defmodule MobDev.StaticNifs do
 
   # The preprocessor line that opens a guarded entry in the C table:
   # `#ifdef <guard>` for a built-in feature switch (unchanged from earlier
-  # versions); for a project NIF also the target-arch test, so a build that
-  # defines nothing still gets the entry exactly where its :archs say (and a
-  # build that defines the guard, like `mix mob.release --ios`, keeps it too).
+  # versions); for a project NIF the target-arch test alone. The guard macro
+  # plays no part there: `mix mob.release --ios` defines it for every guarded
+  # entry on the device (for C tables generated before 0.7.12), which would
+  # pull in a simulator-only entry sharing that guard.
   defp c_guard_open(nif, platform) do
     if template_guard?(nif.guard) do
       "#ifdef #{nif.guard}\n"
@@ -514,7 +515,7 @@ defmodule MobDev.StaticNifs do
           :android_arm32 -> "defined(__arm__)"
         end
 
-      "#if defined(#{nif.guard}) || #{arch_test}\n"
+      "#if #{arch_test}\n"
     end
   end
 

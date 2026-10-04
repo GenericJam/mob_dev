@@ -429,8 +429,8 @@ defmodule MobDev.Release do
   @doc false
   # The project's own build inputs and the plugins' cpp_archive NIF archives as
   # the env vars `release_device.sh` reads: what the device build passes as
-  # `-Dproject_swift_sources`, `-Dproject_c_nifs` / `-Dproject_rust_libs` /
-  # `-D<module>_static=true`, and `-Dplugin_static_libs` (MOB-373). Pure over
+  # `-Dproject_swift_sources`, `-Dproject_c_nifs` / `-Dproject_rust_libs`, and
+  # `-Dplugin_static_libs` (MOB-373). Pure over
   # `NativeBuild.project_swift_sources/1`, `project_nif_build_inputs/1` and
   # `build_plugin_static_archives/3` results. Space-joined and word-split by the
   # script like the other path lists.
@@ -443,7 +443,9 @@ defmodule MobDev.Release do
   #   `:extra_static_libs`; `MOB_PLUGIN_STATIC_LIBS` — cpp_archive plugin
   #   archives. Both go on the link line.
   # - `MOB_DRIVER_TAB_DEFINES` — `-D<guard>` per guarded project NIF built for
-  #   this target, so `driver_tab_ios.c` keeps its `#ifdef`'d row.
+  #   this target. A table generated since 0.7.12 selects these rows by target
+  #   arch and ignores it; a committed C table from earlier versions wraps them
+  #   in `#ifdef <guard>` and needs it.
   @spec project_release_env([Path.t()], map(), [Path.t()]) :: [{String.t(), String.t()}]
   def project_release_env(swift_sources, project_nifs, plugin_archives) do
     [

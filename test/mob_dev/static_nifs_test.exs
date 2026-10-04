@@ -538,7 +538,7 @@ defmodule MobDev.StaticNifsTest do
       refute c_out =~ "export var erts_static_nif_tab"
     end
 
-    test "C table: each project guard is kept by its target-arch test or its macro" do
+    test "C table: each project guard is selected by its target-arch test alone" do
       ios =
         StaticNifs.generate(
           :ios,
@@ -551,9 +551,12 @@ defmodule MobDev.StaticNifsTest do
         |> IO.iodata_to_binary()
 
       assert ios =~ "#include <TargetConditionals.h>"
-      assert ios =~ "#if defined(MOB_STATIC_DEV_ONLY_NIF) || !TARGET_OS_SIMULATOR\n"
-      assert ios =~ "#if defined(MOB_STATIC_SIM_ONLY_NIF) || TARGET_OS_SIMULATOR\n"
-      assert ios =~ "#if defined(MOB_STATIC_BOTH_IOS_NIF) || 1\n"
+      assert ios =~ "#if !TARGET_OS_SIMULATOR\nvoid *dev_only_nif_init(void);"
+      assert ios =~ "#if TARGET_OS_SIMULATOR\nvoid *sim_only_nif_init(void);"
+      assert ios =~ "#if 1\nvoid *both_ios_nif_init(void);"
+      # The macro plays no part: `mix mob.release --ios` defines every guarded
+      # entry's macro on the device, which must not pull in a simulator-only row.
+      refute ios =~ "defined(MOB_STATIC_SIM_ONLY_NIF)"
       # Built-in feature switches are unchanged.
       assert ios =~ "#ifdef MOB_STATIC_SQLITE_NIF\n"
 
@@ -589,8 +592,8 @@ defmodule MobDev.StaticNifsTest do
         )
         |> IO.iodata_to_binary()
 
-      assert android =~ "#if defined(MOB_STATIC_VT64_NIF) || defined(__aarch64__)\n"
-      assert android =~ "#if defined(MOB_STATIC_VT32_NIF) || defined(__arm__)\n"
+      assert android =~ "#if defined(__aarch64__)\nvoid *vt64_nif_init(void);"
+      assert android =~ "#if defined(__arm__)\nvoid *vt32_nif_init(void);"
       refute android =~ "TargetConditionals"
     end
 
@@ -598,7 +601,7 @@ defmodule MobDev.StaticNifsTest do
       for platform <- [:ios, :android] do
         out = StaticNifs.generate(platform, StaticNifs.default_nifs()) |> IO.iodata_to_binary()
         refute out =~ "TargetConditionals"
-        refute out =~ "#if defined("
+        refute out =~ ~r/^#if /m
       end
     end
   end

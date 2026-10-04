@@ -38,10 +38,13 @@ The generated tables decide a project guard themselves, from the entry's
   for `[:android_arm32]`, `true` when the entry covers the whole platform. A
   flag per entry, not per guard, keeps two entries that share a guard on their
   own archs, and lets any C macro serve as a guard.
-- C: `#if defined(<guard>) || <test>` with `TARGET_OS_SIMULATOR` (via
-  `<TargetConditionals.h>`, emitted only when needed), `__aarch64__`,
-  `__arm__` or `1`. Keeping `defined(<guard>)` means a build that defines the
-  guard, like the release, still keeps the entry.
+- C: `#if <test>` with `TARGET_OS_SIMULATOR` (via `<TargetConditionals.h>`,
+  emitted only when needed), `__aarch64__`, `__arm__` or `1`. The guard macro
+  plays no part: `mix mob.release --ios` still defines `-D<guard>` for every
+  guarded entry on the device, which C tables generated before 0.7.12 (plain
+  `#ifdef <guard>`) need, and a `defined(<guard>) ||` here would let that pull
+  in a simulator-only entry sharing the guard. (A first version of this change
+  had it; the 0.7.12 release-gate review caught it before release.)
 - `project_nif_zig_args/1` no longer emits `-D<module>_static=true`.
 
 The four built-in guards (`default_nifs/0`) are feature switches, not arch
@@ -67,10 +70,14 @@ on their next `mix mob.deploy --native`.
   test compiles the tables on a laptop; CI excludes it (no zig there), and
   text tests of each generated condition run in CI.
 - `:guard` on a project entry no longer acts as an off switch: an entry whose
-  `:archs` cover the platform is always registered (`|| 1`), even if nothing
-  defines the macro. Nothing local relied on the old behaviour, and in a dev
-  build it either failed (Zig) or always dropped the entry (C).
+  `:archs` cover the platform is always registered (`#if 1` / `true`), whether
+  or not anything defines the macro. Nothing local relied on the old
+  behaviour, and in a dev build it either failed (Zig) or always dropped the
+  entry (C).
+- An app with a project guard sees its committed `priv/generated/driver_tab_*`
+  change on the next native build (commit the result); until then
+  `mix mob.doctor` reports the C table as stale.
 - An unguarded entry that narrows a platform still references its init symbol
   on every arch of the platform, as before; the guide says to add a `:guard`.
-- Two project entries may share a guard name: the C table tests each entry's
-  archs, and the Zig table gives each its own flag.
+- Two project entries may share a guard name: each has its own arch test in
+  both formats, so the release's `-D<guard>` can't pull in the other one.
