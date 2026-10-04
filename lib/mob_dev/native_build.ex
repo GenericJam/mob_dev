@@ -3781,7 +3781,7 @@ defmodule MobDev.NativeBuild do
 
       true ->
         with :elixir_only <- classify_via_zig_stub(name, project_root) do
-          case dep_rust_manifest(name, dep_dirs || Map.values(Mix.Project.deps_paths())) do
+          case dep_rust_manifest(name, dep_dirs || nif_dep_dirs().(entry)) do
             nil -> :elixir_only
             manifest -> {:rust, manifest}
           end
@@ -3790,16 +3790,22 @@ defmodule MobDev.NativeBuild do
   end
 
   @doc false
-  # The dep dirs to search per static-NIF entry, computed once per build
-  # (activating plugins verifies every manifest, so not once per entry). A
-  # plugin's NIF is compiled by the plugin build paths; searching deps for it
-  # would link a second <module>_nif_init, so it gets none.
+  # The dep dirs to search per static-NIF entry. Builds call it once per
+  # target, not per entry: activating plugins verifies every manifest. A
+  # plugin's NIF belongs to the plugin's own build; searching deps for it
+  # could link a second <module>_nif_init, so it gets none.
   @spec nif_dep_dirs() :: (MobDev.StaticNifs.nif_entry() -> [Path.t()])
   def nif_dep_dirs do
-    plugin_modules =
-      MobDev.Plugin.activated() |> MobDev.Plugin.Merge.nifs() |> MapSet.new(& &1.module)
+    nif_dep_dirs(
+      MobDev.Plugin.Merge.nifs(MobDev.Plugin.activated()),
+      Map.values(Mix.Project.deps_paths())
+    )
+  end
 
-    dep_dirs = Map.values(Mix.Project.deps_paths())
+  @doc false
+  @spec nif_dep_dirs([map()], [Path.t()]) :: (MobDev.StaticNifs.nif_entry() -> [Path.t()])
+  def nif_dep_dirs(plugin_nifs, dep_dirs) do
+    plugin_modules = MapSet.new(plugin_nifs, & &1.module)
     fn entry -> if MapSet.member?(plugin_modules, entry.module), do: [], else: dep_dirs end
   end
 

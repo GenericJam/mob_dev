@@ -1540,7 +1540,7 @@ defmodule MobDev.NativeBuildTest do
     end
   end
 
-  describe "classify_project_nif/2" do
+  describe "classify_project_nif/2,3" do
     # Pins the source-classification logic that decides whether a
     # project-side NIF gets the C wiring path, the Rust cross-compile +
     # link path, or no native wiring at all (Elixir-only stub). Issue #18.
@@ -1646,6 +1646,12 @@ defmodule MobDev.NativeBuildTest do
       assert {:rust, found} = result
       # deps_paths resolves symlinks (macOS /var → /private/var).
       assert String.ends_with?(found, Path.relative_to(cargo_path, Path.dirname(tmp)))
+    end
+
+    test "nif_dep_dirs/2 searches no deps for a plugin's own NIF" do
+      dirs_for = NativeBuild.nif_dep_dirs([%{module: :plugin_nif}], ["/deps/a"])
+      assert dirs_for.(%{module: :plugin_nif}) == []
+      assert dirs_for.(%{module: :host_nif}) == ["/deps/a"]
     end
 
     test "the project's own Zig NIF wins over a dependency's crate", %{tmp: tmp} do
