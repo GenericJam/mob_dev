@@ -3759,18 +3759,81 @@ defmodule MobDev.NativeBuild do
   def classify_project_nif(entry), do: classify_project_nif(entry, File.cwd!())
 
   @doc false
-  @spec classify_project_nif(MobDev.StaticNifs.nif_entry(), Path.t()) ::
+  # `dep_dirs` are the dependency directories searched, last, for a crate the
+  # project ships no source for; they default to `nif_dep_dirs/0`'s answer for
+  # the entry (every dependency `Mix.Project.deps_paths/0` resolves, or none
+  # for a plugin-contributed NIF). Callers classifying many entries should
+  # compute `nif_dep_dirs/0` once and pass its answer.
+  @spec classify_project_nif(MobDev.StaticNifs.nif_entry(), Path.t(), [Path.t()] | nil) ::
           {:c, Path.t()} | {:rust, Path.t()} | {:zig, atom()} | :elixir_only
-  def classify_project_nif(entry, project_root) do
+  def classify_project_nif(entry, project_root, dep_dirs \\ nil) do
     name = to_string(entry.module)
     c_src = Path.join(project_root, "c_src/#{name}.c")
     rust_manifest = Path.join(project_root, "native/#{name}/Cargo.toml")
 
     cond do
       # C wins if both exist — the user has explicitly written C.
-      File.exists?(c_src) -> {:c, c_src}
-      File.exists?(rust_manifest) -> {:rust, rust_manifest}
-      true -> classify_via_zig_stub(name, project_root)
+      File.exists?(c_src) ->
+        {:c, c_src}
+
+      File.exists?(rust_manifest) ->
+        {:rust, rust_manifest}
+
+      true ->
+        with :elixir_only <- classify_via_zig_stub(name, project_root) do
+          case dep_rust_manifest(name, dep_dirs || nif_dep_dirs().(entry)) do
+            nil -> :elixir_only
+            manifest -> {:rust, manifest}
+          end
+        end
+    end
+  end
+
+  @doc false
+  # The dep dirs to search per static-NIF entry. Builds call it once per
+  # target, not per entry: activating plugins verifies every manifest. A
+  # plugin's NIF belongs to the plugin's own build; searching deps for it
+  # could link a second <module>_nif_init, so it gets none.
+  @spec nif_dep_dirs() :: (MobDev.StaticNifs.nif_entry() -> [Path.t()])
+  def nif_dep_dirs do
+    nif_dep_dirs(
+      MobDev.Plugin.Merge.nifs(MobDev.Plugin.activated()),
+      Map.values(Mix.Project.deps_paths())
+    )
+  end
+
+  @doc false
+  @spec nif_dep_dirs([map()], [Path.t()]) :: (MobDev.StaticNifs.nif_entry() -> [Path.t()])
+  def nif_dep_dirs(plugin_nifs, dep_dirs) do
+    plugin_modules = MapSet.new(plugin_nifs, & &1.module)
+    fn entry -> if MapSet.member?(plugin_modules, entry.module), do: [], else: dep_dirs end
+  end
+
+  # A Rustler NIF a dependency ships (e.g. mob_rapier's
+  # deps/mob_rapier/native/lab_physics): the host registers it in
+  # :static_nifs and the crate is cross-compiled from the dep, so the host
+  # needn't copy or symlink it into its own native/. :static_nifs names only
+  # the module, so two deps shipping the same crate name is ambiguous.
+  defp dep_rust_manifest(name, dep_dirs) do
+    candidates =
+      for dir <- dep_dirs,
+          manifest = Path.join(dir, "native/#{name}/Cargo.toml"),
+          File.exists?(manifest),
+          do: manifest
+
+    case Enum.sort(candidates) do
+      [] ->
+        nil
+
+      [manifest] ->
+        manifest
+
+      many ->
+        Mix.raise(
+          "static NIF #{name}: more than one dependency ships native/#{name}/Cargo.toml:\n" <>
+            Enum.map_join(many, "\n", &"  - #{&1}") <>
+            "\nRemove one of those dependencies or rename one crate."
+        )
     end
   end
 
@@ -3871,9 +3934,11 @@ defmodule MobDev.NativeBuild do
       project_nif_user_entries()
       |> Enum.filter(&MobDev.StaticNifs.on_platform?(&1, target_arch))
 
+    dep_dirs_for = nif_dep_dirs()
+
     {c_sources, rust_manifests, zig_modules} =
       Enum.reduce(entries, {[], [], []}, fn entry, {c_acc, rust_acc, zig_acc} ->
-        case classify_project_nif(entry, project_root) do
+        case classify_project_nif(entry, project_root, dep_dirs_for.(entry)) do
           {:c, path} ->
             {[{to_string(entry.module), path} | c_acc], rust_acc, zig_acc}
 
@@ -3938,12 +4003,14 @@ defmodule MobDev.NativeBuild do
       "--crate-type",
       "staticlib",
       "--manifest-path",
-      manifest
+      manifest,
+      "--target-dir",
+      rust_nif_target_dir(name)
     ]
 
     case System.cmd("cargo", args, stderr_to_stdout: true, into: IO.stream()) do
       {_, 0} ->
-        a = Path.expand("native/#{name}/target/#{target}/release/lib#{name}.a")
+        a = rust_nif_archive(rust_nif_target_dir(name), name, target)
 
         if File.exists?(a) do
           {:ok, a}
@@ -3961,6 +4028,20 @@ defmodule MobDev.NativeBuild do
            "    2. Cargo.toml's [lib] crate-type doesn't include \"staticlib\".\n" <>
            "    3. The Rust source has a compile error — see the cargo output above."}
     end
+  end
+
+  # Cargo builds every Rust NIF into the host's own build dir, not next to the
+  # crate (which for a dependency is inside deps/): a crate that is a
+  # workspace member or a set CARGO_TARGET_DIR would otherwise put the archive
+  # somewhere this build doesn't look.
+  defp rust_nif_target_dir(name),
+    do: Path.expand(Path.join(Mix.Project.build_path(), "mob_rust_nifs/#{name}"))
+
+  @doc false
+  # The static archive `cargo rustc --target-dir <target_dir>` writes.
+  @spec rust_nif_archive(Path.t(), String.t(), String.t()) :: Path.t()
+  def rust_nif_archive(target_dir, name, target) do
+    Path.join(target_dir, "#{target}/release/lib#{name}.a")
   end
 
   # Apple toolchains differ between simulator and device targets. Both

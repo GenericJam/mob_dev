@@ -1,3 +1,32 @@
+## [Unreleased]
+
+### Fixed
+
+- **Two plugins declaring the same Info.plist key no longer block the build
+  when the project's own `ios/Info.plist` sets that key (MOB-387).** Plugin
+  plist keys only fill gaps (PlistBuddy `Add` never overrides), so the host's
+  value always wins and the collision is moot. Activating `mob_bluetooth` and
+  `mob_midi` together (both declare `NSBluetoothAlwaysUsageDescription`)
+  raised "activated plugins conflict"; now `Validator.cross_validate/2` takes
+  `:host_plist_keys` and the native build passes the top-level keys of
+  `ios/Info.plist` (`Validator.host_plist_keys/1`, parsed with xmerl; a binary
+  plist via `plutil` where it exists). Keys the host doesn't set, and keys any
+  plugin declares as an array (merged into the host's array rather than
+  yielding to it), still conflict.
+- **A static Rust NIF a dependency ships is built (MOB-392).** A
+  `:static_nifs` entry whose crate lives in a dependency at
+  `native/<name>/Cargo.toml` (e.g. `mob_rapier`'s `lab_physics`) was
+  classified as Elixir-only and never cross-compiled, so the app crashed at
+  launch with `cannot locate symbol lab_physics_nif_init`. When the project
+  ships no C, Rust or Zig source for the NIF, every dependency
+  `Mix.Project.deps_paths/0` resolves (hex, git, path) is searched (not for
+  plugin-contributed NIFs, which the plugin build compiles); two dependencies
+  shipping the same crate name is a build error. Every Rust NIF now builds
+  into `_build/<env>/mob_rust_nifs/<name>` (`cargo --target-dir`) instead of
+  the crate's `target/`, so a workspace member or `CARGO_TARGET_DIR` no longer
+  misplaces the archive (existing `native/<name>/target/` dirs can be deleted).
+  `mix mob.doctor` checks the Rust Android targets for such crates too.
+
 ## [0.7.13] - 2026-10-03
 
 ### Added

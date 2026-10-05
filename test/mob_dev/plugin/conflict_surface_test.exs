@@ -99,6 +99,76 @@ defmodule MobDev.Plugin.ConflictSurfaceTest do
       assert Enum.any?(errs, &(&1 =~ "Info.plist key"))
     end
 
+    test "a duplicate Info.plist key the host's own Info.plist sets is no conflict" do
+      plugins =
+        two(
+          %{
+            ios: %{
+              plist_keys: %{NSBluetoothAlwaysUsageDescription: "A", NSCameraUsageDescription: "A"}
+            }
+          },
+          %{
+            ios: %{
+              plist_keys: %{NSBluetoothAlwaysUsageDescription: "B", NSCameraUsageDescription: "B"}
+            }
+          }
+        )
+
+      assert %{errors: [err]} =
+               Validator.cross_validate(plugins,
+                 host_plist_keys: ["NSBluetoothAlwaysUsageDescription"]
+               )
+
+      assert err =~ "NSCameraUsageDescription"
+    end
+
+    test "a host-set Info.plist key any plugin declares as an array still conflicts" do
+      # Plugin arrays are merged into the host's array, and between plugins the
+      # later value wins, so the other plugin's array would be silently lost.
+      array = %{ios: %{plist_keys: %{"UIBackgroundModes" => ["bluetooth-central"]}}}
+
+      for other <- [["location"], "scalar"], {a, b} <- [{:array, :other}, {:other, :array}] do
+        pick = %{array: array, other: %{ios: %{plist_keys: %{"UIBackgroundModes" => other}}}}
+
+        assert %{errors: [err]} =
+                 Validator.cross_validate(two(pick[a], pick[b]),
+                   host_plist_keys: ["UIBackgroundModes"]
+                 )
+
+        assert err =~ "UIBackgroundModes"
+      end
+    end
+
+    @tag :tmp_dir
+    test "host_plist_keys/1 lists the root dictionary's keys only", %{tmp_dir: dir} do
+      path = Path.join(dir, "Info.plist")
+
+      File.write!(path, """
+      <?xml version="1.0" encoding="UTF-8"?>
+      <plist version="1.0">
+      <dict>
+          <key>NSCameraUsageDescription</key>
+          <string>camera</string>
+          <key>UIApplicationSceneManifest</key>
+          <dict>
+              <key>UISceneConfigurations</key>
+              <dict><key>Inner</key><string>x</string></dict>
+          </dict>
+          <!-- <key>NSMicrophoneUsageDescription</key><string>off</string> -->
+          <key>Real</key>
+          <string><![CDATA[literal <key>Fake</key> text]]></string>
+          <key>NFCReaderUsageDescription</key>
+          <string>nfc</string>
+      </dict>
+      </plist>
+      """)
+
+      assert Enum.sort(Validator.host_plist_keys(path)) ==
+               ~w(NFCReaderUsageDescription NSCameraUsageDescription Real UIApplicationSceneManifest)
+
+      assert Validator.host_plist_keys(Path.join(dir, "missing.plist")) == []
+    end
+
     test "duplicate AndroidManifest component name across plugins" do
       plugins =
         same(%{
