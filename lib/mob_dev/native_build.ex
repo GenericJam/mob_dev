@@ -49,44 +49,7 @@ defmodule MobDev.NativeBuild do
 
     __apply_slim_env__(slim)
 
-    # Cross-plugin collisions (MOB-170) abort before anything is generated or
-    # compiled — otherwise a duplicate NIF/view key fails deep in zig/Gradle or
-    # one plugin's registration silently overwrites another's at runtime.
-    MobDev.Plugin.Validator.raise_on_cross_plugin_conflicts!(MobDev.Plugin.activated())
-
-    # Always regenerate the runtime plugin manifest from the CURRENT activated
-    # plugins before bundling priv — like the driver_tab, it's derived state, not
-    # a hand-maintained file. Regenerating on every build (not just when the
-    # `:plugins` list changes) means adding/changing a plugin's tier-3/4 sections
-    # can't silently ship a stale manifest (the lifecycle/settings/notification
-    # handlers just wouldn't activate on device, with no error).
-    regen_runtime_manifest!()
-
-    # Same treatment for the static-NIF driver table: it's derived state
-    # (mob.exs :static_nifs + the activated plugins' NIFs), but it used to be a
-    # checked-in artifact only `mix mob.regen_driver_tab` refreshed. Activating
-    # a NIF plugin against a stale table links the <module>_nif_init symbol but
-    # never registers it — every call then raises :nif_not_loaded at runtime
-    # with nothing pointing at the cause. Regenerate on every native build.
-    regen_driver_tab!()
-
-    # Tier-3 build-time file merges (platform-agnostic; run once before the
-    # per-platform builds): copy plugin migrations into the host migrations dir
-    # and plugin images into the host bundle assets. Fonts are merged per-platform
-    # (iOS Info.plist + bundle, Android assets) inside the build chains.
-    apply_plugin_migrations!()
-    apply_plugin_images!()
-
-    # Manual host-app obligations a plugin declared (e.g. an AndroidManifest
-    # <service> fragment the plugin system can't contribute) — print every
-    # build, because forgetting one builds + boots clean and only fails at
-    # first feature use (a SecurityException with nothing pointing here).
-    warn_host_requirements!()
-
-    # A dep that ships a NIF but isn't in `config :mob, :plugins` builds clean
-    # and boots clean — its on_load tolerates the missing NIF — and fails with
-    # :nif_not_loaded at the first call (MOB-281). Name it and the config line.
-    MobDev.Plugin.NifActivation.warn_inactive()
+    prepare_plugin_build_state!()
 
     results = []
 
@@ -279,47 +242,222 @@ defmodule MobDev.NativeBuild do
   defp label_platform("iOS" <> _), do: :ios
   defp label_platform(_), do: nil
 
+  # ── Plugin-derived build state ───────────────────────────────────────────────
+
+  @doc """
+  Regenerates every file derived from the activated plugins and checks them,
+  before anything is compiled or bundled. Shared by `build_all/1` and the
+  release pipelines (`MobDev.ReleaseAndroid.build_aab/1`,
+  `MobDev.Release.build_ipa/1`), so a release never ships the plugin set of
+  whatever dev build last ran in the checkout (MOB-404).
+  """
+  @spec prepare_plugin_build_state!() :: :ok
+  def prepare_plugin_build_state! do
+    # Cross-plugin collisions (MOB-170) abort before anything is generated or
+    # compiled — otherwise a duplicate NIF/view key fails deep in zig/Gradle or
+    # one plugin's registration silently overwrites another's at runtime.
+    MobDev.Plugin.Validator.raise_on_cross_plugin_conflicts!(MobDev.Plugin.activated())
+
+    # Always regenerate the runtime plugin manifest from the CURRENT activated
+    # plugins before bundling priv — like the driver_tab, it's derived state, not
+    # a hand-maintained file. Regenerating on every build (not just when the
+    # `:plugins` list changes) means adding/changing a plugin's tier-3/4 sections
+    # can't silently ship a stale manifest (the lifecycle/settings/notification
+    # handlers just wouldn't activate on device, with no error).
+    regen_runtime_manifest!()
+
+    # Same treatment for the static-NIF driver table: it's derived state
+    # (mob.exs :static_nifs + the activated plugins' NIFs), but it used to be a
+    # checked-in artifact only `mix mob.regen_driver_tab` refreshed. Activating
+    # a NIF plugin against a stale table links the <module>_nif_init symbol but
+    # never registers it — every call then raises :nif_not_loaded at runtime
+    # with nothing pointing at the cause. Regenerate on every native build.
+    regen_driver_tab!()
+
+    # Tier-3 build-time file merges (platform-agnostic; run once before the
+    # per-platform builds): copy plugin migrations into the host migrations dir
+    # and plugin images into the host bundle assets. Fonts are merged per-platform
+    # (iOS Info.plist + bundle, Android assets) inside the build chains.
+    apply_plugin_migrations!()
+    apply_plugin_images!()
+
+    # Manual host-app obligations a plugin declared (e.g. an AndroidManifest
+    # <service> fragment the plugin system can't contribute) — print every
+    # build, because forgetting one builds + boots clean and only fails at
+    # first feature use (a SecurityException with nothing pointing here).
+    warn_host_requirements!()
+
+    # A dep that ships a NIF but isn't in `config :mob, :plugins` builds clean
+    # and boots clean — its on_load tolerates the missing NIF — and fails with
+    # :nif_not_loaded at the first call (MOB-281). Name it and the config line.
+    MobDev.Plugin.NifActivation.warn_inactive()
+    :ok
+  end
+
   # ── Android ──────────────────────────────────────────────────────────────────
+
+  # Every ABI mob can build the app's native library for, with the target id
+  # the NIF/NxEigen/TFLite builders use. Mirrors the mob_new abiFilters.
+  @android_abis [
+    {"arm64-v8a", :android_arm64},
+    {"armeabi-v7a", :android_arm32},
+    {"x86_64", :android_x86_64}
+  ]
+  @android_abi_names Enum.map(@android_abis, &elem(&1, 0))
 
   defp build_android(cfg, device_id) do
     IO.puts("  Building Android APK...")
     bundle_id = cfg[:bundle_id] || MobDev.Config.bundle_id()
     apk = "android/app/build/outputs/apk/debug/app-debug.apk"
-    mob_dir = Path.expand(cfg[:mob_dir])
-    warn_missing_app_lifecycle_hooks(mob_dir)
 
-    with {:ok, otp_arm64} <- MobDev.OtpDownloader.ensure_android("arm64-v8a"),
-         {:ok, otp_arm32} <- MobDev.OtpDownloader.ensure_android("armeabi-v7a"),
-         {:ok, otp_x86_64} <- MobDev.OtpDownloader.ensure_android("x86_64"),
-         {:ok, python_android_bundle} <- maybe_ensure_python_android_bundle(),
-         :ok <- ensure_jni_libs(otp_arm64, "arm64-v8a"),
-         :ok <- ensure_jni_libs(otp_arm32, "armeabi-v7a"),
-         :ok <- ensure_jni_libs(otp_x86_64, "x86_64"),
-         :ok <- ensure_python_android_libs(python_android_bundle),
-         :ok <- install_nx_eigen_otp_lib(otp_arm64),
-         :ok <- install_nx_eigen_otp_lib(otp_arm32),
-         :ok <- zig_build_android_objects(mob_dir, otp_arm64, otp_arm32, otp_x86_64),
-         :ok <- apply_plugin_android_manifest!(),
-         :ok <- apply_android_url_schemes!(cfg),
-         :ok <- apply_plugin_gradle_deps!(),
-         :ok <- apply_plugin_android_kotlin!(),
-         :ok <- apply_plugin_android_res!(),
-         :ok <- apply_fonts_to_android!(),
+    with :ok <- apply_android_url_schemes!(cfg),
+         {:ok, otp} <- build_android_native(cfg),
          :ok <- gradle_assemble(),
          :ok <- adb_install_all(apk, bundle_id, device_id),
          :ok <-
            push_otp_release_android(
              bundle_id,
              cfg[:elixir_lib],
-             otp_arm64,
-             otp_arm32,
-             otp_x86_64,
+             otp["arm64-v8a"],
+             otp["armeabi-v7a"],
+             otp["x86_64"],
              device_id
            ) do
       {:ok, "Android"}
     else
       {:error, reason} -> {:error, "Android", reason}
     end
+  end
+
+  @doc """
+  Everything the Android build does before Gradle runs: fetch the OTP runtime
+  per ABI, stage the ERTS helpers into `jniLibs/`, compile the app's native
+  library (`jniLibs/<abi>/lib<app>.so`, with every activated plugin's JNI and
+  NIF code linked in) and merge the plugins' manifest, Gradle, Kotlin, resource
+  and font contributions into `android/`. Needs no device.
+
+  `mix mob.deploy --native` and `mix mob.release --android` both run it, so a
+  release links the same native code a dev build would instead of whatever
+  `.so` the last deploy left in `jniLibs/` (MOB-404).
+
+  Options:
+
+    * `:abis` — the ABIs to build, all of which must succeed (the release
+      passes Gradle's `abiFilters`, see `release_android_abis/1`). Without it,
+      every ABI mob supports is built and one the app's `build.zig` predates
+      is skipped with a warning (dev builds).
+
+  Returns `{:ok, %{abi => otp_dir}}` for the ABIs built.
+  """
+  @spec build_android_native(keyword(), keyword()) ::
+          {:ok, %{String.t() => Path.t()}} | {:error, String.t()}
+  def build_android_native(cfg, opts \\ []) do
+    {abis, strict?} =
+      case Keyword.fetch(opts, :abis) do
+        {:ok, abis} -> {abis, true}
+        :error -> {@android_abi_names, false}
+      end
+
+    mob_dir = Path.expand(cfg[:mob_dir])
+    warn_missing_app_lifecycle_hooks(mob_dir)
+
+    with {:ok, otp} <- ensure_android_otps(abis),
+         {:ok, python_android_bundle} <- maybe_ensure_python_android_bundle(),
+         :ok <- each_ok(otp, fn {abi, dir} -> ensure_jni_libs(dir, abi) end),
+         :ok <- ensure_python_android_libs(python_android_bundle),
+         :ok <- install_nx_eigen_otp_libs(otp),
+         :ok <- zig_build_android_objects(mob_dir, otp, abis, strict?),
+         :ok <- apply_plugin_android_manifest!(),
+         :ok <- apply_plugin_gradle_deps!(),
+         :ok <- apply_plugin_android_kotlin!(),
+         :ok <- apply_plugin_android_res!(),
+         :ok <- apply_fonts_to_android!() do
+      {:ok, otp}
+    end
+  end
+
+  defp ensure_android_otps(abis) do
+    Enum.reduce_while(abis, {:ok, %{}}, fn abi, {:ok, acc} ->
+      case MobDev.OtpDownloader.ensure_android(abi) do
+        {:ok, dir} -> {:cont, {:ok, Map.put(acc, abi, dir)}}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+  end
+
+  # NxEigen only ships 32/64-bit ARM builds; x86_64 never got its OTP lib.
+  defp install_nx_eigen_otp_libs(otp) do
+    each_ok(otp, fn
+      {abi, dir} when abi in ["arm64-v8a", "armeabi-v7a"] -> install_nx_eigen_otp_lib(dir)
+      _ -> :ok
+    end)
+  end
+
+  defp each_ok(enum, fun) do
+    Enum.reduce_while(enum, :ok, fn item, :ok ->
+      case fun.(item) do
+        :ok -> {:cont, :ok}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+  end
+
+  @doc """
+  The ABIs `mix mob.release --android` must build: every entry of the app's
+  Gradle `abiFilters` (all ABIs mob supports when unset), since Gradle packages
+  `jniLibs/<abi>/lib<app>.so` for each of them and an ABI left unbuilt would
+  ship a stale library. Errors when a filter names an ABI mob can't build.
+  """
+  @spec release_android_abis(Path.t()) :: {:ok, [String.t()]} | {:error, String.t()}
+  def release_android_abis(project_dir \\ File.cwd!()) do
+    ["build.gradle", "build.gradle.kts"]
+    |> Enum.find_value(fn name ->
+      case File.read(Path.join([project_dir, "android/app", name])) do
+        {:ok, src} -> android_abi_filters(src)
+        _ -> nil
+      end
+    end)
+    |> __release_abis__()
+  end
+
+  @doc false
+  # Pure kernel of release_android_abis/1; `filters` is nil when the app has
+  # no build.gradle(.kts).
+  @spec __release_abis__([String.t()] | nil) :: {:ok, [String.t()]} | {:error, String.t()}
+  def __release_abis__(nil),
+    do: {:error, "android/app/build.gradle(.kts) not found — can't tell which ABIs to build."}
+
+  def __release_abis__([]), do: {:ok, @android_abi_names}
+
+  def __release_abis__(filters) do
+    case filters -- @android_abi_names do
+      [] ->
+        {:ok, filters}
+
+      unknown ->
+        {:error,
+         "abiFilters lists #{Enum.join(unknown, ", ")}, which mob can't build native code for " <>
+           "(supported: #{Enum.join(@android_abi_names, ", ")}). Remove it from " <>
+           "android/app/build.gradle, or the release would ship a stale or missing lib for it."}
+    end
+  end
+
+  @doc false
+  # The ABIs named by `abiFilters` in an app build.gradle / build.gradle.kts
+  # (`abiFilters 'a', 'b'`, `abiFilters += listOf("a")`,
+  # `abiFilters.addAll(listOf("a"))`), in order, deduplicated. [] when unset.
+  @spec android_abi_filters(String.t()) :: [String.t()]
+  def android_abi_filters(gradle_src) do
+    gradle_src
+    |> String.split("\n")
+    |> Enum.map(&String.replace(&1, ~r{//.*$}, ""))
+    |> Enum.filter(&String.contains?(&1, "abiFilters"))
+    |> Enum.flat_map(fn line ->
+      [_before, rest] = String.split(line, "abiFilters", parts: 2)
+      Regex.scan(~r/["']([A-Za-z0-9_-]+)["']/, rest, capture: :all_but_first)
+    end)
+    |> List.flatten()
+    |> Enum.uniq()
   end
 
   # An app that upgraded mob but kept its pre-0.9.6 MainActivity.kt / beam_jni.c
@@ -347,7 +485,10 @@ defmodule MobDev.NativeBuild do
   # Skips silently if the project has no jni/build.zig (older projects from
   # before this iter still work via CMake compiling driver_tab_android.c
   # directly through the Phase 0 fallback).
-  defp zig_build_android_objects(mob_dir, otp_arm64, otp_arm32, otp_x86_64) do
+  #
+  # `strict?` (release): every ABI in `abis` must build; an ABI build.zig
+  # doesn't handle is an error, not a skip.
+  defp zig_build_android_objects(mob_dir, otp, abis, strict?) do
     build_zig = "android/app/src/main/jni/build.zig"
     # The CMake fallback (used when zig can't run) tries to compile this C
     # source straight out of the mob dep. mob 0.7+ ships it as .zig instead,
@@ -356,98 +497,118 @@ defmodule MobDev.NativeBuild do
 
     case zig_build_plan(File.exists?(build_zig), Toolchain.zig_status(), File.exists?(legacy_c)) do
       :skip_no_build_zig ->
-        :ok
+        remove_stale_app_libs(abis)
 
       :legacy_cmake ->
         IO.puts(
           "  #{IO.ANSI.yellow()}zig not on PATH — skipping build.zig step (CMake will compile sources directly)#{IO.ANSI.reset()}"
         )
 
-        :ok
+        remove_stale_app_libs(abis)
 
       {:zig_required, zig_status} ->
         {:error, zig_required_message(zig_status)}
 
       :run_zig ->
         driver_tab = resolve_driver_tab_android(mob_dir)
-        erts_vsn = detect_erts_vsn(otp_arm64) || "erts-17.0"
+        erts_vsn = detect_erts_vsn(otp |> Map.values() |> List.first()) || "erts-17.0"
 
         IO.puts("  Compiling Android C objects via zig build (per-ABI)...")
 
-        # Cross-compile project Rust/Zig NIFs once per ABI. Each
-        # invocation targets `aarch64-linux-android` or
-        # `armv7-linux-androideabi` (Rust) / `arm-linux-androideabi`
-        # (Zig) and produces its own per-target `.a` paths. NIFs whose
-        # `mob.exs` `:archs` entry lists `[:android_arm64]` only
-        # appear in the arm64 build; same for arm32; `[:all]` and
-        # `[:android]` land in both. The per-ABI build.zig invocation
-        # in `run_zig_android_objects` then receives the right archive
-        # set and links them into its `lib<app>.so`.
-        with {:ok, arm64_nif_args} <- project_nif_zig_args(:android_arm64),
-             {:ok, arm32_nif_args} <- project_nif_zig_args(:android_arm32),
-             {:ok, x86_64_nif_args} <- project_nif_zig_args(:android_x86_64),
-             {:ok, arm64_nxeigen} <- maybe_build_nxeigen(:android_arm64),
-             {:ok, arm32_nxeigen} <- maybe_build_nxeigen(:android_arm32),
-             {:ok, arm64_tflite} <- maybe_build_tflite(:android_arm64),
-             {:ok, arm32_tflite} <- maybe_build_tflite(:android_arm32) do
-          build_zig_src =
-            case inject_page_size_flag(File.read!(build_zig)) do
-              {:already, src} ->
-                src
+        build_zig_src =
+          case inject_page_size_flag(File.read!(build_zig)) do
+            {:already, src} ->
+              src
 
-              {:patched, src} ->
-                File.write!(build_zig, src)
+            {:patched, src} ->
+              File.write!(build_zig, src)
 
-                IO.puts(
-                  "  Added 16 KB page-size alignment to #{build_zig} " <>
-                    "(Android 15+ / Play requirement; build.zig predated the flag)."
-                )
+              IO.puts(
+                "  Added 16 KB page-size alignment to #{build_zig} " <>
+                  "(Android 15+ / Play requirement; build.zig predated the flag)."
+              )
 
-                src
+              src
 
-              {:no_match, src} ->
-                IO.puts(
-                  "  #{IO.ANSI.yellow()}Could not auto-add the 16 KB page-size flag to " <>
-                    "#{build_zig} — add -Wl,-z,max-page-size=16384 to the -shared link " <>
-                    "manually, or regenerate build.zig from mob_new.#{IO.ANSI.reset()}"
-                )
+            {:no_match, src} ->
+              IO.puts(
+                "  #{IO.ANSI.yellow()}Could not auto-add the 16 KB page-size flag to " <>
+                  "#{build_zig} — add -Wl,-z,max-page-size=16384 to the -shared link " <>
+                  "manually, or regenerate build.zig from mob_new.#{IO.ANSI.reset()}"
+              )
 
-                src
-            end
+              src
+          end
 
-          [
-            {otp_arm64, "arm64-v8a", arm64_nif_args, arm64_nxeigen, arm64_tflite},
-            {otp_arm32, "armeabi-v7a", arm32_nif_args, arm32_nxeigen, arm32_tflite},
-            {otp_x86_64, "x86_64", x86_64_nif_args, nil, nil}
-          ]
-          |> Enum.filter(fn {_otp, abi, _nif, _nx, _tf} ->
-            build_zig_supports_abi?(build_zig_src, abi) ||
-              warn_skip_abi(build_zig, abi)
-          end)
-          |> Enum.reduce_while(:ok, fn {otp_dir, abi, abi_nif_args, abi_nxeigen, abi_tflite},
-                                       _acc ->
-            # Drop the TFLite runtime .so into jniLibs/<abi>/ alongside
-            # the static-NIF archive that gets linked into native-lib.
-            # No-op when TFLite isn't enabled.
-            :ok = copy_tflite_runtime_lib_android(abi_tflite, abi)
+        supported = Enum.filter(abis, &build_zig_supports_abi?(build_zig_src, &1))
 
-            case run_zig_android_objects(
-                   build_zig,
-                   abi,
-                   otp_dir,
-                   erts_vsn,
-                   mob_dir,
-                   driver_tab,
-                   abi_nif_args,
-                   abi_nxeigen,
-                   abi_tflite
-                 ) do
-              :ok -> {:cont, :ok}
-              {:error, reason} -> {:halt, {:error, reason}}
-            end
-          end)
+        case abis -- supported do
+          [_ | _] = unhandled when strict? ->
+            {:error,
+             "#{build_zig} doesn't handle ABI #{Enum.join(unhandled, ", ")}, which " <>
+               "abiFilters ships. Regenerate build.zig from mob_new >= 0.4.5, or drop the " <>
+               "ABI from abiFilters in android/app/build.gradle."}
+
+          unhandled ->
+            Enum.each(unhandled, &warn_skip_abi(build_zig, &1))
+
+            each_ok(
+              supported,
+              &build_android_abi(&1, otp[&1], build_zig, erts_vsn, mob_dir, driver_tab)
+            )
         end
     end
+  end
+
+  # Cross-compile project Rust/Zig NIFs for the ABI's target
+  # (`aarch64-linux-android`, `armv7-linux-androideabi` / `arm-linux-androideabi`,
+  # `x86_64-linux-android`), producing its own per-target `.a` paths. NIFs whose
+  # `mob.exs` `:archs` entry lists `[:android_arm64]` only appear in the arm64
+  # build; same for arm32; `[:all]` and `[:android]` land in every ABI. The
+  # build.zig invocation then links them into that ABI's `lib<app>.so`.
+  defp build_android_abi(abi, otp_dir, build_zig, erts_vsn, mob_dir, driver_tab) do
+    {^abi, target} = List.keyfind(@android_abis, abi, 0)
+
+    with {:ok, nif_args} <- project_nif_zig_args(target),
+         {:ok, nxeigen} <- arm_only(target, &maybe_build_nxeigen/1),
+         {:ok, tflite} <- arm_only(target, &maybe_build_tflite/1) do
+      # Drop the TFLite runtime .so into jniLibs/<abi>/ alongside
+      # the static-NIF archive that gets linked into native-lib.
+      # No-op when TFLite isn't enabled.
+      :ok = copy_tflite_runtime_lib_android(tflite, abi)
+
+      run_zig_android_objects(
+        build_zig,
+        abi,
+        otp_dir,
+        erts_vsn,
+        mob_dir,
+        driver_tab,
+        nif_args,
+        nxeigen,
+        tflite
+      )
+    end
+  end
+
+  defp arm_only(:android_x86_64, _build), do: {:ok, nil}
+  defp arm_only(target, build), do: build.(target)
+
+  # Without a zig build, CMake imports jniLibs/<abi>/lib<app>.so when one
+  # exists and compiles the sources only when it doesn't. Whatever is there is
+  # left over from an earlier zig build, so remove it: shipping it would link a
+  # previous plugin set (MOB-404).
+  defp remove_stale_app_libs(abis) do
+    app_name = Mix.Project.config() |> Keyword.fetch!(:app) |> Atom.to_string()
+
+    for abi <- abis,
+        so = Path.join(["android/app/src/main/jniLibs", abi, "lib#{app_name}.so"]),
+        File.exists?(so) do
+      File.rm!(so)
+      IO.puts("  removed stale #{so} (CMake compiles it from source)")
+    end
+
+    :ok
   end
 
   # Pure kernel behind zig_build_android_objects/4, extracted so the

@@ -46,8 +46,11 @@ defmodule MobDev.Release do
     slim = Keyword.get(opts, :slim, true)
     project_swift_sources = MobDev.NativeBuild.project_swift_sources(cfg)
 
+    # Same plugin-derived files a dev build regenerates (driver_tab_ios.c, the
+    # runtime manifest, ...), so the release never links or bundles the plugin
+    # set of the last dev build (MOB-404). Also refuses cross-plugin conflicts.
+    MobDev.NativeBuild.prepare_plugin_build_state!()
     activated = MobDev.Plugin.activated()
-    MobDev.Plugin.Validator.raise_on_cross_plugin_conflicts!(activated)
 
     # Before signing resolution, the OTP download and the script/bootstrap
     # writes, so a plugin the gate refuses leaves nothing built or downloaded.

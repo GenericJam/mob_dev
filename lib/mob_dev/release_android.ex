@@ -6,18 +6,23 @@ defmodule MobDev.ReleaseAndroid do
 
     1. Regenerate the `mob.exs` `url_schemes` intent filter in
        `AndroidManifest.xml` (`MobDev.UrlSchemes`), so the release doesn't
-       depend on a dev build having stamped the current setting. Then
-       download the Android OTP runtime (arm64) if not already cached.
-    2. Copy the OTP tree to a temp staging dir and add:
+       depend on a dev build having stamped the current setting.
+    2. Regenerate the plugin-derived files (runtime manifest, driver tables,
+       migrations, images) and run the same native build as
+       `mix mob.deploy --native` (`MobDev.NativeBuild.build_android_native/2`)
+       for every Gradle `abiFilters` ABI: `jniLibs/<abi>/lib<app>.so` is
+       rebuilt with the current plugins linked in, never reused from the last
+       deploy (MOB-404). No device needed.
+    3. Copy the arm64 OTP tree to a temp staging dir and add:
        - App + dep BEAMs (flattened into `{app_name}/`)
        - App `priv/` → `{app_name}/priv/`
        - exqlite BEAMs → `lib/exqlite-{vsn}/ebin/` (OTP lib structure needed
          for `:code.lib_dir(:exqlite)` to resolve correctly at runtime)
-    3. Run `MobDev.OtpAssetBundle.build/2` — strips unused OTP libs (never
+    4. Run `MobDev.OtpAssetBundle.build/2` — strips unused OTP libs (never
        one the app's runtime dependency closure needs, see
        `MobDev.OtpRequiredApps`) and optional BEAM chunks, then zips the tree
        to `src/release/assets/otp.zip`.
-    4. Run `./gradlew bundleRelease` — signs the AAB using the keystore
+    5. Run `./gradlew bundleRelease` — signs the AAB using the keystore
        configured in `android/keystore.properties`.
 
   `MobBridge.extractOtpIfNeeded()` (Kotlin) extracts `otp.zip` into
@@ -46,12 +51,15 @@ defmodule MobDev.ReleaseAndroid do
     app_name = Mix.Project.config()[:app] |> to_string()
     slim = Keyword.get(opts, :slim, true)
 
-    MobDev.Plugin.Validator.raise_on_cross_plugin_conflicts!(MobDev.Plugin.activated())
-
     with :ok <- check_android_project(),
-         :ok <- MobDev.NativeBuild.apply_android_url_schemes!(MobDev.Config.load_mob_config()),
-         log("Ensuring Android OTP runtime..."),
-         {:ok, otp_arm64} <- MobDev.OtpDownloader.ensure_android("arm64-v8a"),
+         cfg = MobDev.NativeBuild.__load_config__(),
+         :ok <- MobDev.MobDirCheck.check!(cfg[:mob_dir]),
+         :ok <- MobDev.NativeBuild.apply_android_url_schemes!(cfg),
+         :ok <- MobDev.NativeBuild.prepare_plugin_build_state!(),
+         {:ok, abis} <- MobDev.NativeBuild.release_android_abis(),
+         log("Building native library for #{Enum.join(abis, ", ")}..."),
+         {:ok, otp} <- MobDev.NativeBuild.build_android_native(cfg, abis: abis),
+         {:ok, otp_arm64} <- release_otp(otp),
          log("Staging OTP tree + app BEAMs..."),
          {:ok, staging} <- stage_otp_tree(otp_arm64, app_name),
          log("Building otp.zip (stripping unused OTP libs)..."),
@@ -67,6 +75,11 @@ defmodule MobDev.ReleaseAndroid do
       {:ok, aab}
     end
   end
+
+  # otp.zip ships the arm64 OTP tree (BEAMs are ABI-independent; each ABI's
+  # ERTS helpers ride in jniLibs). Reuse the native build's copy.
+  defp release_otp(%{"arm64-v8a" => dir}), do: {:ok, dir}
+  defp release_otp(_otp), do: MobDev.OtpDownloader.ensure_android("arm64-v8a")
 
   # ── Staging ──────────────────────────────────────────────────────────────────
 
