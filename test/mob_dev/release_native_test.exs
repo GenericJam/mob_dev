@@ -60,6 +60,16 @@ defmodule MobDev.ReleaseNativeTest do
       assert NativeBuild.android_abi_filters(kts) == ["armeabi-v7a", "x86_64"]
     end
 
+    test "reads Groovy list and Kotlin mutable-collection forms" do
+      assert NativeBuild.android_abi_filters("abiFilters.addAll(['arm64-v8a', 'x86_64'])") ==
+               ["arm64-v8a", "x86_64"]
+
+      assert NativeBuild.android_abi_filters("abiFilters = ['arm64-v8a']") == ["arm64-v8a"]
+
+      assert NativeBuild.android_abi_filters(~s|abiFilters += mutableListOf("armeabi-v7a")|) ==
+               ["armeabi-v7a"]
+    end
+
     test "unset gives []" do
       assert NativeBuild.android_abi_filters("android { compileSdk 35 }") == []
     end

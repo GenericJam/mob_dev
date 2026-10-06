@@ -451,7 +451,7 @@ defmodule MobDev.NativeBuild do
   def android_abi_filters(gradle_src) do
     uncommented = String.replace(gradle_src, ~r{//[^\n]*}, "")
 
-    ~r/abiFilters(?:\s|\+=|=|\.addAll|\.add|\(|listOf|setOf|mutableSetOf|arrayOf)*((?:["'][\w-]+["'][\s,]*)+)/
+    ~r/abiFilters(?:\s|\+=|=|\.addAll|\.add|\(|\[|[A-Za-z]*Of)*((?:["'][\w-]+["'][\s,]*)+)/
     |> Regex.scan(uncommented, capture: :all_but_first)
     |> Enum.flat_map(fn [args] ->
       Regex.scan(~r/["']([\w-]+)["']/, args, capture: :all_but_first)
