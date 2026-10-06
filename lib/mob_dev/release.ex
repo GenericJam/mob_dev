@@ -60,6 +60,10 @@ defmodule MobDev.Release do
 
     with :ok <- check_macos(),
          :ok <- check_xcrun(),
+         # The plugin-derived files a dev build regenerates (driver_tab_ios.c,
+         # the runtime manifest, ...), so the release never links or bundles
+         # the plugin set of the last dev build (MOB-404).
+         :ok <- MobDev.NativeBuild.prepare_plugin_build_state!(),
          :ok <- check_driver_table(),
          {:ok, cfg} <- resolve_distribution_signing(cfg),
          {:ok, otp_root} <- MobDev.OtpDownloader.ensure_ios_device(),

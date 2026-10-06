@@ -1,3 +1,24 @@
+## [Unreleased]
+
+### Fixed
+
+- **`mix mob.release` builds the native code from the current plugin set
+  (MOB-404).** `mix mob.release --android` never rebuilt the native library:
+  Gradle imported whatever `jniLibs/<abi>/lib<app>.so` the last
+  `mix mob.deploy --native` in the checkout left behind, so a release after
+  adding or bumping a native plugin shipped a stale `.so` and crashed at
+  launch (Operator 1.0.0 with `mob_sensors`: `UnsatisfiedLinkError …
+  MobSensorsBridge.nativeRegister()`). The release now runs the same native
+  build as `mix mob.deploy --native` (`MobDev.NativeBuild.build_android_native/2`,
+  factored out of the deploy path; no device needed) for every Gradle
+  `abiFilters` ABI before `bundleRelease`, and refuses an ABI it can't build
+  instead of shipping a leftover library. When zig isn't used, a leftover
+  `lib<app>.so` is removed so CMake compiles it from source. Both release
+  pipelines (Android and iOS) now also regenerate the plugin-derived files a
+  dev build does (`MobDev.NativeBuild.prepare_plugin_build_state!/0`): the
+  iOS release linked the checked-in `driver_tab_ios.c` as is, so a NIF plugin
+  added since it was last generated linked but never registered.
+
 ## [0.7.15] - 2026-10-05
 
 ### Fixed
