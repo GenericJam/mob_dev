@@ -130,9 +130,52 @@ defmodule MobDev.OtpAssetBundleTest do
         File.rm(target_zip)
       end
     end
+
+    test "never strips an OTP lib the app's .app closure needs, transitively" do
+      # The slim-release regression: an app listing :inets failed to start on
+      # the device with {:inets, {~c"no such file or directory", ~c"inets.app"}}
+      # because inets is in the default strip list.
+      source = build_fake_otp_tree()
+
+      write_app(source, "inets", "9.7",
+        applications: [:kernel, :stdlib, :runtime_tools],
+        included_applications: [:tftp]
+      )
+
+      write_app(source, "runtime_tools", "2.4", applications: [:kernel])
+      write_app(source, "tftp", "1.3", applications: [:kernel])
+      write_app(source, "ftp", "1.2.5", applications: [:kernel])
+
+      target_zip =
+        Path.join(System.tmp_dir!(), "mob_otp_test_required_#{:rand.uniform(999_999)}.zip")
+
+      try do
+        assert {:ok, info} =
+                 OtpAssetBundle.build(source, target_zip, required_apps: ["my_app", "inets"])
+
+        {listing, 0} = System.cmd("unzip", ["-l", target_zip], stderr_to_stdout: true)
+
+        assert listing =~ "lib/inets-9.7/ebin/inets.app"
+        assert listing =~ "lib/runtime_tools-2.4/ebin/runtime_tools.app"
+        assert listing =~ "lib/tftp-1.3/ebin/tftp.app"
+        refute listing =~ "lib/ftp-1.2.5/"
+        refute listing =~ "lib/megaco-1.0.0/"
+        assert Enum.sort(info.kept_required) == ["inets", "runtime_tools", "tftp"]
+      after
+        File.rm_rf!(source)
+        File.rm(target_zip)
+      end
+    end
   end
 
   # ── Helpers ────────────────────────────────────────────────────────────
+
+  defp write_app(root, name, vsn, props) do
+    ebin = Path.join(root, "lib/#{name}-#{vsn}/ebin")
+    File.mkdir_p!(ebin)
+    term = {:application, String.to_atom(name), [{:vsn, ~c"#{vsn}"} | props]}
+    File.write!(Path.join(ebin, "#{name}.app"), :io_lib.format("~p.~n", [term]))
+  end
 
   defp build_fake_otp_tree do
     root = Path.join(System.tmp_dir!(), "mob_otp_fake_#{:rand.uniform(999_999)}")

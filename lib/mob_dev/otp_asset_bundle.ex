@@ -32,6 +32,10 @@ defmodule MobDev.OtpAssetBundle do
 
   1. **Whole OTP libs the framework doesn't use** — `megaco`, `runtime_tools`,
      `wx`, `observer`, `debugger`, etc. These are dead weight in a Mob app.
+     A lib in that list is kept when the app needs it: anything in the
+     `:required_apps` closure (`MobDev.OtpRequiredApps`). Stripping a lib a
+     shipped app lists in its `.app` makes starting that app fail on the
+     device, e.g. `{:inets, {~c"no such file or directory", ~c"inets.app"}}`.
   2. **Standalone executables** — `priv/bin/*` and `erts-*/bin/*`. The few
      that Mob actually executes (`erl_child_setup`, `inet_gethost`, `epmd`)
      are packaged separately in `jniLibs/<abi>/` as `lib<name>.so` so they
@@ -55,12 +59,18 @@ defmodule MobDev.OtpAssetBundle do
   Builds the OTP asset zip from `source_otp_tree` into `target_zip_path`.
 
   Returns `{:ok, %{zipped_files: count, original_size_kb: integer,
-  zip_size_kb: integer}}` on success, `{:error, reason}` on failure.
+  zip_size_kb: integer, kept_required: [String.t()]}}` on success,
+  `{:error, reason}` on failure. `kept_required` lists the libs of the strip
+  set kept because the app needs them.
 
   ## Options
 
+    * `:required_apps` — names of the apps the release starts (normally
+      `MobDev.HotPush.runtime_lib_names/0`). They and everything their `.app`
+      files in the OTP tree need, transitively, are never stripped.
     * `:strip_extra_prefixes` — additional OTP lib prefixes to drop on top of
-      the default list. Atoms or strings.
+      the default list. Atoms or strings. Explicit, so it wins over
+      `:required_apps`.
     * `:keep_prefixes` — prefixes to KEEP even if in the default strip list.
       Lets a specific app opt back into a stripped lib.
   """
@@ -68,11 +78,13 @@ defmodule MobDev.OtpAssetBundle do
           {:ok, map} | {:error, term}
   def build(source_otp_tree, target_zip_path, opts \\ []) do
     with :ok <- check_source(source_otp_tree),
-         {:ok, staging} <- stage_and_strip(source_otp_tree, opts),
+         {:ok, staging, kept_required} <- stage_and_strip(source_otp_tree, opts),
          {:ok, info} <- zip_staging(staging, target_zip_path) do
       File.rm_rf!(staging)
       original_kb = du_kb(source_otp_tree)
-      {:ok, Map.put(info, :original_size_kb, original_kb)}
+
+      {:ok,
+       info |> Map.put(:original_size_kb, original_kb) |> Map.put(:kept_required, kept_required)}
     end
   end
 
@@ -115,15 +127,16 @@ defmodule MobDev.OtpAssetBundle do
         # Mix.install) — we can't know which OTP libs (inets, ssl, xmerl,
         # runtime_tools, …) a user's deps will need, so stripping any is unsafe.
         if Keyword.get(opts, :slim, true) do
-          prefixes = compute_strip_set(opts)
+          {prefixes, kept_required} = compute_strip_set(staging, opts)
           strip_otp_libs(staging, prefixes)
           strip_standalone_execs(staging)
           strip_static_archives(staging)
           strip_source_and_headers(staging)
           strip_beam_chunks(staging)
+          {:ok, staging, kept_required}
+        else
+          {:ok, staging, []}
         end
-
-        {:ok, staging}
 
       {out, _} ->
         File.rm_rf!(staging)
@@ -167,10 +180,15 @@ defmodule MobDev.OtpAssetBundle do
     :ok
   end
 
-  defp compute_strip_set(opts) do
+  # Returns {prefixes to strip, default prefixes kept because the app needs
+  # them}. Precedence, low to high: the default list, minus the app's required
+  # closure, plus :strip_extra_prefixes, minus :keep_prefixes.
+  defp compute_strip_set(staging, opts) do
     extra = opts |> Keyword.get(:strip_extra_prefixes, []) |> Enum.map(&to_string/1)
     keep = opts |> Keyword.get(:keep_prefixes, []) |> Enum.map(&to_string/1)
-    (@stripped_lib_prefixes ++ extra) -- keep
+    required = MobDev.OtpRequiredApps.closure(staging, Keyword.get(opts, :required_apps, []))
+    {kept_required, defaults} = Enum.split_with(@stripped_lib_prefixes, &(&1 in required))
+    {(defaults ++ extra) -- keep, kept_required -- extra}
   end
 
   defp strip_otp_libs(staging, prefixes) do
