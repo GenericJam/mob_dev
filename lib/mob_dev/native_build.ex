@@ -445,16 +445,16 @@ defmodule MobDev.NativeBuild do
   @doc false
   # The ABIs named by `abiFilters` in an app build.gradle / build.gradle.kts
   # (`abiFilters 'a', 'b'`, `abiFilters += listOf("a")`,
-  # `abiFilters.addAll(listOf("a"))`), in order, deduplicated. [] when unset.
+  # `abiFilters.addAll(listOf("a"))`, argument lists split over lines), in
+  # order, deduplicated. [] when unset.
   @spec android_abi_filters(String.t()) :: [String.t()]
   def android_abi_filters(gradle_src) do
-    gradle_src
-    |> String.split("\n")
-    |> Enum.map(&String.replace(&1, ~r{//.*$}, ""))
-    |> Enum.filter(&String.contains?(&1, "abiFilters"))
-    |> Enum.flat_map(fn line ->
-      [_before, rest] = String.split(line, "abiFilters", parts: 2)
-      Regex.scan(~r/["']([A-Za-z0-9_-]+)["']/, rest, capture: :all_but_first)
+    uncommented = String.replace(gradle_src, ~r{//[^\n]*}, "")
+
+    ~r/abiFilters(?:\s|\+=|=|\.addAll|\.add|\(|listOf|setOf|mutableSetOf|arrayOf)*((?:["'][\w-]+["'][\s,]*)+)/
+    |> Regex.scan(uncommented, capture: :all_but_first)
+    |> Enum.flat_map(fn [args] ->
+      Regex.scan(~r/["']([\w-]+)["']/, args, capture: :all_but_first)
     end)
     |> List.flatten()
     |> Enum.uniq()
@@ -545,9 +545,10 @@ defmodule MobDev.NativeBuild do
         case abis -- supported do
           [_ | _] = unhandled when strict? ->
             {:error,
-             "#{build_zig} doesn't handle ABI #{Enum.join(unhandled, ", ")}, which " <>
-               "abiFilters ships. Regenerate build.zig from mob_new >= 0.4.5, or drop the " <>
-               "ABI from abiFilters in android/app/build.gradle."}
+             "#{build_zig} doesn't handle ABI #{Enum.join(unhandled, ", ")}, which the " <>
+               "release must build: Gradle packages every abiFilters ABI (every ABI when " <>
+               "abiFilters is unset). Regenerate build.zig from mob_new >= 0.4.5, or list " <>
+               "only the ABIs it handles in abiFilters (android/app/build.gradle)."}
 
           unhandled ->
             Enum.each(unhandled, &warn_skip_abi(build_zig, &1))
@@ -657,7 +658,8 @@ defmodule MobDev.NativeBuild do
 
     #{Toolchain.zig_install_instructions()}
 
-    Then re-run `mix mob.deploy --native --android`.
+    Then re-run the build (`mix mob.deploy --native --android`, or
+    `mix mob.release --android`).
     Verify your toolchain any time with `mix mob.doctor`.\
     """
   end

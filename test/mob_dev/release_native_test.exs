@@ -39,6 +39,27 @@ defmodule MobDev.ReleaseNativeTest do
       assert NativeBuild.android_abi_filters(gradle) == ["arm64-v8a"]
     end
 
+    test "reads an argument list split over several lines" do
+      groovy = """
+      ndk {
+          abiFilters "arm64-v8a",
+                     "x86_64"
+      }
+      """
+
+      kts = """
+      ndk {
+          abiFilters += listOf(
+              "armeabi-v7a",
+              "x86_64",
+          )
+      }
+      """
+
+      assert NativeBuild.android_abi_filters(groovy) == ["arm64-v8a", "x86_64"]
+      assert NativeBuild.android_abi_filters(kts) == ["armeabi-v7a", "x86_64"]
+    end
+
     test "unset gives []" do
       assert NativeBuild.android_abi_filters("android { compileSdk 35 }") == []
     end
@@ -96,10 +117,11 @@ defmodule MobDev.ReleaseNativeTest do
       assert File.exists?("priv/generated/mob_plugins.exs")
     end
 
+    # Elsewhere the pipeline stops at the macOS check, before this step.
+    @tag :macos_only
     test "mix mob.release --ios regenerates a stale driver table before building" do
-      # No distribution profile matches this bundle id, so on macOS the
-      # pipeline stops at signing resolution (elsewhere at the macOS check),
-      # before downloading or compiling anything.
+      # No distribution profile matches this bundle id, so the pipeline stops
+      # at signing resolution, before downloading or compiling anything.
       File.write!("mob.exs", """
       import Config
       config :mob_dev, ios_bundle_id: "com.mob404.no_such_profile", ios_dist_sign_identity: "none"
