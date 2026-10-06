@@ -13,9 +13,10 @@ defmodule MobDev.ReleaseAndroid do
        - App `priv/` → `{app_name}/priv/`
        - exqlite BEAMs → `lib/exqlite-{vsn}/ebin/` (OTP lib structure needed
          for `:code.lib_dir(:exqlite)` to resolve correctly at runtime)
-    3. Run `MobDev.OtpAssetBundle.build/2` — strips unused OTP libs and
-       optional BEAM chunks, then zips the tree to
-       `src/release/assets/otp.zip`.
+    3. Run `MobDev.OtpAssetBundle.build/2` — strips unused OTP libs (never
+       one the app's runtime dependency closure needs, see
+       `MobDev.OtpRequiredApps`) and optional BEAM chunks, then zips the tree
+       to `src/release/assets/otp.zip`.
     4. Run `./gradlew bundleRelease` — signs the AAB using the keystore
        configured in `android/keystore.properties`.
 
@@ -56,6 +57,7 @@ defmodule MobDev.ReleaseAndroid do
          log("Building otp.zip (stripping unused OTP libs)..."),
          {:ok, info} <- build_zip(staging, slim),
          _ = File.rm_rf!(staging),
+         log_kept_required(info.kept_required),
          log(
            "  #{info.zipped_files} files, " <>
              "#{div(info.original_size_kb, 1024)}MB → #{div(info.zip_size_kb, 1024)}MB"
@@ -249,8 +251,17 @@ defmodule MobDev.ReleaseAndroid do
   defp build_zip(staging, slim) do
     zip_path = otp_zip_path()
     File.mkdir_p!(Path.dirname(zip_path))
-    MobDev.OtpAssetBundle.build(staging, zip_path, slim: slim)
+
+    MobDev.OtpAssetBundle.build(staging, zip_path,
+      slim: slim,
+      required_apps: MobDev.HotPush.runtime_lib_names()
+    )
   end
+
+  defp log_kept_required([]), do: :ok
+
+  defp log_kept_required(libs),
+    do: log("  kept OTP libs the app needs (not slimmed): #{Enum.join(libs, ", ")}")
 
   # ── Gradle ───────────────────────────────────────────────────────────────────
 

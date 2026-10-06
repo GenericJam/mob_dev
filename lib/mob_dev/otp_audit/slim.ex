@@ -78,9 +78,9 @@ defmodule MobDev.OtpAudit.Slim do
         ]
 
   Precedence (in order from least to most authoritative): hardcoded
-  baseline → audit-derived expansion (minus always_keep_libs) →
-  `:drop_libs` → `:keep_libs`. The user's `:keep_libs` is always
-  the last word.
+  baseline → audit-derived expansion (minus always_keep_libs) → minus
+  `:required_libs` (what the app's `.app` closure needs) → `:drop_libs` →
+  `:keep_libs`. The user's `:keep_libs` is always the last word.
   """
 
   @hardcoded_prefixes ~w(
@@ -146,8 +146,9 @@ defmodule MobDev.OtpAudit.Slim do
     1. `hardcoded_prefixes/0` — baseline.
     2. `:audit_input` expansion (when given), minus `always_keep_libs/0`
        (the safety guardrail).
-    3. `:drop_libs` — user-explicit force-strip.
-    4. `:keep_libs` — user-explicit force-keep. Wins over everything.
+    3. `:required_libs` — subtracted: libs the app needs at runtime.
+    4. `:drop_libs` — user-explicit force-strip.
+    5. `:keep_libs` — user-explicit force-keep. Wins over everything.
 
   ## Recognized opts
 
@@ -156,6 +157,10 @@ defmodule MobDev.OtpAudit.Slim do
     * `:drop_libs` — `[String.t()]`, force-strip (adds to set).
       Higher precedence than the guardrail: a user can `:drop_libs`
       a lib that's in `always_keep_libs/0` if they really mean it.
+    * `:required_libs` — names the app's runtime dependency closure
+      needs (`MobDev.OtpRequiredApps.for_project/1`). Never stripped by
+      the baseline or the audit: starting an app whose `.app` lists a
+      missing lib fails on the device.
     * `:audit_input` — `MobDev.OtpAudit.report/0` to expand the strip
       set with audit-derived libs:
         - `report.foreign_app_names` always unions in (allow-list-
@@ -176,11 +181,13 @@ defmodule MobDev.OtpAudit.Slim do
   def compute_strip_set(opts \\ []) do
     keep = opts |> Keyword.get(:keep_libs, []) |> MapSet.new()
     drop = opts |> Keyword.get(:drop_libs, []) |> MapSet.new()
+    required = opts |> Keyword.get(:required_libs, []) |> MapSet.new(&to_string/1)
     audit_expansion = audit_expansion(opts[:audit_input])
 
     @hardcoded_prefixes
     |> MapSet.new()
     |> MapSet.union(audit_expansion)
+    |> MapSet.difference(required)
     |> MapSet.union(drop)
     |> MapSet.difference(keep)
     |> Enum.sort()
@@ -229,7 +236,7 @@ defmodule MobDev.OtpAudit.Slim do
   Apply the strip pass to an OTP bundle in place.
 
   Recognized opts:
-    * `:keep_libs`, `:drop_libs`, `:audit_input` — see
+    * `:keep_libs`, `:drop_libs`, `:required_libs`, `:audit_input` — see
       `compute_strip_set/1`.
     * `:strip_set` — short-circuit override. When set, every other
       opt that would feed into the computation is ignored. Primarily

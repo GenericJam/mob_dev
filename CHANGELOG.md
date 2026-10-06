@@ -1,3 +1,24 @@
+## [Unreleased]
+
+### Fixed
+
+- **Slim builds no longer strip an OTP lib the app needs (MOB-399).** The
+  default slim pass of `mix mob.release --android` dropped `inets` (and the
+  rest of its fixed list) whether or not the app used it, so a release of an
+  app whose dependencies list `:inets` (Operator: `ash` → `igniter` →
+  `inets`) logged `plugin :mob_ash: OTP application failed to start …
+  {:inets, {~c"no such file or directory", ~c"inets.app"}}`; debug deploys
+  ship the whole OTP tree, so only release builds broke. A slim pass now
+  never strips a lib any shipped app lists in its `.app` `applications` or
+  `included_applications`, transitively: `MobDev.OtpRequiredApps` follows
+  the runtime dependency set (`MobDev.HotPush.runtime_lib_names/0`) through
+  the bundled OTP tree's `.app` files. It applies to the Android release
+  (`MobDev.OtpAssetBundle`, which logs the libs it kept), the iOS release
+  script (`MOB_SLIM_KEEP_LIBS`) and `mix mob.deploy --slim`
+  (`MobDev.OtpAudit.Slim`'s new `:required_libs`; `:drop_libs` and
+  `:keep_libs` still win). The `_build` traversal that decides what ships
+  now follows `included_applications` as well.
+
 ## [0.7.14] - 2026-10-04
 
 ### Fixed

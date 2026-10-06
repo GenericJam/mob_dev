@@ -6106,6 +6106,7 @@ defmodule MobDev.NativeBuild do
         MobDev.OtpAudit.Slim.slim_bundle(otp_bundle,
           keep_libs: Keyword.get(slim_opts, :keep_libs, []),
           drop_libs: Keyword.get(slim_opts, :drop_libs, []),
+          required_libs: MobDev.OtpRequiredApps.for_project(otp_bundle),
           audit_input: audit_input,
           on_step: fn %{label: label, before_kb: before, after_kb: after_size} ->
             delta = before - after_size

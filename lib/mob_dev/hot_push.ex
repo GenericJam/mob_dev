@@ -302,23 +302,15 @@ defmodule MobDev.HotPush do
     |> MapSet.difference(kept)
   end
 
-  # Expand a set of lib names to include their transitive OTP deps,
-  # by reading each lib's .app file in the active Mix build path.
+  # Expand a set of lib names to include their transitive deps (`applications`
+  # and `included_applications`), by reading each lib's .app file in the active
+  # Mix build path.
   defp expand_runtime_libs(libs, build_path) do
     new_libs =
       Enum.flat_map(libs, fn lib ->
         case app_files(Path.join([build_path, "lib", lib, "ebin"])) do
-          [app_file | _] ->
-            case :file.consult(String.to_charlist(app_file)) do
-              {:ok, [{:application, _app, props}]} ->
-                (props[:applications] || []) |> Enum.map(&to_string/1)
-
-              _ ->
-                []
-            end
-
-          [] ->
-            []
+          [app_file | _] -> MobDev.OtpRequiredApps.app_dependencies(app_file)
+          [] -> []
         end
       end)
       |> MapSet.new()

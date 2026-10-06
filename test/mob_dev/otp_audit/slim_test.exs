@@ -97,6 +97,19 @@ defmodule MobDev.OtpAudit.SlimTest do
       assert Enum.count(set, &(&1 == "zzz")) == 1
       assert Enum.count(set, &(&1 == "megaco")) == 1
     end
+
+    test ":required_libs are never stripped by the baseline or the audit, but :drop_libs still wins" do
+      # inets is in the baseline; an app whose .app lists it fails to start
+      # on the device if it's stripped (the slim-release regression).
+      audit = %{foreign_app_names: ["pigeon"], strippable_libs: [], trace_strippable_libs: nil}
+      set = Slim.compute_strip_set(required_libs: ["inets", "pigeon"], audit_input: audit)
+
+      refute "inets" in set
+      refute "pigeon" in set
+      assert "megaco" in set
+
+      assert "inets" in Slim.compute_strip_set(required_libs: ["inets"], drop_libs: ["inets"])
+    end
   end
 
   # ── compute_strip_set/1 with :audit_input ──────────────────────────────

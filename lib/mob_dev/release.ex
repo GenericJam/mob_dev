@@ -81,9 +81,14 @@ defmodule MobDev.Release do
       output_dir = Path.expand("_build/mob_release")
       File.mkdir_p!(output_dir)
 
+      # The slim pass never strips an OTP lib the app's runtime closure needs
+      # (MobDev.OtpRequiredApps); the script skips every name listed here.
+      keep_libs = otp_root |> MobDev.OtpRequiredApps.for_project() |> Enum.sort()
+
       env = [
         {"MOB_RELEASE_OUTPUT_DIR", output_dir},
-        {"MOB_SLIM", if(slim, do: "1", else: "0")}
+        {"MOB_SLIM", if(slim, do: "1", else: "0")},
+        {"MOB_SLIM_KEEP_LIBS", Enum.join(keep_libs, " ")}
         | env
       ]
 
@@ -1071,11 +1076,17 @@ defmodule MobDev.Release do
             # `{:badmatch, {:error, :enoent, :"compiler.app"}}` deep in
             # application_controller during app boot, so the BEAM never
             # reaches the first screen.
+            # A lib the app needs (MOB_SLIM_KEEP_LIBS, set by release.ex from
+            # MobDev.OtpRequiredApps) is never stripped: starting an app whose
+            # .app lists a missing lib fails on the device.
             for prefix in megaco runtime_tools erl_interface os_mon wx et eunit \
                           observer debugger diameter edoc tools snmp dialyzer \
                           syntax_tools parsetools xmerl reltool inets ftp tftp \
                           common_test mnesia eldap odbc \
                           ssh; do
+                case " ${MOB_SLIM_KEEP_LIBS:-} " in
+                    *" $prefix "*) echo "  keeping $prefix (the app needs it)"; continue ;;
+                esac
                 rm -rf "'"$OTP_BUNDLE"'/lib/$prefix-"*
             done
         '
