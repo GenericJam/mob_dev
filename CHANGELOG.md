@@ -1,4 +1,4 @@
-## [Unreleased]
+## [0.7.20] - 2026-10-09
 
 ### Documentation
 
