@@ -234,8 +234,10 @@ defmodule MobDev.Plugin.Merge do
   plugin-relative string becomes absolute against the plugin dir, while a
   `{:dep, name, subpath}` token is passed through unchanged for the build to
   resolve against `Mix.Project.deps_path/0` (Eigen/Fine live in the plugin's
-  *deps*, not its own tree, and this module stays Mix-free/pure). CXXFLAGS and
-  `:nm_symbol` pass through; the entry is tagged with `:plugin`.
+  *deps*, not its own tree, and this module stays Mix-free/pure), and so is a
+  `{:prebuilt, subpath}` include, which `MobDev.Plugin.Prebuilt` resolves
+  against the entry's downloaded `:prebuilt` bundle. CXXFLAGS, `:nm_symbol`
+  and `:prebuilt` pass through; the entry is tagged with `:plugin`.
   """
   @spec static_archives([plugin()], :ios | :android | :all) :: [map()]
   def static_archives(plugins, platform \\ :all) do
@@ -256,6 +258,7 @@ defmodule MobDev.Plugin.Merge do
         cflags_android: List.wrap(nif[:cflags_android]),
         cflags_ios: List.wrap(nif[:cflags_ios]),
         nm_symbol: nif[:nm_symbol],
+        prebuilt: nif[:prebuilt],
         platform: nif[:platform],
         plugin: manifest[:name]
       }
@@ -264,10 +267,11 @@ defmodule MobDev.Plugin.Merge do
 
   # Resolve a cpp_archive's `:sources`/`:includes` entries. A plugin-relative
   # string resolves to absolute against the plugin dir; a `{:dep, name, subpath}`
-  # token passes through (resolved at build time against the deps path — keeps
-  # this module pure / Mix-free). The dep form lets a plugin reference sources or
-  # headers that live in one of its deps (e.g. nx_eigen's own c_src + Eigen
-  # headers) rather than vendoring a copy that can drift.
+  # or `{:prebuilt, subpath}` token passes through (resolved at build time
+  # against the deps path / the prebuilt bundle — keeps this module pure /
+  # Mix-free). The dep form lets a plugin reference sources or headers that live
+  # in one of its deps (e.g. nx_eigen's own c_src + Eigen headers) rather than
+  # vendoring a copy that can drift.
   defp resolve_paths(dir, entries) do
     for entry <- entries do
       case entry do

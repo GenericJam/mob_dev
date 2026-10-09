@@ -32,14 +32,17 @@ defmodule MobDev.Plugin.CppArchive do
   in the Android lists are dropped on `:android_x86_64`, where clang rejects
   them, so one Android flag list can serve every ABI.
 
-  ## C sources
+  ## C and Objective-C sources
 
-  A `.c` entry in `:sources` is compiled as C by the target's C driver (`clang`,
-  not `clang++`) with `:cflags` / `:cflags_android` / `:cflags_ios` in place of
-  the CXXFLAGS (forced `-fPIC`, the target ABI flags and the `-I` includes still
-  apply). Mixed C/C++ libraries such as ggml need this: their `.c` files are not
-  valid C++. Every other extension goes to `clang++`, which picks the language
-  from the extension (`.cpp`/`.cc` C++, `.mm` Objective-C++).
+  A `.c` or `.m` entry in `:sources` is compiled by the target's C driver
+  (`clang`, not `clang++`) with `:cflags` / `:cflags_android` / `:cflags_ios` in
+  place of the CXXFLAGS (forced `-fPIC`, the target ABI flags and the `-I`
+  includes still apply). Mixed C/C++ libraries such as ggml need this: their
+  `.c` files are not valid C++. An Objective-C NIF (`.m`) archived beside an
+  Objective-C++ renderer (`.mm`) needs it too: clang++ compiles a `.m` as
+  Objective-C, and a C++ flag such as `-std=gnu++17` is then a hard error.
+  Every other extension goes to `clang++`, which picks the language from the
+  extension (`.cpp`/`.cc` C++, `.mm` Objective-C++).
 
   Object files are named `<basename>-<hash of the source path>.o`, so two sources
   with the same basename in different directories (ggml's `quants.c` and
@@ -94,7 +97,7 @@ defmodule MobDev.Plugin.CppArchive do
     do: assemble_flags(spec, target_id, includes, :cxxflags, :cxxflags_android, :cxxflags_ios)
 
   @doc """
-  Assemble the full CFLAGS for one target's `.c` sources: the same shape as
+  Assemble the full CFLAGS for one target's `.c` / `.m` sources: the same shape as
   `cxxflags/3` (forced `-fPIC`, target ABI flags, plugin flags, `-I` includes in
   order) but reading `:cflags` and `:cflags_android` / `:cflags_ios`, so no C++
   flag (`-std=c++17`, `-fno-rtti`, …) reaches the C compiler. Pure.
@@ -132,9 +135,9 @@ defmodule MobDev.Plugin.CppArchive do
     Path.basename(source, Path.extname(source)) <> "-" <> hash <> ".o"
   end
 
-  @doc "Whether a source compiles as C (`.c`) rather than through `clang++`. Pure."
+  @doc "Whether a source compiles through the C driver (`.c`, `.m`) rather than `clang++`. Pure."
   @spec c_source?(Path.t()) :: boolean()
-  def c_source?(source) when is_binary(source), do: Path.extname(source) == ".c"
+  def c_source?(source) when is_binary(source), do: Path.extname(source) in [".c", ".m"]
 
   @doc """
   Resolve a spec's `:sources`/`:includes` (a mix of absolute strings and

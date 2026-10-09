@@ -399,6 +399,108 @@ defmodule MobDev.Plugin.ManifestTest do
     end
   end
 
+  describe "validate/1 cpp_archive :prebuilt (MOB-427)" do
+    @sha String.duplicate("a1", 32)
+
+    defp archive(extra) do
+      Map.put(@valid, :nifs, [
+        Map.merge(
+          %{
+            module: :scene_nif,
+            lang: :cpp_archive,
+            platform: :ios,
+            sources: ["priv/native/ios/scene_nif.m", "priv/native/ios/SceneView.mm"],
+            nm_symbol: "scene_nif_nif_init"
+          },
+          extra
+        )
+      ])
+    end
+
+    defp prebuilt(extra \\ %{}) do
+      Map.merge(
+        %{
+          url: "https://example.com/fil-ios.tgz",
+          sha256: @sha,
+          static_libs: %{ios_sim: ["fil/lib/sim/libfil.a"], ios_device: ["fil/lib/dev/libfil.a"]}
+        },
+        extra
+      )
+    end
+
+    defp errors_for(m) do
+      case Manifest.validate(m) do
+        {:ok, _} -> []
+        {:error, errs} -> errs
+      end
+    end
+
+    test "accepts a pinned bundle with {:prebuilt, _} includes" do
+      m =
+        archive(%{
+          includes: ["priv/native/ios", {:prebuilt, "fil/include"}],
+          prebuilt: prebuilt()
+        })
+
+      assert {:ok, ^m} = Manifest.validate(m)
+    end
+
+    test "a {:prebuilt, _} include needs a :prebuilt bundle" do
+      assert Enum.any?(
+               errors_for(archive(%{includes: [{:prebuilt, "fil/include"}]})),
+               &(&1 =~ "include needs a :prebuilt bundle")
+             )
+    end
+
+    test "includes reject anything but paths and tokens, and prebuilt paths escaping the bundle" do
+      for bad <- [[:nope], [{:prebuilt, "../outside"}], [{:prebuilt, "/abs"}]] do
+        errs = errors_for(archive(%{includes: bad, prebuilt: prebuilt()}))
+        assert Enum.any?(errs, &(&1 =~ "cpp_archive includes must be")), inspect(bad)
+      end
+    end
+
+    test "the url must be https and the sha256 exact" do
+      assert Enum.any?(
+               errors_for(archive(%{prebuilt: prebuilt(%{url: "http://example.com/f.tgz"})})),
+               &(&1 =~ ":url must be an https:// URL")
+             )
+
+      assert Enum.any?(
+               errors_for(archive(%{prebuilt: Map.delete(prebuilt(), :sha256)})),
+               &(&1 =~ "requires a :sha256")
+             )
+
+      assert Enum.any?(
+               errors_for(archive(%{prebuilt: prebuilt(%{sha256: String.upcase(@sha)})})),
+               &(&1 =~ "64 lowercase hex")
+             )
+    end
+
+    test "static_libs keys are CppArchive targets and values bundle-relative path lists" do
+      assert Enum.any?(
+               errors_for(archive(%{prebuilt: prebuilt(%{static_libs: %{ios: ["a.a"]}})})),
+               &(&1 =~ "static_libs key :ios is not one of")
+             )
+
+      assert Enum.any?(
+               errors_for(archive(%{prebuilt: prebuilt(%{static_libs: %{ios_sim: ["../a.a"]}})})),
+               &(&1 =~ "relative paths inside the bundle")
+             )
+
+      assert Enum.any?(
+               errors_for(archive(%{prebuilt: prebuilt(%{static_libs: ["a.a"]})})),
+               &(&1 =~ "static_libs must be a map")
+             )
+    end
+
+    test "a non-map :prebuilt is rejected" do
+      assert Enum.any?(
+               errors_for(archive(%{prebuilt: "https://example.com/f.tgz"})),
+               &(&1 =~ ":prebuilt must be a map")
+             )
+    end
+  end
+
   describe "tier/1" do
     test "no manifest is tier 0" do
       assert Manifest.tier(nil) == 0

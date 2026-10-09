@@ -288,6 +288,55 @@ defmodule MobDev.Plugin.CppArchiveTest do
       assert [_, _, _, last] = Enum.uniq(info.objects)
       assert Path.basename(last) =~ ~r/^whisper-/
     end
+
+    test "an Objective-C .m source compiles with clang and CFLAGS, .mm with clang++" do
+      # An ObjC NIF archived beside an ObjC++ renderer (mob_scene3d, MOB-427):
+      # through clang++ the .m would be Objective-C handed -std=gnu++17, which
+      # clang rejects.
+      s =
+        spec(%{
+          sources: ["/p/scene_nif.m", "/p/SceneView.mm"],
+          cxxflags: ["-std=gnu++17"],
+          cflags_ios: ["-fobjc-arc"]
+        })
+
+      Mox.stub(MobDev.Release.ShellMock, :file?, fn _ -> true end)
+      Mox.stub(MobDev.Release.ShellMock, :mkdir_p, fn _ -> :ok end)
+      Mox.stub(MobDev.Release.ShellMock, :rm_f, fn _ -> :ok end)
+      test_pid = self()
+
+      Mox.stub(MobDev.Release.ShellMock, :cmd, fn argv, _ ->
+        cond do
+          "-c" in argv ->
+            send(test_pid, {:compile, Enum.at(argv, 3), List.last(argv), argv})
+            {:ok, ""}
+
+          Enum.at(argv, 3) == "nm" ->
+            {:ok, "0000000000000000 T _nx_eigen_nif_init\n"}
+
+          true ->
+            {:ok, ""}
+        end
+      end)
+
+      assert {:ok, _} =
+               CppArchive.build(s, :ios_sim, out_dir: "/o", erts_include: "/e", deps_path: "/d")
+
+      compiles =
+        for _ <- 1..2, into: %{} do
+          assert_receive {:compile, driver, src, argv}
+          {src, {driver, argv}}
+        end
+
+      {driver, argv} = compiles["/p/scene_nif.m"]
+      assert driver == "clang"
+      assert "-fobjc-arc" in argv
+      refute "-std=gnu++17" in argv
+
+      {driver, argv} = compiles["/p/SceneView.mm"]
+      assert driver == "clang++"
+      assert "-std=gnu++17" in argv
+    end
   end
 
   describe "build/3 — android source precheck" do

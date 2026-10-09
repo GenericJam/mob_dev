@@ -259,6 +259,30 @@ defmodule MobDev.Plugin.MergeTest do
       assert spec.cxxflags_android == ["-mbranch-protection=standard"]
       assert spec.cxxflags_ios == []
     end
+
+    test "carries :prebuilt and leaves {:prebuilt, _} includes for the build to resolve" do
+      prebuilt = %{url: "https://h/f.tgz", sha256: "s", static_libs: %{ios_sim: ["l/a.a"]}}
+
+      plugins = [
+        {"/a",
+         base(%{
+           nifs: [
+             %{
+               module: :x,
+               lang: :cpp_archive,
+               sources: ["a.mm"],
+               includes: ["inc", {:prebuilt, "fil/include"}],
+               nm_symbol: "x_nif_init",
+               prebuilt: prebuilt
+             }
+           ]
+         })}
+      ]
+
+      assert [spec] = Merge.static_archives(plugins)
+      assert spec.prebuilt == prebuilt
+      assert spec.includes == ["/a/inc", {:prebuilt, "fil/include"}]
+    end
   end
 
   describe "zig_nif_sources/1" do

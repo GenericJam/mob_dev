@@ -32,6 +32,12 @@ three of its assumptions at once:
   Objective-C++ by extension). The forced `-fPIC`, target ABI flags and `-I`
   includes apply to both. Separate flag lists, rather than reusing CXXFLAGS,
   because C++-only flags (`-std=c++17`) are errors for the C driver.
+
+  > **Correction (MOB-427, 2026-10-09):** `clang++` does not make a `.m`
+  > Objective-C++; it compiles it as Objective-C, and a C++ flag such as
+  > `-std=gnu++17` is then a hard error. `.m` now goes to the C driver with
+  > the `:cflags*` lists, like `.c`. See
+  > `2026-10-09-cpp-archive-prebuilt-bundles.md`.
 - Objects are named `<basename>-<first 8 hex of sha256(source path)>.o`:
   stable across builds, unique per path.
 - `:android_x86_64` is a CppArchive target (`x86_64-linux-android28-clang++`).

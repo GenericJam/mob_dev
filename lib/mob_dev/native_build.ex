@@ -3222,7 +3222,9 @@ defmodule MobDev.NativeBuild do
   # Every ABI the Android build produces (arm64, arm32, x86_64) and both iOS
   # targets are CppArchive targets (x86_64 since MOB-381), so an active
   # cpp_archive plugin never leaves the driver_tab's `<module>_nif_init`
-  # unresolved on one of them.
+  # unresolved on one of them. A spec with a `:prebuilt` bundle
+  # (MobDev.Plugin.Prebuilt, MOB-427) also contributes that bundle's archives
+  # for the target, listed right after its own lib<mod>.a.
   @spec build_plugin_static_archives(atom(), :ios | :android, Path.t()) ::
           {:ok, [Path.t()]} | {:error, String.t()}
   def build_plugin_static_archives(target_id, platform, otp_dir) do
@@ -3243,19 +3245,30 @@ defmodule MobDev.NativeBuild do
           "  === Building #{MobDev.Plugin.CppArchive.archive_name(spec.module)} (#{target_id}, #{spec.plugin})"
         )
 
-        case MobDev.Plugin.CppArchive.build(spec, target_id,
-               out_dir: out_dir,
-               erts_include: erts_inc
-             ) do
-          {:ok, info} ->
-            IO.puts("    ✓ #{info.archive}")
-            {:cont, {:ok, [info.archive | acc]}}
+        with {:ok, spec, prebuilt_libs} <- MobDev.Plugin.Prebuilt.prepare(spec, target_id),
+             {:ok, info} <-
+               MobDev.Plugin.CppArchive.build(spec, target_id,
+                 out_dir: out_dir,
+                 erts_include: erts_inc
+               ) do
+          IO.puts("    ✓ #{info.archive}")
 
+          if prebuilt_libs != [],
+            do: IO.puts("    + #{length(prebuilt_libs)} prebuilt archive(s) to link")
+
+          {:cont, {:ok, Enum.reverse(prebuilt_libs, [info.archive | acc])}}
+        else
           {:error, {tag, detail}} ->
             {:halt,
              {:error,
               "plugin cpp_archive #{spec.plugin}/#{spec.module} failed " <>
                 "(#{target_id}, #{tag}): #{inspect(detail)}"}}
+
+          {:error, msg} when is_binary(msg) ->
+            {:halt,
+             {:error,
+              "plugin cpp_archive #{spec.plugin}/#{spec.module} prebuilt failed " <>
+                "(#{target_id}): #{msg}"}}
         end
       end)
       |> case do
