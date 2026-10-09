@@ -1,3 +1,21 @@
+## [Unreleased]
+
+### Documentation
+
+- **The recommended `AGENTS.md` block in the README says where the Mob docs
+  are and the app rules.** It points at `deps/mob/guides/<name>.md` and
+  `deps/mob/usage-rules.md` (mob 0.9.17+), hexdocs `llms.txt` and the
+  per-page `.md` files, the LiveView mapping guide, and
+  `mix hex.docs fetch mob`; and it states that async loading is
+  `start_async/3` + `handle_async/3`, long lists are `<LazyList>` with
+  `on_end_reached` (there is no `stream`), and screens are tested with
+  `Mob.ScreenCase`. It also says a project from `mix mob.new` may already
+  have an `AGENTS.md`.
+- **iOS node names in the agent examples were wrong.** They used
+  `my_app_ios@127.0.0.1`; a simulator is
+  `my_app_ios_<first 8 hex of udid, lowercase>@127.0.0.1`
+  and a device is `my_app_ios@<device ip>`, which the block now lists.
+
 ## [0.7.19] - 2026-10-09
 
 ### Fixed
