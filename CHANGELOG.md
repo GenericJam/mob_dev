@@ -1,3 +1,29 @@
+## [Unreleased]
+
+### Added
+
+- **cpp_archive plugin NIFs can link a prebuilt third-party library
+  (MOB-427).** A `lang: :cpp_archive` entry may declare
+  `prebuilt: %{url:, sha256:, static_libs: %{ios_sim: [...], ios_device: [...]}}`:
+  the build downloads the tarball once into `~/.mob/cache/plugin-prebuilt/`,
+  refuses it unless it matches the pinned `sha256`, compiles the plugin's
+  sources against `{:prebuilt, "<dir>"}` includes, and links the target's
+  listed archives beside `lib<module>.a` through the existing
+  `plugin_static_libs` inputs — the simulator and device deploys and `mix
+  mob.release --ios`, with no host `build.zig` edit. The URL must be https, the
+  hash exact and every path inside the bundle; `mix mob.validate_plugin` and
+  the build both check. `MOB_PLUGIN_PREBUILT_DIR=<dir>` takes the tarball from
+  a local directory instead of downloading it (the hash still applies). This is
+  what lets `mob_scene3d` (Filament) build into a blank iOS host from
+  activation alone. See `decisions/2026-10-09-cpp-archive-prebuilt-bundles.md`.
+
+### Fixed
+
+- **A cpp_archive `.m` source compiles as Objective-C with `:cflags*`
+  (MOB-427).** It went to `clang++` with the CXXFLAGS, which compiles it as
+  Objective-C and fails on any C++ flag (`-std=gnu++17`), so an ObjC NIF could
+  not share an archive with an Objective-C++ (`.mm`) source.
+
 ## [0.7.20] - 2026-10-09
 
 ### Documentation

@@ -373,13 +373,17 @@ defmodule MobDev.Plugin.Manifest do
   # than a single-source NIF: `:sources` (≥1 relative C++ paths) and
   # `:nm_symbol` (the ERL_NIF_INIT symbol the driver table references). The
   # toolchain-shaped fields (`:includes`, `:cxxflags*`) are optional and
-  # resolved at build time.
+  # resolved at build time; an optional `:prebuilt` bundle (MOB-427,
+  # `MobDev.Plugin.Prebuilt`) is checked structurally here because a malformed
+  # one would otherwise surface as a failed download or link on the host.
   defp check_nif_cpp_archive(errors, %{lang: :cpp_archive} = nif, i) do
     errors
     |> check_archive_module(nif, i)
     |> check_archive_sources(nif, i)
     |> check_archive_symbol(nif, i)
     |> check_archive_symbol_matches_module(nif, i)
+    |> check_archive_includes(nif, i)
+    |> check_archive_prebuilt(nif, i)
   end
 
   defp check_nif_cpp_archive(errors, _nif, _i), do: errors
@@ -453,6 +457,46 @@ defmodule MobDev.Plugin.Manifest do
   end
 
   defp check_archive_symbol_matches_module(errors, _nif, _i), do: errors
+
+  # `:includes` entries are plugin-relative strings, `{:dep, name, subpath}`
+  # tokens, or `{:prebuilt, subpath}` tokens into the entry's `:prebuilt`
+  # bundle — which must then be declared.
+  defp check_archive_includes(errors, nif, i) do
+    includes = List.wrap(nif[:includes])
+
+    cond do
+      not Enum.all?(includes, &(archive_path_entry?(&1) or prebuilt_token?(&1))) ->
+        [
+          "nifs entry ##{i}: cpp_archive includes must be path strings, " <>
+            "{:dep, name, subpath} or {:prebuilt, subpath} tokens"
+          | errors
+        ]
+
+      nif[:prebuilt] == nil and Enum.any?(includes, &prebuilt_token?/1) ->
+        ["nifs entry ##{i}: cpp_archive {:prebuilt, _} include needs a :prebuilt bundle" | errors]
+
+      true ->
+        errors
+    end
+  end
+
+  defp prebuilt_token?({:prebuilt, sub}), do: MobDev.Plugin.Prebuilt.bundle_relative?(sub)
+  defp prebuilt_token?(_), do: false
+
+  # `:prebuilt` (MOB-427): a pinned tarball the build downloads, verifies and
+  # extracts — `%{url: "https://…", sha256: <64 lowercase hex>, static_libs:
+  # %{<CppArchive target> => [bundle-relative .a paths]}}`. The hash is what
+  # extends the plugin signature (which covers this manifest) to the download,
+  # so it is required and exact. `Prebuilt.errors/1` owns the rules; the build
+  # (`Prebuilt.prepare/2`) applies the same ones, since a host build doesn't run
+  # this validation.
+  defp check_archive_prebuilt(errors, %{prebuilt: nil}, _i), do: errors
+
+  defp check_archive_prebuilt(errors, %{prebuilt: p}, i) do
+    Enum.reduce(MobDev.Plugin.Prebuilt.errors(p), errors, &["nifs entry ##{i}: #{&1}" | &2])
+  end
+
+  defp check_archive_prebuilt(errors, _nif, _i), do: errors
 
   # ── Tier 3: screens / migrations / assets ─────────────────────────────────
 
