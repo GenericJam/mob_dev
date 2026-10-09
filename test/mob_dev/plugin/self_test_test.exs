@@ -292,6 +292,18 @@ defmodule MobDev.Plugin.SelfTestTest do
                SelfTest.grant_permissions(device, @plugins, "com.x.app", cmd)
     end
 
+    test "ios simulator: mob_photos' :media capability grants the photos service" do
+      cmd = fn "xcrun", ["simctl", "privacy", "UDID-1", "grant", _service, "com.x.app"] ->
+        {"", 0}
+      end
+
+      device = %Device{platform: :ios, serial: "UDID-1", type: :simulator}
+      plugins = [{:mob_photos, %{name: :mob_photos, permissions: [%{capability: :media}]}}]
+
+      assert [%{plugin: :mob_photos, permission: "photos", status: :ok}] =
+               SelfTest.grant_permissions(device, plugins, "com.x.app", cmd)
+    end
+
     test "physical devices get nothing granted from the host" do
       cmd = fn _exe, _argv -> flunk("no command expected") end
 
