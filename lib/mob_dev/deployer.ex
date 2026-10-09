@@ -513,18 +513,7 @@ defmodule MobDev.Deployer do
         if already_root?(serial) do
           true
         else
-          case run_adb(["-s", serial, "root"]) do
-            {:ok, out} when is_binary(out) ->
-              if out =~ "restarting" or out =~ "already running as root" do
-                :timer.sleep(600)
-                true
-              else
-                false
-              end
-
-            _ ->
-              false
-          end
+          root?(serial)
         end
 
       if rooted? do
@@ -623,14 +612,7 @@ defmodule MobDev.Deployer do
       app_data = android_app_data()
       exqlite_lib = "#{app_data}/otp/lib/exqlite-#{vsn}"
 
-      rooted? =
-        case run_adb(["-s", serial, "root"]) do
-          {:ok, out} -> out =~ "restarting" or out =~ "already running as root"
-          _ -> false
-        end
-
-      if rooted? do
-        :timer.sleep(600)
+      if root?(serial) do
         run_adb(["-s", serial, "shell", prune_other_versions_cmd(exqlite_lib, "exqlite")])
         run_adb(["-s", serial, "shell", "mkdir -p #{exqlite_lib}/ebin #{exqlite_lib}/priv"])
         run_adb(["-s", serial, "push", "#{Path.expand(exqlite_ebin)}/.", "#{exqlite_lib}/ebin/"])
@@ -693,14 +675,7 @@ defmodule MobDev.Deployer do
     if File.dir?(local_priv) do
       device_priv = "#{android_beams_dir()}/priv"
 
-      rooted? =
-        case run_adb(["-s", serial, "root"]) do
-          {:ok, out} -> out =~ "restarting" or out =~ "already running as root"
-          _ -> false
-        end
-
-      if rooted? do
-        :timer.sleep(600)
+      if root?(serial) do
         run_adb(["-s", serial, "shell", "mkdir -p #{device_priv}"])
         run_adb(["-s", serial, "push", "#{Path.expand(local_priv)}/.", "#{device_priv}/"])
         # Make directories world-readable. mkdir as root creates them system:system
@@ -882,26 +857,24 @@ defmodule MobDev.Deployer do
     # Try adb root first (works on emulators and eng builds).
     # Check the output text — non-rooted devices return exit 0 with
     # "cannot run as root in production builds".
-    rooted? =
-      case run_adb(["-s", serial, "root"]) do
-        {:ok, out} -> out =~ "restarting" or out =~ "already running as root"
-        _ -> false
-      end
+    case MobDev.AdbRoot.root(serial) do
+      :rooted ->
+        run_adb(["-s", serial, "shell", "mkdir -p #{android_beams_dir()}"])
 
-    if rooted? do
-      :timer.sleep(600)
-      run_adb(["-s", serial, "shell", "mkdir -p #{android_beams_dir()}"])
+        # Labelled by deploy_android's final relabel_otp_android/1.
+        Enum.reduce_while(beam_dirs, :ok, fn dir, _ ->
+          case run_adb(["-s", serial, "push", "#{Path.expand(dir)}/.", "#{android_beams_dir()}/"]) do
+            {:ok, _} -> {:cont, :ok}
+            {:error, reason} -> {:halt, {:error, "push failed: #{reason}"}}
+          end
+        end)
 
-      # Labelled by deploy_android's final relabel_otp_android/1.
-      Enum.reduce_while(beam_dirs, :ok, fn dir, _ ->
-        case run_adb(["-s", serial, "push", "#{Path.expand(dir)}/.", "#{android_beams_dir()}/"]) do
-          {:ok, _} -> {:cont, :ok}
-          {:error, reason} -> {:halt, {:error, "push failed: #{reason}"}}
-        end
-      end)
-    else
-      # Fall back to run-as tar (non-rooted physical devices).
-      push_beams_android_runas(serial, beam_dirs)
+      :not_rooted ->
+        # Fall back to run-as tar (non-rooted physical devices).
+        push_beams_android_runas(serial, beam_dirs)
+
+      {:error, _} = error ->
+        error
     end
   end
 
@@ -1885,6 +1858,23 @@ defmodule MobDev.Deployer do
         _ -> acc
       end
     end)
+  end
+
+  # `adb root`, waiting out the adbd restart it causes (MOB-459).
+  # Errors are warned and fall back to the run-as path, which then reports the
+  # device as failed instead of aborting the whole multi-device deploy.
+  defp root?(serial) do
+    case MobDev.AdbRoot.root(serial) do
+      :rooted ->
+        true
+
+      :not_rooted ->
+        false
+
+      {:error, message} ->
+        IO.puts("  #{color(:yellow)}⚠  #{message}#{color(:reset)}")
+        false
+    end
   end
 
   defp run_adb(args) do
