@@ -16,8 +16,8 @@
   other Info.plist key two plugins declare is still a collision unless every
   declaration is a scalar and the project sets the key, and the error now says
   so; a usage description declared as a non-string still collides. Keys
-  compare by name, so `:K` in one manifest
-  and `"K"` in another collide instead of one being dropped. See
+  compare by name, so `:K` in one manifest and `"K"` in another collide
+  instead of one being dropped. See
   `decisions/2026-10-09-plugin-usage-descriptions-combine.md`.
 
 ## [0.7.18] - 2026-10-09
