@@ -71,9 +71,10 @@ defmodule MobDev.Tunnel do
   end
 
   def setup(%Device{platform: :ios, type: :physical} = device) do
-    # Discovered over USB, so no IP yet. The BEAM names itself after the WiFi
-    # IP when it has one, so the USB link-local IP is only the prediction for
-    # when EPMD lists nothing yet.
+    # Discovered over USB, so no IP yet. Left to itself the BEAM names itself
+    # after its WiFi IP; the Connector's relaunch passes the IP resolved here
+    # as MOB_NODE_HOST (mob >= 0.9.16), so the node then takes exactly the
+    # name set below, whichever network the phone's WiFi is on.
     case IOS.resolve_usb_node(usb_link_local_ip(device.serial)) do
       {:registered, ip, name, dist_port} ->
         {:ok,

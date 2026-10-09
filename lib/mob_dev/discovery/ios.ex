@@ -192,8 +192,10 @@ defmodule MobDev.Discovery.IOS do
   """
   @spec usb_mdns_names([map()], String.t()) :: [String.t()]
   def usb_mdns_names(devices, udid) do
+    want = String.downcase(udid)
+
     devices
-    |> Enum.filter(&(get_in(&1, ["hardwareProperties", "udid"]) == udid))
+    |> Enum.filter(&(String.downcase(get_in(&1, ["hardwareProperties", "udid"]) || "") == want))
     |> Enum.flat_map(fn dev ->
       conn = Map.get(dev, "connectionProperties") || %{}
       List.wrap(conn["localHostnames"]) ++ List.wrap(conn["potentialHostnames"])
