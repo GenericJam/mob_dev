@@ -1,3 +1,14 @@
+## [Unreleased]
+
+### Fixed
+
+- **`grant_permissions/4` pre-grants mob_photos' `:media` on an iOS
+  simulator.** The `:media` capability mapped to the `media-library`
+  `simctl privacy` service (Apple Music); it now maps to `photos`, the
+  `PHPhotoLibrary` access mob_photos (the only plugin declaring `:media`)
+  checks, so its self-test's library leg runs on a simulator instead of
+  finding the library unauthorized (MOB-418).
+
 ## [0.7.17] - 2026-10-08
 
 ### Added

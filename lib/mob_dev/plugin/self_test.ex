@@ -261,7 +261,9 @@ defmodule MobDev.Plugin.SelfTest do
     microphone: "microphone",
     photo_library: "photos",
     photos: "photos",
-    media: "media-library",
+    # mob_photos' :media is the photo library (PHPhotoLibrary), not Apple
+    # Music ("media-library"); no plugin declares a Music capability.
+    media: "photos",
     contacts: "contacts",
     calendar: "calendar",
     reminders: "reminders",
