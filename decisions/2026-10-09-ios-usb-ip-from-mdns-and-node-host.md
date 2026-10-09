@@ -47,6 +47,12 @@ a gap for a cold app on a WiFi phone.
    mob 0.9.16's `mob_beam.m` takes it when it is one of the phone's own
    IPv4s (`decisions/2026-10-09-ios-node-host-override.md` in mob).
    `physical_launch_env/1` drops anything that isn't an IPv4 literal.
+   When the app is not running, that address is the phone's WiFi IP if the
+   Mac reaches it (its EPMD port answers or refuses; `:epmd_refused` vs
+   `:epmd_unreachable`), which is the name the phone picks by itself and the
+   one LAN discovery, `--no-restart` and hot push dial; link-local only when
+   it doesn't (`IOS.choose_usb_node/2`). Always passing link-local named a
+   LAN phone `@169.254.x.x`, which those paths then failed to dial.
 
 Rejected: mapping the WiFi-named node to the link-local address on the Mac
 (the host is an IP literal, so no resolver applies; a custom
@@ -58,9 +64,13 @@ caller); routing the WiFi address over the USB interface (needs root).
 - `mix mob.connect`, `mix mob.selftest` and mob_ci reach a wired iPhone
   whatever network its WiFi is on (verified on the iPhone SE above:
   `mob428_ios@169.254.1.100` connected).
-- A node launched by the Connector over USB is named after the cable's
-  address, so it is unreachable once the cable is pulled; the next connect
-  relaunches it.
+- A node launched by the Connector over USB while its WiFi is a network the
+  Mac isn't on is named after the cable's address, so it is unreachable once
+  the cable is pulled; the next connect relaunches it.
+- Known gap: if the phone's WiFi subnet matches one of the Mac's but is a
+  different network, another host at the phone's WiFi address can refuse the
+  connection, the WiFi IP is predicted, and the connect times out (as in
+  0.7.17). A retry with the link-local host on timeout would close it.
 - `Discovery.IOS`'s LAN scan (`lan_ips/0`, `arp -an`) has the same blind
   spot on macOS 27: from the BEAM it finds no neighbours, so WiFi-only
   phones are not discovered by scanning. Not changed here; the USB path and
