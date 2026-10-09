@@ -141,28 +141,43 @@ defmodule MobDev.Plugin.SelfTest do
         {:reply, :yes}
       ])
 
+    deadline = System.monotonic_time(:millisecond) + timeout
+
     receive do
       {:spawn_reply, ^req, :ok, pid} ->
-        await(req, pid, ref, module, node, timeout)
+        await(req, pid, ref, module, node, deadline, timeout)
 
       {:spawn_reply, ^req, :error, reason} ->
         {:fail, "could not spawn on #{node}: #{inspect(reason)}"}
     after
-      timeout -> {:fail, "no answer from #{node} in #{timeout} ms"}
+      timeout ->
+        # A spawn that lands after the deadline must not run beside the
+        # next plugin's test, nor leave its reply and :DOWN in the mailbox.
+        unless :erlang.spawn_request_abandon(req) do
+          receive do
+            {:spawn_reply, ^req, :ok, pid} -> Process.exit(pid, :kill)
+            {:spawn_reply, ^req, :error, _} -> :ok
+          after
+            0 -> :ok
+          end
+        end
+
+        Process.demonitor(req, [:flush])
+        {:fail, "no answer from #{node} in #{timeout} ms"}
     end
   end
 
-  defp await(req, pid, ref, module, node, timeout) do
+  defp await(req, pid, ref, module, node, deadline, timeout) do
     receive do
       {:DOWN, ^req, :process, ^pid, reason} -> normalize(reason, ref, module, node)
     after
-      timeout ->
+      max(deadline - System.monotonic_time(:millisecond), 0) ->
         Process.exit(pid, :kill)
 
         receive do
           {:DOWN, ^req, :process, ^pid, _} -> :ok
         after
-          1_000 -> :ok
+          1_000 -> Process.demonitor(req, [:flush])
         end
 
         {:fail, "timed out after #{timeout} ms"}

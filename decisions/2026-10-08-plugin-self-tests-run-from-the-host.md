@@ -32,7 +32,7 @@
   error in a later release once the first-party plugins carry theirs
   (MOB-418). Warning first because every published plugin would otherwise
   stop validating the day this ships.
-- **`run_all(node, ctx, opts)` is the runner.** One `:erpc.call/5` per
+- **`run_all(node, ctx, opts)` is the runner.** One remote spawn per
   plugin, sequential (self-tests may touch shared hardware), each with its
   own timeout (`:timeout_ms`, 30 s). The remote `run/1` is spawned the way
   `:erpc.call/5` spawns it (`spawn_request` of `:erpc.execute_call/4`, which
