@@ -351,7 +351,8 @@ defmodule MobDev.Discovery.IOS do
   phone's own other addresses (see `resolve_usb_node/1`).
 
   mob_beam.m names the node after the phone's WiFi/LAN IP whenever it has one
-  and uses the link-local IP only without WiFi. The phone's EPMD binds
+  and uses the link-local IP only without WiFi; mob ≥ 0.9.16 takes the host
+  `mix mob.connect` passes as `MOB_NODE_HOST` instead. The phone's EPMD binds
   0.0.0.0, so the link-local probe lists the node even when its name carries
   the WiFi IP. The link-local probe is the one that reached the phone on the
   cable, so it is the reference: another address is taken only if its EPMD
@@ -360,10 +361,18 @@ defmodule MobDev.Discovery.IOS do
   disagrees, several agree, or the link-local EPMD lists nothing) keeps the
   link-local IP, because nothing proves the other entry is this phone's.
 
+  When the link-local EPMD does not list the node yet (the app is not
+  running; `mix mob.connect` launches it after tunnel setup, passing the
+  predicted IP as `MOB_NODE_HOST`), the prediction is the phone's one other
+  address the Mac reaches — its EPMD answered or refused the connection —
+  else the link-local IP. Naming the node after the WiFi IP whenever the Mac
+  reaches it keeps the name the phone picks by itself, which LAN discovery,
+  `--no-restart` and hot push dial; link-local is only for a WiFi the Mac
+  isn't on (MOB-428).
+
   Returns `{:registered, ip, name, dist_port}` from EPMD,
-  `{:predicted, link_local_ip}` when the link-local EPMD does not list the
-  node yet (the app is not running; `mix mob.connect` launches it after
-  tunnel setup), or `:none` without a link-local IP.
+  `{:predicted, ip}` when the link-local EPMD does not list the node, or
+  `:none` without a link-local IP.
   """
   @spec choose_usb_node({String.t(), epmd_probe()} | nil, [{String.t(), epmd_probe()}]) ::
           {:registered, String.t(), String.t(), pos_integer()} | {:predicted, String.t()} | :none
@@ -376,8 +385,17 @@ defmodule MobDev.Discovery.IOS do
     end
   end
 
-  def choose_usb_node({link_local_ip, _not_registered}, _same_phone_probes),
-    do: {:predicted, link_local_ip}
+  def choose_usb_node({link_local_ip, _not_registered}, same_phone_probes) do
+    case for({ip, probe} <- same_phone_probes, epmd_reached?(probe), do: ip) do
+      [ip] -> {:predicted, ip}
+      _ -> {:predicted, link_local_ip}
+    end
+  end
+
+  # The Mac reaches this address and nothing there claims the app: an address
+  # whose EPMD lists the app while the cable's does not is another BEAM.
+  defp epmd_reached?({:error, reason}), do: reason in [:epmd_refused, :not_ios_node]
+  defp epmd_reached?(_probe), do: false
 
   @doc """
   Every `{name, port}` in an EPMD `NAMES_REQ` reply — a 4-byte EPMD port, then
@@ -622,6 +640,9 @@ defmodule MobDev.Discovery.IOS do
         after
           :gen_tcp.close(s)
         end
+
+      {:error, :econnrefused} ->
+        {:error, :epmd_refused}
 
       {:error, _} ->
         {:error, :epmd_unreachable}
