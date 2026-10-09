@@ -7,7 +7,12 @@
   `simctl privacy` service (Apple Music); it now maps to `photos`, the
   `PHPhotoLibrary` access mob_photos (the only plugin declaring `:media`)
   checks, so its self-test's library leg runs on a simulator instead of
-  finding the library unauthorized (MOB-418).
+  finding the library unauthorized (MOB-418). Fully effective on iOS 27
+  simulator runtimes. On iOS 26.x runtimes `simctl privacy grant photos`
+  writes a version-1 TCC row that PhotoKit's read-write access level
+  ignores (it still reports "not determined"); there the row has to be
+  rewritten to `auth_version=2` in the simulator's TCC.db and `tccd`
+  restarted.
 
 ## [0.7.17] - 2026-10-08
 
