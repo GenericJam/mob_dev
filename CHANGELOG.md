@@ -16,8 +16,10 @@
   isn't on (MOB-428).** The relaunch passes `DEVICECTL_CHILD_MOB_NODE_HOST`
   with the address the Mac reaches the phone at, and mob 0.9.16 names the
   node after it; before, the phone named it after its WiFi address and the
-  connect timed out. Older mob ignores the variable.
-
+  connect timed out. The address is the phone's WiFi IP when the Mac reaches
+  it (the name the phone picks by itself, which LAN discovery, `--no-restart`
+  and hot push dial), and the USB link-local IP only when it doesn't. Older
+  mob ignores the variable.
 - **`grant_permissions/4` pre-grants mob_photos' `:media` on an iOS
   simulator.** The `:media` capability mapped to the `media-library`
   `simctl privacy` service (Apple Music); it now maps to `photos`, the

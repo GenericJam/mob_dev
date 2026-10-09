@@ -328,15 +328,31 @@ defmodule MobDev.Discovery.IOSTest do
                {:registered, @link_local, "scanner_sample_ios", 9101}
     end
 
-    test "link-local lists nothing → prediction, even if another address lists the app" do
+    test "link-local lists nothing, another address lists the app → link-local prediction" do
       assert IOS.choose_usb_node({@link_local, {:error, :not_ios_node}}, [{@wifi, @app}]) ==
                {:predicted, @link_local}
     end
 
-    test "nothing registered anywhere → link-local prediction" do
-      probes = [{@wifi, {:error, :not_ios_node}}]
+    test "app not running, the Mac reaches the phone's WiFi → WiFi prediction" do
+      for reached <- [:epmd_refused, :not_ios_node] do
+        probes = [{@wifi, {:error, reached}}]
 
-      assert IOS.choose_usb_node({@link_local, {:error, :not_ios_node}}, probes) ==
+        assert IOS.choose_usb_node({@link_local, {:error, :epmd_refused}}, probes) ==
+                 {:predicted, @wifi}
+      end
+    end
+
+    test "app not running, the phone's WiFi is unreachable from the Mac → link-local prediction" do
+      probes = [{@wifi, {:error, :epmd_unreachable}}]
+
+      assert IOS.choose_usb_node({@link_local, {:error, :epmd_refused}}, probes) ==
+               {:predicted, @link_local}
+    end
+
+    test "two reachable other addresses → link-local prediction, not a guess" do
+      probes = [{@wifi, {:error, :epmd_refused}}, {"100.101.102.103", {:error, :epmd_refused}}]
+
+      assert IOS.choose_usb_node({@link_local, {:error, :epmd_refused}}, probes) ==
                {:predicted, @link_local}
     end
 
@@ -385,6 +401,14 @@ defmodule MobDev.Discovery.IOSTest do
       task = Task.async(fn -> IOS.epmd_names("127.0.0.1", port, 300) end)
 
       assert Task.yield(task, 1_500) == {:ok, {:error, :epmd_unreachable}}
+    end
+
+    test "a host that refuses the connection is told apart from an unreachable one" do
+      {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false])
+      {:ok, port} = :inet.port(listen)
+      :gen_tcp.close(listen)
+
+      assert IOS.epmd_names("127.0.0.1", port, 300) == {:error, :epmd_refused}
     end
   end
 
