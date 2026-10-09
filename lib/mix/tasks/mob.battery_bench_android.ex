@@ -651,13 +651,13 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
 
     # Check if we can root
     rooted? =
-      case adb(device, ["root"]) do
-        {:ok, out} -> out =~ "restarting" or out =~ "already running as root"
-        _ -> false
+      case MobDev.AdbRoot.root(device) do
+        :rooted -> true
+        :not_rooted -> false
+        {:error, message} -> Mix.raise(message)
       end
 
     if rooted? do
-      :timer.sleep(600)
       adb!(device, ~w[shell mkdir -p #{beams_dir}])
 
       Enum.each(beam_dirs, fn dir ->

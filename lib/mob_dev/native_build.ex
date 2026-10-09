@@ -1688,15 +1688,7 @@ defmodule MobDev.NativeBuild do
     adb = fn args -> System.cmd("adb", ["-s", serial | args], stderr_to_stdout: true) end
 
     # Only works on rooted/emulator builds — silently skip on real devices.
-    rooted? =
-      case adb.(["root"]) do
-        {out, 0} -> out =~ "restarting" or out =~ "already running as root"
-        _ -> false
-      end
-
-    if rooted? do
-      :timer.sleep(800)
-
+    if root!(serial) do
       {lib_dir_out, _} =
         adb.([
           "shell",
@@ -1793,17 +1785,19 @@ defmodule MobDev.NativeBuild do
     adb.(["shell", "am", "force-stop", bundle_id])
     :timer.sleep(500)
 
-    case adb.(["root"]) do
-      {out, 0} ->
-        if out =~ "restarting" or out =~ "already running as root" do
-          :timer.sleep(1000)
-          push_otp_root(adb, app_data, otp_dir, elixir_lib)
-        else
-          push_otp_runas(serial, bundle_id, app_data, otp_dir, elixir_lib)
-        end
+    if root!(serial) do
+      push_otp_root(adb, app_data, otp_dir, elixir_lib)
+    else
+      push_otp_runas(serial, bundle_id, app_data, otp_dir, elixir_lib)
+    end
+  end
 
-      _ ->
-        push_otp_runas(serial, bundle_id, app_data, otp_dir, elixir_lib)
+  # `adb root`, waiting out the adbd restart it causes (MOB-459).
+  defp root!(serial) do
+    case MobDev.AdbRoot.root(serial) do
+      :rooted -> true
+      :not_rooted -> false
+      {:error, message} -> raise message
     end
   end
 

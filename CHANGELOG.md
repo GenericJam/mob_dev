@@ -1,3 +1,16 @@
+## [Unreleased]
+
+### Fixed
+
+- **Android deploys wait for adbd after `adb root` instead of sleeping
+  (MOB-459).** `adb root` restarts adbd; mob_dev slept a fixed 600–1000 ms and
+  went on, so on a loaded host the next adb call failed with "Selected Android
+  device(s) disconnected". `MobDev.AdbRoot.root/2` now runs `adb -s <serial>
+  wait-for-device` plus a `getprop sys.boot_completed` round trip, bounded by
+  30 s (`MOB_ADB_RESTART_TIMEOUT_MS` or `config :mob_dev,
+  adb_restart_timeout_ms:`), and fails naming the serial on timeout. No wait
+  when adbd already runs as root or refuses root.
+
 ## [0.7.21] - 2026-10-09
 
 ### Added
