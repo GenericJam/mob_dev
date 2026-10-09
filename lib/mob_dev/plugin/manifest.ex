@@ -31,7 +31,7 @@ defmodule MobDev.Plugin.Manifest do
     name mob_version plugin_spec_version permissions android ios nifs
     nifs_generator screens screens_generator migrations assets default_font
     lifecycle settings notifications ui_components ui_components_generator
-    host_requirements description version tags host_config_keys setup
+    host_requirements description version tags host_config_keys setup selftest
   )a
 
   @native_sections [
@@ -153,6 +153,7 @@ defmodule MobDev.Plugin.Manifest do
       |> check_notifications(manifest)
       |> check_ui_components(manifest)
       |> check_host_requirements(manifest)
+      |> check_selftest(manifest)
 
     warn_unknown_keys(manifest)
 
@@ -597,6 +598,36 @@ defmodule MobDev.Plugin.Manifest do
     do: ["lifecycle must be a map, got: #{inspect(other)}" | errors]
 
   defp check_lifecycle(errors, _), do: errors
+
+  # `:selftest` names the plugin's `Mob.Plugin.SelfTest` implementation. The
+  # module is only loadable when the plugin is compiled (`mix
+  # mob.validate_plugin` after a compile, or the host activating a dep); then
+  # it must export run/1. Otherwise the name is all there is to check.
+  defp check_selftest(errors, %{selftest: mod}) when is_atom(mod) and not is_nil(mod) do
+    cond do
+      not elixir_module?(mod) ->
+        ["selftest must be an Elixir module, got: #{inspect(mod)}" | errors]
+
+      Code.ensure_loaded?(mod) and not function_exported?(mod, :run, 1) ->
+        [
+          "selftest #{inspect(mod)} does not export run/1 (implement Mob.Plugin.SelfTest)"
+          | errors
+        ]
+
+      true ->
+        errors
+    end
+  end
+
+  defp check_selftest(errors, %{selftest: other}),
+    do: [
+      "selftest must be a module implementing Mob.Plugin.SelfTest, got: #{inspect(other)}"
+      | errors
+    ]
+
+  defp check_selftest(errors, _), do: errors
+
+  defp elixir_module?(mod), do: String.starts_with?(Atom.to_string(mod), "Elixir.")
 
   defp check_optional_mfa(errors, map, key) do
     case Map.get(map, key) do

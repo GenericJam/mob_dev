@@ -194,6 +194,7 @@ defmodule MobDev.Plugin.Scaffold do
 
     [
       {"lib/#{name}.ex", tier1_lib(name, nif_name)},
+      {"lib/#{name}/self_test.ex", tier1_self_test(name, nif_name)},
       {"src/#{nif_name}.erl", tier1_erl_stub(nif_name)},
       {"priv/mob_plugin.exs", tier1_manifest(name, nif_name, mob_req)},
       {"priv/native/jni/#{nif_name}.c", tier1_c(nif_name)},
@@ -238,6 +239,7 @@ defmodule MobDev.Plugin.Scaffold do
       {"lib/#{name}/worker.ex", tier4_worker(mod)},
       {"lib/#{name}/notifications.ex", tier4_notifications(mod)},
       {"lib/#{name}/settings_screen.ex", tier4_settings_screen(mod)},
+      {"lib/#{name}/self_test.ex", tier4_self_test(mod)},
       {"priv/mob_plugin.exs", tier4_manifest(name, mod, mob_req)},
       {"test/test_helper.exs", test_helper()},
       {"test/#{name}_test.exs", plugin_test(name)}
@@ -739,6 +741,29 @@ defmodule MobDev.Plugin.Scaffold do
     """
   end
 
+  defp tier1_self_test(name, nif_name) do
+    mod = module_name(name)
+
+    """
+    defmodule #{mod}.SelfTest do
+      @moduledoc \"\"\"
+      The plugin's on-device proof (`Mob.Plugin.SelfTest`), run by
+      `mix mob.selftest` and mob_ci for every activated plugin. A pass means a
+      real answer came back from the NIF; keep it side-effect free and quick.
+      \"\"\"
+      @behaviour Mob.Plugin.SelfTest
+
+      @impl true
+      def run(%{platform: platform}) do
+        case :#{nif_name}.ping() do
+          :ok -> :pass
+          other -> {:fail, "ping/0 on \#{platform} returned \#{inspect(other)}, expected :ok"}
+        end
+      end
+    end
+    """
+  end
+
   defp tier1_manifest(name, nif_name, mob_req) do
     """
     %{
@@ -751,7 +776,9 @@ defmodule MobDev.Plugin.Scaffold do
         # module — ERL_NIF_INIT uses it as both the registered module name
         # and the static-init C symbol prefix.
         %{module: :#{nif_name}, native_dir: "priv/native/jni"}
-      ]
+      ],
+      # On-device proof, run by `mix mob.selftest` (see Mob.Plugin.SelfTest).
+      selftest: #{module_name(name)}.SelfTest
     }
     """
   end
@@ -1104,6 +1131,33 @@ defmodule MobDev.Plugin.Scaffold do
     """
   end
 
+  defp tier4_self_test(mod) do
+    """
+    defmodule #{mod}.SelfTest do
+      @moduledoc \"\"\"
+      The plugin's on-device proof (`Mob.Plugin.SelfTest`), run by
+      `mix mob.selftest` and mob_ci for every activated plugin. A pure-Elixir
+      plugin proves its real API path: here, that the supervised worker is up
+      under the host's plugin supervisor and answers a call.
+      \"\"\"
+      @behaviour Mob.Plugin.SelfTest
+
+      @impl true
+      def run(_ctx) do
+        case Process.whereis(#{mod}.Worker) do
+          nil ->
+            {:fail, "#{mod}.Worker is not running (lifecycle.supervised did not start it)"}
+
+          pid ->
+            # A round-trip through the worker, not just a pid lookup.
+            %{} = :sys.get_state(pid, 5_000)
+            :pass
+        end
+      end
+    end
+    """
+  end
+
   defp tier4_manifest(name, mod, mob_req) do
     """
     %{
@@ -1138,7 +1192,10 @@ defmodule MobDev.Plugin.Scaffold do
         handlers: [
           %{match: %{type: "#{name}"}, handler: {#{mod}.Notifications, :handle, 1}}
         ]
-      }
+      },
+
+      # On-device proof, run by `mix mob.selftest` (see Mob.Plugin.SelfTest).
+      selftest: #{mod}.SelfTest
     }
     """
   end

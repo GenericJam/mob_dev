@@ -5,6 +5,11 @@ defmodule MobDev.Plugin.ManifestTest do
 
   @valid %{name: :mob_demo, mob_version: "~> 0.6", plugin_spec_version: 1}
 
+  defmodule ManifestTestSelfTest do
+    @moduledoc false
+    def run(_ctx), do: :pass
+  end
+
   # ExUnit.CaptureLog hears every process's log events while `fun` runs, and
   # this module is async: a sibling test's "unknown key(s)" warning lands in
   # the capture and trips a `refute` (MOB-290). Manifest.validate/1 logs from
@@ -185,6 +190,26 @@ defmodule MobDev.Plugin.ManifestTest do
 
     test "rejects a non-map manifest" do
       assert {:error, _} = Manifest.validate("nope")
+    end
+
+    test "selftest names a module; a compiled one must export run/1" do
+      # Not compiled anywhere: only the name can be checked.
+      m = Map.put(@valid, :selftest, MobDemo.SelfTest)
+      log = capture_own_log(fn -> assert {:ok, ^m} = Manifest.validate(m) end)
+      refute log =~ "unknown key"
+
+      # Loadable, and a real Mob.Plugin.SelfTest shape.
+      assert {:ok, _} = Manifest.validate(Map.put(@valid, :selftest, ManifestTestSelfTest))
+
+      # Loadable but not a self-test: the module exists, run/1 does not.
+      assert {:error, [err]} = Manifest.validate(Map.put(@valid, :selftest, Manifest))
+      assert err =~ "does not export run/1"
+
+      assert {:error, [err]} = Manifest.validate(Map.put(@valid, :selftest, "MobDemo.SelfTest"))
+      assert err =~ "selftest must be a module"
+
+      assert {:error, [err]} = Manifest.validate(Map.put(@valid, :selftest, :mob_demo_nif))
+      assert err =~ "must be an Elixir module"
     end
 
     test "accepts a permissions list with capability + optional ios handler" do

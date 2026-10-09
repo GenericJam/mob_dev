@@ -37,6 +37,7 @@ end
 | `mix mob.devices` | List connected devices and their status |
 | `mix mob.attest` | Prove a device is running the code you just pushed — compares module digests, not artifacts ([see below](#did-that-deploy-actually-land-mix-mobattest)) |
 | `mix mob.smoke` | Replay recorded `agent-device` UI flows on devices and check the app's own diagnostics held up ([see below](#smoke-flows-on-devices-mix-mobsmoke)) |
+| `mix mob.selftest` | Run every activated plugin's `Mob.Plugin.SelfTest` on the app running on each device ([see below](#plugin-self-tests-on-devices-mix-mobselftest)) |
 | `mix mob.mutate` | Mutation-test the lines this branch changed: break the code on purpose and report what nothing noticed ([see below](#do-the-tests-guard-anything-mix-mobmutate)) |
 | `mix mob.push` | Hot-push only changed modules (no restart) |
 | `mix mob.enable <feature>...` | Wire up an optional Mob feature — platform-manifest entries, Elixir stubs, dep injections ([see below](#mix-mobenable-feature)) |
@@ -275,6 +276,48 @@ before the first `agent-device` call or run a separate daemon with its own
 or a manually managed development profile for that bundle id and
 `<id>.uitests`: an Xcode-managed wildcard team profile is rejected. Simulators
 and Android need none of this.
+
+## Plugin self-tests on devices (`mix mob.selftest`)
+
+Every plugin can ship its own proof that it works on a device: a module
+implementing `Mob.Plugin.SelfTest`, named in its manifest as `selftest:
+Module` (see mob's `MOB_PLUGINS.md`, "Self-test"). `mix mob.selftest`
+attaches to the deployed app on each selected device and calls each
+activated plugin's `run/1` over distribution, one plugin at a time, with
+`%{platform: :ios | :android, device: :simulator | :emulator | :physical}`.
+
+```bash
+mix mob.selftest                       # the one connected emulator/simulator
+mix mob.selftest --device emulator-5554 --timeout 10000
+mix mob.selftest --all-devices --no-restart   # attach to the apps as they are
+```
+
+Before the tests, the permissions the manifests declare are granted on
+emulators and simulators (`adb shell pm grant`, `xcrun simctl privacy
+grant`) so no system prompt stands between a self-test and its native code;
+then the app is relaunched as `mix mob.connect` does, because a simulator
+may terminate an app whose privacy settings changed. Each device gets a
+table:
+
+```
+Pixel 8 (emulator-5554) android emulator
+  plugin        outcome  ms   detail
+  mob_location  pass     3
+  mob_whisper   pass     1
+  mob_deliver   pass     2
+  mob_camera    skip     0    needs_hardware
+  3 passed, 0 failed, 1 skipped
+```
+
+A plugin without a self-test is a `skip` (so it is visible, not absent); a
+self-test that raises, exits, times out (30 s by default) or returns
+something outside the contract is a `FAIL` with the reason. The exit status
+is non-zero on any `FAIL`, or when a selected device's node could not be
+reached. Device selection follows `mix mob.smoke` (`--device`,
+`--all-devices`, `--all-physical`, agent-device leases honoured).
+`MobDev.Plugin.SelfTest.run_all/3` is the same runner for callers that
+already hold a node, such as mob_ci, and `grant_permissions/4` the
+pre-launch grant.
 
 ## Do the tests guard anything? (`mix mob.mutate`)
 

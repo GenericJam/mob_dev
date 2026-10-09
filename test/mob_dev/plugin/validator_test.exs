@@ -3,7 +3,12 @@ defmodule MobDev.Plugin.ValidatorTest do
 
   alias MobDev.Plugin.Validator
 
-  @base %{name: :mob_demo, mob_version: "~> 0.6", plugin_spec_version: 1}
+  @base %{
+    name: :mob_demo,
+    mob_version: "~> 0.6",
+    plugin_spec_version: 1,
+    selftest: MobDemo.SelfTest
+  }
 
   describe "referenced_paths/1" do
     test "nil manifest has no paths" do
@@ -83,6 +88,13 @@ defmodule MobDev.Plugin.ValidatorTest do
         ])
 
       assert %{warnings: []} = Validator.validate_plugin(m, dir, "0.6.20")
+    end
+
+    test "warns, but does not fail, a manifest without a selftest", %{dir: dir} do
+      m = Map.delete(@base, :selftest)
+      assert %{errors: [], warnings: [warning]} = Validator.validate_plugin(m, dir, "0.6.20")
+      assert warning =~ "missing selftest"
+      assert warning =~ "Mob.Plugin.SelfTest"
     end
 
     test "warns when permissions are declared", %{dir: dir} do
