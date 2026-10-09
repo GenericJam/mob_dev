@@ -1,3 +1,17 @@
+## [Unreleased]
+
+### Fixed
+
+- **Android deploys no longer crash concurrent Gradle builds (MOB-468).**
+  Before every `assembleDebug`, mob_dev deleted `~/.gradle/native/**/*.lock`
+  as "stale locks". native-platform holds those only while it extracts (they
+  are never left stale), and their content marks a finished extraction: without one, the next Gradle JVM rewrites
+  `libnative-platform.so` in place, over the inode every running Gradle JVM
+  (another project's build, a `--no-daemon` wrapper and its daemon) has
+  mapped, and those JVMs die with SIGSEGV (`ld-linux-x86-64.so.2+0x10f2` in
+  the wrapper, a JNI `stat`/`getPid` in the daemon). The markers are kept now;
+  the wrapper, daemon-registry and cache locks are still cleared.
+
 ## [0.7.22] - 2026-10-09
 
 ### Fixed
