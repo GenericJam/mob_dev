@@ -25,8 +25,10 @@ defmodule MobDev.AdbRoot do
 
   Returns `:rooted` once adbd runs as root and answers again, `:not_rooted` if
   the device refuses root (production builds) or adb fails, and
-  `{:error, message}` if adbd restarted but the device didn't come back within
-  the timeout. Waits only when adb reports it is restarting adbd.
+  `{:error, message}` if adbd restarted but the device didn't come back as
+  root within the timeout. Waits unless adbd already runs as root or refuses
+  it; adb sometimes prints nothing while it restarts adbd, so an empty reply
+  waits too.
 
   Options: `:runner` (see `t:runner/0`), `:timeout_ms`.
   """
@@ -37,9 +39,16 @@ defmodule MobDev.AdbRoot do
     case runner.(["-s", serial, "root"]) do
       {out, 0} ->
         cond do
-          out =~ "already running as root" -> :rooted
-          out =~ "restarting" -> with :ok <- wait_for_device(serial, opts), do: :rooted
-          true -> :not_rooted
+          out =~ "already running as root" ->
+            :rooted
+
+          out =~ "cannot run as root" ->
+            :not_rooted
+
+          # "restarting adbd as root", or nothing at all: adb can lose the
+          # connection to the restarting adbd before it prints the reply.
+          true ->
+            with :ok <- wait_for_device(serial, [{:uid, 0} | opts]), do: :rooted
         end
 
       _ ->
@@ -50,42 +59,102 @@ defmodule MobDev.AdbRoot do
   @doc """
   Waits until `serial` is listed again and answers a shell round trip with
   `sys.boot_completed` = 1, after anything that restarts adbd (`adb root`,
-  `adb unroot`, `adb remount`). Same options as `root/2`.
+  `adb unroot`, `adb remount`). Same options as `root/2`, plus `:uid`: the
+  shell uid the restarted adbd must report. The old adbd can still answer for
+  a moment after `adb root` returns, so `root/2` passes `uid: 0` to tell the
+  new adbd from the old one.
   """
   @spec wait_for_device(String.t(), keyword()) :: :ok | {:error, String.t()}
   def wait_for_device(serial, opts \\ []) do
     runner = Keyword.get(opts, :runner, &system_adb/1)
     timeout = Keyword.get_lazy(opts, :timeout_ms, &timeout_ms/0)
     deadline = System.monotonic_time(:millisecond) + timeout
+    parent = self()
+
+    # `adb wait-for-device` blocks until the serial is back, possibly forever
+    # (an unplugged phone), and killing the task doesn't kill the OS process,
+    # so the default runner reports its pid for the timeout to kill.
+    wait =
+      if Keyword.has_key?(opts, :runner),
+        do: runner,
+        else: &port_adb(&1, parent)
 
     task =
       Task.async(fn ->
-        runner.(["-s", serial, "wait-for-device"])
-        poll_ready(runner, serial, deadline)
+        wait.(["-s", serial, "wait-for-device"])
+        poll_ready(runner, serial, Keyword.get(opts, :uid), deadline)
       end)
 
     case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
-      {:ok, :ok} -> :ok
-      _ -> {:error, timeout_message(serial, timeout)}
-    end
-  end
-
-  defp poll_ready(runner, serial, deadline) do
-    case runner.(["-s", serial, "shell", "getprop sys.boot_completed; echo ok"]) do
-      {out, 0} ->
-        if String.trim(out) =~ ~r/\A1\s+ok\z/, do: :ok, else: retry(runner, serial, deadline)
+      {:ok, :ok} ->
+        flush_os_pid()
+        :ok
 
       _ ->
-        retry(runner, serial, deadline)
+        kill_wait_process()
+        {:error, timeout_message(serial, timeout)}
     end
   end
 
-  defp retry(runner, serial, deadline) do
-    if System.monotonic_time(:millisecond) >= deadline do
-      :timeout
+  defp kill_wait_process do
+    receive do
+      {:adb_wait_os_pid, os_pid} ->
+        System.cmd("kill", [to_string(os_pid)], stderr_to_stdout: true)
+    after
+      0 -> :ok
+    end
+  end
+
+  defp flush_os_pid do
+    receive do
+      {:adb_wait_os_pid, _} -> :ok
+    after
+      0 -> :ok
+    end
+  end
+
+  defp port_adb(args, parent) do
+    case System.find_executable("adb") do
+      nil ->
+        system_adb(args)
+
+      adb ->
+        port =
+          Port.open({:spawn_executable, adb}, [
+            :binary,
+            :exit_status,
+            :stderr_to_stdout,
+            args: args
+          ])
+
+        with {:os_pid, os_pid} <- Port.info(port, :os_pid),
+             do: send(parent, {:adb_wait_os_pid, os_pid})
+
+        collect_port(port, "")
+    end
+  end
+
+  defp collect_port(port, acc) do
+    receive do
+      {^port, {:data, data}} -> collect_port(port, acc <> data)
+      {^port, {:exit_status, status}} -> {acc, status}
+    end
+  end
+
+  defp poll_ready(runner, serial, uid, deadline) do
+    with {out, 0} <-
+           runner.(["-s", serial, "shell", "getprop sys.boot_completed; id -u; echo ok"]),
+         ["1", got_uid, "ok"] <- String.split(out),
+         true <- uid == nil or got_uid == to_string(uid) do
+      :ok
     else
-      Process.sleep(@poll_ms)
-      poll_ready(runner, serial, deadline)
+      _ ->
+        if System.monotonic_time(:millisecond) >= deadline do
+          :timeout
+        else
+          Process.sleep(@poll_ms)
+          poll_ready(runner, serial, uid, deadline)
+        end
     end
   end
 

@@ -23,9 +23,10 @@ defmodule MobDev.AdbRootTest do
         [_, _, "shell", _] ->
           t0 = Agent.get(agent, & &1)
 
+          # Before the restart lands, the old non-root adbd still answers.
           if System.monotonic_time(:millisecond) - t0 >= ready_after_ms,
-            do: {"1\nok\n", 0},
-            else: {"error: device 'emu-1' not found", 1}
+            do: {"1\n0\nok\n", 0},
+            else: {"1\n2000\nok\n", 0}
       end
     end
   end
@@ -34,7 +35,7 @@ defmodule MobDev.AdbRootTest do
     r = runner("restarting adbd as root\n", 1_200)
     assert AdbRoot.root("emu-1", runner: r, timeout_ms: 5_000) == :rooted
     assert_received {:adb, ["-s", "emu-1", "wait-for-device"]}
-    assert_received {:adb, ["-s", "emu-1", "shell", "getprop sys.boot_completed; echo ok"]}
+    assert_received {:adb, ["-s", "emu-1", "shell", "getprop sys.boot_completed; id -u; echo ok"]}
   end
 
   test "times out with an error naming the serial" do
@@ -52,6 +53,12 @@ defmodule MobDev.AdbRootTest do
 
     assert {:error, msg} = AdbRoot.root("emu-1", runner: r, timeout_ms: 300)
     assert msg =~ "emu-1"
+  end
+
+  test "an empty reply from adb root still waits for the restart" do
+    r = runner("", 500)
+    assert AdbRoot.root("emu-1", runner: r, timeout_ms: 5_000) == :rooted
+    assert_received {:adb, ["-s", "emu-1", "wait-for-device"]}
   end
 
   test "no wait when adbd already runs as root" do
