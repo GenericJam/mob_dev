@@ -74,7 +74,7 @@ defmodule MobDev.Tunnel do
     # Discovered over USB, so no IP yet. The BEAM names itself after the WiFi
     # IP when it has one, so the USB link-local IP is only the prediction for
     # when EPMD lists nothing yet.
-    case IOS.resolve_usb_node(usb_link_local_ip()) do
+    case IOS.resolve_usb_node(usb_link_local_ip(device.serial)) do
       {:registered, ip, name, dist_port} ->
         {:ok,
          %{device | host_ip: ip, node: :"#{name}@#{ip}", dist_port: dist_port, status: :tunneled}}
@@ -85,7 +85,9 @@ defmodule MobDev.Tunnel do
         {:ok, %{d | node: Device.node_name(d)}}
 
       :none ->
-        {:error, "device usb ip: no device USB IP in ARP — is the device connected via USB?"}
+        {:error,
+         "device usb ip: no USB link-local IP for #{device.serial} (neither its mDNS name " <>
+           "nor ARP has one) — is the device connected via USB?"}
     end
   end
 
@@ -297,14 +299,22 @@ defmodule MobDev.Tunnel do
   #
   # When an iOS device is connected via USB, macOS creates a USB Ethernet
   # interface (e.g. en11). The device has its own 169.254.x.x address on that
-  # interface; macOS discovers it via mDNS and caches it in the ARP table as
-  # "<device-name>.local (169.254.x.x) at <mac>".
+  # interface and answers mDNS for it under its `.local` name. The device's
+  # own EPMD binds 0.0.0.0:4369, making it directly reachable from Mac at that
+  # IP — no iproxy needed.
   #
-  # ARP entries start as "(incomplete)" until traffic triggers MAC resolution.
-  # We ping any incomplete 169.254 entries first, then re-read the ARP table.
-  # The device's own EPMD binds 0.0.0.0:4369, making it directly reachable
-  # from Mac at that IP — no iproxy needed.
-  defp usb_link_local_ip do
+  # First from the phone's own mDNS name (IOS.usb_link_local_ip/1: the names
+  # devicectl lists for this UDID), so the address belongs to the phone being
+  # connected. On macOS 27 `arp` run from the BEAM reads an empty table, so
+  # the ARP scan below finds nothing there (MOB-428); it stays as the fallback
+  # for a devicectl without hostnames. ARP entries start as "(incomplete)"
+  # until traffic triggers MAC resolution, so incomplete 169.254 entries are
+  # pinged before the table is re-read.
+  defp usb_link_local_ip(udid) do
+    IOS.usb_link_local_ip(udid) || arp_link_local_ip()
+  end
+
+  defp arp_link_local_ip do
     case read_resolved_usb_ip() do
       {:ok, ip} ->
         ip

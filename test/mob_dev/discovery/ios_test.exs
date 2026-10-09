@@ -219,6 +219,21 @@ defmodule MobDev.Discovery.IOSTest do
       assert IOS.physical_launch_env([]) == []
       assert IOS.physical_launch_env(dist_cookie: "") == []
     end
+
+    # MOB-428: the phone must take the host the Mac reaches it at (over USB,
+    # the link-local one), or a WiFi-named node is unreachable.
+    test "names the node host the Mac waits for; anything but an IPv4 is dropped" do
+      assert IOS.physical_launch_env(dist_cookie: "c", node_host: "169.254.1.100") == [
+               {"DEVICECTL_CHILD_MOB_DIST_COOKIE", "c"},
+               {"DEVICECTL_CHILD_MOB_NODE_HOST", "169.254.1.100"}
+             ]
+
+      for bad <- [nil, "", "kevins-iphone.local", "169.254.1", "fe80::1"] do
+        assert IOS.physical_launch_env(dist_cookie: "c", node_host: bad) == [
+                 {"DEVICECTL_CHILD_MOB_DIST_COOKIE", "c"}
+               ]
+      end
+    end
   end
 
   # ── EPMD node resolution (MOB-283) ───────────────────────────────────────────
@@ -379,6 +394,92 @@ defmodule MobDev.Discovery.IOSTest do
       task = Task.async(fn -> IOS.same_phone_ipv4s("169.254.1.100", hang, 200) end)
 
       assert Task.yield(task, 1_500) == {:ok, []}
+    end
+  end
+
+  # MOB-428: on macOS 27 `arp` spawned from the BEAM reads an empty table, so a
+  # wired iPhone's link-local IP comes from its own mDNS name instead.
+  describe "usb_link_local_ip/2" do
+    # The shape `xcrun devicectl list devices --json-output` reports (trimmed):
+    # the wired phone, a second phone, and a simulator.
+    @devices [
+      %{
+        "hardwareProperties" => %{"udid" => "00008110-001E1C3A34F8401E", "reality" => "physical"},
+        "connectionProperties" => %{
+          "localHostnames" => [
+            "Kevins-iPhone.coredevice.local",
+            "2B980533-C8B6-50C1-98D2-F84F1B91B0FE.coredevice.local",
+            "00008110-001E1C3A34F8401E.coredevice.local"
+          ],
+          "potentialHostnames" => ["Kevins-iPhone.coredevice.local"],
+          "tunnelIPAddress" => "fda2:8720:de7e::1"
+        }
+      },
+      %{
+        "hardwareProperties" => %{"udid" => "00008030-000A1B2C3D4E5F60", "reality" => "physical"},
+        "connectionProperties" => %{"localHostnames" => ["Other-iPhone.coredevice.local"]}
+      },
+      %{
+        "hardwareProperties" => %{
+          "udid" => "D134E7BC-B6D3-4237-9E41-A01C0DFF4269",
+          "reality" => "simulated"
+        }
+      }
+    ]
+
+    @mdns %{
+      "Kevins-iPhone.local" => ["192.168.0.185", "169.254.1.100"],
+      "Other-iPhone.local" => ["169.254.9.9"]
+    }
+
+    defp resolve(name), do: Map.get(@mdns, name, [])
+
+    test "the phone's .local names come from its own CoreDevice hostnames, identifiers skipped" do
+      assert IOS.usb_mdns_names(@devices, "00008110-001E1C3A34F8401E") == ["Kevins-iPhone.local"]
+      assert IOS.usb_mdns_names(@devices, "00008030-000A1B2C3D4E5F60") == ["Other-iPhone.local"]
+      assert IOS.usb_mdns_names(@devices, "D134E7BC-B6D3-4237-9E41-A01C0DFF4269") == []
+      assert IOS.usb_mdns_names(@devices, "not-attached") == []
+    end
+
+    test "takes the link-local address of the phone being connected, not another phone's" do
+      assert IOS.usb_link_local_ip("00008110-001E1C3A34F8401E",
+               devices: @devices,
+               resolve: &resolve/1
+             ) ==
+               "169.254.1.100"
+
+      assert IOS.usb_link_local_ip("00008030-000A1B2C3D4E5F60",
+               devices: @devices,
+               resolve: &resolve/1
+             ) ==
+               "169.254.9.9"
+    end
+
+    test "nil when the phone's name has only a WiFi address, or devicectl doesn't list it" do
+      wifi_only = fn "Kevins-iPhone.local" -> ["192.168.0.185"] end
+
+      assert IOS.usb_link_local_ip("00008110-001E1C3A34F8401E",
+               devices: @devices,
+               resolve: wifi_only
+             ) == nil
+
+      assert IOS.usb_link_local_ip("00008110-001E1C3A34F8401E", devices: [], resolve: &resolve/1) ==
+               nil
+    end
+
+    test "a lookup that hangs is abandoned at the deadline" do
+      hang = fn _name -> Process.sleep(:infinity) end
+
+      task =
+        Task.async(fn ->
+          IOS.usb_link_local_ip("00008110-001E1C3A34F8401E",
+            devices: @devices,
+            resolve: hang,
+            timeout_ms: 200
+          )
+        end)
+
+      assert Task.yield(task, 1_500) == {:ok, nil}
     end
   end
 end
