@@ -115,6 +115,28 @@ defmodule MobDev.Plugin.ScaffoldTest do
     end
   end
 
+  describe "self-tests in the scaffolds" do
+    test "tier 1 and tier 4 generate a Mob.Plugin.SelfTest and declare it in the manifest" do
+      for tier <- [1, 4] do
+        files = Map.new(Scaffold.files_for(tier, "mob_demo_widget"))
+        self_test = Map.fetch!(files, "lib/mob_demo_widget/self_test.ex")
+        assert self_test =~ "defmodule MobDemoWidget.SelfTest do"
+        assert self_test =~ "@behaviour Mob.Plugin.SelfTest"
+        assert self_test =~ "def run("
+        assert Map.fetch!(files, "priv/mob_plugin.exs") =~ "selftest: MobDemoWidget.SelfTest"
+      end
+    end
+
+    test "the tier-1 self-test expects what the generated C NIF returns from ping/0" do
+      files = Map.new(Scaffold.files_for(1, "mob_demo_widget"))
+
+      assert Map.fetch!(files, "priv/native/jni/mob_demo_widget_nif.c") =~
+               ~S|enif_make_atom(env, "ok")|
+
+      assert Map.fetch!(files, "lib/mob_demo_widget/self_test.ex") =~ ":ok -> :pass"
+    end
+  end
+
   describe "files_for/2 — tier 0" do
     setup do
       {:ok, files: Scaffold.files_for(0, "mob_demo_widget")}

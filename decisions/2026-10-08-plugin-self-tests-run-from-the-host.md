@@ -34,12 +34,16 @@
   stop validating the day this ships.
 - **`run_all(node, ctx, opts)` is the runner.** One `:erpc.call/5` per
   plugin, sequential (self-tests may touch shared hardware), each with its
-  own timeout (`:timeout_ms`, 30 s). Every way a remote `run/1` can go
-  wrong is caught on the host and becomes that plugin's `{:fail, why}`:
-  `error:{erpc, timeout}`, `{exception, Reason, Stack}` (raise; `:undef`
-  for a module the running build does not have, named as such),
-  `exit:{exception, _}` and `{signal, _}`, `throw`, and a return outside
-  the contract. The contract's three shapes are restated in the runner
+  own timeout (`:timeout_ms`, 30 s). The remote `run/1` is spawned the way
+  `:erpc.call/5` spawns it (`spawn_request` of `:erpc.execute_call/4`, which
+  reports the return or the exception as its exit reason) but with the pid
+  in hand, so a test that overruns the deadline is **killed** on the
+  device rather than abandoned beside the next plugin's run. Every way it
+  can go wrong becomes that plugin's `{:fail, why}`: timeout, raise
+  (`:undef` for a module the running build does not have, named as such),
+  exit, throw, a kill signal, a lost connection, a non-module `selftest:`
+  value, a manifest that failed signature verification, and a return
+  outside the contract. The contract's three shapes are restated in the runner
   rather than calling `Mob.Plugin.SelfTest.result?/1`, so mob_dev does not
   need mob at runtime and the runner works against an app built with an
   older mob. Plugins with no `selftest:` (or no manifest) are entries with
@@ -52,13 +56,21 @@
   `permissions: [%{capability: _}]` whose capability has a simctl service
   (location, microphone, photos, media, contacts, calendar, reminders,
   motion). A physical iPhone gets nothing: there is no host-side grant.
-  `run_all/3` grants when given `:device` (mob_ci's path); `mix mob.selftest`
-  grants **before** it relaunches the app, because `simctl privacy` warns
-  that some changes terminate a running app, and a self-test must not meet
-  a system prompt.
-- **`mix mob.selftest` selects devices like `mix mob.connect`** (`--device`
-  / `--only`, `--ios-only`, `--android-only`, `--cookie`) and relaunches
-  the app by default like it (`--no-restart` attaches as is). The context is
+  `run_all/3` never grants: it holds a node, so the app is already running,
+  and `simctl privacy` warns that some changes terminate a running app.
+  Granting is the caller's job before launch: `mix mob.selftest` grants,
+  then relaunches (`--no-restart` grants nothing); mob_ci calls
+  `grant_permissions/4` before it starts the app. (The first draft had
+  `run_all/3` grant when given `:device`; the pre-merge review found that
+  it could kill the simulator app it was about to test.) Physical devices
+  get nothing granted; their self-tests skip with `:needs_user`.
+- **`mix mob.selftest` selects devices like `mix mob.smoke`**
+  (`MobDev.TaskTargets.resolve/3` with the agent-device leases: `--device`
+  / `--only`, `--all-devices`, `--all-physical`, `--ios-only`,
+  `--android-only`; a device another session holds is left alone unless
+  named) and relaunches the app by default like `mix mob.connect`
+  (`--no-restart` attaches as is). A target that `connect_all/1` no longer
+  finds is reported as unreachable, so a run never passes on zero devices. The context is
   the device record's platform and type, not something the plugin detects:
   a plugin deciding for itself that it is "on an emulator" is how a skip
   hides a hole. Exit status is non-zero on any `FAIL` or on a selected

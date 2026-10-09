@@ -1,10 +1,7 @@
 defmodule MobDev.Plugin.SelfTestTest do
-  # The "device" is this node: `:erpc.call/5` to `node()` runs the self-test
-  # in a spawned local process exactly as it would on a phone, including the
-  # exception, exit and timeout paths. async: false — the crash fixtures log.
-  use ExUnit.Case, async: false
-
-  import ExUnit.CaptureLog
+  # The "device" is this node: the self-test is spawned here exactly as it
+  # would be on a phone, including the exception, exit, kill and timeout paths.
+  use ExUnit.Case, async: true
 
   alias MobDev.Device
   alias MobDev.Plugin.SelfTest
@@ -26,6 +23,11 @@ defmodule MobDev.Plugin.SelfTestTest do
     def run(%{device: :emulator}), do: {:skip, :needs_hardware}
   end
 
+  defmodule SkipsWithReason do
+    @moduledoc false
+    def run(_ctx), do: {:skip, "no camera on this device"}
+  end
+
   defmodule Raises do
     @moduledoc false
     def run(_ctx), do: raise(ArgumentError, "nif not loaded")
@@ -41,9 +43,17 @@ defmodule MobDev.Plugin.SelfTestTest do
     def run(_ctx), do: throw(:oops)
   end
 
+  defmodule Killed do
+    @moduledoc false
+    def run(_ctx), do: Process.exit(self(), :kill)
+  end
+
   defmodule Hangs do
     @moduledoc false
-    def run(_ctx), do: Process.sleep(:infinity)
+    def run(_ctx) do
+      Process.register(self(), :mob_selftest_hangs)
+      Process.sleep(:infinity)
+    end
   end
 
   defmodule OffContract do
@@ -51,64 +61,69 @@ defmodule MobDev.Plugin.SelfTestTest do
     def run(_ctx), do: :ok
   end
 
+  defmodule FailAtom do
+    @moduledoc false
+    def run(_ctx), do: {:fail, :nope}
+  end
+
+  defmodule SkipAtom do
+    @moduledoc false
+    def run(_ctx), do: {:skip, :no_reason}
+  end
+
   defp plugin(name, module), do: {name, %{name: name, selftest: module}}
 
   describe "run_all/3" do
-    test "maps pass, fail and skip through unchanged, with the plugin and module" do
+    test "maps pass, fail and both skip shapes through unchanged, with the plugin and module" do
       entries =
         SelfTest.run_all(node(), @ctx,
-          plugins: [plugin(:mob_a, Passes), plugin(:mob_b, Fails), plugin(:mob_c, Skips)]
+          plugins: [
+            plugin(:mob_a, Passes),
+            plugin(:mob_b, Fails),
+            plugin(:mob_c, Skips),
+            plugin(:mob_d, SkipsWithReason)
+          ]
         )
 
       assert [
                %{plugin: :mob_a, module: Passes, result: :pass},
                %{plugin: :mob_b, module: Fails, result: {:fail, "status/0 returned :error"}},
-               %{plugin: :mob_c, module: Skips, result: {:skip, :needs_hardware}}
+               %{plugin: :mob_c, module: Skips, result: {:skip, :needs_hardware}},
+               %{plugin: :mob_d, result: {:skip, "no camera on this device"}}
              ] = entries
 
       assert Enum.all?(entries, &(is_integer(&1.ms) and &1.ms >= 0))
     end
 
-    test "a raise, exit or throw in one self-test is that plugin's failure and the rest still run" do
-      log =
-        capture_log(fn ->
-          entries =
-            SelfTest.run_all(node(), @ctx,
-              plugins: [
-                plugin(:mob_raise, Raises),
-                plugin(:mob_exit, Exits),
-                plugin(:mob_throw, Throws),
-                plugin(:mob_ok, Passes)
-              ]
-            )
+    test "a raise, exit, throw or kill in one self-test is that plugin's failure and the rest still run" do
+      entries =
+        SelfTest.run_all(node(), @ctx,
+          plugins: [
+            plugin(:mob_raise, Raises),
+            plugin(:mob_exit, Exits),
+            plugin(:mob_throw, Throws),
+            plugin(:mob_kill, Killed),
+            plugin(:mob_ok, Passes)
+          ]
+        )
 
-          assert [
-                   %{plugin: :mob_raise, result: {:fail, "raised: " <> raised}},
-                   %{plugin: :mob_exit, result: {:fail, "exited: :shutdown"}},
-                   %{plugin: :mob_throw, result: {:fail, "threw: :oops"}},
-                   %{plugin: :mob_ok, result: :pass}
-                 ] = entries
+      assert [
+               %{plugin: :mob_raise, result: {:fail, "raised: " <> raised}},
+               %{plugin: :mob_exit, result: {:fail, "exited: :shutdown"}},
+               %{plugin: :mob_throw, result: {:fail, "threw: :oops"}},
+               %{plugin: :mob_kill, result: {:fail, "killed: :killed"}},
+               %{plugin: :mob_ok, result: :pass}
+             ] = entries
 
-          assert raised =~ "ArgumentError"
-          assert raised =~ "nif not loaded"
-          send(self(), :done)
-        end)
-
-      assert_received :done
-      # The runner's own process survived every crash (the log is the remote one's).
-      refute log =~ "runner"
+      assert raised =~ "ArgumentError"
+      assert raised =~ "nif not loaded"
     end
 
-    test "a self-test that overruns the timeout fails with the timeout and does not block the next" do
-      {ms, entries} =
-        :timer.tc(
-          fn ->
-            SelfTest.run_all(node(), @ctx,
-              plugins: [plugin(:mob_slow, Hangs), plugin(:mob_ok, Passes)],
-              timeout_ms: 50
-            )
-          end,
-          :millisecond
+    test "a self-test that overruns the timeout is killed on the device, fails, and the next one runs" do
+      entries =
+        SelfTest.run_all(node(), @ctx,
+          plugins: [plugin(:mob_slow, Hangs), plugin(:mob_ok, Passes)],
+          timeout_ms: 50
         )
 
       assert [
@@ -117,37 +132,56 @@ defmodule MobDev.Plugin.SelfTestTest do
              ] = entries
 
       assert slow_ms >= 50
-      assert ms < 5_000
+      assert Process.whereis(:mob_selftest_hangs) == nil
     end
 
-    test "a module that is not on the device, or a return outside the contract, is a failure" do
+    test "a module not on the device, or a return outside the contract, is a failure" do
       entries =
         SelfTest.run_all(node(), @ctx,
-          plugins: [plugin(:mob_stale, Not.Deployed.SelfTest), plugin(:mob_bad, OffContract)]
+          plugins: [
+            plugin(:mob_stale, Not.Deployed.SelfTest),
+            plugin(:mob_bad, OffContract),
+            plugin(:mob_fail_atom, FailAtom),
+            plugin(:mob_skip_atom, SkipAtom),
+            {:mob_string, %{name: :mob_string, selftest: "MobString.SelfTest"}}
+          ]
         )
 
       assert [
                %{plugin: :mob_stale, result: {:fail, stale}},
-               %{plugin: :mob_bad, result: {:fail, bad}}
+               %{plugin: :mob_bad, result: {:fail, bad}},
+               %{plugin: :mob_fail_atom, result: {:fail, fail_atom}},
+               %{plugin: :mob_skip_atom, result: {:fail, skip_atom}},
+               %{plugin: :mob_string, module: nil, result: {:fail, string}}
              ] = entries
 
       assert stale =~ "Not.Deployed.SelfTest.run/1 is not on the device"
       assert bad =~ "returned :ok, not :pass | {:fail, reason} | {:skip, reason}"
+      assert fail_atom =~ "returned {:fail, :nope}, not"
+      assert skip_atom =~ "returned {:skip, :no_reason}, not"
+      assert string == ~s(selftest is not a module: "MobString.SelfTest")
     end
 
-    test "plugins without a self-test (or without a manifest) are skips, not absent" do
+    test "plugins without a self-test or a manifest are skips, a failed verification is a failure" do
       entries =
         SelfTest.run_all(node(), @ctx,
           plugins: [
-            {"/deps/mob_tier0", nil},
+            {"/deps/mob_tier0", nil, :unsigned},
+            {"/deps/mob_tampered", nil, {:error, :signature_mismatch}},
             {:mob_old, %{name: :mob_old, nifs: []}},
+            {"/deps/mob_nameless", %{name: nil, selftest: Passes}},
             plugin(:mob_ok, Passes)
           ]
         )
 
       assert [
                %{plugin: :mob_tier0, module: nil, result: {:skip, "no manifest (tier-0 plugin)"}},
+               %{
+                 plugin: :mob_tampered,
+                 result: {:fail, "manifest failed verification: :signature_mismatch"}
+               },
                %{plugin: :mob_old, module: nil, result: {:skip, "no selftest in manifest"}},
+               %{plugin: :mob_nameless, result: :pass},
                %{plugin: :mob_ok, result: :pass}
              ] = entries
     end
@@ -160,46 +194,8 @@ defmodule MobDev.Plugin.SelfTestTest do
         )
 
       assert [%{plugin: :mob_a, result: {:fail, reason}}] = entries
-      assert reason =~ "nope@127.0.0.1 is not reachable"
-    end
-
-    test "grants the manifests' permissions first when a device is given" do
-      test = self()
-
-      cmd = fn exe, argv ->
-        send(test, {:cmd, exe, argv})
-        {"", 0}
-      end
-
-      plugins = [
-        {:mob_location,
-         %{
-           name: :mob_location,
-           selftest: Passes,
-           android: %{permissions: ["android.permission.ACCESS_FINE_LOCATION"]}
-         }}
-      ]
-
-      device = %Device{platform: :android, serial: "emulator-5554", type: :emulator}
-
-      assert [%{result: :pass}] =
-               SelfTest.run_all(node(), @ctx,
-                 plugins: plugins,
-                 device: device,
-                 bundle_id: "com.example.host",
-                 cmd: cmd
-               )
-
-      assert_received {:cmd, "adb",
-                       [
-                         "-s",
-                         "emulator-5554",
-                         "shell",
-                         "pm",
-                         "grant",
-                         "com.example.host",
-                         "android.permission.ACCESS_FINE_LOCATION"
-                       ]}
+      assert reason =~ "nope@127.0.0.1"
+      assert reason =~ "noconnection"
     end
   end
 
@@ -215,7 +211,7 @@ defmodule MobDev.Plugin.SelfTestTest do
              "android.permission.ACCESS_COARSE_LOCATION"
            ]
          }
-       }},
+       }, :ok},
       {:mob_whisper,
        %{
          name: :mob_whisper,
@@ -226,7 +222,7 @@ defmodule MobDev.Plugin.SelfTestTest do
       {"/deps/mob_tier0", nil}
     ]
 
-    test "android: pm grant per declared permission, recording what the device said" do
+    test "android emulator: pm grant per declared permission, recording what the device said" do
       cmd = fn "adb", ["-s", "emulator-5554", "shell", "pm", "grant", "com.x.app", perm] ->
         if perm =~ "COARSE",
           do: {"Operation not allowed: not a changeable permission type", 255},
@@ -262,10 +258,15 @@ defmodule MobDev.Plugin.SelfTestTest do
                SelfTest.grant_permissions(device, @plugins, "com.x.app", cmd)
     end
 
-    test "ios physical device: nothing can be granted from the host" do
+    test "physical devices get nothing granted from the host" do
       cmd = fn _exe, _argv -> flunk("no command expected") end
-      device = %Device{platform: :ios, serial: "00008030-ABCDEF", type: :physical}
-      assert SelfTest.grant_permissions(device, @plugins, "com.x.app", cmd) == []
+
+      for device <- [
+            %Device{platform: :ios, serial: "00008030-ABCDEF", type: :physical},
+            %Device{platform: :android, serial: "ZY22DP6HFL", type: :physical}
+          ] do
+        assert SelfTest.grant_permissions(device, @plugins, "com.x.app", cmd) == []
+      end
     end
   end
 

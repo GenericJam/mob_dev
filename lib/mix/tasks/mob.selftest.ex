@@ -5,9 +5,9 @@ defmodule Mix.Tasks.Mob.Selftest do
   Attach to the deployed app on each selected device and run every activated
   plugin's `Mob.Plugin.SelfTest` on it, over distribution.
 
-      mix mob.selftest                       # every connected device
+      mix mob.selftest                       # the one connected emulator/simulator
       mix mob.selftest --device emulator-5554
-      mix mob.selftest --ios-only --timeout 10000
+      mix mob.selftest --all-devices --timeout 10000
 
   The app must be deployed (`mix mob.deploy`) with the plugins activated in
   `mob.exs`; a self-test is only on the device if the build that is running
@@ -22,17 +22,23 @@ defmodule Mix.Tasks.Mob.Selftest do
   on emulators and simulators (`adb shell pm grant`, `xcrun simctl privacy
   grant`), so no system prompt stands between a self-test and its native
   code. The app is then relaunched (as `mix mob.connect` does), because a
-  simulator may terminate an app whose privacy settings changed;
-  `--no-restart` attaches to the app as it is.
+  simulator may terminate an app whose privacy settings changed.
+  `--no-restart` attaches to the app as it is and grants nothing.
 
   ## Options
 
     * `--device` / `--only` (`-d`) — target a device by serial/udid
-      (substring match). Repeatable
+      (serial, udid or short id). Repeatable
+    * `--all-devices`  — every emulator and simulator
+    * `--all-physical` — every physical device (with `--all-devices`: everything)
     * `--ios-only` / `--android-only` — restrict discovery to one platform
     * `--timeout MS` — per self-test, in milliseconds (default: 30000)
-    * `--no-restart` — do not relaunch the app before testing
+    * `--no-restart` — do not relaunch the app before testing (and do not
+      grant permissions)
     * `--cookie C` — dist cookie (default: the app's private cookie)
+
+  With no selection flags exactly one emulator/simulator is picked, and a
+  device another `agent-device` session holds is left alone unless named.
 
   ## Exit status
 
@@ -43,12 +49,15 @@ defmodule Mix.Tasks.Mob.Selftest do
   use Mix.Task
 
   alias Mix.Tasks.Mob.Connect
-  alias MobDev.{Connector, Device, TaskHelp}
+  alias Mix.Tasks.Mob.Deploy
+  alias MobDev.{Connector, Device, DeviceLeases, TaskHelp, TaskTargets}
   alias MobDev.Plugin.SelfTest
 
   @switches [
     device: :keep,
     only: :keep,
+    all_devices: :boolean,
+    all_physical: :boolean,
     ios_only: :boolean,
     android_only: :boolean,
     timeout: :integer,
@@ -58,13 +67,15 @@ defmodule Mix.Tasks.Mob.Selftest do
 
   @impl Mix.Task
   def run(args), do: run(args, %{})
+
   @doc false
   # `deps` replaces the I/O: `:discover` (platforms -> devices, as
-  # `Mix.Tasks.Mob.Deploy.discover_devices/1`), `:grant` (device, plugins ->
-  # grants, as `SelfTest.grant_permissions/4` with the app's bundle id),
-  # `:connect` (opts -> {connected, failed} devices, as
-  # `MobDev.Connector.connect_all/1`), `:plugins` (-> activated plugins) and
-  # `:run_all` (node, ctx, opts -> entries, as `SelfTest.run_all/3`).
+  # `Mix.Tasks.Mob.Deploy.discover_devices/1`), `:leases` (-> the agent-device
+  # claims), `:grant` (device, plugins -> grants, as
+  # `SelfTest.grant_permissions/4` with the app's bundle id), `:connect`
+  # (opts -> {connected, failed} devices, as `MobDev.Connector.connect_all/1`),
+  # `:plugins` (-> activated plugins) and `:run_all` (node, ctx, opts ->
+  # entries, as `SelfTest.run_all/3`).
   @spec run([String.t()], map()) :: :ok
   def run(args, deps) do
     if TaskHelp.help_requested?(args) do
@@ -90,43 +101,37 @@ defmodule Mix.Tasks.Mob.Selftest do
 
   defp selftest(opts, deps) do
     Mix.Task.run("app.config")
-
-    platforms =
-      case Connect.resolve_platforms(opts, MobDev.Config.platforms()) do
-        {:ok, platforms} -> platforms
-        {:error, message} -> Mix.raise(message)
-      end
-
-    only = Keyword.get_values(opts, :device) ++ Keyword.get_values(opts, :only)
+    targets = select_devices!(opts, deps)
     plugins = deps.plugins.()
-
-    targets = platforms |> deps.discover.() |> Connector.filter_only(only)
-
-    if targets == [] do
-      Mix.raise("No devices found. Deploy the app first (mix mob.deploy), then run this again.")
-    end
+    restart? = Keyword.get(opts, :restart, true)
 
     # Grants come before the (re)launch: a simulator may terminate an app
     # whose privacy settings change, and a self-test must not meet a prompt.
-    Enum.each(targets, &grant(&1, plugins, deps))
+    if restart?, do: Enum.each(targets, &grant(&1, plugins, deps))
 
     {connected, failed} =
       deps.connect.(
         cookie: opts[:cookie],
         only: Enum.map(targets, & &1.serial),
-        platforms: platforms,
-        restart: Keyword.get(opts, :restart, true)
+        platforms: targets |> Enum.map(& &1.platform) |> Enum.uniq(),
+        restart: restart?
       )
 
     run_opts = [plugins: plugins, timeout_ms: Keyword.get(opts, :timeout, 30_000)]
     results = Enum.map(connected, &run_device(&1, run_opts, deps))
 
-    unreachable = Enum.map(failed, &"#{label(&1)}: node not reachable (#{&1.error || &1.status})")
+    seen = MapSet.new(connected ++ failed, & &1.serial)
+    missing = Enum.reject(targets, &MapSet.member?(seen, &1.serial))
+
+    unreachable =
+      Enum.map(failed, &"#{label(&1)}: node not reachable (#{&1.error || &1.status})") ++
+        Enum.map(missing, &"#{label(&1)}: not found when connecting")
+
     Enum.each(unreachable, &IO.puts("\n" <> &1))
 
     failures =
       for {device, entries} <- results,
-          %{plugin: plugin, result: {:fail, reason}} <- entries,
+          %{plugin: plugin, result: {:fail, reason}} <- SelfTest.failures(entries),
           do: "#{label(device)} #{plugin}: #{reason}"
 
     case failures ++ unreachable do
@@ -135,6 +140,22 @@ defmodule Mix.Tasks.Mob.Selftest do
     end
 
     :ok
+  end
+
+  defp select_devices!(opts, deps) do
+    platforms =
+      case Connect.resolve_platforms(opts, MobDev.Config.platforms()) do
+        {:ok, platforms} -> platforms
+        {:error, message} -> Mix.raise(message)
+      end
+
+    ids = Keyword.get_values(opts, :device) ++ Keyword.get_values(opts, :only)
+    opts = Keyword.put(opts, :leases, deps.leases.())
+
+    case TaskTargets.resolve(deps.discover.(platforms), ids, opts) do
+      {:ok, devices} -> devices
+      {:error, reason, context} -> Mix.raise(Deploy.target_error(reason, context, ids))
+    end
   end
 
   defp grant(%Device{} = device, plugins, deps) do
@@ -168,10 +189,11 @@ defmodule Mix.Tasks.Mob.Selftest do
 
   defp default_deps do
     %{
-      discover: &Mix.Tasks.Mob.Deploy.discover_devices/1,
+      discover: &Deploy.discover_devices/1,
+      leases: &DeviceLeases.load/0,
       grant: &grant_permissions/2,
       connect: &Connector.connect_all/1,
-      plugins: &MobDev.Plugin.activated/0,
+      plugins: &MobDev.Plugin.activated_with_verify/0,
       run_all: &SelfTest.run_all/3
     }
   end

@@ -287,9 +287,9 @@ activated plugin's `run/1` over distribution, one plugin at a time, with
 `%{platform: :ios | :android, device: :simulator | :emulator | :physical}`.
 
 ```bash
-mix mob.selftest                       # every connected device
+mix mob.selftest                       # the one connected emulator/simulator
 mix mob.selftest --device emulator-5554 --timeout 10000
-mix mob.selftest --ios-only --no-restart   # attach to the app as it is
+mix mob.selftest --all-devices --no-restart   # attach to the apps as they are
 ```
 
 Before the tests, the permissions the manifests declare are granted on
@@ -313,8 +313,11 @@ A plugin without a self-test is a `skip` (so it is visible, not absent); a
 self-test that raises, exits, times out (30 s by default) or returns
 something outside the contract is a `FAIL` with the reason. The exit status
 is non-zero on any `FAIL`, or when a selected device's node could not be
-reached. `MobDev.Plugin.SelfTest.run_all/3` is the same runner for callers
-that already hold a node, such as mob_ci.
+reached. Device selection follows `mix mob.smoke` (`--device`,
+`--all-devices`, `--all-physical`, agent-device leases honoured).
+`MobDev.Plugin.SelfTest.run_all/3` is the same runner for callers that
+already hold a node, such as mob_ci, and `grant_permissions/4` the
+pre-launch grant.
 
 ## Do the tests guard anything? (`mix mob.mutate`)
 
