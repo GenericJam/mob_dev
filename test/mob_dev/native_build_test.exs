@@ -2400,6 +2400,34 @@ defmodule MobDev.NativeBuildTest do
     end
   end
 
+  describe "clear_stale_gradle_locks/1" do
+    @describetag :tmp_dir
+
+    # MOB-468: native-platform's `<lib>.so.lock` marks a finished extraction.
+    # Deleting it made the next Gradle JVM rewrite the mapped .so in place and
+    # crashed every concurrent Gradle JVM (SIGSEGV in ld-linux / JNI).
+    test "clears stale wrapper, daemon and cache locks but keeps native-platform's extraction markers",
+         %{tmp_dir: home} do
+      marker = Path.join(home, "native/68d5/linux-amd64/libnative-platform.so.lock")
+      lib = Path.join(home, "native/68d5/linux-amd64/libnative-platform.so")
+
+      stale = [
+        Path.join(home, "daemon/8.2.1/registry.bin.lock"),
+        Path.join(home, "caches/8.2.1/fileHashes/fileHashes.lock")
+      ]
+
+      for f <- [marker, lib | stale] do
+        File.mkdir_p!(Path.dirname(f))
+        File.write!(f, <<1>>)
+      end
+
+      assert NativeBuild.clear_stale_gradle_locks(home) == :ok
+      assert File.exists?(marker)
+      assert File.exists?(lib)
+      for f <- stale, do: refute(File.exists?(f), f)
+    end
+  end
+
   # ── ios_bundle_id/1 ───────────────────────────────────────────────────────────
   #
   # The sim bundle, the device bundle, and code signing must all stamp the

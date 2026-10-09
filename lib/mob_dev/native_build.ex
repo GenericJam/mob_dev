@@ -1574,15 +1574,21 @@ defmodule MobDev.NativeBuild do
   # Remove stale Gradle lock files left behind when a build is interrupted
   # (Ctrl+C, kill, etc.). These cause the next run to hang indefinitely while
   # the wrapper waits to acquire the lock.
-  defp clear_stale_gradle_locks do
-    gradle_home =
-      System.get_env("GRADLE_USER_HOME") ||
-        Path.join(System.user_home!(), ".gradle")
-
+  #
+  # Never `<gradle_home>/native/**/*.lock` (MOB-468): those are not locks but
+  # native-platform's "extraction complete" markers. Without one, the next
+  # Gradle JVM re-extracts `libnative-platform.so` (and friends) in place, over
+  # the inode every running Gradle JVM has mapped, and those JVMs SIGSEGV (the
+  # wrapper in `ld-linux` at exit, the daemon in a JNI `stat`/`getPid`).
+  @doc false
+  @spec clear_stale_gradle_locks(Path.t()) :: :ok
+  def clear_stale_gradle_locks(
+        gradle_home \\ System.get_env("GRADLE_USER_HOME") ||
+          Path.join(System.user_home!(), ".gradle")
+      ) do
     patterns = [
       "#{gradle_home}/daemon/*/registry.bin.lock",
       "#{gradle_home}/wrapper/dists/**/*.lck",
-      "#{gradle_home}/native/**/*.lock",
       "#{gradle_home}/caches/**/*.lock",
       "#{gradle_home}/caches/**/*.lck"
     ]
