@@ -67,9 +67,14 @@ defmodule MobDev.AdbRootTest do
     refute_received {:adb, ["-s", "emu-1", "wait-for-device"]}
   end
 
-  test "no wait when the device refuses root" do
-    r = runner("adbd cannot run as root in production builds\n", 0)
-    assert AdbRoot.root("emu-1", runner: r) == :not_rooted
-    refute_received {:adb, ["-s", "emu-1", "wait-for-device"]}
+  for refusal <- [
+        "adbd cannot run as root in production builds\n",
+        "ADB Root access is disabled by system setting - enable in Settings -> System -> Developer options\n"
+      ] do
+    test "no wait when the device refuses root: #{String.slice(refusal, 0, 24)}" do
+      r = runner(unquote(refusal), 0)
+      assert AdbRoot.root("emu-1", runner: r) == :not_rooted
+      refute_received {:adb, ["-s", "emu-1", "wait-for-device"]}
+    end
   end
 end

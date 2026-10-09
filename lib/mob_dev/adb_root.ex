@@ -42,13 +42,15 @@ defmodule MobDev.AdbRoot do
           out =~ "already running as root" ->
             :rooted
 
-          out =~ "cannot run as root" ->
-            :not_rooted
-
           # "restarting adbd as root", or nothing at all: adb can lose the
           # connection to the restarting adbd before it prints the reply.
-          true ->
+          out =~ "restarting" or String.trim(out) == "" ->
             with :ok <- wait_for_device(serial, [{:uid, 0} | opts]), do: :rooted
+
+          # "cannot run as root in production builds", LineageOS's "ADB Root
+          # access is disabled by system setting", ...
+          true ->
+            :not_rooted
         end
 
       _ ->
