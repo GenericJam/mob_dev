@@ -480,85 +480,23 @@ defmodule MobDev.Plugin.Manifest do
     end
   end
 
-  defp prebuilt_token?({:prebuilt, sub}), do: bundle_relative?(sub)
+  defp prebuilt_token?({:prebuilt, sub}), do: MobDev.Plugin.Prebuilt.bundle_relative?(sub)
   defp prebuilt_token?(_), do: false
 
   # `:prebuilt` (MOB-427): a pinned tarball the build downloads, verifies and
   # extracts — `%{url: "https://…", sha256: <64 lowercase hex>, static_libs:
   # %{<CppArchive target> => [bundle-relative .a paths]}}`. The hash is what
   # extends the plugin signature (which covers this manifest) to the download,
-  # so it is required and exact.
+  # so it is required and exact. `Prebuilt.errors/1` owns the rules; the build
+  # (`Prebuilt.prepare/2`) applies the same ones, since a host build doesn't run
+  # this validation.
   defp check_archive_prebuilt(errors, %{prebuilt: nil}, _i), do: errors
 
-  defp check_archive_prebuilt(errors, %{prebuilt: %{} = p}, i) do
-    errors
-    |> check_prebuilt_url(p, i)
-    |> check_prebuilt_sha256(p, i)
-    |> check_prebuilt_static_libs(p, i)
+  defp check_archive_prebuilt(errors, %{prebuilt: p}, i) do
+    Enum.reduce(MobDev.Plugin.Prebuilt.errors(p), errors, &["nifs entry ##{i}: #{&1}" | &2])
   end
-
-  defp check_archive_prebuilt(errors, %{prebuilt: other}, i),
-    do: ["nifs entry ##{i}: cpp_archive :prebuilt must be a map, got: #{inspect(other)}" | errors]
 
   defp check_archive_prebuilt(errors, _nif, _i), do: errors
-
-  defp check_prebuilt_url(errors, %{url: "https://" <> _}, _i), do: errors
-
-  defp check_prebuilt_url(errors, p, i),
-    do: [
-      "nifs entry ##{i}: :prebuilt :url must be an https:// URL, got: #{inspect(p[:url])}"
-      | errors
-    ]
-
-  defp check_prebuilt_sha256(errors, %{sha256: sha}, i) when is_binary(sha) do
-    if sha =~ ~r/\A[0-9a-f]{64}\z/,
-      do: errors,
-      else: ["nifs entry ##{i}: :prebuilt :sha256 must be 64 lowercase hex characters" | errors]
-  end
-
-  defp check_prebuilt_sha256(errors, _p, i),
-    do: ["nifs entry ##{i}: :prebuilt requires a :sha256 of the tarball" | errors]
-
-  defp check_prebuilt_static_libs(errors, p, i) do
-    targets = MobDev.Plugin.CppArchive.targets()
-
-    case Map.get(p, :static_libs, %{}) do
-      %{} = libs ->
-        Enum.reduce(libs, errors, fn {target, paths}, acc ->
-          cond do
-            target not in targets ->
-              [
-                "nifs entry ##{i}: :prebuilt :static_libs key #{inspect(target)} is not one of " <>
-                  inspect(targets)
-                | acc
-              ]
-
-            not (is_list(paths) and Enum.all?(paths, &bundle_relative?/1)) ->
-              [
-                "nifs entry ##{i}: :prebuilt :static_libs #{inspect(target)} must be a list of " <>
-                  "relative paths inside the bundle"
-                | acc
-              ]
-
-            true ->
-              acc
-          end
-        end)
-
-      other ->
-        [
-          "nifs entry ##{i}: :prebuilt :static_libs must be a map of target => paths, got: " <>
-            inspect(other)
-          | errors
-        ]
-    end
-  end
-
-  # A path inside the extracted bundle: relative, no `..` escaping it.
-  defp bundle_relative?(path) when is_binary(path) and path != "",
-    do: Path.type(path) == :relative and ".." not in Path.split(path)
-
-  defp bundle_relative?(_), do: false
 
   # ── Tier 3: screens / migrations / assets ─────────────────────────────────
 

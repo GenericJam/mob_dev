@@ -38,9 +38,20 @@ What the build already had:
   `lib<module>.a`. They ride the existing `plugin_static_libs` inputs, so no
   host `build.zig` changes, and every app generated since those inputs exist
   links them.
-- The hash is required and validated (64 lowercase hex), and the URL must be
-  https. The plugin signature covers the manifest but cannot cover a download,
-  so the pin is what carries the signature's trust to the bundle.
+- The hash is required and validated (64 lowercase hex), the URL must be
+  https, and every bundle path must stay inside the bundle. The plugin
+  signature covers the manifest but cannot cover a download, so the pin is
+  what carries the signature's trust to the bundle. `Prebuilt.errors/1` holds
+  these rules; `mix mob.validate_plugin` reports them, and the build applies
+  them again in `Prebuilt.prepare/2`, because `MobDev.Plugin.activated/0`
+  verifies signatures but does not run manifest validation.
+- The tarball downloads and extracts beside the cache entry under a name
+  unique to the OS process, then renames into place, so concurrent first
+  builds (a sim and a device deploy, parallel CI cells sharing `HOME`) neither
+  collide nor expose a half-extracted bundle; a `.partial-*` left by a killed
+  build is swept once it is an hour old. `MOB_PLUGIN_PREBUILT_DIR` takes the
+  tarball from a local directory instead (offline builds, mirrors); the hash
+  still applies.
 - `.m` sources in a cpp_archive go to the C driver with `:cflags*`, like `.c`.
   `clang++` compiles `.m` as Objective-C and rejects `-std=gnu++17` for it, so
   an ObjC NIF could not share an archive with an ObjC++ renderer.
@@ -57,11 +68,11 @@ is no reference).
 
 ## Consequences
 
-- An older mob_dev ignores `prebuilt:` and fails to compile the renderer for
-  want of the Filament headers. mob_scene3d declares
-  `{:mob_dev, "~> 0.7.20", optional: true}`: an optional dependency adds
-  nothing to a host, but a host that has mob_dev (every Mob app) must resolve a
-  version that satisfies it.
+- An older mob_dev crashes on the `{:prebuilt, _}` include
+  (`CppArchive.resolve_deps/2` has no clause for it) before compiling
+  anything. mob_scene3d declares `{:mob_dev, "~> 0.7.20", optional: true}`: an
+  optional dependency adds nothing to a host, but a host that has mob_dev
+  (every Mob app) must resolve a version that satisfies it.
 - Bundle archives link after OTP's. ld64 takes the first archive that defines
   an undefined symbol, so where both ship a library (Filament and OTP each have
   `libzstd.a`) OTP's members win and Filament's only fill gaps; this is how the

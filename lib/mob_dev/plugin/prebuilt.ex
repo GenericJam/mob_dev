@@ -40,9 +40,20 @@ defmodule MobDev.Plugin.Prebuilt do
   hash to the manifest's `sha256` before anything is extracted: the manifest is
   covered by the plugin signature, so the pin carries that trust to a file the
   signature cannot cover.
+
+  ## Offline builds and mirrors
+
+  Set `MOB_PLUGIN_PREBUILT_DIR=/path/to/dir` to take each tarball from
+  `<dir>/<file name of the url>` instead of downloading it. The `sha256` is
+  checked all the same.
   """
 
   @marker ".mob_prebuilt_sha256"
+  @local_dir_env "MOB_PLUGIN_PREBUILT_DIR"
+
+  # A `.partial-*` sibling older than this is a fetch that died (the VM halted
+  # before its `after` ran); younger ones may belong to a build still running.
+  @stale_partial_seconds 3600
 
   @typedoc "A cpp_archive entry's `:prebuilt` map."
   @type t :: %{
@@ -52,6 +63,28 @@ defmodule MobDev.Plugin.Prebuilt do
         }
 
   # ── Pure surface ──────────────────────────────────────────────────────────
+
+  @doc """
+  Structural problems with a `:prebuilt` map, as messages (empty when it is
+  well formed): the URL must be https, the `sha256` 64 lowercase hex characters,
+  and `:static_libs` a map of `CppArchive` targets to relative paths that stay
+  inside the bundle. `MobDev.Plugin.Manifest.validate/1` reports these, and
+  `prepare/2` refuses a bundle that has any, since a host build does not run
+  manifest validation. Pure.
+  """
+  @spec errors(term()) :: [String.t()]
+  def errors(%{} = prebuilt) do
+    url_errors(prebuilt[:url]) ++ sha_errors(prebuilt[:sha256]) ++ lib_errors(prebuilt)
+  end
+
+  def errors(other), do: [":prebuilt must be a map, got: #{inspect(other)}"]
+
+  @doc "A path inside an extracted bundle: relative, no `..` component. Pure."
+  @spec bundle_relative?(term()) :: boolean()
+  def bundle_relative?(path) when is_binary(path) and path != "",
+    do: Path.type(path) == :relative and ".." not in Path.split(path)
+
+  def bundle_relative?(_), do: false
 
   @doc """
   Cache directory for a bundle: `<cache>/plugin-prebuilt/<name>-<sha256 prefix>`,
@@ -87,10 +120,6 @@ defmodule MobDev.Plugin.Prebuilt do
     for rel <- Map.get(prebuilt[:static_libs] || %{}, target_id, []), do: Path.join(root, rel)
   end
 
-  @doc "Whether an `:includes` list references the prebuilt bundle. Pure."
-  @spec uses_prebuilt?([term()]) :: boolean()
-  def uses_prebuilt?(includes), do: Enum.any?(includes, &match?({:prebuilt, _}, &1))
-
   # ── Build entrypoint ──────────────────────────────────────────────────────
 
   @doc """
@@ -99,21 +128,31 @@ defmodule MobDev.Plugin.Prebuilt do
   `{:prebuilt, _}` includes, and return the bundle archives to link.
 
   Returns `{:ok, spec, link_libs}`; a spec without `:prebuilt` comes back
-  unchanged with `[]`. Fails when the download, the hash or the extraction
-  fails, or when a listed archive is missing from the bundle.
+  unchanged with `[]`. Fails, with a message, on a malformed `:prebuilt` or
+  include, a failed download, hash or extraction, or a listed archive missing
+  from the bundle.
   """
   @spec prepare(map(), atom()) :: {:ok, map(), [Path.t()]} | {:error, String.t()}
   def prepare(spec, target_id) do
     includes = Map.get(spec, :includes, [])
+    prebuilt_includes = for {:prebuilt, sub} <- includes, do: sub
 
     case Map.get(spec, :prebuilt) do
+      nil when prebuilt_includes == [] ->
+        {:ok, spec, []}
+
       nil ->
-        if uses_prebuilt?(includes),
-          do: {:error, "#{label(spec)}: {:prebuilt, _} include but no :prebuilt declared"},
-          else: {:ok, spec, []}
+        {:error, "#{label(spec)}: {:prebuilt, _} include but no :prebuilt declared"}
 
       prebuilt ->
-        with {:ok, root} <- ensure(prebuilt),
+        problems =
+          errors(prebuilt) ++
+            for sub <- prebuilt_includes,
+                not bundle_relative?(sub),
+                do: "{:prebuilt, #{inspect(sub)}} include must stay inside the bundle"
+
+        with :ok <- no_problems(spec, problems),
+             {:ok, root} <- ensure(prebuilt),
              libs = static_libs(prebuilt, target_id, root),
              :ok <- check_libs(libs, prebuilt, root) do
           {:ok, %{spec | includes: resolve_includes(includes, root)}, libs}
@@ -133,28 +172,78 @@ defmodule MobDev.Plugin.Prebuilt do
     if cached?(dest, sha) do
       {:ok, dest}
     else
-      File.rm_rf!(dest)
-      fetch(url, sha, dest)
+      sweep_stale_partials(dest)
+
+      with :ok <- posix(File.rm_rf(dest) |> rm_rf_result(), "remove #{dest}"),
+           :ok <- posix(File.mkdir_p(Path.dirname(dest)), "create #{Path.dirname(dest)}") do
+        fetch(url, sha, dest)
+      end
     end
   end
 
   # ── Private ───────────────────────────────────────────────────────────────
 
+  defp url_errors("https://" <> _), do: []
+  defp url_errors(url), do: [":prebuilt :url must be an https:// URL, got: #{inspect(url)}"]
+
+  defp sha_errors(sha) when is_binary(sha) do
+    if sha =~ ~r/\A[0-9a-f]{64}\z/,
+      do: [],
+      else: [":prebuilt :sha256 must be 64 lowercase hex characters"]
+  end
+
+  defp sha_errors(_), do: [":prebuilt requires a :sha256 of the tarball"]
+
+  defp lib_errors(prebuilt) do
+    targets = MobDev.Plugin.CppArchive.targets()
+
+    case Map.get(prebuilt, :static_libs, %{}) do
+      %{} = libs ->
+        for {target, paths} <- libs,
+            error <- lib_entry_errors(target, paths, targets),
+            do: error
+
+      other ->
+        [":prebuilt :static_libs must be a map of target => paths, got: #{inspect(other)}"]
+    end
+  end
+
+  defp lib_entry_errors(target, paths, targets) do
+    cond do
+      target not in targets ->
+        [":prebuilt :static_libs key #{inspect(target)} is not one of #{inspect(targets)}"]
+
+      not (is_list(paths) and Enum.all?(paths, &bundle_relative?/1)) ->
+        [
+          ":prebuilt :static_libs #{inspect(target)} must be a list of relative paths " <>
+            "inside the bundle"
+        ]
+
+      true ->
+        []
+    end
+  end
+
+  defp no_problems(_spec, []), do: :ok
+
+  defp no_problems(spec, problems),
+    do: {:error, "#{label(spec)}: " <> Enum.join(problems, "; ")}
+
   defp cached?(dest, sha), do: File.read(Path.join(dest, @marker)) == {:ok, sha}
 
+  # The tarball and the extraction both live beside `dest` (same filesystem, so
+  # the final rename is atomic) under a name unique to this OS process.
   defp fetch(url, sha, dest) do
-    tag = "#{binary_part(sha, 0, 12)}-#{System.unique_integer([:positive])}"
-    tarball = Path.join(System.tmp_dir!(), "mob-prebuilt-#{tag}.tgz")
+    tag = "#{System.pid()}-#{System.unique_integer([:positive])}"
     staging = "#{dest}.partial-#{tag}"
-
-    IO.puts("  Downloading plugin prebuilt #{url}")
+    tarball = staging <> ".tgz"
 
     try do
-      with :ok <- MobDev.Download.curl(url, tarball),
-           :ok <- verify_sha256(tarball, sha, url),
-           :ok <- File.mkdir_p(staging),
-           :ok <- MobDev.Download.untar(tarball, staging),
-           :ok <- File.write(Path.join(staging, @marker), sha) do
+      with {:ok, source} <- obtain(url, tarball),
+           :ok <- verify_sha256(source, sha, url),
+           :ok <- posix(File.mkdir_p(staging), "create #{staging}"),
+           :ok <- MobDev.Download.untar(source, staging),
+           :ok <- posix(File.write(Path.join(staging, @marker), sha), "write #{staging}") do
         install(staging, dest, sha)
       end
     after
@@ -163,11 +252,30 @@ defmodule MobDev.Plugin.Prebuilt do
     end
   end
 
+  # The tarball to verify: a local copy when MOB_PLUGIN_PREBUILT_DIR is set,
+  # otherwise a download to `tarball`.
+  defp obtain(url, tarball) do
+    case System.get_env(@local_dir_env) do
+      dir when dir in [nil, ""] ->
+        IO.puts("  Downloading plugin prebuilt #{url}")
+
+        with :ok <- MobDev.Download.curl(url, tarball), do: {:ok, tarball}
+
+      dir ->
+        local = Path.join(dir, url_file_name(url))
+
+        if File.regular?(local) do
+          IO.puts("  Using local plugin prebuilt #{local}")
+          {:ok, local}
+        else
+          {:error, "#{@local_dir_env} is set to #{dir} but #{url_file_name(url)} is not there"}
+        end
+    end
+  end
+
   # Moves the finished extraction into place. A concurrent build may have
   # installed the same bundle first; its copy is just as good.
   defp install(staging, dest, sha) do
-    File.mkdir_p!(Path.dirname(dest))
-
     case File.rename(staging, dest) do
       :ok ->
         IO.puts("  Cached plugin prebuilt at #{dest}")
@@ -176,24 +284,50 @@ defmodule MobDev.Plugin.Prebuilt do
       {:error, reason} ->
         if cached?(dest, sha),
           do: {:ok, dest},
-          else: {:error, "could not move prebuilt into #{dest}: #{inspect(reason)}"}
+          else: {:error, "could not move prebuilt into #{dest}: #{:file.format_error(reason)}"}
     end
   end
 
   defp verify_sha256(path, expected, url) do
-    actual =
-      path
-      |> File.stream!(2_097_152)
-      |> Enum.reduce(:crypto.hash_init(:sha256), &:crypto.hash_update(&2, &1))
-      |> :crypto.hash_final()
-      |> Base.encode16(case: :lower)
+    with {:ok, actual} <- sha256_file(path) do
+      if actual == expected,
+        do: :ok,
+        else:
+          {:error,
+           "prebuilt #{url} has sha256 #{actual}, but the plugin manifest pins " <>
+             "#{expected}; refusing to use it"}
+    end
+  end
 
-    if actual == expected,
-      do: :ok,
-      else:
-        {:error,
-         "prebuilt #{url} has sha256 #{actual}, but the plugin manifest pins " <>
-           "#{expected}; refusing to use it"}
+  defp sha256_file(path) do
+    case File.open(path, [:read, :binary], &hash_device/1) do
+      {:ok, {:ok, digest}} -> {:ok, Base.encode16(digest, case: :lower)}
+      {:ok, {:error, reason}} -> posix({:error, reason}, "read #{path}")
+      {:error, reason} -> posix({:error, reason}, "open #{path}")
+    end
+  end
+
+  defp hash_device(io, ctx \\ :crypto.hash_init(:sha256)) do
+    case IO.binread(io, 2_097_152) do
+      :eof -> {:ok, :crypto.hash_final(ctx)}
+      {:error, reason} -> {:error, reason}
+      chunk -> hash_device(io, :crypto.hash_update(ctx, chunk))
+    end
+  end
+
+  defp sweep_stale_partials(dest) do
+    cutoff = System.os_time(:second) - @stale_partial_seconds
+    parent = Path.dirname(dest)
+    prefix = Path.basename(dest) <> ".partial-"
+
+    with {:ok, names} <- File.ls(parent) do
+      for name <- names,
+          String.starts_with?(name, prefix),
+          path = Path.join(parent, name),
+          {:ok, %File.Stat{mtime: mtime}} <- [File.lstat(path, time: :posix)],
+          mtime < cutoff,
+          do: File.rm_rf(path)
+    end
   end
 
   defp check_libs(libs, prebuilt, root) do
@@ -209,14 +343,23 @@ defmodule MobDev.Plugin.Prebuilt do
     end
   end
 
+  defp rm_rf_result({:ok, _}), do: :ok
+  defp rm_rf_result({:error, reason, _path}), do: {:error, reason}
+
+  defp posix(:ok, _what), do: :ok
+
+  defp posix({:error, reason}, what),
+    do: {:error, "could not #{what}: #{:file.format_error(reason)}"}
+
   defp label(spec), do: "plugin cpp_archive #{spec[:plugin]}/#{spec[:module]}"
+
+  defp url_file_name(url) do
+    url |> URI.parse() |> Map.get(:path) |> to_string() |> Path.basename()
+  end
 
   defp stem(url) do
     url
-    |> URI.parse()
-    |> Map.get(:path, "")
-    |> to_string()
-    |> Path.basename()
+    |> url_file_name()
     |> String.replace(~r/(\.tar\.gz|\.tgz)$/, "")
     |> String.replace(~r/[^A-Za-z0-9._-]/, "_")
   end

@@ -10,10 +10,12 @@
   sources against `{:prebuilt, "<dir>"}` includes, and links the target's
   listed archives beside `lib<module>.a` through the existing
   `plugin_static_libs` inputs — the simulator and device deploys and `mix
-  mob.release --ios`, with no host `build.zig` edit. Manifest validation checks
-  the URL (https), the hash and the paths. This is what lets `mob_scene3d`
-  (Filament) build into a blank iOS host from activation alone. See
-  `decisions/2026-10-09-cpp-archive-prebuilt-bundles.md`.
+  mob.release --ios`, with no host `build.zig` edit. The URL must be https, the
+  hash exact and every path inside the bundle; `mix mob.validate_plugin` and
+  the build both check. `MOB_PLUGIN_PREBUILT_DIR=<dir>` takes the tarball from
+  a local directory instead of downloading it (the hash still applies). This is
+  what lets `mob_scene3d` (Filament) build into a blank iOS host from
+  activation alone. See `decisions/2026-10-09-cpp-archive-prebuilt-bundles.md`.
 
 ### Fixed
 
