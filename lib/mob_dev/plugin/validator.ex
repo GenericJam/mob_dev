@@ -631,7 +631,22 @@ defmodule MobDev.Plugin.Validator do
   defp warnings(manifest) do
     single_platform_components(manifest) ++
       permission_review(manifest) ++
-      plist_review(manifest)
+      plist_review(manifest) ++
+      selftest_review(manifest)
+  end
+
+  # A warning in 0.7.17 so published plugins keep validating; an error in a
+  # later release once the first-party plugins all carry one (MOB-418).
+  defp selftest_review(manifest) do
+    if Map.has_key?(manifest, :selftest) do
+      []
+    else
+      [
+        "missing selftest — declare `selftest: Module` (a Mob.Plugin.SelfTest) so " <>
+          "`mix mob.selftest` and mob_ci can prove the plugin works on a device; " <>
+          "a later mob_dev release makes this an error"
+      ]
+    end
   end
 
   defp single_platform_components(manifest) do
