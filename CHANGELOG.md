@@ -2,6 +2,22 @@
 
 ### Fixed
 
+- **A wired iPhone connects again on macOS 27 (MOB-428).** `mix
+  mob.connect` (and every `MobDev.Connector` caller, `mix mob.selftest`,
+  mob_ci) failed with `device usb ip: no device USB IP in ARP`: on macOS
+  27.0.1 `arp -a` spawned from the BEAM reads an empty table (the same
+  command from a shell sees the entries), so the phone's USB link-local
+  address was never found. `MobDev.Tunnel` now takes it from the phone's own
+  mDNS name — the `<name>.coredevice.local` hostnames `devicectl` lists for
+  that UDID, resolved as `<name>.local` (`MobDev.Discovery.IOS.usb_link_local_ip/2`)
+  — which also ties the address to the phone being connected instead of the
+  first `169.254.*` neighbour of any device. ARP stays as the fallback.
+- **`mix mob.connect` reaches a wired iPhone whose WiFi is a network the Mac
+  isn't on (MOB-428).** The relaunch passes `DEVICECTL_CHILD_MOB_NODE_HOST`
+  with the address the Mac reaches the phone at, and mob 0.9.16 names the
+  node after it; before, the phone named it after its WiFi address and the
+  connect timed out. Older mob ignores the variable.
+
 - **`grant_permissions/4` pre-grants mob_photos' `:media` on an iOS
   simulator.** The `:media` capability mapped to the `media-library`
   `simctl privacy` service (Apple Music); it now maps to `photos`, the

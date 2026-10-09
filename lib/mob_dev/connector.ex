@@ -326,11 +326,19 @@ defmodule MobDev.Connector do
     IO.puts(" done")
   end
 
-  defp restart_app(%Device{platform: :ios, type: :physical, serial: udid}, cookie) do
+  defp restart_app(%Device{platform: :ios, type: :physical, serial: udid, host_ip: ip}, cookie) do
     IO.write("  Restarting app on #{udid}...")
-    # mob_beam.m picks its node IP via getifaddrs() (WiFi first). devicectl
-    # passes the cookie in the child environment, never on a command line.
-    IOS.restart_app_physical(udid, ios_bundle_id(), dist_cookie: Atom.to_string(cookie))
+    # The node is waited for as <name>@<host_ip> (Tunnel.setup/1), so the app
+    # is told to take that host (MOB_NODE_HOST, mob >= 0.9.16): left to
+    # itself mob_beam.m names the node after the phone's WiFi address, which
+    # is not the one the Mac reaches over USB when that WiFi is a network the
+    # Mac isn't on. devicectl passes the cookie in the child environment,
+    # never on a command line.
+    IOS.restart_app_physical(udid, ios_bundle_id(),
+      dist_cookie: Atom.to_string(cookie),
+      node_host: ip
+    )
+
     IO.puts(" done")
   end
 

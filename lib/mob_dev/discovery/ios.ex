@@ -111,6 +111,14 @@ defmodule MobDev.Discovery.IOS do
   """
   @spec devicectl_ipv4_addresses() :: [String.t()]
   def devicectl_ipv4_addresses do
+    devicectl_devices()
+    |> Enum.flat_map(&device_ipv4_candidates/1)
+    |> Enum.uniq()
+  end
+
+  # The `result.devices` of `xcrun devicectl list devices --json-output`, or
+  # [] when xcrun is missing, devicectl fails or its JSON doesn't parse.
+  defp devicectl_devices do
     if System.find_executable("xcrun") do
       tmp =
         Path.join(
@@ -128,8 +136,6 @@ defmodule MobDev.Discovery.IOS do
             |> Jason.decode!()
             |> get_in(["result", "devices"])
             |> List.wrap()
-            |> Enum.flat_map(&device_ipv4_candidates/1)
-            |> Enum.uniq()
 
           _ ->
             []
@@ -143,6 +149,80 @@ defmodule MobDev.Discovery.IOS do
       []
     end
   end
+
+  @doc """
+  The USB link-local IPv4 (`169.254.x.x`) of the physical iPhone `udid`,
+  looked up from the phone's own mDNS name, or nil.
+
+  devicectl lists each paired phone's CoreDevice hostnames
+  (`connectionProperties.localHostnames`, e.g.
+  `Kevins-iPhone.coredevice.local`); the phone answers mDNS as the same
+  label under `.local` (`Kevins-iPhone.local`) with its USB link-local
+  address and its WiFi address. Picking the link-local one from the names of
+  this UDID ties the address to the phone being connected, which an ARP scan
+  (the first resolved `169.254.*` neighbour of any device) does not, and it
+  works where ARP can't be read: on macOS 27 `arp` spawned from the BEAM
+  sees an empty table (MOB-428).
+
+  The lookups share one deadline (`:timeout_ms`, 3 s); `:devices` (decoded
+  devicectl devices) and `:resolve` (name → IPv4 strings) replace the real
+  calls in tests.
+  """
+  @spec usb_link_local_ip(String.t(), keyword()) :: String.t() | nil
+  def usb_link_local_ip(udid, opts \\ []) do
+    devices = Keyword.get_lazy(opts, :devices, &devicectl_devices/0)
+    resolve = Keyword.get(opts, :resolve, &resolve_hostname_to_ipv4/1)
+    names = usb_mdns_names(devices, udid)
+
+    task = Task.async(fn -> Enum.find_value(names, &link_local_ipv4(resolve.(&1))) end)
+
+    case Task.yield(task, Keyword.get(opts, :timeout_ms, 3_000)) ||
+           Task.shutdown(task, :brutal_kill) do
+      {:ok, ip} -> ip
+      _ -> nil
+    end
+  end
+
+  @doc """
+  The `.local` names the phone `udid` answers mDNS under, from devicectl's
+  device list: each `<label>.coredevice.local` hostname of that device as
+  `<label>.local`, skipping the labels that are the UDID or a CoreDevice
+  identifier (those only resolve to the IPv6 tunnel). Other devices' names
+  are never returned.
+  """
+  @spec usb_mdns_names([map()], String.t()) :: [String.t()]
+  def usb_mdns_names(devices, udid) do
+    want = String.downcase(udid)
+
+    devices
+    |> Enum.filter(&(String.downcase(get_in(&1, ["hardwareProperties", "udid"]) || "") == want))
+    |> Enum.flat_map(fn dev ->
+      conn = Map.get(dev, "connectionProperties") || %{}
+      List.wrap(conn["localHostnames"]) ++ List.wrap(conn["potentialHostnames"])
+    end)
+    |> Enum.flat_map(fn
+      host when is_binary(host) ->
+        case Regex.run(~r/^(.+)\.coredevice\.local\.?$/i, host) do
+          [_, label] -> if identifier_label?(label, udid), do: [], else: ["#{label}.local"]
+          nil -> []
+        end
+
+      _ ->
+        []
+    end)
+    |> Enum.uniq()
+  end
+
+  defp identifier_label?(label, udid) do
+    String.downcase(label) == String.downcase(udid) or
+      label =~ ~r/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i or
+      label =~ ~r/^[0-9a-f]{8}-[0-9a-f]{16}$/i or
+      label =~ ~r/^[0-9a-f]{40}$/i
+  end
+
+  @doc "The first link-local (`169.254.x.x`) address in `ips`, or nil."
+  @spec link_local_ipv4([String.t()]) :: String.t() | nil
+  def link_local_ipv4(ips), do: Enum.find(ips, &String.starts_with?(&1, "169.254."))
 
   defp device_ipv4_candidates(dev) do
     conn = Map.get(dev, "connectionProperties", %{})
@@ -699,16 +779,35 @@ defmodule MobDev.Discovery.IOS do
     )
   end
 
-  @doc false
+  @doc """
+  The `devicectl device process launch` environment for a physical iPhone
+  (`DEVICECTL_CHILD_*` reaches the app): the dist cookie (`:dist_cookie`) and
+  the host the node must be named after (`:node_host`, an IPv4 the Mac
+  reaches the phone at). mob_beam.m (mob ≥ 0.9.16) takes `MOB_NODE_HOST`
+  when it is one of the phone's own addresses; without it the phone names
+  its node after its WiFi address, which the Mac can't dial when that WiFi is
+  a network the Mac isn't on (MOB-428). Older mob ignores it.
+  """
   @spec physical_launch_env(keyword()) :: [{String.t(), String.t()}]
   def physical_launch_env(opts) do
-    case Keyword.get(opts, :dist_cookie) do
-      cookie when is_binary(cookie) and cookie != "" ->
-        [{"DEVICECTL_CHILD_MOB_DIST_COOKIE", cookie}]
+    cookie =
+      case Keyword.get(opts, :dist_cookie) do
+        c when is_binary(c) and c != "" -> [{"DEVICECTL_CHILD_MOB_DIST_COOKIE", c}]
+        _ -> []
+      end
 
-      _ ->
-        []
-    end
+    host =
+      case Keyword.get(opts, :node_host) do
+        ip when is_binary(ip) ->
+          if match?({:ok, _}, :inet.parse_ipv4strict_address(String.to_charlist(ip))),
+            do: [{"DEVICECTL_CHILD_MOB_NODE_HOST", ip}],
+            else: []
+
+        _ ->
+          []
+      end
+
+    cookie ++ host
   end
 
   @doc """
