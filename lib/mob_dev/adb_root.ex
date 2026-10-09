@@ -95,6 +95,7 @@ defmodule MobDev.AdbRoot do
   end
 
   @doc false
+  @spec timeout_ms() :: pos_integer()
   def timeout_ms do
     case System.get_env("MOB_ADB_RESTART_TIMEOUT_MS") do
       nil ->
