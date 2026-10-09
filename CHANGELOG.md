@@ -1,3 +1,25 @@
+## [Unreleased]
+
+### Fixed
+
+- **Activating `mob_bluetooth` and `mob_midi` together builds (MOB-421).**
+  Both declare `NSBluetoothAlwaysUsageDescription`, each with its own reason,
+  and the plugin gate refused the pair as an Info.plist key collision unless
+  the project's `ios/Info.plist` already set the key. A privacy usage
+  description (`*UsageDescription`) that several plugins declare as strings is
+  now combined instead: `Merge.plist_keys/1` joins each plugin's distinct
+  sentence in activation order, so the permission prompt gives every reason
+  ("Bluetooth access is required to discover and advertise to nearby devices.
+  Bluetooth access is required to connect to wireless (BLE) MIDI devices."),
+  and the iOS build prints which plugins it combined and that setting the key
+  in `ios/Info.plist` words it yourself (the project's value still wins). Any
+  other Info.plist key two plugins declare is still a collision unless every
+  declaration is a scalar and the project sets the key, and the error now says
+  so; a usage description declared as a non-string still collides. Keys
+  compare by name, so `:K` in one manifest and `"K"` in another collide
+  instead of one being dropped. See
+  `decisions/2026-10-09-plugin-usage-descriptions-combine.md`.
+
 ## [0.7.18] - 2026-10-09
 
 ### Fixed
