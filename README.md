@@ -995,8 +995,8 @@ the block below and keep whichever sections it lacks:
 Read the docs for the mob version in `mix.lock`, not from memory:
 
 - `deps/mob/guides/<name>.md` and `deps/mob/usage-rules.md` (mob 0.9.17+).
-  With the `usage_rules` dev dep and `:mob` in its `usage_rules:` config,
-  `mix usage_rules.sync` copies the rules into this file.
+  With the `usage_rules` dev dep and `usage_rules: [file: "AGENTS.md", usage_rules: [:mob]]`
+  in `mix.exs`, `mix usage_rules.sync` copies the rules into this file.
 - Hexdocs: https://hexdocs.pm/mob/llms.txt is the index; every page is also
   Markdown at `https://hexdocs.pm/mob/<page>.md`. Coming from Phoenix LiveView:
   https://hexdocs.pm/mob/coming_from_liveview.html
