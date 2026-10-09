@@ -9,8 +9,9 @@
   options, honouring agent-device leases, plus `--timeout` and
   `--no-restart`), grants the permissions the manifests declare on
   emulators and simulators (`adb shell pm grant`, `xcrun simctl privacy
-  grant`), relaunches the app, calls every activated plugin's `run/1` on
-  the device with
+  grant`), relaunches the app, waits for the plugins' OTP applications to
+  be started (`:boot_timeout_ms`, 15 s), calls every activated plugin's
+  `run/1` on the device with
   `%{platform:, device: :simulator | :emulator | :physical}` and prints a
   table per device. A self-test that raises, exits, times out (30 s; it is
   then killed on the device) or returns outside the contract is a `FAIL`;

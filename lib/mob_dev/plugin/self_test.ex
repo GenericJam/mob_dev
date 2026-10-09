@@ -56,13 +56,42 @@ defmodule MobDev.Plugin.SelfTest do
     * `:timeout_ms` — per self-test (default #{@default_timeout_ms}). A test
       still running at the deadline is killed on the device, so the next
       plugin's test never runs beside it.
+    * `:boot_timeout_ms` — how long to wait for the plugins' OTP applications
+      to be started on the node before the first test (default 15000). mob
+      starts them after the node is up, so a run right after a relaunch
+      would otherwise test a plugin whose supervisor is not there yet. A
+      plugin whose application never starts is tested anyway and reports it.
   """
   @spec run_all(node(), ctx(), keyword()) :: [entry()]
   def run_all(node, %{platform: _, device: _} = ctx, opts \\ []) do
     plugins = Keyword.get_lazy(opts, :plugins, &MobDev.Plugin.activated_with_verify/0)
     timeout = Keyword.get(opts, :timeout_ms, @default_timeout_ms)
 
+    await_applications(node, plugins, Keyword.get(opts, :boot_timeout_ms, 15_000))
     for plugin <- plugins, do: run_one(node, plugin, ctx, timeout)
+  end
+
+  defp await_applications(node, plugins, remaining) do
+    wanted = for {_, %{name: name}} <- manifests(plugins), is_atom(name), do: name
+
+    started =
+      try do
+        :erpc.call(node, Application, :started_applications, [], 5_000) |> Enum.map(&elem(&1, 0))
+      catch
+        _, _ -> wanted
+      end
+
+    cond do
+      wanted -- started == [] ->
+        :ok
+
+      remaining <= 0 ->
+        :ok
+
+      true ->
+        Process.sleep(250)
+        await_applications(node, plugins, remaining - 250)
+    end
   end
 
   defp run_one(node, {name_or_dir, manifest}, ctx, timeout),

@@ -186,6 +186,40 @@ defmodule MobDev.Plugin.SelfTestTest do
              ] = entries
     end
 
+    test "waits for the plugins' applications to be started before the first test, then gives up" do
+      # :kernel is started; :mob_never_starts is not, so the wait runs out.
+      {ms, entries} =
+        :timer.tc(
+          fn ->
+            SelfTest.run_all(node(), @ctx,
+              plugins: [
+                {:kernel, %{name: :kernel, selftest: Passes}},
+                {:mob_never_starts, %{name: :mob_never_starts, selftest: Passes}}
+              ],
+              boot_timeout_ms: 300
+            )
+          end,
+          :millisecond
+        )
+
+      assert [%{plugin: :kernel, result: :pass}, %{plugin: :mob_never_starts, result: :pass}] =
+               entries
+
+      assert ms >= 300 and ms < 3_000
+
+      {ms, _} =
+        :timer.tc(
+          fn ->
+            SelfTest.run_all(node(), @ctx,
+              plugins: [{:kernel, %{name: :kernel, selftest: Passes}}]
+            )
+          end,
+          :millisecond
+        )
+
+      assert ms < 250
+    end
+
     test "an unreachable node is every plugin's failure, not a crash" do
       entries =
         SelfTest.run_all(:"nope@127.0.0.1", @ctx,
