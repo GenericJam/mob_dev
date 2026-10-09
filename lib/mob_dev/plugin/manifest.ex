@@ -111,6 +111,17 @@ defmodule MobDev.Plugin.Manifest do
     end
   end
 
+  @doc """
+  Whether an `ios.plist_keys` key is a privacy usage description
+  (`NSBluetoothAlwaysUsageDescription`, `NFCReaderUsageDescription`, …): the
+  string iOS shows in a permission prompt to explain why the app asks. Several
+  plugins may each need the same permission for their own reason, so these keys
+  combine across plugins instead of colliding (`MobDev.Plugin.Merge.plist_keys/1`,
+  `MobDev.Plugin.Validator.cross_validate/2`).
+  """
+  @spec usage_description_key?(atom() | String.t()) :: boolean()
+  def usage_description_key?(key), do: key |> to_string() |> String.ends_with?("UsageDescription")
+
   defp eval(path) do
     case Code.eval_file(path) do
       {map, _bindings} when is_map(map) ->

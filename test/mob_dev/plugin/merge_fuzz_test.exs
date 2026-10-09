@@ -11,9 +11,10 @@ defmodule MobDev.Plugin.MergeFuzzTest do
        through) and over-detection (e.g. the cross-platform-NIF false positive,
        where one plugin's iOS+Android entry shares a `:module`).
     2. No silent loss: when `cross_validate` finds no plist-key collision,
-       `Merge.plist_keys` (a `Map.merge`, the one consumer that silently
-       last-write-wins) preserves every key — proving the guard is *sufficient*,
-       not just present.
+       `Merge.plist_keys` (the one consumer that silently last-write-wins on a
+       plain key) preserves every key, and a combined usage description keeps
+       every plugin's sentence — proving the guard is *sufficient*, not just
+       present.
 
   Deterministic: `:rand` is seeded per iteration so a failure is reproducible
   (the message prints the iteration + manifests).
@@ -33,7 +34,9 @@ defmodule MobDev.Plugin.MergeFuzzTest do
   @plist [
     "NSCameraUsageDescription",
     "NSMicrophoneUsageDescription",
-    "NSPhotoLibraryUsageDescription"
+    "NSPhotoLibraryUsageDescription",
+    "UIStatusBarStyle",
+    "UIRequiresFullScreen"
   ]
   @workers [W.Alpha, W.Beta, W.Gamma]
   @matches [%{type: "a"}, %{type: "b"}, %{type: "c"}]
@@ -46,9 +49,13 @@ defmodule MobDev.Plugin.MergeFuzzTest do
       plugins = to_plugins(manifests)
       %{errors: errors} = Validator.cross_validate(plugins)
 
-      for {_gatherer, {:collision, checks}} <- Validator.conflict_surface(),
+      for {gatherer, {:collision, checks}} <- Validator.conflict_surface(),
           {label, extractor} <- checks do
-        expected = cross_plugin_dup?(manifests, extractor)
+        expected =
+          if gatherer == :plist_keys,
+            do: plist_dup?(manifests),
+            else: cross_plugin_dup?(manifests, extractor)
+
         # Anchored to the exact collision-message shape so one guard's label
         # can't substring-match inside another guard's error text.
         actual = Enum.any?(errors, &(&1 =~ ~r/declare the same #{Regex.escape(label)}: /))
@@ -61,7 +68,7 @@ defmodule MobDev.Plugin.MergeFuzzTest do
     end
   end
 
-  test "no silent loss: clean plist merge keeps every key (fuzz)" do
+  test "no silent loss: clean plist merge keeps every key and every usage description (fuzz)" do
     for i <- 1..@iterations do
       manifests = gen_set(i + 10_000)
       plugins = to_plugins(manifests)
@@ -70,21 +77,58 @@ defmodule MobDev.Plugin.MergeFuzzTest do
 
       merged = Merge.plist_keys(plugins)
 
-      distinct_keys =
-        manifests
-        |> Enum.flat_map(fn m -> (get_in(m, [:ios, :plist_keys]) || %{}) |> Map.keys() end)
-        |> Enum.uniq()
-
       unless plist_collision? do
-        assert map_size(merged) == length(distinct_keys),
-               "iter #{i}: plist merge lost a key with NO collision flagged — " <>
-                 "merged #{map_size(merged)} vs #{length(distinct_keys)} distinct\n" <>
-                 "manifests: #{inspect(manifests, pretty: true)}"
+        assert merged == expected_plist(manifests),
+               "iter #{i}: plist merge lost or changed a value with NO collision flagged\n" <>
+                 "merged: #{inspect(merged)}\nmanifests: #{inspect(manifests, pretty: true)}"
       end
     end
   end
 
+  # What the host's Info.plist should get when nothing collides: each key once,
+  # by name; a usage description carries every plugin's distinct non-blank
+  # sentence in activation order, each ending in punctuation once there are two.
+  defp expected_plist(manifests) do
+    manifests
+    |> plist_declarations()
+    |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+    |> Map.new(fn {key, values} ->
+      if String.ends_with?(key, "UsageDescription") and Enum.all?(values, &is_binary/1) do
+        sentences = for v <- values, s = String.trim(v), s != "", uniq: true, do: s
+
+        text =
+          case sentences do
+            [] -> ""
+            [one] -> one
+            many -> Enum.map_join(many, " ", &if(&1 =~ ~r/[.!?]$/, do: &1, else: &1 <> "."))
+          end
+
+        {key, text}
+      else
+        # Declared once: anything declared twice that doesn't combine collided.
+        [value] = values
+        {key, value}
+      end
+    end)
+  end
+
   # ── independent oracle ──────────────────────────────────────────────────────
+  # An Info.plist key collides when ≥2 plugins declare it, unless it is a usage
+  # description every one of them gives as a string (those combine, MOB-421).
+  defp plist_dup?(manifests) do
+    manifests
+    |> plist_declarations()
+    |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+    |> Enum.any?(fn {key, values} ->
+      match?([_, _ | _], values) and
+        not (String.ends_with?(key, "UsageDescription") and Enum.all?(values, &is_binary/1))
+    end)
+  end
+
+  defp plist_declarations(manifests) do
+    for m <- manifests, {k, v} <- get_in(m, [:ios, :plist_keys]) || %{}, do: {to_string(k), v}
+  end
+
   # A value is a cross-plugin collision when, after de-duping WITHIN each plugin
   # (so a cross-platform NIF declaring one :module twice counts once), it appears
   # in ≥2 plugins. Re-derived here without cross_validate's collisions/3 helper.
@@ -143,8 +187,27 @@ defmodule MobDev.Plugin.MergeFuzzTest do
   defp put_jni(m), do: deep_put(m, [:android, :jni_source], "priv/#{Enum.random(@jni)}")
   defp put_bridge(m), do: deep_put(m, [:android, :bridge_class], Enum.random(@bridges))
 
+  # Mostly a sentence named after the plugin, so usage descriptions differ per
+  # plugin; also padded, blank, and shared sentences (combine edge cases), a
+  # non-string (keeps even a usage description a collision), and the key as an
+  # atom (keys compare by name).
   defp put_plist(m) do
-    keys = some(@plist) |> Map.new(fn k -> {k, "why #{m.name}"} end)
+    values = [
+      "why #{m.name}",
+      "why #{m.name}",
+      "  why #{m.name}  ",
+      "",
+      "Shared reason.",
+      true
+    ]
+
+    keys =
+      some(@plist)
+      |> Map.new(fn k ->
+        key = if :rand.uniform() < 0.3, do: String.to_atom(k), else: k
+        {key, Enum.random(values)}
+      end)
+
     deep_put(m, [:ios, :plist_keys], keys)
   end
 

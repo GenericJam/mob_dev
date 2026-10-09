@@ -209,11 +209,20 @@ defmodule MobDev.Plugin.Validator do
       gaps), so two plugins declaring one of these keys is not a conflict:
       neither value lands. A key any plugin declares as an array still
       conflicts: arrays merge into the host's array instead of yielding to it.
+
+  A privacy usage description (`Manifest.usage_description_key?/1`) that every
+  declaring plugin gives as a string is never a conflict either:
+  `Merge.plist_keys/1` combines the sentences, so no plugin's reason is lost
+  (`combined_usage_descriptions/1`).
   """
   @spec cross_validate([{atom() | Path.t(), map() | nil}], keyword()) :: result()
   def cross_validate(plugins, opts \\ []) do
     owned = for {owner, m} <- plugins, is_map(m), do: {manifest_location(owner), m}
-    exempt = exempt_plist_keys(owned, Keyword.get(opts, :host_plist_keys, []))
+
+    exempt =
+      owned
+      |> exempt_plist_keys(Keyword.get(opts, :host_plist_keys, []))
+      |> MapSet.union(combinable_plist_keys(owned))
 
     errors =
       for {gatherer, {:collision, checks}} <- conflict_surface(),
@@ -230,20 +239,66 @@ defmodule MobDev.Plugin.Validator do
   # plugin's value (array or scalar) would silently drop an earlier one's array.
   defp exempt_plist_keys(owned, host_keys) do
     array_keys =
-      for {_, m} <- owned,
-          {key, value} <- get_in(m, [:ios, :plist_keys]) || %{},
-          is_list(value),
-          into: MapSet.new(),
-          do: to_string(key)
+      for {key, value} <- plist_declarations(owned), is_list(value), into: MapSet.new(), do: key
 
     host_keys |> MapSet.new(&to_string/1) |> MapSet.difference(array_keys)
   end
 
+  # Usage-description keys whose every declaration is a string: Merge combines them.
+  defp combinable_plist_keys(owned) do
+    owned
+    |> plist_declarations()
+    |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+    |> Enum.filter(fn {key, values} ->
+      Manifest.usage_description_key?(key) and Enum.all?(values, &is_binary/1)
+    end)
+    |> MapSet.new(&elem(&1, 0))
+  end
+
+  defp plist_declarations(owned) do
+    for {_, m} <- owned,
+        keys = get_in(m, [:ios, :plist_keys]),
+        is_map(keys),
+        {key, value} <- keys,
+        do: {to_string(key), value}
+  end
+
   defp exempting(:plist_keys, extractor, exempt) do
-    fn manifest -> Enum.reject(extractor.(manifest), &(to_string(&1) in exempt)) end
+    fn manifest -> Enum.reject(extractor.(manifest), &(&1 in exempt)) end
   end
 
   defp exempting(_gatherer, extractor, _host_keys), do: extractor
+
+  @doc """
+  The usage descriptions `Merge.plist_keys/1` combines from more than one
+  plugin, as `{key, plugin names}` sorted by key: keys at least two plugins
+  declare with different strings. Used to tell the host that its permission
+  prompt text was put together from several plugins and how to word it itself.
+  """
+  @spec combined_usage_descriptions([{atom() | Path.t(), map() | nil}]) ::
+          [{String.t(), [String.t()]}]
+  def combined_usage_descriptions(plugins) do
+    owned = for {owner, m} <- plugins, is_map(m), do: {owner, m}
+    combinable = combinable_plist_keys(owned)
+
+    for {owner, m} <- owned,
+        {key, value} <- plist_declarations([{owner, m}]),
+        key in combinable,
+        text = String.trim(value),
+        text != "" do
+      {key, {plugin_name(owner, m), text}}
+    end
+    |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+    |> Enum.filter(fn {_key, decls} -> match?([_, _ | _], Enum.uniq_by(decls, &elem(&1, 1))) end)
+    |> Enum.map(fn {key, decls} -> {key, decls |> Enum.map(&elem(&1, 0)) |> Enum.uniq()} end)
+    |> Enum.sort()
+  end
+
+  defp plugin_name(_owner, %{name: name}) when is_atom(name) and not is_nil(name),
+    do: to_string(name)
+
+  defp plugin_name(owner, _manifest) when is_binary(owner), do: Path.basename(owner)
+  defp plugin_name(owner, _manifest), do: inspect(owner)
 
   @doc """
   Runs `cross_validate/2` over the activated `{plugin_dir, manifest}` pairs and
@@ -261,8 +316,18 @@ defmodule MobDev.Plugin.Validator do
       %{errors: errors} ->
         Mix.raise(
           "activated plugins conflict — remove one from `config :mob, :plugins` in " <>
-            "mob.exs or fix the manifests:\n" <> Enum.map_join(errors, "\n", &"  - #{&1}")
+            "mob.exs or fix the manifests:\n" <>
+            Enum.map_join(errors, "\n", &"  - #{&1}") <> plist_hint(errors)
         )
+    end
+  end
+
+  defp plist_hint(errors) do
+    if Enum.any?(errors, &(&1 =~ "iOS Info.plist key")) do
+      "\nAn Info.plist key every plugin declares as a scalar (not an array) is not a " <>
+        "conflict once the project's own ios/Info.plist sets it: its value wins."
+    else
+      ""
     end
   end
 
@@ -817,11 +882,14 @@ defmodule MobDev.Plugin.Validator do
     Merge.android_res_files([{".", manifest}]) |> Enum.map(& &1.dest)
   end
 
-  # Two plugins setting the same Info.plist key silently last-write-wins in the
-  # merged plist (Map.merge in Merge.plist_keys/1).
+  # Two plugins setting the same Info.plist key: Merge.plist_keys/1 keeps the
+  # later value, silently dropping the earlier one. Keyed by string name, as
+  # Merge keys them, so `:K` in one manifest and `"K"` in another still clash.
+  # Usage descriptions every plugin declares as strings combine instead and are
+  # exempted in cross_validate/2.
   defp plist_key_names(manifest) do
     case get_in(manifest, [:ios, :plist_keys]) do
-      m when is_map(m) -> Map.keys(m)
+      m when is_map(m) -> Enum.map(Map.keys(m), &to_string/1)
       _ -> []
     end
   end

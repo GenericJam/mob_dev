@@ -278,15 +278,48 @@ defmodule MobDev.Plugin.Merge do
     end
   end
 
-  @doc "Merged iOS `plist_keys` across plugins (later plugins win on conflict)."
-  @spec plist_keys([plugin()]) :: map()
+  @doc """
+  Merged iOS `plist_keys` across plugins, keyed by the key's string name.
+
+  A privacy usage description (`Manifest.usage_description_key?/1`) that several
+  plugins declare as strings is **combined**: each distinct sentence once, in
+  activation order, so the permission prompt explains every reason the app asks
+  (mob_bluetooth's "discover nearby devices" and mob_midi's "connect to BLE MIDI
+  devices"). Any other key declared twice keeps the later plugin's value;
+  `Validator.cross_validate/2` rejects that case unless the host's own
+  `ios/Info.plist` sets the key (its value always wins over every plugin's).
+  """
+  @spec plist_keys([plugin()]) :: %{String.t() => term()}
   def plist_keys(plugins) do
     for {_dir, manifest} <- with_manifests(plugins),
         keys = get_in(manifest, [:ios, :plist_keys]),
         is_map(keys),
-        reduce: %{} do
-      acc -> Map.merge(acc, keys)
+        {key, value} <- keys do
+      {to_string(key), value}
     end
+    |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+    |> Map.new(fn {key, values} -> {key, merge_plist_values(key, values)} end)
+  end
+
+  defp merge_plist_values(key, values) do
+    if Manifest.usage_description_key?(key) and Enum.all?(values, &is_binary/1) do
+      values
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.uniq()
+      |> join_sentences()
+    else
+      List.last(values)
+    end
+  end
+
+  defp join_sentences([]), do: ""
+  defp join_sentences([one]), do: one
+
+  defp join_sentences(sentences) do
+    Enum.map_join(sentences, " ", fn s ->
+      if String.ends_with?(s, [".", "!", "?"]), do: s, else: s <> "."
+    end)
   end
 
   @doc "Combined `ui_components` entries across plugins."

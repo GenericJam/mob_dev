@@ -5070,9 +5070,20 @@ defmodule MobDev.NativeBuild do
   # on conflict; plugins fill gaps" semantics — so a plugin can ship a default
   # NSCameraUsageDescription that the app author can override in their own
   # Info.plist without changing the plugin. See ADR
-  # decisions/2026-05-28-plugin-plist-keys-merge.md.
+  # decisions/2026-05-28-plugin-plist-keys-merge.md. A usage description several
+  # plugins declare arrives combined (Merge.plist_keys/1, MOB-421); say so when
+  # it lands, since the host never wrote that prompt text.
   defp apply_plugin_plist_keys!(info_plist) do
     activated_plugins = MobDev.Plugin.activated()
+    host_keys = MobDev.Plugin.Validator.host_plist_keys(info_plist)
+
+    for {key, names} <- MobDev.Plugin.Validator.combined_usage_descriptions(activated_plugins),
+        key not in host_keys do
+      Mix.shell().info(
+        "  [plugin plist] #{key}: combined the descriptions of #{Enum.join(names, ", ")}; " <>
+          "set #{key} in ios/Info.plist to word the permission prompt yourself"
+      )
+    end
 
     for {key, value} <- MobDev.Plugin.Merge.plist_keys(activated_plugins) do
       cond do

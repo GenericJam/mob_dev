@@ -91,35 +91,78 @@ defmodule MobDev.Plugin.ConflictSurfaceTest do
     test "duplicate Info.plist key across plugins (different values)" do
       plugins =
         two(
-          %{ios: %{plist_keys: %{"NSCameraUsageDescription" => "A wants camera"}}},
-          %{ios: %{plist_keys: %{"NSCameraUsageDescription" => "B wants camera"}}}
+          %{ios: %{plist_keys: %{"UIStatusBarStyle" => "UIStatusBarStyleLightContent"}}},
+          %{ios: %{plist_keys: %{UIStatusBarStyle: "UIStatusBarStyleDarkContent"}}}
         )
 
-      assert %{errors: errs} = Validator.cross_validate(plugins)
-      assert Enum.any?(errs, &(&1 =~ "Info.plist key"))
+      assert %{errors: [err]} = Validator.cross_validate(plugins)
+      assert err =~ ~s[Info.plist key (ios.plist_keys): "UIStatusBarStyle"]
+    end
+
+    test "a usage description several plugins declare as strings combines instead of colliding" do
+      # MOB-421: mob_bluetooth and mob_midi each need Bluetooth for their own
+      # reason; the prompt has to explain both, and neither reason is lost.
+      plugins = [
+        {"/deps/mob_bluetooth",
+         %{@base | name: :mob_bluetooth}
+         |> Map.put(:ios, %{
+           plist_keys: %{NSBluetoothAlwaysUsageDescription: "Discover nearby devices."}
+         })},
+        {"/deps/mob_midi",
+         %{@base | name: :mob_midi}
+         |> Map.put(:ios, %{
+           plist_keys: %{"NSBluetoothAlwaysUsageDescription" => " Connect to BLE MIDI devices "}
+         })},
+        {"/deps/mob_beacon",
+         %{@base | name: :mob_beacon}
+         |> Map.put(:ios, %{
+           plist_keys: %{NSBluetoothAlwaysUsageDescription: "Discover nearby devices."}
+         })}
+      ]
+
+      assert Validator.cross_validate(plugins) == %{errors: [], warnings: []}
+
+      assert Merge.plist_keys(plugins) == %{
+               "NSBluetoothAlwaysUsageDescription" =>
+                 "Discover nearby devices. Connect to BLE MIDI devices."
+             }
+
+      assert Validator.combined_usage_descriptions(plugins) == [
+               {"NSBluetoothAlwaysUsageDescription", ["mob_bluetooth", "mob_midi", "mob_beacon"]}
+             ]
+    end
+
+    test "the same usage description from every plugin is kept verbatim and not reported as combined" do
+      plugins = same(%{ios: %{plist_keys: %{NSCameraUsageDescription: "Scan codes"}}})
+
+      assert Validator.cross_validate(plugins).errors == []
+      assert Merge.plist_keys(plugins) == %{"NSCameraUsageDescription" => "Scan codes"}
+      assert Validator.combined_usage_descriptions(plugins) == []
+    end
+
+    test "a usage description some plugin declares as a non-string still collides" do
+      plugins =
+        two(
+          %{ios: %{plist_keys: %{NSCameraUsageDescription: "Scan codes"}}},
+          %{ios: %{plist_keys: %{NSCameraUsageDescription: true}}}
+        )
+
+      assert %{errors: [err]} = Validator.cross_validate(plugins)
+      assert err =~ "NSCameraUsageDescription"
+      assert Validator.combined_usage_descriptions(plugins) == []
     end
 
     test "a duplicate Info.plist key the host's own Info.plist sets is no conflict" do
       plugins =
         two(
-          %{
-            ios: %{
-              plist_keys: %{NSBluetoothAlwaysUsageDescription: "A", NSCameraUsageDescription: "A"}
-            }
-          },
-          %{
-            ios: %{
-              plist_keys: %{NSBluetoothAlwaysUsageDescription: "B", NSCameraUsageDescription: "B"}
-            }
-          }
+          %{ios: %{plist_keys: %{UIStatusBarStyle: "A", UIRequiresFullScreen: true}}},
+          %{ios: %{plist_keys: %{UIStatusBarStyle: "B", UIRequiresFullScreen: false}}}
         )
 
       assert %{errors: [err]} =
-               Validator.cross_validate(plugins,
-                 host_plist_keys: ["NSBluetoothAlwaysUsageDescription"]
-               )
+               Validator.cross_validate(plugins, host_plist_keys: ["UIStatusBarStyle"])
 
-      assert err =~ "NSCameraUsageDescription"
+      assert err =~ "UIRequiresFullScreen"
     end
 
     test "a host-set Info.plist key any plugin declares as an array still conflicts" do

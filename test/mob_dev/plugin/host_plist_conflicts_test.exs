@@ -6,12 +6,11 @@ defmodule MobDev.Plugin.HostPlistConflictsTest do
 
   @base %{name: :p, mob_version: "~> 0.6", plugin_spec_version: 1}
 
+  # A scalar key that isn't a usage description: those combine (MOB-421), so
+  # the host exemption only matters for keys like this one.
   @plugins [
-    {:a, Map.put(@base, :ios, %{plist_keys: %{"NSBluetoothAlwaysUsageDescription" => "A"}})},
-    {:b,
-     Map.put(%{@base | name: :b}, :ios, %{
-       plist_keys: %{"NSBluetoothAlwaysUsageDescription" => "B"}
-     })}
+    {:a, Map.put(@base, :ios, %{plist_keys: %{"UIStatusBarStyle" => "A"}})},
+    {:b, Map.put(%{@base | name: :b}, :ios, %{plist_keys: %{"UIStatusBarStyle" => "B"}})}
   ]
 
   @host_plist """
@@ -19,7 +18,7 @@ defmodule MobDev.Plugin.HostPlistConflictsTest do
   <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
   <plist version="1.0">
   <dict>
-      <key>NSBluetoothAlwaysUsageDescription</key>
+      <key>UIStatusBarStyle</key>
       <string>host</string>
   </dict>
   </plist>
@@ -28,9 +27,11 @@ defmodule MobDev.Plugin.HostPlistConflictsTest do
   @tag :tmp_dir
   test "the native build's gate reads the project's ios/Info.plist", %{tmp_dir: dir} do
     File.cd!(dir, fn ->
-      assert_raise Mix.Error, ~r/NSBluetoothAlwaysUsageDescription/, fn ->
-        Validator.raise_on_cross_plugin_conflicts!(@plugins)
-      end
+      assert_raise Mix.Error,
+                   ~r/"UIStatusBarStyle".*once the project's own ios\/Info.plist sets it/s,
+                   fn ->
+                     Validator.raise_on_cross_plugin_conflicts!(@plugins)
+                   end
 
       File.mkdir_p!("ios")
       File.write!("ios/Info.plist", @host_plist)
@@ -47,7 +48,7 @@ defmodule MobDev.Plugin.HostPlistConflictsTest do
     if plutil do
       {_, 0} = System.cmd(plutil, ["-convert", "binary1", path])
       assert File.read!(path) =~ ~r/\Abplist/
-      assert Validator.host_plist_keys(path) == ["NSBluetoothAlwaysUsageDescription"]
+      assert Validator.host_plist_keys(path) == ["UIStatusBarStyle"]
     else
       File.write!(path, "bplist00garbage")
       assert Validator.host_plist_keys(path) == []
