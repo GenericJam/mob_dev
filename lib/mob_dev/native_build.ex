@@ -1575,11 +1575,12 @@ defmodule MobDev.NativeBuild do
   # (Ctrl+C, kill, etc.). These cause the next run to hang indefinitely while
   # the wrapper waits to acquire the lock.
   #
-  # Never `<gradle_home>/native/**/*.lock` (MOB-468): those are not locks but
-  # native-platform's "extraction complete" markers. Without one, the next
-  # Gradle JVM re-extracts `libnative-platform.so` (and friends) in place, over
-  # the inode every running Gradle JVM has mapped, and those JVMs SIGSEGV (the
-  # wrapper in `ld-linux` at exit, the daemon in a JNI `stat`/`getPid`).
+  # Never `<gradle_home>/native/**/*.lock` (MOB-468): native-platform holds
+  # each only while it extracts (never left stale), and its 1-byte content
+  # marks a finished extraction. Without one, the next Gradle JVM re-extracts
+  # `libnative-platform.so` (and friends) in place, over the inode every
+  # running Gradle JVM has mapped, and those JVMs SIGSEGV (the wrapper in
+  # `ld-linux` at exit, the daemon in a JNI `stat`/`getPid`).
   @doc false
   @spec clear_stale_gradle_locks(Path.t()) :: :ok
   def clear_stale_gradle_locks(
