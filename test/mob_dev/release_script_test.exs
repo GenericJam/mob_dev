@@ -194,6 +194,28 @@ defmodule MobDev.ReleaseScriptTest do
     end
   end
 
+  describe "the release link dead-strips like the dev links (MOB-471)" do
+    # A dev build (mob_new's ios/build.zig, ios/build_device.zig) and
+    # `mix mob.release --ios` must agree on -dead_strip: when only one side
+    # strips, a plugin's dangling reference in dead code passes one and fails
+    # the other (MOB-470). The templates come from mob_new, as mob.adopt's do.
+    test "the release script and both dev build templates pass -dead_strip to the linker",
+         %{sh: sh} do
+      root = MobDev.Adopt.Generator.templates_root([])
+
+      [sim, device] =
+        for file <- ["ios/build.zig.eex", "ios/build_device.zig.eex"] do
+          root |> Path.join(file) |> File.read!() =~ ~s("-Xlinker", "-dead_strip")
+        end
+
+      [_, link] = String.split(sh, ~s|echo "=== Linking $APP_NAME|, parts: 2)
+      [link | _] = String.split(link, ~s|-o "$BUILD_DIR/$APP_NAME"|, parts: 2)
+      release = link =~ "-Xlinker -dead_strip"
+
+      assert {sim, device} == {release, release}
+    end
+  end
+
   describe "plugin Swift sources + bootstrap are compiled into the app module" do
     # AppDelegate.m calls mob_register_plugins() unconditionally; the generated
     # bootstrap defines it. The script compiled only $MOB_DIR/ios/*.swift, so

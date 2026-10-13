@@ -73,3 +73,16 @@ a stable one.
 - `ios/zig-out/<App>` and `~/.mob/runtime/ios-sim` are still fixed paths, so
   two concurrent builds of one project still race on those. That is separate
   from this change.
+
+## Update 2026-10-13: `mix mob.release --ios` follows this rule (MOB-425)
+
+The release script (`release_device.sh`) had its own scratch: a bare
+`mktemp -d` for the objects, the linked binary and the `.app` (~100 MB, never
+removed), plus the exqlite objects, actool's partial plist and the IPA
+staging dir, removed only on success. Bare macOS `mktemp -d` ignores
+`TMPDIR`, so it all went to `DARWIN_USER_TEMP_DIR`. `Release.build_ipa/1` now
+runs the script inside `with_temp_build_dir("release", …)` and passes the dir
+as `MOB_RELEASE_BUILD_DIR`; every scratch path in the script is under it
+(`Release.release_scratch_sh/0`). A direct run of the script makes its own
+dir under `$TMPDIR` and removes it with an `EXIT` trap. Nothing reads the
+scratch once the `.ipa` is in `_build/mob_release/`.

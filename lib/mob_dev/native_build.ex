@@ -3037,7 +3037,8 @@ defmodule MobDev.NativeBuild do
           do: "-D#{name}=#{val}"
 
     with {:ok, nif_args} <- project_nif_zig_args(:ios_sim),
-         {:ok, plugin_archives} <- build_plugin_static_archives(:ios_sim, :ios, otp_root) do
+         {:ok, plugin_archives} <-
+           build_plugin_static_archives(:ios_sim, :ios, otp_root, mob_dir: mob_dir) do
       args =
         base_args ++
           plugin_args ++
@@ -3233,17 +3234,20 @@ defmodule MobDev.NativeBuild do
   # cpp_archive plugin never leaves the driver_tab's `<module>_nif_init`
   # unresolved on one of them. A spec with a `:prebuilt` bundle
   # (MobDev.Plugin.Prebuilt, MOB-427) also contributes that bundle's archives
-  # for the target, listed right after its own lib<mod>.a.
-  @spec build_plugin_static_archives(atom(), :ios | :android, Path.t()) ::
+  # for the target, listed right after its own lib<mod>.a. On the iOS targets
+  # each archive then passes MobDev.Plugin.IosLinkCheck (MOB-471): linked
+  # without -dead_strip, it may leave undefined only what the BEAM, mob core
+  # (`opts[:mob_dir]`) or the iOS SDK define.
+  @spec build_plugin_static_archives(atom(), :ios | :android, Path.t(), keyword()) ::
           {:ok, [Path.t()]} | {:error, String.t()}
-  def build_plugin_static_archives(target_id, platform, otp_dir) do
+  def build_plugin_static_archives(target_id, platform, otp_dir, opts \\ []) do
     case MobDev.Plugin.Merge.static_archives(MobDev.Plugin.activated(), platform) do
       [] -> {:ok, []}
-      specs -> do_build_plugin_static_archives(specs, target_id, otp_dir)
+      specs -> do_build_plugin_static_archives(specs, target_id, otp_dir, opts)
     end
   end
 
-  defp do_build_plugin_static_archives(specs, target_id, otp_dir) do
+  defp do_build_plugin_static_archives(specs, target_id, otp_dir, opts) do
     with {:ok, erts_inc} <- resolve_erts_include(otp_dir) do
       out_dir =
         Path.join([Mix.Project.build_path(), "plugin_archives", Atom.to_string(target_id)])
@@ -3259,7 +3263,8 @@ defmodule MobDev.NativeBuild do
                MobDev.Plugin.CppArchive.build(spec, target_id,
                  out_dir: out_dir,
                  erts_include: erts_inc
-               ) do
+               ),
+             :ok <- ios_link_check(spec, target_id, info.archive, prebuilt_libs, otp_dir, opts) do
           IO.puts("    ✓ #{info.archive}")
 
           if prebuilt_libs != [],
@@ -3267,6 +3272,9 @@ defmodule MobDev.NativeBuild do
 
           {:cont, {:ok, Enum.reverse(prebuilt_libs, [info.archive | acc])}}
         else
+          {:error, {:link_check, msg}} ->
+            {:halt, {:error, msg}}
+
           {:error, {tag, detail}} ->
             {:halt,
              {:error,
@@ -3286,6 +3294,19 @@ defmodule MobDev.NativeBuild do
       end
     end
   end
+
+  defp ios_link_check(spec, target_id, archive, prebuilt_libs, otp_dir, opts)
+       when target_id in [:ios_sim, :ios_device] do
+    case MobDev.Plugin.IosLinkCheck.check(spec, target_id, archive, prebuilt_libs,
+           otp_dir: otp_dir,
+           mob_dir: opts[:mob_dir]
+         ) do
+      :ok -> :ok
+      {:error, msg} -> {:error, {:link_check, msg}}
+    end
+  end
+
+  defp ios_link_check(_spec, _target_id, _archive, _prebuilt_libs, _otp_dir, _opts), do: :ok
 
   @doc false
   # Android ABI string → CppArchive target id; nil = an ABI the Android build
@@ -4567,7 +4588,8 @@ defmodule MobDev.NativeBuild do
           do: "-D#{name}=#{val}"
 
     with {:ok, nif_args} <- project_nif_zig_args(:ios_device),
-         {:ok, plugin_archives} <- build_plugin_static_archives(:ios_device, :ios, otp_root) do
+         {:ok, plugin_archives} <-
+           build_plugin_static_archives(:ios_device, :ios, otp_root, mob_dir: mob_dir) do
       sqlite_args =
         case sqlite_static_lib do
           nil -> []
