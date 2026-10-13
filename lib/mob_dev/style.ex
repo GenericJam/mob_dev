@@ -6,6 +6,10 @@ defmodule MobDev.Style do
   `config :mob, :default_style, :name` in `mob.exs`, and the runtime manifest
   carries the resolved set so core can apply the default style's theme at boot.
 
+  A style may also bundle font files (`assets: %{fonts: [...]}`, paths
+  relative to the style package root) for its theme's `fonts:` map; the build
+  ships them exactly like plugin fonts (`fonts!/1`).
+
   Tokens-only is the doc's smallest tier ("repalette-only styles"); the
   per-component native-override tier (cascade, `_style` dispatch — the mob_m3
   case) is NOT implemented yet.
@@ -38,7 +42,9 @@ defmodule MobDev.Style do
   @doc """
   Validates the four required fields (MOB_STYLES.md "Minimum viable
   manifest"): `:name` atom, `:mob_version` requirement string,
-  `:style_spec_version` integer, `:theme` module atom.
+  `:style_spec_version` integer, `:theme` module atom; plus the optional
+  `:assets`, a map whose only supported key is `:fonts` (a list of path
+  strings relative to the style package root).
   """
   @spec validate(map()) :: {:ok, map()} | {:error, [String.t()]}
   def validate(manifest) when is_map(manifest) do
@@ -58,6 +64,7 @@ defmodule MobDev.Style do
         &(is_atom(&1) and not is_nil(&1)),
         ":theme is required and must be a theme module atom"
       )
+      |> check_assets(manifest)
 
     case errors do
       [] -> {:ok, manifest}
@@ -113,14 +120,8 @@ defmodule MobDev.Style do
   def runtime_entries! do
     entries =
       for {dir, manifest} <- activated() do
-        case validate(manifest) do
-          {:ok, m} ->
-            %{name: m.name, theme: m.theme}
-
-          {:error, errs} ->
-            raise ArgumentError,
-                  "invalid style manifest in #{dir}:\n  " <> Enum.join(errs, "\n  ")
-        end
+        m = validate!(dir, manifest)
+        %{name: m.name, theme: m.theme}
       end
 
     default = default_style()
@@ -134,11 +135,76 @@ defmodule MobDev.Style do
     %{styles: entries, default_style: default}
   end
 
+  @doc """
+  Absolute paths of the fonts the given styles (default: the activated ones)
+  bundle via `assets: %{fonts: [...]}`, resolved against each style's
+  package dir. Raises when a manifest is invalid or a declared font file
+  doesn't exist, so the build fails instead of shipping a theme whose fonts
+  fall back to the system face. A style `activated/0` couldn't resolve or
+  load contributes nothing here.
+  """
+  @spec fonts!([{Path.t(), map()}]) :: [Path.t()]
+  def fonts!(styles \\ activated()) do
+    for {dir, manifest} <- styles,
+        m = validate!(dir, manifest),
+        rel <- get_in(m, [:assets, :fonts]) || [] do
+      path = Path.join(dir, rel)
+
+      if !File.regular?(path) do
+        raise ArgumentError,
+              "style #{inspect(m.name)} declares font #{inspect(rel)} in assets.fonts, " <>
+                "but #{path} does not exist"
+      end
+
+      path
+    end
+  end
+
   # ── helpers ────────────────────────────────────────────────────────────────
 
   defp check(errors, manifest, key, pred, msg) do
     if pred.(Map.get(manifest, key)), do: errors, else: [msg | errors]
   end
+
+  defp validate!(dir, manifest) do
+    case validate(manifest) do
+      {:ok, m} ->
+        m
+
+      {:error, errs} ->
+        raise ArgumentError, "invalid style manifest in #{dir}:\n  " <> Enum.join(errs, "\n  ")
+    end
+  end
+
+  # Styles bundle fonts only; images and anything else belong to plugins.
+  defp check_assets(errors, %{assets: %{} = assets}) do
+    errors
+    |> check_asset_keys(Map.keys(assets) -- [:fonts])
+    |> check_font_paths(Map.get(assets, :fonts))
+  end
+
+  defp check_assets(errors, %{assets: other}),
+    do: ["assets must be a map with a :fonts path list, got: #{inspect(other)}" | errors]
+
+  defp check_assets(errors, _), do: errors
+
+  defp check_asset_keys(errors, []), do: errors
+
+  defp check_asset_keys(errors, unknown),
+    do: [
+      "assets supports only :fonts in a style manifest, got unknown key(s): #{inspect(unknown)}"
+      | errors
+    ]
+
+  defp check_font_paths(errors, nil), do: errors
+
+  defp check_font_paths(errors, paths) when is_list(paths) do
+    if Enum.all?(paths, &is_binary/1), do: errors, else: bad_font_paths(errors)
+  end
+
+  defp check_font_paths(errors, _), do: bad_font_paths(errors)
+
+  defp bad_font_paths(errors), do: ["assets.fonts must be a list of path strings" | errors]
 
   defp check_version(errors, %{mob_version: req}) when is_binary(req) do
     case Version.parse_requirement(req) do

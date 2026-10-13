@@ -39,6 +39,78 @@ defmodule MobDev.StyleTest do
     end
   end
 
+  describe "validate/1 — optional assets.fonts" do
+    test "accepts a fonts path list" do
+      m = Map.put(@valid, :assets, %{fonts: ["priv/fonts/X.ttf"]})
+      assert {:ok, ^m} = Style.validate(m)
+    end
+
+    test "rejects a non-map assets" do
+      assert {:error, [msg]} = Style.validate(Map.put(@valid, :assets, ["priv/fonts/X.ttf"]))
+      assert msg =~ "assets must be a map"
+    end
+
+    test "rejects keys other than :fonts (styles don't bundle images)" do
+      m = Map.put(@valid, :assets, %{fonts: ["priv/fonts/X.ttf"], images: ["priv/a.png"]})
+      assert {:error, [msg]} = Style.validate(m)
+      assert msg =~ ":images"
+    end
+
+    test "rejects fonts that aren't a list of strings" do
+      for fonts <- ["priv/fonts/X.ttf", [:x], ["priv/fonts/X.ttf", nil]] do
+        assert {:error, [msg]} = Style.validate(Map.put(@valid, :assets, %{fonts: fonts}))
+        assert msg =~ "assets.fonts"
+      end
+    end
+  end
+
+  describe "fonts!/1" do
+    test "resolves declared fonts against each style dir, in order" do
+      a = tmp_style!("")
+      b = tmp_style!("")
+      touch!(a, "priv/fonts/A.ttf")
+      touch!(a, "priv/fonts/B.otf")
+      touch!(b, "fonts/C.ttf")
+
+      styles = [
+        {a, Map.put(@valid, :assets, %{fonts: ["priv/fonts/A.ttf", "priv/fonts/B.otf"]})},
+        {b, Map.merge(@valid, %{name: :other, assets: %{fonts: ["fonts/C.ttf"]}})},
+        {tmp_style!(""), @valid}
+      ]
+
+      assert Style.fonts!(styles) == [
+               Path.join(a, "priv/fonts/A.ttf"),
+               Path.join(a, "priv/fonts/B.otf"),
+               Path.join(b, "fonts/C.ttf")
+             ]
+    end
+
+    test "a declared font that doesn't exist fails, naming the style and path" do
+      dir = tmp_style!("")
+      m = Map.put(@valid, :assets, %{fonts: ["priv/fonts/Missing.ttf"]})
+
+      err = assert_raise ArgumentError, fn -> Style.fonts!([{dir, m}]) end
+      assert err.message =~ ":mob_theme_citrus"
+      assert err.message =~ Path.join(dir, "priv/fonts/Missing.ttf")
+    end
+
+    test "a declared path that is a directory, not a file, fails" do
+      dir = tmp_style!("")
+      File.mkdir_p!(Path.join(dir, "priv/fonts"))
+      m = Map.put(@valid, :assets, %{fonts: ["priv/fonts"]})
+
+      assert_raise ArgumentError, fn -> Style.fonts!([{dir, m}]) end
+    end
+
+    test "an invalid manifest fails instead of contributing no fonts" do
+      m = Map.put(@valid, :assets, %{fonts: "priv/fonts/X.ttf"})
+
+      assert_raise ArgumentError, ~r/invalid style manifest/, fn ->
+        Style.fonts!([{tmp_style!(""), m}])
+      end
+    end
+  end
+
   describe "load/1" do
     test "loads a manifest file from a style dir" do
       dir = tmp_style!(inspect(@valid))
@@ -128,6 +200,12 @@ defmodule MobDev.StyleTest do
     File.write!(Path.join(dir, "priv/mob_style.exs"), contents)
     on_exit(fn -> File.rm_rf!(dir) end)
     dir
+  end
+
+  defp touch!(dir, rel) do
+    path = Path.join(dir, rel)
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, "font")
   end
 
   # Style.activated_names/default_style read mob.exs from cwd (absent in a tmp

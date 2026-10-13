@@ -2681,4 +2681,82 @@ defmodule MobDev.NativeBuildTest do
       assert File.ls!(tmp_dir) == ["mob_plugin_bootstrap.swift"]
     end
   end
+
+  describe "collect_all_fonts/0 in a host project with an activated style" do
+    setup do
+      tmp = Path.join(System.tmp_dir!(), "mob_style_fonts_#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf!(tmp) end)
+      suffix = System.unique_integer([:positive])
+      host = Path.join(tmp, "host")
+      style = Path.join(tmp, "elsewhere/sfonts")
+
+      for {dir, rel} <- [{host, "priv/fonts/App.ttf"}, {style, "priv/fonts/Style-Medium.ttf"}] do
+        File.mkdir_p!(Path.join(dir, "priv/fonts"))
+        File.write!(Path.join(dir, rel), "font")
+      end
+
+      File.write!(Path.join(style, "mix.exs"), """
+      defmodule SFonts#{suffix}.MixProject do
+        use Mix.Project
+        def project, do: [app: :sfonts, version: "0.1.0"]
+      end
+      """)
+
+      File.write!(Path.join(host, "mix.exs"), """
+      defmodule SFontsHost#{suffix}.MixProject do
+        use Mix.Project
+        def project, do: [app: :host, version: "0.1.0", deps: [{:sfonts, path: "../elsewhere/sfonts"}]]
+      end
+      """)
+
+      File.write!(Path.join(host, "mob.exs"), """
+      import Config
+      config :mob, styles: [:sfonts], default_style: :sfonts
+      """)
+
+      write_style_manifest = fn fonts ->
+        File.write!(
+          Path.join(style, "priv/mob_style.exs"),
+          inspect(%{
+            name: :sfonts,
+            mob_version: "~> 0.9",
+            style_spec_version: 1,
+            theme: SFonts.Theme,
+            assets: %{fonts: fonts}
+          })
+        )
+      end
+
+      # on_clean_slate makes the fixture the top-level project (see the
+      # classify_project_nif path-dep test above).
+      collect = fn ->
+        Mix.ProjectStack.on_clean_slate(fn ->
+          Mix.Project.in_project(:"sfonts_host#{suffix}", host, fn _ ->
+            NativeBuild.collect_all_fonts()
+          end)
+        end)
+      end
+
+      {:ok, write_style_manifest: write_style_manifest, collect: collect}
+    end
+
+    test "the style's fonts join the app's", %{write_style_manifest: write, collect: collect} do
+      write.(["priv/fonts/Style-Medium.ttf"])
+
+      assert [app, style_font] = collect.()
+      assert app == "priv/fonts/App.ttf"
+      # deps_paths resolves symlinks (macOS /var → /private/var).
+      assert String.ends_with?(style_font, "elsewhere/sfonts/priv/fonts/Style-Medium.ttf")
+      assert Path.type(style_font) == :absolute
+    end
+
+    test "a style font that doesn't exist fails the build", %{
+      write_style_manifest: write,
+      collect: collect
+    } do
+      write.(["priv/fonts/Gone.ttf"])
+
+      assert_raise ArgumentError, ~r/style :sfonts declares font "priv\/fonts\/Gone.ttf"/, collect
+    end
+  end
 end

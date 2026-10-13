@@ -5523,8 +5523,12 @@ defmodule MobDev.NativeBuild do
 
   @android_res_font "android/app/src/main/res/font"
 
-  # App-level (`priv/fonts/*.ttf|otf`) + plugin (`assets.fonts`) custom fonts.
-  defp collect_all_fonts do
+  # App-level (`priv/fonts/*.ttf|otf`) + plugin (`assets.fonts`) + activated
+  # style (`assets.fonts` in `priv/mob_style.exs`) custom fonts. Public for
+  # testing; raises when an activated style declares a missing font.
+  @doc false
+  @spec collect_all_fonts() :: [Path.t()]
+  def collect_all_fonts do
     app_fonts = Path.wildcard("priv/fonts/*.{ttf,otf,TTF,OTF}")
 
     plugin_fonts =
@@ -5532,10 +5536,10 @@ defmodule MobDev.NativeBuild do
           f <- fonts,
           do: f
 
-    Enum.uniq(app_fonts ++ plugin_fonts)
+    Enum.uniq(app_fonts ++ plugin_fonts ++ MobDev.Style.fonts!())
   end
 
-  # Copies the app's + plugins' fonts into the iOS `.app` bundle root and lists
+  # Copies the app's, plugins' and styles' fonts into the iOS `.app` bundle root and lists
   # them in `Info.plist` UIAppFonts so iOS registers them at launch (the SwiftUI
   # `Font.custom(name, …)` path in MobRootView then resolves them by name). No-op
   # when there are no fonts.
@@ -5566,7 +5570,7 @@ defmodule MobDev.NativeBuild do
     :ok
   end
 
-  # Copies the app's + plugins' fonts into the Android `res/font/` dir under a
+  # Copies the app's, plugins' and styles' fonts into the Android `res/font/` dir under a
   # normalised resource name (lowercase + underscores; the renderer normalises
   # the `font:` prop the same way to look them up via `getIdentifier`). Unlike
   # `assets/`, `res/font/` entries are stored uncompressed, which Android's font

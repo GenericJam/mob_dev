@@ -1,3 +1,22 @@
+## [Unreleased]
+
+### Added
+
+- **Style packages can bundle fonts (MOB-476).** `priv/mob_style.exs` takes
+  an optional `assets: %{fonts: ["priv/fonts/X.ttf", ...]}`, paths relative
+  to the style package root. An activated style's fonts ship like plugin
+  fonts: iOS `.app` root + `UIAppFonts`, Android `res/font/`, with the same
+  dedup and collision checks, so the style's theme can name them in its
+  `fonts:` map through `Mob.Theme.font/2`. A declared font file that doesn't
+  exist fails the build, naming the style and the path. Only `:fonts` is
+  supported in a style's `assets`; any other key is a validation error.
+  `style_spec_version` stays `1`. `mix mob.styles` lists each style's fonts
+  and flags missing ones. New: `MobDev.Style.fonts!/1`. If your app copied a
+  style's font files into its own `priv/fonts/`, delete the copies once the
+  style lists them: the same font from both places is a bundle-name
+  collision and fails the build. See
+  `decisions/2026-10-13-style-packages-bundle-fonts.md`.
+
 ## [0.7.24] - 2026-10-13
 
 ### Fixed
