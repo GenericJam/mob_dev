@@ -269,6 +269,12 @@ defmodule MobDev.Deployer do
       {:skipped,
        "#{pkg} not installed on #{device.name || serial} (ABI mismatch or app not built for this platform)"}
     else
+      # Also before the run-as probe below. After an APK reinstall the app
+      # runs under new MCS categories, but the otp/ tree `--native` pushed as
+      # root can carry the previous install's; run-as can't read it, the probe
+      # reports ERTS missing, and the deploy stopped before the relabel below.
+      relabel_otp_android(serial)
+
       case ensure_erts_on_device(serial, pkg) do
         :ok ->
           case push_beams_android(serial, beam_dirs) do

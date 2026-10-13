@@ -17,6 +17,16 @@
   collision and fails the build. See
   `decisions/2026-10-13-style-packages-bundle-fonts.md`.
 
+### Fixed
+
+- **`mix mob.deploy --native --android` works again after the app is
+  reinstalled on a rooted emulator (MOB-478).** The reinstalled app runs
+  under new SELinux MCS categories, but the OTP tree the deploy pushed as
+  root came out with the previous install's, so the `run-as` check for ERTS
+  couldn't read it and the deploy failed with "OTP runtime missing on
+  device". The deploy now relabels `otp/` before that check too, not only
+  after the last write. Without root the relabel is a no-op, as before.
+
 ## [0.7.24] - 2026-10-13
 
 ### Fixed
