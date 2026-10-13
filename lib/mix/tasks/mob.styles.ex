@@ -3,7 +3,8 @@ defmodule Mix.Tasks.Mob.Styles do
 
   @moduledoc """
   Lists the activated style packages (MOB_STYLES.md, tokens-only tier) with
-  their themes and which one `config :mob, :default_style` selects.
+  their themes, the fonts each bundles (`assets: %{fonts: [...]}`), and which
+  one `config :mob, :default_style` selects.
 
       mix mob.styles
   """
@@ -38,6 +39,8 @@ defmodule Mix.Tasks.Mob.Styles do
               "  #{String.pad_trailing(to_string(m.name), 18)}#{String.pad_trailing(inspect(m.theme), 28)}#{marker}"
             )
 
+            print_fonts(dir, m)
+
           {:error, errs} ->
             Mix.shell().error("  #{Path.basename(dir)}: INVALID — #{Enum.join(errs, "; ")}")
         end
@@ -50,6 +53,16 @@ defmodule Mix.Tasks.Mob.Styles do
       end
 
       Mix.shell().info("")
+    end
+  end
+
+  defp print_fonts(dir, manifest) do
+    for rel <- get_in(manifest, [:assets, :fonts]) || [] do
+      if File.regular?(Path.join(dir, rel)) do
+        Mix.shell().info("    font  #{rel}")
+      else
+        Mix.shell().error("    font  #{rel}  ✗ missing (build will fail)")
+      end
     end
   end
 end
