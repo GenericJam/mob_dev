@@ -1516,10 +1516,6 @@ defmodule MobDev.NativeBuild do
     android_dir = Path.join(File.cwd!(), "android")
     gradlew = Path.join(android_dir, "gradlew")
 
-    # Stale Gradle daemon registry locks accumulate when builds are killed (Ctrl+C,
-    # force-stop, etc.) and cause subsequent runs to hang silently while the wrapper
-    # waits to acquire the lock. Clear them before every build.
-    clear_stale_gradle_locks()
     remove_stale_release_otp_zip(android_dir)
 
     if File.exists?(gradlew) do
@@ -1569,34 +1565,6 @@ defmodule MobDev.NativeBuild do
     stale = Path.join([android_dir, "app", "src", "main", "assets", "otp.zip"])
     if File.exists?(stale), do: File.rm!(stale)
     :ok
-  end
-
-  # Remove stale Gradle lock files left behind when a build is interrupted
-  # (Ctrl+C, kill, etc.). These cause the next run to hang indefinitely while
-  # the wrapper waits to acquire the lock.
-  #
-  # Never `<gradle_home>/native/**/*.lock` (MOB-468): native-platform holds
-  # each only while it extracts (never left stale), and its 1-byte content
-  # marks a finished extraction. Without one, the next Gradle JVM re-extracts
-  # `libnative-platform.so` (and friends) in place, over the inode every
-  # running Gradle JVM has mapped, and those JVMs SIGSEGV (the wrapper in
-  # `ld-linux` at exit, the daemon in a JNI `stat`/`getPid`).
-  @doc false
-  @spec clear_stale_gradle_locks(Path.t()) :: :ok
-  def clear_stale_gradle_locks(
-        gradle_home \\ System.get_env("GRADLE_USER_HOME") ||
-          Path.join(System.user_home!(), ".gradle")
-      ) do
-    patterns = [
-      "#{gradle_home}/daemon/*/registry.bin.lock",
-      "#{gradle_home}/wrapper/dists/**/*.lck",
-      "#{gradle_home}/caches/**/*.lock",
-      "#{gradle_home}/caches/**/*.lck"
-    ]
-
-    Enum.each(patterns, fn pattern ->
-      Path.wildcard(pattern, match_dot: true) |> Enum.each(&File.rm/1)
-    end)
   end
 
   @doc """
