@@ -69,7 +69,7 @@ defmodule MobDev.Release do
          {:ok, otp_root} <- MobDev.OtpDownloader.ensure_ios_device(),
          {:ok, plugin_archives} <-
            MobDev.NativeBuild.build_plugin_static_archives(:ios_device, :ios, otp_root,
-             mob_dir: cfg[:mob_dir]
+             mob_dir: Path.expand(cfg[:mob_dir])
            ),
          {:ok, project_nifs} <- MobDev.NativeBuild.project_nif_build_inputs(:ios_device) do
       script_path = "ios/release_device.sh"

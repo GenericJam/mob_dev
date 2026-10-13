@@ -54,10 +54,14 @@ defmodule MobDev.Plugin.IosLinkCheck do
     sdk = sdk_name(target_id)
 
     MobDev.NativeBuild.with_temp_build_dir("link_check", fn dir ->
-      with {:ok, unresolved} <- probe(sdk, target_id, archive, prebuilt, dir) do
-        host = MapSet.union(beam_symbols(sdk, otp_dir), mob_core_symbols(opts[:mob_dir]))
+      with {:ok, unresolved} <- probe(sdk, target_id, archive, prebuilt, dir),
+           {:ok, beam} <- beam_symbols(sdk, otp_dir),
+           {:ok, sdk_path} <- xcrun(["-sdk", sdk, "--show-sdk-path"]) do
+        host = MapSet.union(beam, mob_core_symbols(opts[:mob_dir]))
         candidates = Enum.reject(unresolved, &MapSet.member?(host, &1))
-        exported = sdk_exports(sdk_path(sdk), Enum.map(candidates, &tbd_name/1))
+        # The path is the last line (xcrun warnings, if any, come first).
+        sdk_path = sdk_path |> String.split("\n", trim: true) |> List.last()
+        exported = sdk_exports(sdk_path, Enum.map(candidates, &tbd_name/1))
 
         case Enum.reject(candidates, &MapSet.member?(exported, tbd_name(&1))) do
           [] ->
@@ -68,6 +72,15 @@ defmodule MobDev.Plugin.IosLinkCheck do
         end
       end
     end)
+  end
+
+  # xcrun's output, or an error naming the command (the check runs inside
+  # every iOS build, so a tool failure must be a build error, not a crash).
+  defp xcrun(args) do
+    case System.cmd("xcrun", args, stderr_to_stdout: true) do
+      {out, 0} -> {:ok, out}
+      {out, status} -> {:error, "xcrun #{Enum.join(args, " ")} failed (exit #{status}):\n#{out}"}
+    end
   end
 
   # The dylib link: no -dead_strip, unresolved symbols left for dyld
@@ -82,14 +95,13 @@ defmodule MobDev.Plugin.IosLinkCheck do
         ["-Xlinker", "-force_load", "-Xlinker", archive | prebuilt] ++
         ["-Wl,-undefined,dynamic_lookup", "-o", dylib]
 
-    case System.cmd("xcrun", args, stderr_to_stdout: true) do
-      {_, 0} ->
-        {nm, 0} = System.cmd("xcrun", ["-sdk", sdk, "nm", "-m", "-u", dylib])
-        {:ok, parse_dynamic_lookups(nm)}
+    case xcrun(args) do
+      {:ok, _} ->
+        with {:ok, nm} <- xcrun(["-sdk", sdk, "nm", "-m", "-u", dylib]),
+             do: {:ok, parse_dynamic_lookups(nm)}
 
-      {out, status} ->
-        {:error,
-         "linking #{archive} for the undefined-symbol check failed (exit #{status}):\n#{out}"}
+      {:error, out} ->
+        {:error, "linking #{archive} for the undefined-symbol check failed: #{out}"}
     end
   end
 
@@ -111,11 +123,11 @@ defmodule MobDev.Plugin.IosLinkCheck do
 
     case libs do
       [] ->
-        MapSet.new()
+        {:ok, MapSet.new()}
 
       libs ->
-        {out, 0} = System.cmd("xcrun", ["-sdk", sdk, "nm", "-gUj" | libs])
-        out |> String.split("\n", trim: true) |> MapSet.new()
+        with {:ok, out} <- xcrun(["-sdk", sdk, "nm", "-gUj" | libs]),
+             do: {:ok, out |> String.split("\n", trim: true) |> MapSet.new()}
     end
   end
 
@@ -249,9 +261,4 @@ defmodule MobDev.Plugin.IosLinkCheck do
   defp sdk_name(:ios_device), do: "iphoneos"
 
   defp min_flag(target_id), do: MobDev.Plugin.CppArchive.ios_min_flag(target_id)
-
-  defp sdk_path(sdk) do
-    {out, 0} = System.cmd("xcrun", ["-sdk", sdk, "--show-sdk-path"])
-    String.trim(out)
-  end
 end
