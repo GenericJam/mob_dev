@@ -2413,6 +2413,7 @@ defmodule MobDev.NativeBuildTest do
 
       locks =
         for rel <- [
+              "native/68d5/linux-amd64/libnative-platform.so.lock",
               "daemon/8.2.1/registry.bin.lock",
               "wrapper/dists/gradle-8.2.1-bin/abc/gradle-8.2.1-bin.zip.lck",
               "caches/8.2.1/fileHashes/fileHashes.lock",
