@@ -640,7 +640,7 @@ narrowing functions). Don't make them private:
   `Release.release_env/4` (the assembled script env). See
   `decisions/2026-10-03-ios-release-compiles-plugin-swift-and-bootstrap.md`
 - `NativeBuild.project_nif_build_inputs/1`, `project_swift_sources/1` and
-  `build_plugin_static_archives/3`, plus `Release.project_release_env/3` (MOB-373:
+  `build_plugin_static_archives/4`, plus `Release.project_release_env/3` (MOB-373:
   the project NIFs, project Swift and cpp_archive plugin archives a device build
   links, as data the zig builds and `mix mob.release --ios` both consume;
   `project_nif_zig_args/1` renders its `-D` args from the first). See
@@ -649,7 +649,20 @@ narrowing functions). Don't make them private:
   `write_build_input!/2` (MOB-313: the iOS `.app` goes in a temp dir removed
   on every exit path; the sources zig compiles stay at stable paths so its
   cache hits; see
-  `decisions/2026-10-01-ios-build-sources-stable-app-dir-removed.md`)
+  `decisions/2026-10-01-ios-build-sources-stable-app-dir-removed.md`).
+  `mix mob.release --ios` runs `release_device.sh` inside one too, passed as
+  `MOB_RELEASE_BUILD_DIR`; every scratch path in the script goes under it
+  (`Release.release_scratch_sh/0`, MOB-425). A new scratch file or dir in the
+  script goes under `$MOB_RELEASE_SCRATCH`, never a bare `mktemp` (macOS
+  `mktemp -d` ignores TMPDIR and nothing would remove it)
+- `MobDev.Plugin.IosLinkCheck.check/5` and its pure kernel
+  (`parse_dynamic_lookups/1`, `defined_symbols/1`, `tbd_name/1`,
+  `sdk_exports/2`, `error_message/4`): every iOS `cpp_archive` plugin archive
+  is linked without `-dead_strip` and may leave undefined only what the BEAM,
+  mob core or the iOS SDK define (MOB-471). Every iOS link dead-strips, the
+  release one included, so this check is what still catches a dangling
+  reference in dead code (MOB-470). See
+  `decisions/2026-10-13-ios-release-dead-strips-and-plugin-link-check.md`
 - `MobDev.UrlSchemes.schemes/1`, `merge_manifest/2`, `declared_elsewhere/2`,
   `launch_mode_error/2`, `plist_commands/3`, `bundle_plist_commands!/3` and
   `audit/2` (documented: `mob.exs` `url_schemes` validation, the Android

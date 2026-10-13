@@ -369,8 +369,10 @@ defmodule MobDev.Plugin.CppArchive do
   defp ios_sdk_name(:ios_sim), do: "iphonesimulator"
   defp ios_sdk_name(:ios_device), do: "iphoneos"
 
-  defp ios_min_flag(:ios_sim), do: "-mios-simulator-version-min=#{@ios_min_version}"
-  defp ios_min_flag(:ios_device), do: "-miphoneos-version-min=#{@ios_min_version}"
+  @doc "The deployment-target flag an iOS archive is compiled for. Pure."
+  @spec ios_min_flag(:ios_sim | :ios_device) :: String.t()
+  def ios_min_flag(:ios_sim), do: "-mios-simulator-version-min=#{@ios_min_version}"
+  def ios_min_flag(:ios_device), do: "-miphoneos-version-min=#{@ios_min_version}"
 
   # Honors ANDROID_HOME / ANDROID_SDK_ROOT via the shared NdkVersion helper —
   # do NOT re-derive the SDK path here (MOB-89: this used to hardcode
