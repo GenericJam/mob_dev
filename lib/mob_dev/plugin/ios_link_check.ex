@@ -193,7 +193,8 @@ defmodule MobDev.Plugin.IosLinkCheck do
   def sdk_exports(sdk_path, names) do
     pattern = :binary.compile_pattern(Enum.uniq(names))
 
-    # `**` doesn't follow symlinks; the SDK's own .tbd files are real files.
+    # `**` follows symlinks, which this needs: some SDK frameworks (AVFAudio
+    # inside AVFoundation, WebKit, ...) are reachable only through one.
     sdk_path
     |> Path.join("**/*.tbd")
     |> Path.wildcard()

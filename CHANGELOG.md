@@ -1,7 +1,27 @@
-## [Unreleased]
+## [0.7.24] - 2026-10-13
 
 ### Fixed
 
+- **`mix mob.release --ios` no longer leaves ~100 MB in the user temp dir
+  (MOB-425).** `ios/release_device.sh` compiled, linked and bundled in a bare
+  `mktemp -d` (macOS ignores `TMPDIR` for that) that was never removed, and
+  its exqlite and IPA staging dirs were removed only on success. The script
+  now runs in a temp dir mob_dev removes on every exit path, success or
+  failure, and every scratch path is under it. Running the script by hand,
+  it makes its own dir under `$TMPDIR` and removes it on exit.
+- **The iOS release link dead-strips like the dev links, and plugin
+  archives are checked for dangling references (MOB-471).** `mix mob.deploy
+  --native --ios` linked with `-dead_strip` and `mix mob.release --ios` did
+  not, so a plugin with a reference in dead code passed every dev build and
+  failed only the release (MOB-470, mob_whisper 0.1.1). The release now
+  passes `-dead_strip` too (a blank app with mob_whisper and mob_scene3d:
+  app binary −12.5 %). Every iOS build of a `cpp_archive` plugin then links
+  its archive once without `-dead_strip` and fails, naming the plugin, the
+  symbols and the objects that reference them, when a symbol is left that
+  neither the BEAM, mob core nor the iOS SDK defines. A dev build that
+  passed on 0.7.23 can now fail this way: on mob_whisper 0.1.1, upgrade to
+  0.1.2 or later. See
+  `decisions/2026-10-13-ios-release-dead-strips-and-plugin-link-check.md`.
 - **mob_dev no longer deletes Gradle lock files before Android builds
   (MOB-469).** It removed `~/.gradle/daemon/*/registry.bin.lock`,
   `wrapper/dists/**/*.lck` and `caches/**/*.{lock,lck}` before every
