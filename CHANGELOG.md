@@ -5,13 +5,12 @@
 - **mob_dev no longer deletes Gradle lock files before Android builds
   (MOB-469).** It removed `~/.gradle/daemon/*/registry.bin.lock`,
   `wrapper/dists/**/*.lck` and `caches/**/*.{lock,lck}` before every
-  `assembleDebug`. Gradle's locks are OS file locks released when the holder
-  exits, so they are never stale; deleting one only unlinks the inode, so a
-  concurrent build took a "new" lock on a fresh file and both builds wrote the
-  shared caches at once. A contended lock now behaves as Gradle intends: it
-  waits, then times out naming the owner PID (stop it with `./gradlew --stop`
-  or kill that PID). The hang this worked around was fixed separately
-  (`--no-daemon`, running `gradlew` through `bash`).
+  `assembleDebug`. Gradle's locks are OS-backed file locks: the OS releases
+  them when the holding JVM exits, even though the file stays on disk, so they
+  are never left held. Deleting one only unlinks the inode, so a concurrent
+  build locked a fresh file and both builds wrote the shared caches at once. A
+  contended lock now behaves as Gradle intends: it waits, then reports a
+  timeout; find and stop the live owner rather than deleting the file.
 
 ## [0.7.23] - 2026-10-09
 
