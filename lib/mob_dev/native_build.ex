@@ -1510,10 +1510,15 @@ defmodule MobDev.NativeBuild do
     :ok
   end
 
-  defp gradle_assemble do
+  # Gradle's locks are OS-backed file locks, released when the holding JVM
+  # exits; the files themselves are never "stale". Never delete them: that
+  # only unlinks the inode and lets concurrent builds share a cache unlocked
+  # (MOB-468, MOB-469, decisions/2026-10-13-never-delete-gradle-locks.md).
+  @doc false
+  @spec gradle_assemble(String.t()) :: :ok | {:error, String.t()}
+  def gradle_assemble(android_dir \\ Path.join(File.cwd!(), "android")) do
     IO.puts("  Running Gradle assembleDebug...")
     IO.puts("  (first build may take a few minutes while CMake compiles native code)")
-    android_dir = Path.join(File.cwd!(), "android")
     gradlew = Path.join(android_dir, "gradlew")
 
     remove_stale_release_otp_zip(android_dir)

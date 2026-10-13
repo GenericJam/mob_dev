@@ -2400,6 +2400,48 @@ defmodule MobDev.NativeBuildTest do
     end
   end
 
+  describe "gradle_assemble/1" do
+    @describetag :tmp_dir
+
+    # MOB-469: Gradle's locks are OS-held; unlinking a lock file lets a
+    # concurrent build take a fresh lock and write the shared caches at once.
+    test "leaves Gradle's lock files in GRADLE_USER_HOME alone", %{tmp_dir: dir} do
+      home = Path.join(dir, "gradle_home")
+      android = Path.join(dir, "android")
+      File.mkdir_p!(android)
+      File.write!(Path.join(android, "gradlew"), "exit 0\n")
+
+      locks =
+        for rel <- [
+              "daemon/8.2.1/registry.bin.lock",
+              "wrapper/dists/gradle-8.2.1-bin/abc/gradle-8.2.1-bin.zip.lck",
+              "caches/8.2.1/fileHashes/fileHashes.lock",
+              "caches/journal-1/journal-1.lock",
+              "caches/transforms-3/abc/results.bin.lck"
+            ] do
+          path = Path.join(home, rel)
+          File.mkdir_p!(Path.dirname(path))
+          File.write!(path, "")
+          path
+        end
+
+      prev = System.get_env("GRADLE_USER_HOME")
+      System.put_env("GRADLE_USER_HOME", home)
+
+      on_exit(fn ->
+        if prev,
+          do: System.put_env("GRADLE_USER_HOME", prev),
+          else: System.delete_env("GRADLE_USER_HOME")
+      end)
+
+      ExUnit.CaptureIO.capture_io(fn ->
+        assert NativeBuild.gradle_assemble(android) == :ok
+      end)
+
+      for lock <- locks, do: assert(File.exists?(lock), lock)
+    end
+  end
+
   # ── ios_bundle_id/1 ───────────────────────────────────────────────────────────
   #
   # The sim bundle, the device bundle, and code signing must all stamp the
