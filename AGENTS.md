@@ -454,12 +454,15 @@ Real fix: `sim_runtime_dir/0` should detect `ios/build.zig` and use
   schemes set, the launcher must be `singleTask`/`singleInstance` (enforced,
   never rewritten; mob_new's template is `singleTop`). See
   `decisions/2026-10-03-url-schemes.md`.
-- **Android deploys relabel `otp/` once, last.** Anything written as root
-  (`adb root` push, `ln -s`) keeps root's SELinux categories until
+- **Android deploys relabel `otp/` last (and also first).** Anything written
+  as root (`adb root` push, `ln -s`) keeps root's SELinux categories until
   `relabel_otp_android/1` in `deploy_android/3` runs. Add new device writes
-  before that call, never after: the dist (hot) path doesn't restart, so there
-  is no later relabel, and the app fails on its next launch (P11: exqlite's
-  NIF symlink, `dlopen ... not found`).
+  before the final call, never after: the dist (hot) path doesn't restart, so
+  there is no later relabel, and the app fails on its next launch (P11:
+  exqlite's NIF symlink, `dlopen ... not found`). The first call, before the
+  `run-as` ERTS probe, exists because after an APK reinstall the root-pushed
+  tree can carry the previous install's categories, which `run-as` can't read
+  (MOB-478).
 - **Physical iOS BEAM overrides must be exact and self-verifying.** The app
   prefers `Documents/otp/<app>` over its complete signed bundle. Replace that
   directory rather than incrementally merging it, require `<app>.beam` before
