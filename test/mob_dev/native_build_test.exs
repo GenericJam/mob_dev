@@ -2400,31 +2400,46 @@ defmodule MobDev.NativeBuildTest do
     end
   end
 
-  describe "clear_stale_gradle_locks/1" do
+  describe "gradle_assemble/1" do
     @describetag :tmp_dir
 
-    # MOB-468: native-platform's `<lib>.so.lock` marks a finished extraction.
-    # Deleting it made the next Gradle JVM rewrite the mapped .so in place and
-    # crashed every concurrent Gradle JVM (SIGSEGV in ld-linux / JNI).
-    test "clears stale wrapper, daemon and cache locks but keeps native-platform's extraction markers",
-         %{tmp_dir: home} do
-      marker = Path.join(home, "native/68d5/linux-amd64/libnative-platform.so.lock")
-      lib = Path.join(home, "native/68d5/linux-amd64/libnative-platform.so")
+    # MOB-469: Gradle's locks are OS-held; unlinking a lock file lets a
+    # concurrent build take a fresh lock and write the shared caches at once.
+    test "leaves Gradle's lock files in GRADLE_USER_HOME alone", %{tmp_dir: dir} do
+      home = Path.join(dir, "gradle_home")
+      android = Path.join(dir, "android")
+      File.mkdir_p!(android)
+      File.write!(Path.join(android, "gradlew"), "exit 0\n")
 
-      stale = [
-        Path.join(home, "daemon/8.2.1/registry.bin.lock"),
-        Path.join(home, "caches/8.2.1/fileHashes/fileHashes.lock")
-      ]
+      locks =
+        for rel <- [
+              "native/68d5/linux-amd64/libnative-platform.so.lock",
+              "daemon/8.2.1/registry.bin.lock",
+              "wrapper/dists/gradle-8.2.1-bin/abc/gradle-8.2.1-bin.zip.lck",
+              "caches/8.2.1/fileHashes/fileHashes.lock",
+              "caches/journal-1/journal-1.lock",
+              "caches/transforms-3/abc/results.bin.lck"
+            ] do
+          path = Path.join(home, rel)
+          File.mkdir_p!(Path.dirname(path))
+          File.write!(path, "")
+          path
+        end
 
-      for f <- [marker, lib | stale] do
-        File.mkdir_p!(Path.dirname(f))
-        File.write!(f, <<1>>)
-      end
+      prev = System.get_env("GRADLE_USER_HOME")
+      System.put_env("GRADLE_USER_HOME", home)
 
-      assert NativeBuild.clear_stale_gradle_locks(home) == :ok
-      assert File.exists?(marker)
-      assert File.exists?(lib)
-      for f <- stale, do: refute(File.exists?(f), f)
+      on_exit(fn ->
+        if prev,
+          do: System.put_env("GRADLE_USER_HOME", prev),
+          else: System.delete_env("GRADLE_USER_HOME")
+      end)
+
+      ExUnit.CaptureIO.capture_io(fn ->
+        assert NativeBuild.gradle_assemble(android) == :ok
+      end)
+
+      for lock <- locks, do: assert(File.exists?(lock), lock)
     end
   end
 
