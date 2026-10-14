@@ -5561,11 +5561,14 @@ defmodule MobDev.NativeBuild do
   @doc false
   # `fonts` as `{source, bundle_name}` copies into the iOS `.app` root, shared by
   # the dev bundle and the release (MOB-480). Raises when two fonts would land
-  # on the same bundle name.
+  # on the same bundle name, or when a name can't be listed in UIAppFonts
+  # intact: the dev build writes it into the plist XML unescaped and the
+  # release passes it to PlistBuddy, which drops `"` and `\` and still exits 0.
   @spec ios_font_copies!([Path.t()]) :: [{Path.t(), String.t()}]
   def ios_font_copies!(fonts) do
     case MobDev.Plugin.Assets.plan_ios_font_bundle(fonts) do
       {:ok, copies} ->
+        Enum.each(copies, &check_ios_font_name!/1)
         copies
 
       {:error, {:font_basename_collision, name, srcs}} ->
@@ -5574,6 +5577,15 @@ defmodule MobDev.NativeBuild do
             Enum.join(srcs, "\n  ") <>
             "\nRename one so the .app bundle + UIAppFonts stay unambiguous."
         )
+    end
+  end
+
+  defp check_ios_font_name!({src, name}) do
+    if String.match?(name, ~r/["\\&<>\p{Cc}]/u) do
+      Mix.raise(
+        "Font file name #{inspect(name)} (#{src}) can't be listed in the iOS UIAppFonts: " <>
+          "rename it without \", \\, &, <, > or control characters."
+      )
     end
   end
 

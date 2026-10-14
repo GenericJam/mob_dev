@@ -543,8 +543,10 @@ defmodule MobDev.Release do
   #   collision, as the dev build does).
   # - `MOB_IOS_UI_APP_FONTS_PLIST_COMMANDS` — a PlistBuddy `Add` per bundle
   #   name `plist_path` (the project's `ios/Info.plist`, copied into the bundle
-  #   as is) doesn't already list in UIAppFonts, so the result matches the dev
-  #   build's `Assets.merge_ui_app_fonts/2`.
+  #   as is; any plist format, read with `plutil`) doesn't already list in
+  #   UIAppFonts, so the result matches the dev build's
+  #   `Assets.merge_ui_app_fonts/2`. `ios_font_copies!/1` has already refused
+  #   names PlistBuddy can't carry intact.
   #
   # Both empty without reading the plist when there are no fonts.
   @spec ios_fonts_release_env(Path.t(), [Path.t()]) :: [{String.t(), String.t()}]
@@ -554,7 +556,7 @@ defmodule MobDev.Release do
         [{"MOB_IOS_FONT_FILES", ""}, {"MOB_IOS_UI_APP_FONTS_PLIST_COMMANDS", ""}]
 
       copies ->
-        listed = plist_path |> File.read!() |> MobDev.Plugin.Assets.parse_ui_app_fonts()
+        listed = ui_app_fonts!(plist_path)
         names = copies |> Enum.map(&elem(&1, 1)) |> Enum.uniq()
 
         [
@@ -565,6 +567,23 @@ defmodule MobDev.Release do
            |> Enum.reject(&(&1 in listed))
            |> Enum.map_join("\n", &~s|Add :UIAppFonts: string "#{&1}"|)}
         ]
+    end
+  end
+
+  # The UIAppFonts entries of the plist at `path`, decoded by plutil so a
+  # binary plist and XML-escaped names compare as the bundle will see them.
+  # `[]` when the key is absent.
+  defp ui_app_fonts!(path) do
+    case System.cmd("plutil", ["-extract", "UIAppFonts", "json", "-o", "-", path],
+           stderr_to_stdout: true
+         ) do
+      {json, 0} ->
+        :json.decode(json)
+
+      {output, _} ->
+        if File.regular?(path) and output =~ "No value at that key path",
+          do: [],
+          else: Mix.raise("plutil couldn't read UIAppFonts from #{path}: #{String.trim(output)}")
     end
   end
 

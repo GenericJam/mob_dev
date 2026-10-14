@@ -1,5 +1,6 @@
 defmodule MobDev.ReleaseFontsTest do
-  use ExUnit.Case, async: true
+  # Not async: the release_env/4 test runs from a project directory (cwd).
+  use ExUnit.Case, async: false
 
   # Runs release_device.sh's font block through the real bash and
   # /usr/libexec/PlistBuddy with the env MobDev.Release.ios_fonts_release_env/2
@@ -130,5 +131,69 @@ defmodule MobDev.ReleaseFontsTest do
     assert_raise Mix.Error, ~r/Inter-Regular\.ttf/, fn ->
       Release.ios_fonts_release_env(Path.join(dir, "Info.plist"), [clash | fonts])
     end
+  end
+
+  test "a binary Info.plist and an XML-escaped entry it already lists aren't added again",
+       %{dir: dir, app: app} do
+    font = Path.join(dir, "my fonts/Inter-Regular.ttf")
+    File.write!(font, "inter")
+
+    source_plist = Path.join(dir, "Info.plist")
+
+    File.write!(
+      source_plist,
+      String.replace(@plist_with_fonts, "<string>Inter-Regular.ttf</string>", """
+      <string>Inter-Regular.ttf</string>
+              <string>Ampersand &amp; Co.ttf</string>
+      """)
+    )
+
+    {_, 0} = System.cmd("plutil", ["-convert", "binary1", source_plist])
+    File.cp!(source_plist, Path.join(app, "Info.plist"))
+
+    env = Release.ios_fonts_release_env(source_plist, [font])
+    assert {"MOB_IOS_UI_APP_FONTS_PLIST_COMMANDS", ""} in env
+    assert {_, 0} = run_block(app, env)
+    assert ui_app_fonts(app) == ["Inter-Regular.ttf", "Ampersand & Co.ttf"]
+  end
+
+  test "a font name UIAppFonts can't carry intact fails the release", %{dir: dir} do
+    File.write!(Path.join(dir, "Info.plist"), @bare_plist)
+
+    for name <- [~s|Quote"Font.ttf|, ~S|Back\Slash.ttf|, "A&B.ttf", "Tab\tFont.ttf"] do
+      path = Path.join(dir, name)
+      File.write!(path, "x")
+
+      assert_raise Mix.Error, ~r/can't be listed in the iOS UIAppFonts/, fn ->
+        Release.ios_fonts_release_env(Path.join(dir, "Info.plist"), [path])
+      end
+    end
+  end
+
+  # The path mix mob.release --ios takes: release_env/4 (what build_ipa/1
+  # hands release_device.sh) computes the fonts from the project, so a release
+  # that stops passing them fails here.
+  test "release_env/4 hands the script the project's fonts", %{dir: dir, app: app} do
+    project = Path.join(dir, "project")
+    File.mkdir_p!(Path.join(project, "priv/fonts"))
+    File.mkdir_p!(Path.join(project, "ios"))
+    File.write!(Path.join(project, "priv/fonts/Brand-Regular.ttf"), "brand")
+    File.write!(Path.join(project, "ios/Info.plist"), @bare_plist)
+    File.cp!(Path.join(project, "ios/Info.plist"), Path.join(app, "Info.plist"))
+
+    cwd = File.cwd!()
+    File.cd!(project)
+
+    env =
+      try do
+        cfg = [mob_dir: project, elixir_lib: Path.dirname(to_string(:code.lib_dir(:elixir)))]
+        Release.release_env(cfg, "/otp", [], [])
+      after
+        File.cd!(cwd)
+      end
+
+    assert {_, 0} = run_block(app, env)
+    assert File.read!(Path.join(app, "Brand-Regular.ttf")) == "brand"
+    assert ui_app_fonts(app) == ["Brand-Regular.ttf"]
   end
 end
