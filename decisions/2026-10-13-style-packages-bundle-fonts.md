@@ -35,13 +35,19 @@ manifest's, so authors write one thing.
   nothing pointing at the style. An invalid manifest raises here too, rather
   than contributing no fonts.
 - `style_spec_version` stays `1`: the key is optional and additive, and an
-  older mob_dev ignores it (styles have no unknown-key check).
+  older mob_dev ignores it (styles have no unknown-key check). The reverse is
+  accepted: a v1 style that carried some other `assets` value, ignored before,
+  fails validation now. No published style does; the CHANGELOG says so.
 
 ## Consequences
 
 - A style that uses `assets` needs a mob_dev with this change to ship its
   fonts. On an older mob_dev the manifest still validates, the fonts are not
   bundled, and the theme's font names fall back to the system face.
+- `mix mob.release --ios` bundles the same fonts: its `release_device.sh` used
+  to build the `.app` without any custom fonts (app, plugin or style), found in
+  the 0.7.25 release review and fixed in MOB-480 through
+  `NativeBuild.ios_font_copies!/1` and `Release.ios_fonts_release_env/2`.
 - Style fonts are not signed. Styles have no signature scheme, and fonts are
   data, not code.
 - An app that copied a style's fonts into its own `priv/fonts/` hits a

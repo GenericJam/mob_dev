@@ -424,7 +424,9 @@ defmodule MobDev.Release do
       screenshot_build_env(cfg),
       layout_plist_env(cfg),
       url_types_plist_env(cfg, "ios/Info.plist")
-    ] ++ plugin_env ++ project_env
+    ] ++
+      ios_fonts_release_env("ios/Info.plist", MobDev.NativeBuild.collect_all_fonts()) ++
+      plugin_env ++ project_env
   end
 
   @doc false
@@ -529,6 +531,41 @@ defmodule MobDev.Release do
       )
 
     {"MOB_IOS_URL_TYPES_PLIST_COMMANDS", Enum.join(commands, "\n")}
+  end
+
+  @doc false
+  # The app's, plugins' and styles' fonts (`NativeBuild.collect_all_fonts/0`) as
+  # the two env vars release_device.sh bundles them from, so a release ships
+  # the fonts a dev build does (MOB-480):
+  #
+  # - `MOB_IOS_FONT_FILES` — one `<absolute source>\t<bundle name>` line per
+  #   font, from `NativeBuild.ios_font_copies!/1` (raises on a bundle-name
+  #   collision, as the dev build does).
+  # - `MOB_IOS_UI_APP_FONTS_PLIST_COMMANDS` — a PlistBuddy `Add` per bundle
+  #   name `plist_path` (the project's `ios/Info.plist`, copied into the bundle
+  #   as is) doesn't already list in UIAppFonts, so the result matches the dev
+  #   build's `Assets.merge_ui_app_fonts/2`.
+  #
+  # Both empty without reading the plist when there are no fonts.
+  @spec ios_fonts_release_env(Path.t(), [Path.t()]) :: [{String.t(), String.t()}]
+  def ios_fonts_release_env(plist_path, fonts) do
+    case MobDev.NativeBuild.ios_font_copies!(fonts) do
+      [] ->
+        [{"MOB_IOS_FONT_FILES", ""}, {"MOB_IOS_UI_APP_FONTS_PLIST_COMMANDS", ""}]
+
+      copies ->
+        listed = plist_path |> File.read!() |> MobDev.Plugin.Assets.parse_ui_app_fonts()
+        names = copies |> Enum.map(&elem(&1, 1)) |> Enum.uniq()
+
+        [
+          {"MOB_IOS_FONT_FILES",
+           Enum.map_join(copies, "\n", fn {src, dest} -> "#{Path.expand(src)}\t#{dest}" end)},
+          {"MOB_IOS_UI_APP_FONTS_PLIST_COMMANDS",
+           names
+           |> Enum.reject(&(&1 in listed))
+           |> Enum.map_join("\n", &~s|Add :UIAppFonts: string "#{&1}"|)}
+        ]
+    end
   end
 
   @doc false
@@ -960,6 +997,24 @@ defmodule MobDev.Release do
           while IFS= read -r CMD; do
               /usr/libexec/PlistBuddy -c "$CMD" "$APP/Info.plist"
           done <<< "$MOB_IOS_URL_TYPES_PLIST_COMMANDS"
+      fi
+
+      # The app's, plugins' and styles' fonts (MOB-480), as the dev bundle has
+      # them: each file at the .app root under its bundle name, and listed in
+      # UIAppFonts so iOS registers it at launch. Computed in Elixir
+      # (MobDev.Release.ios_fonts_release_env/2). Every copy and Add must
+      # succeed (set -e); creating the array may fail only because it exists.
+      if [ -n "$MOB_IOS_FONT_FILES" ]; then
+          while IFS=$'\t' read -r SRC DEST; do
+              cp "$SRC" "$APP/$DEST"
+          done <<< "$MOB_IOS_FONT_FILES"
+          /usr/libexec/PlistBuddy -c "Add :UIAppFonts array" "$APP/Info.plist" 2>/dev/null || true
+          while IFS= read -r CMD; do
+              if [ -n "$CMD" ]; then
+                  /usr/libexec/PlistBuddy -c "$CMD" "$APP/Info.plist"
+              fi
+          done <<< "$MOB_IOS_UI_APP_FONTS_PLIST_COMMANDS"
+          echo "  bundled $(printf '%s\n' "$MOB_IOS_FONT_FILES" | wc -l | tr -d ' ') font(s) + UIAppFonts"
       fi
 
       # Apple's App Store validator requires MinimumOSVersion and DTPlatformName

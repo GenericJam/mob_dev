@@ -5542,24 +5542,12 @@ defmodule MobDev.NativeBuild do
   # Copies the app's, plugins' and styles' fonts into the iOS `.app` bundle root and lists
   # them in `Info.plist` UIAppFonts so iOS registers them at launch (the SwiftUI
   # `Font.custom(name, …)` path in MobRootView then resolves them by name). No-op
-  # when there are no fonts.
+  # when there are no fonts. The release bundle gets the same copies through
+  # `MobDev.Release.ios_fonts_release_env/2`.
   defp apply_fonts_to_ios_bundle!(info_plist, app_path) do
-    fonts = collect_all_fonts()
+    copies = ios_font_copies!(collect_all_fonts())
 
-    if fonts != [] do
-      copies =
-        case MobDev.Plugin.Assets.plan_ios_font_bundle(fonts) do
-          {:ok, copies} ->
-            copies
-
-          {:error, {:font_basename_collision, name, srcs}} ->
-            Mix.raise(
-              "Font bundle collision: multiple fonts share the iOS bundle name #{name}:\n  " <>
-                Enum.join(srcs, "\n  ") <>
-                "\nRename one so the .app bundle + UIAppFonts stay unambiguous."
-            )
-        end
-
+    if copies != [] do
       for {src, dest} <- copies, do: File.cp!(src, Path.join(app_path, dest))
       basenames = Enum.map(copies, fn {_src, dest} -> dest end)
       plist = File.read!(info_plist)
@@ -5568,6 +5556,25 @@ defmodule MobDev.NativeBuild do
     end
 
     :ok
+  end
+
+  @doc false
+  # `fonts` as `{source, bundle_name}` copies into the iOS `.app` root, shared by
+  # the dev bundle and the release (MOB-480). Raises when two fonts would land
+  # on the same bundle name.
+  @spec ios_font_copies!([Path.t()]) :: [{Path.t(), String.t()}]
+  def ios_font_copies!(fonts) do
+    case MobDev.Plugin.Assets.plan_ios_font_bundle(fonts) do
+      {:ok, copies} ->
+        copies
+
+      {:error, {:font_basename_collision, name, srcs}} ->
+        Mix.raise(
+          "Font bundle collision: multiple fonts share the iOS bundle name #{name}:\n  " <>
+            Enum.join(srcs, "\n  ") <>
+            "\nRename one so the .app bundle + UIAppFonts stay unambiguous."
+        )
+    end
   end
 
   # Copies the app's, plugins' and styles' fonts into the Android `res/font/` dir under a
