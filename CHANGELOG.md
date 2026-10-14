@@ -38,10 +38,11 @@
   `ios/Info.plist` doesn't already list), with the dev build's bundle-name
   collision check. New: `MobDev.NativeBuild.ios_font_copies!/1`,
   `MobDev.Release.ios_fonts_release_env/2`. Existing UIAppFonts entries are
-  read with `plutil`, so a binary `Info.plist` works. A font whose file name
-  contains `"`, `\`, `&`, `<`, `>` or a control character now fails the iOS
-  build, dev and release: UIAppFonts couldn't list it intact (the dev build
-  wrote it into the plist XML unescaped).
+  read with `plutil`, so a binary `Info.plist` works, and names reach the
+  bundle exactly (quotes, apostrophes, backslashes and any path included). A
+  font whose file name contains `&`, `<`, `>` or a control character now
+  fails the iOS build, dev and release: the dev build wrote such a name into
+  the plist XML unescaped, corrupting it.
 
 ## [0.7.24] - 2026-10-13
 
