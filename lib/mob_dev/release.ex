@@ -424,7 +424,9 @@ defmodule MobDev.Release do
       screenshot_build_env(cfg),
       layout_plist_env(cfg),
       url_types_plist_env(cfg, "ios/Info.plist")
-    ] ++ plugin_env ++ project_env
+    ] ++
+      ios_fonts_release_env("ios/Info.plist", MobDev.NativeBuild.collect_all_fonts()) ++
+      plugin_env ++ project_env
   end
 
   @doc false
@@ -529,6 +531,64 @@ defmodule MobDev.Release do
       )
 
     {"MOB_IOS_URL_TYPES_PLIST_COMMANDS", Enum.join(commands, "\n")}
+  end
+
+  @doc false
+  # The app's, plugins' and styles' fonts (`NativeBuild.collect_all_fonts/0`) as
+  # the two env vars release_device.sh bundles them from, so a release ships
+  # the fonts a dev build does (MOB-480). Values are base64, so any path or
+  # name survives the env and the script's `read` intact:
+  #
+  # - `MOB_IOS_FONT_FILES` — one `<base64 absolute source> <base64 bundle name>`
+  #   line per font, from `NativeBuild.ios_font_copies!/1` (the dev build's
+  #   collision and name checks).
+  # - `MOB_IOS_UI_APP_FONTS` — one base64 bundle name per line for each name
+  #   `plist_path` (the project's `ios/Info.plist`, copied into the bundle as
+  #   is) doesn't already list in UIAppFonts, so the result matches the dev
+  #   build's `Assets.merge_ui_app_fonts/2`. The script adds each with
+  #   `plutil -insert`, the name a single argument, never parsed.
+  #
+  # Both empty without reading the plist when there are no fonts.
+  @spec ios_fonts_release_env(Path.t(), [Path.t()]) :: [{String.t(), String.t()}]
+  def ios_fonts_release_env(plist_path, fonts) do
+    case MobDev.NativeBuild.ios_font_copies!(fonts) do
+      [] ->
+        [{"MOB_IOS_FONT_FILES", ""}, {"MOB_IOS_UI_APP_FONTS", ""}]
+
+      copies ->
+        listed = ui_app_fonts!(plist_path)
+
+        names =
+          copies |> Enum.map(&elem(&1, 1)) |> Enum.uniq() |> Enum.reject(&(&1 in listed))
+
+        [
+          {"MOB_IOS_FONT_FILES",
+           Enum.map_join(copies, "\n", fn {src, dest} ->
+             Base.encode64(Path.expand(src)) <> " " <> Base.encode64(dest)
+           end)},
+          {"MOB_IOS_UI_APP_FONTS", Enum.map_join(names, "\n", &Base.encode64/1)}
+        ]
+    end
+  end
+
+  # The UIAppFonts entries of the plist at `path`, decoded by plutil so a
+  # binary plist and XML-escaped names compare as the bundle will see them.
+  # `[]` without running plutil when the file never mentions the key (both
+  # plist formats store key strings as plain ASCII).
+  defp ui_app_fonts!(path) do
+    if path |> File.read!() |> String.contains?("UIAppFonts") do
+      case System.cmd("plutil", ["-extract", "UIAppFonts", "json", "-o", "-", path],
+             stderr_to_stdout: true
+           ) do
+        {json, 0} ->
+          :json.decode(json)
+
+        {output, _} ->
+          Mix.raise("plutil couldn't read UIAppFonts from #{path}: #{String.trim(output)}")
+      end
+    else
+      []
+    end
   end
 
   @doc false
@@ -960,6 +1020,32 @@ defmodule MobDev.Release do
           while IFS= read -r CMD; do
               /usr/libexec/PlistBuddy -c "$CMD" "$APP/Info.plist"
           done <<< "$MOB_IOS_URL_TYPES_PLIST_COMMANDS"
+      fi
+
+      # The app's, plugins' and styles' fonts (MOB-480), as the dev bundle has
+      # them: each file at the .app root under its bundle name, and listed in
+      # UIAppFonts so iOS registers it at launch. Computed in Elixir
+      # (MobDev.Release.ios_fonts_release_env/2), every value base64 so no path
+      # or name is split or parsed here; plutil takes each name as one argument.
+      # Every step must succeed (set -e).
+      if [ -n "$MOB_IOS_FONT_FILES" ]; then
+          FONT_COUNT=0
+          while read -r SRC_B64 DEST_B64; do
+              SRC=$(printf '%s' "$SRC_B64" | base64 --decode)
+              DEST=$(printf '%s' "$DEST_B64" | base64 --decode)
+              cp "$SRC" "$APP/$DEST"
+              FONT_COUNT=$((FONT_COUNT + 1))
+          done <<< "$MOB_IOS_FONT_FILES"
+          if ! plutil -extract UIAppFonts json -o /dev/null "$APP/Info.plist" 2>/dev/null; then
+              plutil -insert UIAppFonts -array "$APP/Info.plist"
+          fi
+          while read -r NAME_B64; do
+              if [ -n "$NAME_B64" ]; then
+                  plutil -insert UIAppFonts -string "$(printf '%s' "$NAME_B64" | base64 --decode)" \
+                      -append "$APP/Info.plist"
+              fi
+          done <<< "$MOB_IOS_UI_APP_FONTS"
+          echo "  bundled $FONT_COUNT font(s) + UIAppFonts"
       fi
 
       # Apple's App Store validator requires MinimumOSVersion and DTPlatformName

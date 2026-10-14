@@ -454,6 +454,16 @@ Real fix: `sim_runtime_dir/0` should detect `ios/build.zig` and use
   schemes set, the launcher must be `singleTask`/`singleInstance` (enforced,
   never rewritten; mob_new's template is `singleTop`). See
   `decisions/2026-10-03-url-schemes.md`.
+- **Custom fonts are bundled on every native build path.** App
+  (`priv/fonts/`), plugin and style fonts come from
+  `NativeBuild.collect_all_fonts/0`. Android dev and AAB builds copy them in
+  `apply_fonts_to_android!/0`; the iOS sim and device bundles in
+  `apply_fonts_to_ios_bundle!/2`; `mix mob.release --ios` through
+  `Release.ios_fonts_release_env/2` and `release_device.sh` (MOB-480, the
+  release used to ship none). iOS goes through `ios_font_copies!/1` either
+  way, so both get the same collision check. A new path that builds an
+  `.app` or APK must do the same, or that build renders the system font.
+  `test/mob_dev/release_fonts_test.exs` runs the release block.
 - **Android deploys relabel `otp/` last (and also first).** Anything written
   as root (`adb root` push, `ln -s`) keeps root's SELinux categories until
   `relabel_otp_android/1` in `deploy_android/3` runs. Add new device writes

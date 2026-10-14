@@ -10,6 +10,8 @@
   `fonts:` map through `Mob.Theme.font/2`. A declared font file that doesn't
   exist fails the build, naming the style and the path. Only `:fonts` is
   supported in a style's `assets`; any other key is a validation error.
+  **Upgrading:** 0.7.24 ignored `assets` in a style manifest, so a style that
+  carried some other `assets` value fails validation from 0.7.25; remove it.
   `style_spec_version` stays `1`. `mix mob.styles` lists each style's fonts
   and flags missing ones. New: `MobDev.Style.fonts!/1`. If your app copied a
   style's font files into its own `priv/fonts/`, delete the copies once the
@@ -26,6 +28,21 @@
   couldn't read it and the deploy failed with "OTP runtime missing on
   device". The deploy now relabels `otp/` before that check too, not only
   after the last write. Without root the relabel is a no-op, as before.
+
+- **`mix mob.release --ios` bundles custom fonts (MOB-480).** The release's
+  `ios/release_device.sh` built the `.app` from the binary and
+  `ios/Info.plist` alone, so an App Store build shipped none of the app's
+  `priv/fonts/`, plugins' or styles' fonts and rendered the system font
+  wherever a theme named one. It now copies the same fonts the dev build
+  does to the `.app` root and adds them to `UIAppFonts` (only the names
+  `ios/Info.plist` doesn't already list), with the dev build's bundle-name
+  collision check. New: `MobDev.NativeBuild.ios_font_copies!/1`,
+  `MobDev.Release.ios_fonts_release_env/2`. Existing UIAppFonts entries are
+  read with `plutil`, so a binary `Info.plist` works, and names reach the
+  bundle exactly (quotes, apostrophes, backslashes and any path included). A
+  font whose file name contains `&`, `<`, `>` or a control character now
+  fails the iOS build, dev and release: the dev build wrote such a name into
+  the plist XML unescaped, corrupting it.
 
 ## [0.7.24] - 2026-10-13
 
