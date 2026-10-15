@@ -1,3 +1,29 @@
+## [0.7.27] - 2026-10-15
+
+### Fixed
+
+- **Apps with `nx_tflite_mob` or `nx_eigen` get their own driver table, so
+  the NIF registers (MOB-394).** An app with no
+  `priv/generated/driver_tab_*` links against mob's core table, which has
+  no TFLite or NxEigen entry: the native build linked `libtflite_nif.a`
+  (or `libnx_eigen.a`), but the NIF never registered and
+  `NxTfliteMob.NIF` failed to load (`dlopen failed: library
+  "libtflite_nif.so" not found`). The native build now creates the table
+  (zig) when either dep is present, as it already did for NIF-bearing
+  plugins. EMLX is unchanged: mob's core iOS table already registers it.
+  **Upgrading:** an app with either dep and no table gets
+  `priv/generated/driver_tab_android.zig` and `driver_tab_ios.zig` on its
+  next `mix mob.deploy --native` (or run `mix mob.regen_driver_tab` once);
+  commit them. TFLite apps also need the build-file change in mob_new
+  0.6.12 (see its CHANGELOG): with the table but the old `build.zig`, the
+  Android app crashes at launch (`cannot locate symbol
+  "tflite_nif_nif_init"`) and the iOS link fails (`Undefined symbols:
+  _tflite_nif_nif_init`). NxEigen apps whose build files predate the
+  `tflite_static` option (mob_new 0.3.15 and earlier on iOS, 0.3.8 on
+  Android) fail to compile the new table ("struct 'options' has no member
+  named 'tflite_static'"): declare `tflite_static` with `b.option` and add
+  it to the driver table's `addOptions`, as current templates do.
+
 ## [0.7.26] - 2026-10-15
 
 ### Fixed
