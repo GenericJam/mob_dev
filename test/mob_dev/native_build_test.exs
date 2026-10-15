@@ -151,6 +151,74 @@ defmodule MobDev.NativeBuildTest do
         File.rm_rf!(dir)
       end
     end
+
+    # MOB-394: a blank app with `mix mob.enable tflite` had no generated table,
+    # so it linked against mob's core Android table, which has no TFLite entry:
+    # NxTfliteMob loaded as :nif_not_loaded on the device.
+    test "creates a table with the TFLite entry for a host with nx_tflite_mob" do
+      host = regen_host([{:nx_tflite_mob, "nx_tflite_mob"}])
+
+      for table <- ["driver_tab_android.zig", "driver_tab_ios.zig"] do
+        assert File.read!(Path.join(host, "priv/generated/#{table}")) =~
+                 "extern fn tflite_nif_nif_init()"
+      end
+    end
+
+    test "creates a table with the NxEigen entry for a host with nx_eigen" do
+      host = regen_host([{:nx_eigen, "nx_eigen"}])
+
+      for table <- ["driver_tab_android.zig", "driver_tab_ios.zig"] do
+        assert File.read!(Path.join(host, "priv/generated/#{table}")) =~
+                 "extern fn nx_eigen_nif_init()"
+      end
+    end
+
+    # EMLX is iOS-only and mob's core iOS table already registers it.
+    test "creates no table for a host whose only built-in NIF is in the core table" do
+      host = regen_host([{:emlx, "emlx"}])
+
+      refute File.exists?(Path.join(host, "priv/generated"))
+    end
+
+    # A host Mix project (path deps on stub packages) with regen_driver_tab!/0
+    # run inside it. Returns the host dir; the scratch root goes on test exit.
+    defp regen_host(deps) do
+      suffix = System.unique_integer([:positive])
+      root = Path.join(System.tmp_dir!(), "mob_driver_tab_host_#{suffix}")
+      on_exit(fn -> File.rm_rf!(root) end)
+      host = Path.join(root, "host")
+      File.mkdir_p!(host)
+
+      dep_specs =
+        for {app, dir} <- deps do
+          dep_dir = Path.join(root, dir)
+          File.mkdir_p!(dep_dir)
+
+          File.write!(Path.join(dep_dir, "mix.exs"), """
+          defmodule Stub#{suffix}#{Macro.camelize(dir)}.MixProject do
+            use Mix.Project
+            def project, do: [app: #{inspect(app)}, version: "0.1.0"]
+          end
+          """)
+
+          "{#{inspect(app)}, path: #{inspect(dep_dir)}}"
+        end
+
+      File.write!(Path.join(host, "mix.exs"), """
+      defmodule Host#{suffix}.MixProject do
+        use Mix.Project
+        def project, do: [app: :host, version: "0.1.0", deps: [#{Enum.join(dep_specs, ", ")}]]
+      end
+      """)
+
+      Mix.ProjectStack.on_clean_slate(fn ->
+        Mix.Project.in_project(:"host#{suffix}", host, fn _ ->
+          assert :ok = NativeBuild.regen_driver_tab!()
+        end)
+      end)
+
+      host
+    end
   end
 
   describe "__merge_android_manifest_components__/2" do
