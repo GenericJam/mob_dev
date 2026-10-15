@@ -59,7 +59,9 @@ the bundle id. iOS, Android and the Mac-side node all use it.
   file, so it stays attachable. (Amended by MOB-348: iOS filesystem deploys
   now also write `mob_dist_cookie` into the beams dir, the simulator runtime
   dir or the physical iPhone's `Documents/otp/<app>/`, and mob ≥ the matching
-  release reads it, so iOS relaunches stay attachable too.)
+  release reads it, so iOS relaunches stay attachable too. Amended again by
+  MOB-408: on a physical iPhone with mob ≥ 0.9.20 that is the deploy's new
+  `Documents/otp/<app>.versions/<N>/`.)
 - While a legacy app is connected, its node name carries `mob_secret` as a
   per-node cookie on the Mac. That is the old exposure, limited to that name,
   and the warning tells the developer how to end it.

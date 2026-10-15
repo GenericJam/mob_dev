@@ -48,7 +48,13 @@ succeeded. And even over USB the write is an
 `xcrun devicectl ... --remove-existing-content` replace with no undo: a cable
 knock mid-copy leaves the app unbootable, with no way back but another
 successful deploy. A hot load could never damage a device. Making it able to,
-silently, on the most-used command in the repo, is not a fix.
+silently, on the most-used command in the repo, is not a fix. (Amended by
+MOB-408: that replace was worse than stated, since the flag empties the app's
+whole data container. From mob_dev 0.7.28 the write never removes anything:
+an app on mob ≥ 0.9.20 gets a new committed directory that leaves the
+previous code running if interrupted, an older one a merge into
+`Documents/otp/<app>`, which can still leave it unbootable. The first reason
+stands either way; see `2026-10-15-ios-deploy-never-empties-the-container.md`.)
 
 The documented physical-iOS dist workflow is USB *unplugged* anyway, which is
 precisely the state in which the write cannot run.

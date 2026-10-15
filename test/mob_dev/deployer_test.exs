@@ -17,9 +17,9 @@ defmodule MobDev.DeployerTest do
   end
 
   describe "physical iOS override" do
-    test "app-not-installed skips never claim the override is incomplete" do
-      Process.put(:mob_ios_override_replaced, true)
-      on_exit(fn -> Process.delete(:mob_ios_override_replaced) end)
+    test "app-not-installed skips carry no partial-upload note" do
+      Process.put(:mob_ios_code_upload, {:legacy, "Documents/otp/sample_app"})
+      on_exit(fn -> Process.delete(:mob_ios_code_upload) end)
 
       assert {:skipped, "App is not installed"} =
                Deployer.finalize_ios_override_result(
@@ -28,15 +28,31 @@ defmodule MobDev.DeployerTest do
                )
     end
 
-    test "real copy failures still explain an incomplete override" do
-      Process.put(:mob_ios_override_replaced, true)
-      on_exit(fn -> Process.delete(:mob_ios_override_replaced) end)
+    test "an error before the upload began is reported as is" do
+      Process.delete(:mob_ios_code_upload)
+
+      assert {:error, "listing failed"} =
+               Deployer.finalize_ios_override_result({:error, "listing failed"}, "sample_app")
+    end
+
+    test "an error after the upload began says which directory it left behind" do
+      dir = "Documents/otp/sample_app.versions/0000000007"
+      Process.put(:mob_ios_code_upload, {{:versioned, "0000000007"}, dir})
+      on_exit(fn -> Process.delete(:mob_ios_code_upload) end)
 
       assert {:error, message} =
                Deployer.finalize_ios_override_result({:error, "copy failed"}, "sample_app")
 
-      assert message =~ "copy failed"
-      assert message =~ "now incomplete"
+      assert String.starts_with?(message, "copy failed")
+      assert message =~ dir
+
+      Process.put(:mob_ios_code_upload, {:legacy, "Documents/otp/sample_app"})
+
+      assert {:error, message} =
+               Deployer.finalize_ios_override_result({:error, "copy failed"}, "sample_app")
+
+      assert String.starts_with?(message, "copy failed")
+      assert message =~ "Documents/otp/sample_app"
     end
 
     test "requires staged bootstrap bytes to match the active compile output" do
@@ -79,8 +95,10 @@ defmodule MobDev.DeployerTest do
                Deployer.validate_ios_override(compile_path, staging_dir, "sample_app")
     end
 
-    test "copy command replaces the exact override directory" do
-      args = Deployer.ios_override_copy_args("device-id", "com.example.app", "/tmp/app", "app")
+    # MOB-408: --remove-existing-content empties the app's whole data
+    # container (Documents, Library, tmp), whatever --destination names.
+    test "the copy merges into its destination and never removes existing content" do
+      args = Deployer.ios_code_copy_args("device-id", "com.example.app", "/tmp/app", "dest/dir")
 
       assert args == [
                "devicectl",
@@ -96,18 +114,126 @@ defmodule MobDev.DeployerTest do
                "--source",
                "/tmp/app",
                "--destination",
-               "Documents/otp/app",
-               "--remove-existing-content",
-               "true"
+               "dest/dir"
              ]
     end
 
-    test "verification command retrieves the exact remote bootstrap" do
-      assert Deployer.ios_override_verify_args(
+    # What every mob runtime since 0.6.2 writes to Documents/mob_diag_beams_dir.txt
+    # at boot: the absolute path of the directory it loads.
+    test "the deploy is confirmed only when the app booted from the directory it wrote" do
+      container = "/var/mobile/Containers/Data/Application/9F50A0EA"
+      versioned = "Documents/otp/app.versions/0000000008"
+
+      assert Deployer.ios_loaded?("#{container}/#{versioned}\n", versioned)
+      assert Deployer.ios_loaded?("#{container}/Documents/otp/app\n", "Documents/otp/app")
+
+      # An older committed version, the legacy override, or the bundle.
+      refute Deployer.ios_loaded?("#{container}/Documents/otp/app.versions/0000000007", versioned)
+      refute Deployer.ios_loaded?("#{container}/Documents/otp/app\n", versioned)
+      refute Deployer.ios_loaded?("#{container}/#{versioned}\n", "Documents/otp/app")
+      refute Deployer.ios_loaded?("/private/var/containers/Bundle/D.app/otp/app", versioned)
+      # Another app whose name ends in this one's.
+      refute Deployer.ios_loaded?("#{container}/Documents/otp/myapp\n", "Documents/otp/app")
+      # No diagnostic yet.
+      refute Deployer.ios_loaded?(nil, versioned)
+      refute Deployer.ios_loaded?("", versioned)
+    end
+
+    test "a versioned deploy goes above every existing entry, committed or not" do
+      # An interrupted upload (no marker) still takes its number: reusing it
+      # would merge into its leftovers.
+      assert {:versioned, "0000000004"} =
+               Deployer.ios_code_plan(
+                 true,
+                 {:ok, ["0000000001", "0000000003", "notes", "0000000002", "12x"]}
+               )
+
+      assert {:versioned, "0000000001"} = Deployer.ios_code_plan(true, {:ok, []})
+      assert {:versioned, "0000000010"} = Deployer.ios_code_plan(true, {:ok, ["9"]})
+    end
+
+    test "versioned only when both the project's mob and the phone's runtime read it" do
+      # The phone never created <app>.versions/: its runtime predates the
+      # layout (mob updated without --native), or hasn't booted yet.
+      assert :legacy = Deployer.ios_code_plan(true, :absent)
+      # The project's mob predates it: the runtime about to run is old even if
+      # the phone kept <app>.versions/ from a newer one.
+      assert :legacy = Deployer.ios_code_plan(false, {:ok, ["0000000001"]})
+      assert :legacy = Deployer.ios_code_plan(false, :absent)
+    end
+
+    test "each plan uploads into its own directory" do
+      assert Deployer.ios_code_dir("app", {:versioned, "0000000002"}) ==
+               "Documents/otp/app.versions/0000000002"
+
+      assert Deployer.ios_code_dir("app", :legacy) == "Documents/otp/app"
+    end
+
+    test "the project's mob reads <app>.versions/ when it ships the runtime header" do
+      dir = Path.join(System.tmp_dir!(), "mob_dep_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(Path.join(dir, "ios"))
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      refute Deployer.mob_reads_ios_versions?(dir)
+      File.write!(Path.join(dir, "ios/mob_code_versions.h"), "")
+      assert Deployer.mob_reads_ios_versions?(dir)
+      refute Deployer.mob_reads_ios_versions?(nil)
+    end
+
+    test "the listing lists <app>.versions/ itself, one level, as JSON to a file" do
+      args = Deployer.ios_versions_list_args("device-id", "com.example.app", "app", "/tmp/l.json")
+
+      assert ["devicectl", "device", "info", "files" | _] = args
+
+      assert ["--subdirectory", "Documents/otp/app.versions" | _] =
+               drop_until(args, "--subdirectory")
+
+      assert "--no-recurse" in args
+      assert ["--json-output", "/tmp/l.json" | _] = drop_until(args, "--json-output")
+
+      assert ["--domain-identifier", "com.example.app" | _] =
+               drop_until(args, "--domain-identifier")
+    end
+
+    # Shapes captured from devicectl 642.16 against an iPhone (MOB-408).
+    test "a listing yields the directory's entry names" do
+      json = ~s({"info": {"outcome": "success"}, "result": {"files": [
+        {"name": "0000000001", "relativePath": "0000000001",
+         "resources": {"isDirectory": true}},
+        {"name": ".mob_complete", "relativePath": "0000000001/.mob_complete",
+         "resources": {"isDirectory": false}},
+        {"name": "0000000002", "relativePath": "0000000002",
+         "resources": {"isDirectory": true}}]}})
+
+      assert {:ok, ["0000000001", "0000000002"]} = Deployer.parse_ios_versions_listing(json)
+      assert {:ok, []} = Deployer.parse_ios_versions_listing(~s({"result": {"files": []}}))
+    end
+
+    test "a directory devicectl can't list is absent; other failures are errors" do
+      # What a missing <app>.versions/ (and an app that isn't installed) gives.
+      missing = ~s({"error": {"code": 3, "domain": "CoreDevice.ActionError", "userInfo": {
+        "NSDebugDescription": {"string": "The system failed to get a list of files"}}},
+        "info": {"outcome": "failed"}})
+
+      assert :absent = Deployer.parse_ios_versions_listing(missing)
+
+      no_device = ~s({"error": {"code": 1000, "domain": "com.apple.dt.CoreDeviceError",
+        "userInfo": {"NSLocalizedDescription": {"string": "The specified device was not found."}}},
+        "info": {"outcome": "failed"}})
+
+      assert {:error, message} = Deployer.parse_ios_versions_listing(no_device)
+      assert message =~ "The specified device was not found."
+
+      assert {:error, _} = Deployer.parse_ios_versions_listing("ERROR: not json")
+    end
+
+    test "verification reads back the bootstrap from the directory just written" do
+      assert Deployer.ios_code_verify_args(
                "device-id",
                "com.example.app",
-               "/tmp/received.beam",
-               "app"
+               "Documents/otp/app.versions/0000000002",
+               "app",
+               "/tmp/received.beam"
              ) == [
                "devicectl",
                "device",
@@ -120,7 +246,7 @@ defmodule MobDev.DeployerTest do
                "--domain-identifier",
                "com.example.app",
                "--source",
-               "Documents/otp/app/app.beam",
+               "Documents/otp/app.versions/0000000002/app.beam",
                "--destination",
                "/tmp/received.beam"
              ]
@@ -539,4 +665,6 @@ defmodule MobDev.DeployerTest do
              ]
     end
   end
+
+  defp drop_until(list, item), do: Enum.drop_while(list, &(&1 != item))
 end
