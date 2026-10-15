@@ -2250,34 +2250,37 @@ defmodule MobDev.NativeBuild do
       # The macOS-compiled NIF from `mix deps.compile` is incompatible with
       # the iOS sim (wrong platform tag). Recompile against iphonesimulator
       # SDK so dlopen succeeds inside the simulator process.
-      args = [
-        "-sdk",
-        "iphonesimulator",
-        "cc",
-        "-arch",
-        "arm64",
-        "-mios-simulator-version-min=17.0",
-        "-isysroot",
-        sdkroot,
-        "-Os",
-        "-ffunction-sections",
-        "-fdata-sections",
-        "-dynamiclib",
-        "-undefined",
-        "dynamic_lookup",
-        "-I",
-        "deps/exqlite/c_src",
-        "-I",
-        "#{otp_root}/#{erts_vsn}/include",
-        "-I",
-        "#{otp_root}/#{erts_vsn}/include/aarch64-apple-iossimulator",
-        "-DSQLITE_THREADSAFE=1",
-        "-Wno-#warnings",
-        "deps/exqlite/c_src/sqlite3_nif.c",
-        "deps/exqlite/c_src/sqlite3.c",
-        "-o",
-        out_so
-      ]
+      args =
+        [
+          "-sdk",
+          "iphonesimulator",
+          "cc",
+          "-arch",
+          "arm64",
+          "-mios-simulator-version-min=17.0",
+          "-isysroot",
+          sdkroot,
+          "-Os",
+          "-ffunction-sections",
+          "-fdata-sections",
+          "-dynamiclib",
+          "-undefined",
+          "dynamic_lookup",
+          "-I",
+          "deps/exqlite/c_src",
+          "-I",
+          "#{otp_root}/#{erts_vsn}/include",
+          "-I",
+          "#{otp_root}/#{erts_vsn}/include/aarch64-apple-iossimulator"
+        ] ++
+          MobDev.Exqlite.cflags() ++
+          [
+            "-Wno-#warnings",
+            "deps/exqlite/c_src/sqlite3_nif.c",
+            "deps/exqlite/c_src/sqlite3.c",
+            "-o",
+            out_so
+          ]
 
       case System.cmd("xcrun", args, stderr_to_stdout: true, into: IO.stream()) do
         {_, 0} -> :ok
@@ -3503,8 +3506,10 @@ defmodule MobDev.NativeBuild do
                      "-I",
                      "#{otp_root}/#{erts_vsn}/include",
                      "-I",
-                     "#{otp_root}/#{erts_vsn}/include/internal",
-                     "-DSQLITE_THREADSAFE=1",
+                     "#{otp_root}/#{erts_vsn}/include/internal"
+                   ] ++
+                   MobDev.Exqlite.cflags() ++
+                   [
                      "-DSTATIC_ERLANG_NIF_LIBNAME=sqlite3_nif",
                      "-Wno-#warnings",
                      "-c",
@@ -3516,10 +3521,9 @@ defmodule MobDev.NativeBuild do
              :ok <-
                run_cc(
                  common_cc ++
+                   ["-I", "deps/exqlite/c_src"] ++
+                   MobDev.Exqlite.cflags() ++
                    [
-                     "-I",
-                     "deps/exqlite/c_src",
-                     "-DSQLITE_THREADSAFE=1",
                      "-Wno-#warnings",
                      "-c",
                      "deps/exqlite/c_src/sqlite3.c",

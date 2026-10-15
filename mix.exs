@@ -117,6 +117,9 @@ defmodule MobDev.MixProject do
       # Lets us test "given inputs, clang is invoked with these args"
       # without actually running clang.
       {:mox, "~> 1.2", only: :test},
+      # exqlite's source, never compiled or loaded: MobDev.ExqliteTest reads
+      # its Makefile to pin MobDev.Exqlite's SQLite defines (MOB-487).
+      {:exqlite, "~> 0.42", only: :test, runtime: false, compile: false, app: false},
       {:erlfmt, "~> 1.8", only: :dev, runtime: false},
       # Dev-only dead-code detector. Wires in via the `:unused` compiler
       # tracer; ignore list maintained inline below since this codebase has
