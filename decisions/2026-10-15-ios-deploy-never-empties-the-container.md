@@ -56,18 +56,34 @@ The versioned layout is used only when both are true (`ios_code_plan/2`):
 
 The first alone misses mob updated without `--native` (an old runtime still
 on the phone, which would ignore the upload); the second alone misses a phone
-that ran a newer mob before a downgrade. A listing that fails any other way
-fails the deploy.
+that ran a newer mob before a `--native` downgrade. A listing that fails any
+other way fails the deploy.
+
+Both together still guess wrong when the project's mob moves across 0.9.20
+without `--native` on a phone that has `<app>.versions/`: a versioned upload
+an old runtime ignores, or a legacy merge that a new runtime's committed
+version shadows (and that runtime then deletes). So the deploy checks the
+result instead of trusting the guess: after relaunching, it reads
+`Documents/mob_diag_beams_dir.txt`, which every mob runtime since 0.6.2
+writes at boot with the directory it loaded, until that names the directory
+just written (up to 20 s), and otherwise fails, naming where the app booted
+from and saying to run `mix mob.deploy --native`. No relaunch (a launch that
+failed, or `restart: false`) means nothing to check.
 
 ## Consequences
 
 - No BEAM deploy deletes app data again, whatever mob the app runs.
-- The deploy after `mix mob.deploy --native` to mob ≥ 0.9.20 still merges
-  into `Documents/otp/<app>` (the new runtime hasn't booted to create
-  `<app>.versions/`); later deploys are versioned, and the first versioned
-  boot deletes the legacy directory.
-- Each deploy is one more devicectl call (the listing) and, for a versioned
-  one, one more (the marker), each well under a second over USB.
+- A physical-iPhone deploy that relaunched the app and reports success has
+  had the app boot from the code it wrote.
+- The `mix mob.deploy --native` run that first puts mob ≥ 0.9.20 on a phone
+  still merges into `Documents/otp/<app>` (the new runtime hasn't booted to
+  create `<app>.versions/`); its restart boots that runtime, later deploys
+  are versioned, and the first versioned boot deletes the legacy directory.
+- Each deploy costs one more devicectl call (the listing, for a project on
+  mob ≥ 0.9.20), one more for a versioned one (the marker), and the boot
+  check: about a second over USB in total, more if the app is slow to start.
+- Two deploys to one phone at the same moment can both pick the same `N`.
+  Concurrent deploys could always clobber each other; this doesn't fix that.
 - A physical iPhone connected over dist is still only hot-loaded
   (`persistable?/1`): a LAN-only device has no devicectl route, and an old
   runtime's merge can still break the app mid-copy.

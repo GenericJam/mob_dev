@@ -1187,14 +1187,19 @@ defmodule MobDev.Deployer do
   #
   # `:legacy`: merge into `Documents/otp/<app>`, the one directory older
   # runtimes read. Nothing is deleted; a module removed from the project
-  # lingers there until the app is reinstalled.
+  # lingers there until the app is reinstalled or a newer runtime's first
+  # versioned boot deletes the directory.
   #
   # Versioned only when both sides say so: the project's mob ships the runtime
   # that reads the layout (`mob_reads_ios_versions?/1`), and the device has
   # `<app>.versions/`, which that runtime creates at every boot (`listing` is
-  # `{:ok, entries}`). Either alone can be wrong: mob updated without
+  # `{:ok, entries}`). Either alone is often wrong: mob updated without
   # `--native` leaves an old runtime on the phone, and a phone that ran a newer
-  # mob keeps the directory after a downgrade.
+  # mob keeps the directory after a `--native` downgrade. Both together can
+  # still be wrong when the project's mob moves across 0.9.20 without
+  # `--native`, leaving the phone's runtime the other kind;
+  # `confirm_ios_code_loaded/4` turns that into a failed deploy rather than a
+  # phone quietly running old code.
   @spec ios_code_plan(boolean(), {:ok, [String.t()]} | :absent) ::
           {:versioned, String.t()} | :legacy
   def ios_code_plan(true, {:ok, entries}), do: {:versioned, next_ios_code_version(entries)}
@@ -1500,9 +1505,15 @@ defmodule MobDev.Deployer do
       end
 
       commit_ios_code_upload(udid, bundle, plan, code_dir, staging_parent)
+      # Committed: from here a failure leaves no partial upload behind.
+      Process.delete(:mob_ios_code_upload)
 
       if restart do
-        IOS.restart_app_physical(udid, bundle, dist_cookie: Atom.to_string(dist_cookie))
+        case IOS.restart_app_physical(udid, bundle, dist_cookie: Atom.to_string(dist_cookie)) do
+          {_, 0} -> confirm_ios_code_loaded(udid, bundle, code_dir, staging_parent)
+          # Not launched (a locked phone, say): nothing booted to confirm.
+          _ -> :ok
+        end
       end
 
       {:ok, device}
@@ -1557,6 +1568,85 @@ defmodule MobDev.Deployer do
       {_, 0} -> :ok
       {out, _} -> throw({:error, "devicectl could not write #{destination}: #{out}"})
     end
+  end
+
+  # The upload is on the phone, but the runtime picks what it loads, and a
+  # wrong guess in ios_code_plan/2 (an app whose native runtime and :mob
+  # dependency differ, say) would have it boot other code while the deploy
+  # reports success. Every mob runtime since 0.6.2 writes the directory it
+  # chose to Documents/mob_diag_beams_dir.txt at boot, so wait for it to name
+  # this one.
+  @ios_boot_confirm_ms 20_000
+
+  defp confirm_ios_code_loaded(udid, bundle, code_dir, staging_parent) do
+    destination = Path.join(staging_parent, "mob_diag_beams_dir.txt")
+    args = ios_loaded_dir_args(udid, bundle, destination)
+    deadline = System.monotonic_time(:millisecond) + @ios_boot_confirm_ms
+    await_ios_code_loaded(args, destination, code_dir, deadline)
+  end
+
+  defp await_ios_code_loaded(args, destination, code_dir, deadline) do
+    File.rm(destination)
+    System.cmd("xcrun", args, stderr_to_stdout: true)
+    loaded = with {:ok, diag} <- File.read(destination), do: diag, else: (_ -> nil)
+
+    cond do
+      ios_loaded?(loaded, code_dir) ->
+        :ok
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        throw({:error, ios_not_loaded_message(loaded, code_dir)})
+
+      true ->
+        Process.sleep(500)
+        await_ios_code_loaded(args, destination, code_dir, deadline)
+    end
+  end
+
+  @doc false
+  @spec ios_loaded_dir_args(String.t(), String.t(), String.t()) :: [String.t()]
+  def ios_loaded_dir_args(udid, bundle, destination) do
+    [
+      "devicectl",
+      "device",
+      "copy",
+      "from",
+      "--device",
+      udid,
+      "--domain-type",
+      "appDataContainer",
+      "--domain-identifier",
+      bundle,
+      "--source",
+      "Documents/mob_diag_beams_dir.txt",
+      "--destination",
+      destination
+    ]
+  end
+
+  @doc false
+  # Whether the runtime's beams-dir diagnostic (an absolute path on the
+  # phone, one line) names `code_dir`, a path relative to the app container.
+  @spec ios_loaded?(String.t() | nil, String.t()) :: boolean()
+  def ios_loaded?(nil, _code_dir), do: false
+
+  def ios_loaded?(diag, code_dir) do
+    case String.split(diag, "\n", parts: 2) do
+      [path | _] -> String.ends_with?(String.trim_trailing(path, "/"), "/" <> code_dir)
+      _ -> false
+    end
+  end
+
+  defp ios_not_loaded_message(nil, code_dir) do
+    "the app was relaunched but never reported which BEAMs it loaded " <>
+      "(no Documents/mob_diag_beams_dir.txt after #{div(@ios_boot_confirm_ms, 1000)} s), " <>
+      "so #{code_dir} may not be running. Open the app and check the device log."
+  end
+
+  defp ios_not_loaded_message(loaded, code_dir) do
+    "the app relaunched from #{String.trim(loaded)}, not #{code_dir}, which this " <>
+      "deploy wrote, so it still runs older code. The app's native runtime and the " <>
+      "project's :mob dependency don't match; run `mix mob.deploy --native`."
   end
 
   @doc false

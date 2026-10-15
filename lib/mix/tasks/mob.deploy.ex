@@ -140,11 +140,14 @@ defmodule Mix.Tasks.Mob.Deploy do
       xcrun simctl launch <udid> <ios bundle id>
 
       # Any other physical iPhone: upload into a new numbered directory,
-      # check it, commit it, relaunch. The app loads the newest committed one
-      # and deletes the older ones; nothing outside it is touched (MOB-408).
+      # check it, commit it, relaunch, and confirm the app booted from it. The
+      # app loads the newest committed one and deletes the older ones; nothing
+      # outside it is touched (MOB-408).
       xcrun devicectl device info files ... --subdirectory Documents/otp/<app>.versions
       xcrun devicectl device copy to --device <udid> ... Documents/otp/<app>.versions/<N>
       xcrun devicectl device copy to --device <udid> ... Documents/otp/<app>.versions/<N>/.mob_complete
+      xcrun devicectl device process launch --device <udid> --terminate-existing <ios bundle id>
+      xcrun devicectl device copy from ... --source Documents/mob_diag_beams_dir.txt
       # (an app on mob < 0.9.20, or not yet launched since its --native
       # install: merge into Documents/otp/<app> instead)
 

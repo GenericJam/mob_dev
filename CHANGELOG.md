@@ -14,16 +14,21 @@
   app loads the newest committed version and deletes the older ones, so an
   interrupted deploy leaves the previous code running. For an older runtime
   the BEAMs are merged into `Documents/otp/<app>`; there a module removed
-  from the project stays loadable until the app is reinstalled, and an
-  interrupted copy can still leave old and new BEAMs mixed (the error says
-  so). The new layout is used when the project's mob ships
-  `ios/mob_code_versions.h` and the phone has `Documents/otp/<app>.versions/`,
-  which that runtime creates at each boot. See
+  from the project stays loadable until the app is reinstalled or moves to
+  mob ≥ 0.9.20, and an interrupted copy can still leave old and new BEAMs
+  mixed (the error says so). The new layout is used when the project's mob
+  ships `ios/mob_code_versions.h` and the phone has
+  `Documents/otp/<app>.versions/`, which that runtime creates at each boot.
+  After relaunching the app, the deploy now waits (up to 20 s) for its
+  `Documents/mob_diag_beams_dir.txt` to name the directory just written, and
+  fails, naming the one it booted from, if it doesn't: that is an app whose
+  native runtime and `:mob` dependency disagree. See
   `decisions/2026-10-15-ios-deploy-never-empties-the-container.md`.
   **Upgrading:** updating mob_dev stops the wipe, with any mob. For crash-safe
   deploys also update mob to 0.9.20 and run `mix mob.deploy --native` once;
   that deploy still merges into `Documents/otp/<app>`, and the ones after it
-  use the numbered directories.
+  use the numbered directories. Moving an app's mob across 0.9.20 later, in
+  either direction, needs `--native` too, or fast deploys fail the boot check.
 
 ## [0.7.27] - 2026-10-15
 

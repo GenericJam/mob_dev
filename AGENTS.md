@@ -481,7 +481,9 @@ Real fix: `sim_runtime_dir/0` should detect `ios/build.zig` and use
   then copy `<N>/.mob_complete`; the app loads only committed versions and
   deletes the old ones itself (devicectl has no delete verb). Older runtimes
   get a merge into `Documents/otp/<app>`. Require `<app>.beam` before
-  transfer and verify it before restarting, either way. See
+  transfer and verify it before restarting, either way, and after the
+  relaunch confirm `Documents/mob_diag_beams_dir.txt` names the directory
+  written: which one the app loads is the runtime's choice, not mob_dev's. See
   `decisions/2026-10-15-ios-deploy-never-empties-the-container.md`.
 - **iOS bundle ids resolve through one function per side, never `bundle_id/0`.**
   Consumers (deploy, connect, provision, battery bench) use

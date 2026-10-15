@@ -45,15 +45,14 @@ defmodule MobDev.DeployerTest do
 
       assert String.starts_with?(message, "copy failed")
       assert message =~ dir
-      assert message =~ ".mob_complete"
 
       Process.put(:mob_ios_code_upload, {:legacy, "Documents/otp/sample_app"})
 
       assert {:error, message} =
                Deployer.finalize_ios_override_result({:error, "copy failed"}, "sample_app")
 
+      assert String.starts_with?(message, "copy failed")
       assert message =~ "Documents/otp/sample_app"
-      assert message =~ "sample_app.versions/"
     end
 
     test "requires staged bootstrap bytes to match the active compile output" do
@@ -101,9 +100,6 @@ defmodule MobDev.DeployerTest do
     test "the copy merges into its destination and never removes existing content" do
       args = Deployer.ios_code_copy_args("device-id", "com.example.app", "/tmp/app", "dest/dir")
 
-      refute "--remove-existing-content" in args
-      refute "-r" in args
-
       assert args == [
                "devicectl",
                "device",
@@ -120,6 +116,27 @@ defmodule MobDev.DeployerTest do
                "--destination",
                "dest/dir"
              ]
+    end
+
+    # What every mob runtime since 0.6.2 writes to Documents/mob_diag_beams_dir.txt
+    # at boot: the absolute path of the directory it loads.
+    test "the deploy is confirmed only when the app booted from the directory it wrote" do
+      container = "/var/mobile/Containers/Data/Application/9F50A0EA"
+      versioned = "Documents/otp/app.versions/0000000008"
+
+      assert Deployer.ios_loaded?("#{container}/#{versioned}\n", versioned)
+      assert Deployer.ios_loaded?("#{container}/Documents/otp/app\n", "Documents/otp/app")
+
+      # An older committed version, the legacy override, or the bundle.
+      refute Deployer.ios_loaded?("#{container}/Documents/otp/app.versions/0000000007", versioned)
+      refute Deployer.ios_loaded?("#{container}/Documents/otp/app\n", versioned)
+      refute Deployer.ios_loaded?("#{container}/#{versioned}\n", "Documents/otp/app")
+      refute Deployer.ios_loaded?("/private/var/containers/Bundle/D.app/otp/app", versioned)
+      # Another app whose name ends in this one's.
+      refute Deployer.ios_loaded?("#{container}/Documents/otp/myapp\n", "Documents/otp/app")
+      # No diagnostic yet.
+      refute Deployer.ios_loaded?(nil, versioned)
+      refute Deployer.ios_loaded?("", versioned)
     end
 
     test "a versioned deploy goes above every existing entry, committed or not" do
