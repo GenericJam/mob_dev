@@ -5359,17 +5359,17 @@ defmodule MobDev.NativeBuild do
   # never registers, so `load_nif/2` falls back to dlopen and the NIF is
   # `:nif_not_loaded` on device. So when plugins contribute NIFs and the app has
   # no table yet, create one (zig — the default format). The same goes for the
-  # opt-in built-in NIFs (`mix mob.enable tflite | nxeigen | mlx`): their
-  # guarded entries are in `StaticNifs.default_nifs/0` but not in mob's core
-  # Android table, so a blank app with nx_tflite_mob linked TFLite yet never
-  # registered it (MOB-394). Public for tests (and exercised on every
+  # opt-in built-in NIFs mob's core tables lack (`mix mob.enable tflite |
+  # nxeigen`): their guarded entries are in `StaticNifs.default_nifs/0` but not
+  # in the core Android table, so a blank app with nx_tflite_mob linked TFLite
+  # yet never registered it (MOB-394). Public for tests (and exercised on every
   # `build_all`).
   @spec regen_driver_tab!() :: :ok
   def regen_driver_tab! do
     formats =
       __regen_formats__(
         __driver_tab_formats__(&File.exists?/1),
-        __plugin_nifs_present__() or __enabled_builtin_nifs__() != []
+        __plugin_nifs_present__() or builtin_nifs_without_core_entry_enabled?()
       )
 
     for fmt <- formats do
@@ -5411,24 +5411,19 @@ defmodule MobDev.NativeBuild do
     MobDev.Plugin.Merge.nifs(MobDev.Plugin.activated()) != []
   end
 
-  @doc false
-  # The guarded built-in NIFs of `StaticNifs.default_nifs/0` this project
-  # enables, judged by the same dep checks the native build uses to decide
-  # whether to compile and link each one. `enabled?` maps a guard to that
-  # check. Public for tests.
-  @spec __enabled_builtin_nifs__((String.t() -> boolean())) :: [atom()]
-  def __enabled_builtin_nifs__(enabled? \\ &builtin_nif_enabled?/1) do
-    for %{guard: guard, module: module} <- MobDev.StaticNifs.default_nifs(),
-        enabled?.(guard),
-        do: module
+  # Is a guarded built-in NIF of `StaticNifs.default_nifs/0` that mob's core
+  # tables don't register enabled, judged by the same dep check the native
+  # build uses to compile and link it? EMLX is left out: it is iOS-only and
+  # mob's core iOS table already registers it, so a generated table gains
+  # nothing and would make old app build files (no `tflite_static` option)
+  # fail to compile it. sqlite3_nif is in the core iOS table too.
+  defp builtin_nifs_without_core_entry_enabled? do
+    Enum.any?(MobDev.StaticNifs.default_nifs(), fn
+      %{guard: "MOB_STATIC_TFLITE_NIF"} -> tflite_in_project?()
+      %{guard: "MOB_STATIC_NX_EIGEN_NIF"} -> nxeigen_in_project?()
+      _ -> false
+    end)
   end
-
-  defp builtin_nif_enabled?("MOB_STATIC_TFLITE_NIF"), do: tflite_in_project?()
-  defp builtin_nif_enabled?("MOB_STATIC_NX_EIGEN_NIF"), do: nxeigen_in_project?()
-  defp builtin_nif_enabled?("MOB_STATIC_EMLX_NIF"), do: emlx_in_project?()
-  # sqlite3_nif is not opt-in: every iOS device build links it, and mob's core
-  # iOS table already carries its entry.
-  defp builtin_nif_enabled?(_guard), do: false
 
   @doc false
   # Pure kernel: which driver_tab formats to (re)generate. An app with existing

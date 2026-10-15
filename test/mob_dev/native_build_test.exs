@@ -158,44 +158,34 @@ defmodule MobDev.NativeBuildTest do
     test "creates a table with the TFLite entry for a host with nx_tflite_mob" do
       host = regen_host([{:nx_tflite_mob, "nx_tflite_mob"}])
 
-      try do
-        android = File.read!(Path.join(host, "priv/generated/driver_tab_android.zig"))
-        ios = File.read!(Path.join(host, "priv/generated/driver_tab_ios.zig"))
-
-        assert android =~ "extern fn tflite_nif_nif_init()"
-        assert ios =~ "extern fn tflite_nif_nif_init()"
-      after
-        File.rm_rf!(Path.dirname(host))
+      for table <- ["driver_tab_android.zig", "driver_tab_ios.zig"] do
+        assert File.read!(Path.join(host, "priv/generated/#{table}")) =~
+                 "extern fn tflite_nif_nif_init()"
       end
     end
 
-    test "creates no table for a host with none of the opt-in NIFs" do
-      host = regen_host([{:other_dep, "other_dep"}])
+    test "creates a table with the NxEigen entry for a host with nx_eigen" do
+      host = regen_host([{:nx_eigen, "nx_eigen"}])
 
-      try do
-        refute File.exists?(Path.join(host, "priv/generated"))
-      after
-        File.rm_rf!(Path.dirname(host))
+      for table <- ["driver_tab_android.zig", "driver_tab_ios.zig"] do
+        assert File.read!(Path.join(host, "priv/generated/#{table}")) =~
+                 "extern fn nx_eigen_nif_init()"
       end
     end
 
-    test "__enabled_builtin_nifs__/1 maps each enabled guard to its built-in NIF" do
-      assert NativeBuild.__enabled_builtin_nifs__(fn _ -> false end) == []
+    # EMLX is iOS-only and mob's core iOS table already registers it.
+    test "creates no table for a host whose only built-in NIF is in the core table" do
+      host = regen_host([{:emlx, "emlx"}])
 
-      assert NativeBuild.__enabled_builtin_nifs__(&(&1 == "MOB_STATIC_TFLITE_NIF")) == [
-               :tflite_nif
-             ]
-
-      assert NativeBuild.__enabled_builtin_nifs__(&(&1 == "MOB_STATIC_NX_EIGEN_NIF")) == [
-               :nx_eigen
-             ]
+      refute File.exists?(Path.join(host, "priv/generated"))
     end
 
     # A host Mix project (path deps on stub packages) with regen_driver_tab!/0
-    # run inside it. Returns the host dir; its parent is the scratch root.
+    # run inside it. Returns the host dir; the scratch root goes on test exit.
     defp regen_host(deps) do
       suffix = System.unique_integer([:positive])
       root = Path.join(System.tmp_dir!(), "mob_driver_tab_host_#{suffix}")
+      on_exit(fn -> File.rm_rf!(root) end)
       host = Path.join(root, "host")
       File.mkdir_p!(host)
 
