@@ -5358,12 +5358,19 @@ defmodule MobDev.NativeBuild do
   # lacks: without an app-level table the plugin's `<module>_nif_init` links yet
   # never registers, so `load_nif/2` falls back to dlopen and the NIF is
   # `:nif_not_loaded` on device. So when plugins contribute NIFs and the app has
-  # no table yet, create one (zig — the default format). Public for tests (and
-  # exercised on every `build_all`).
+  # no table yet, create one (zig — the default format). The same goes for the
+  # opt-in built-in NIFs (`mix mob.enable tflite | nxeigen | mlx`): their
+  # guarded entries are in `StaticNifs.default_nifs/0` but not in mob's core
+  # Android table, so a blank app with nx_tflite_mob linked TFLite yet never
+  # registered it (MOB-394). Public for tests (and exercised on every
+  # `build_all`).
   @spec regen_driver_tab!() :: :ok
   def regen_driver_tab! do
     formats =
-      __regen_formats__(__driver_tab_formats__(&File.exists?/1), __plugin_nifs_present__())
+      __regen_formats__(
+        __driver_tab_formats__(&File.exists?/1),
+        __plugin_nifs_present__() or __enabled_builtin_nifs__() != []
+      )
 
     for fmt <- formats do
       paths = Mix.Tasks.Mob.RegenDriverTab.target_paths(fmt)
@@ -5388,7 +5395,7 @@ defmodule MobDev.NativeBuild do
         existed? = File.exists?(path)
         File.mkdir_p!(Path.dirname(path))
         File.write!(path, src)
-        verb = if existed?, do: "regenerated (was stale)", else: "created (plugin NIFs)"
+        verb = if existed?, do: "regenerated (was stale)", else: "created"
         IO.puts("  ✓ driver_tab #{verb}: #{path}")
       end
     end
@@ -5405,15 +5412,34 @@ defmodule MobDev.NativeBuild do
   end
 
   @doc false
+  # The guarded built-in NIFs of `StaticNifs.default_nifs/0` this project
+  # enables, judged by the same dep checks the native build uses to decide
+  # whether to compile and link each one. `enabled?` maps a guard to that
+  # check. Public for tests.
+  @spec __enabled_builtin_nifs__((String.t() -> boolean())) :: [atom()]
+  def __enabled_builtin_nifs__(enabled? \\ &builtin_nif_enabled?/1) do
+    for %{guard: guard, module: module} <- MobDev.StaticNifs.default_nifs(),
+        enabled?.(guard),
+        do: module
+  end
+
+  defp builtin_nif_enabled?("MOB_STATIC_TFLITE_NIF"), do: tflite_in_project?()
+  defp builtin_nif_enabled?("MOB_STATIC_NX_EIGEN_NIF"), do: nxeigen_in_project?()
+  defp builtin_nif_enabled?("MOB_STATIC_EMLX_NIF"), do: emlx_in_project?()
+  # sqlite3_nif is not opt-in: every iOS device build links it, and mob's core
+  # iOS table already carries its entry.
+  defp builtin_nif_enabled?(_guard), do: false
+
+  @doc false
   # Pure kernel: which driver_tab formats to (re)generate. An app with existing
   # tables keeps its format(s). An app with NONE normally generates nothing (it
-  # links against mob's core table) — UNLESS a NIF-bearing plugin is active, in
-  # which case it needs its own table (core + plugin entries), defaulting to
-  # zig. Public for tests.
+  # links against mob's core table) — UNLESS a NIF-bearing plugin or an opt-in
+  # built-in NIF is active, in which case it needs its own table (core + those
+  # entries), defaulting to zig. Public for tests.
   @spec __regen_formats__([:zig | :c], boolean()) :: [:zig | :c]
   def __regen_formats__([], true), do: [:zig]
   def __regen_formats__([], false), do: []
-  def __regen_formats__(existing, _plugin_nifs?), do: existing
+  def __regen_formats__(existing, _needs_app_table?), do: existing
 
   defp warn_host_requirements! do
     case __host_requirements_warning__(
