@@ -724,6 +724,8 @@ defmodule MobDev.Release do
     OUTPUT_DIR="${MOB_RELEASE_OUTPUT_DIR:?MOB_RELEASE_OUTPUT_DIR not set}"
     """ <>
       release_scratch_sh() <>
+      "# exqlite's SQLite defines (MobDev.Exqlite, MOB-487)\n" <>
+      "SQLITE_CFLAGS=\"#{Enum.join(MobDev.Exqlite.cflags(), " ")}\"\n" <>
       ~S"""
 
       ERTS_VSN=$(ls "$OTP_ROOT" | grep '^erts-' | sort -V | tail -1)
@@ -779,10 +781,10 @@ defmodule MobDev.Release do
           mkdir -p "$BUILD_DIR_TMP"
           $CC -I "$EXQLITE_SRC" -I "$OTP_ROOT/$ERTS_VSN/include" \
               -I "$OTP_ROOT/$ERTS_VSN/include/internal" \
-              -DSQLITE_THREADSAFE=1 -DSTATIC_ERLANG_NIF_LIBNAME=sqlite3_nif \
+              $SQLITE_CFLAGS -DSTATIC_ERLANG_NIF_LIBNAME=sqlite3_nif \
               -Wno-\#warnings \
               -c "$EXQLITE_SRC/sqlite3_nif.c" -o "$BUILD_DIR_TMP/sqlite3_nif.o"
-          $CC -I "$EXQLITE_SRC" -DSQLITE_THREADSAFE=1 -Wno-\#warnings \
+          $CC -I "$EXQLITE_SRC" $SQLITE_CFLAGS -Wno-\#warnings \
               -c "$EXQLITE_SRC/sqlite3.c" -o "$BUILD_DIR_TMP/sqlite3.o"
           $(xcrun -find ar) rcs "$EXQLITE_LIB_DIR/priv/sqlite3_nif.a" \
               "$BUILD_DIR_TMP/sqlite3_nif.o" "$BUILD_DIR_TMP/sqlite3.o"

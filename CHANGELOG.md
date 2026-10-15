@@ -1,5 +1,57 @@
 ## [Unreleased]
 
+### Fixed
+
+- **SQLite on the phone has FTS5 and exqlite's other features (MOB-487).**
+  mob compiled exqlite's SQLite amalgamation with only
+  `-DSQLITE_THREADSAFE=1`, while the host NIF (built by exqlite's Makefile)
+  also enables FTS3/4/5, R*Tree, Geopoly, math functions, RBU and dbstat. A
+  query on an FTS5 table passed host tests and failed on the device with
+  `no such module: fts5`. The iOS simulator NIF, the iOS device
+  `sqlite3_nif.a` and `mix mob.release --ios` now compile with exqlite's
+  defines, from one list, `MobDev.Exqlite.cflags/0`; a test pins it against
+  the locked exqlite's Makefile and against mob_new's Android templates.
+  Note that exqlite's set includes `SQLITE_DQS=0`, so the device, like the
+  host, now rejects double-quoted string literals (`WHERE x = "a"`).
+
+### Upgrading
+
+- **MOB-487, Android.** iOS picks the defines up from mob_dev on the next
+  `mix mob.deploy --native`. Android compiles SQLite in the app's own
+  `android/app/src/main/jni/build.zig` (and `CMakeLists.txt`, the fallback
+  when zig didn't run), so existing apps edit those (mob_new's templates
+  carry it for new apps). In `build.zig`, in `const sqlite_flags`, replace
+  the line `"-DSQLITE_THREADSAFE=1",` with:
+
+  ```zig
+          "-DSQLITE_THREADSAFE=1",
+          "-DSQLITE_USE_URI=1",
+          "-DSQLITE_LIKE_DOESNT_MATCH_BLOBS=1",
+          "-DSQLITE_DQS=0",
+          "-DHAVE_USLEEP=1",
+          "-DALLOW_COVERING_INDEX_SCAN=1",
+          "-DENABLE_FTS3_PARENTHESIS=1",
+          "-DENABLE_LOAD_EXTENSION=1",
+          "-DENABLE_SOUNDEX=1",
+          "-DENABLE_STAT4=1",
+          "-DENABLE_UPDATE_DELETE_LIMIT=1",
+          "-DSQLITE_ENABLE_FTS3=1",
+          "-DSQLITE_ENABLE_FTS4=1",
+          "-DSQLITE_ENABLE_FTS5=1",
+          "-DSQLITE_ENABLE_GEOPOLY=1",
+          "-DSQLITE_ENABLE_MATH_FUNCTIONS=1",
+          "-DSQLITE_ENABLE_RBU=1",
+          "-DSQLITE_ENABLE_RTREE=1",
+          "-DSQLITE_OMIT_DEPRECATED=1",
+          "-DSQLITE_ENABLE_DBSTAT_VTAB=1",
+  ```
+
+  In `CMakeLists.txt`, in `target_compile_definitions(sqlite3_nif PRIVATE`,
+  replace `SQLITE_THREADSAFE=1` with the same names without `-D` and quotes
+  (`SQLITE_THREADSAFE=1`, `SQLITE_USE_URI=1`, … one per line), and add `m`
+  after `log` in `target_link_libraries(sqlite3_nif`. Then run
+  `mix mob.deploy --native`. mob_new's CHANGELOG has the CMake lines in full.
+
 ## [0.7.28] - 2026-10-15
 
 ### Fixed
