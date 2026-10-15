@@ -1,3 +1,18 @@
+## [Unreleased]
+
+### Fixed
+
+- **`mix mob.regen_plugin_manifest --check` no longer reports drift right
+  after a regen (MOB-383).** `priv/generated/mob_plugins.exs` printed each
+  map's keys in atom-creation order, which on OTP 26+ differs between VMs, so
+  the file a deploy wrote and the one `--check` (and `mix mob.doctor`)
+  rendered could differ in key order alone. Every map in the file, nested
+  ones included, is now printed with sorted keys, so the same plugins always
+  produce the same bytes. **Upgrading:** the first regen after updating
+  rewrites a committed `mob_plugins.exs` with its keys reordered (no content
+  change); run `mix mob.regen_plugin_manifest` once (or let the next deploy do
+  it) and commit the result, or `--check` reports drift until you do.
+
 ## [0.7.25] - 2026-10-13
 
 ### Added

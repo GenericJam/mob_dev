@@ -32,6 +32,54 @@ defmodule MobDev.Plugin.RuntimeManifestTest do
   defp base(extra),
     do: Map.merge(%{name: :p, mob_version: "~> 0.6", plugin_spec_version: 1}, extra)
 
+  # A manifest with every map-bearing section, each map keyed partly by `a` and
+  # `z` (atoms the caller creates). Keys are written in sorted order here;
+  # @reverse_order_writer builds the same manifest with every key reversed.
+  defp every_section_manifest(a, z) do
+    %{
+      composites: [%{:atom => :card, :expand => {P.Card, :expand}, :plugin => :p, a => 1, z => 2}],
+      default_font: %{:android => "inter_regular", :ios => "Inter", a => 1, z => 2},
+      default_style: :brand,
+      lifecycle: [%{:on_start => {P, :start, []}, :plugin => :p, a => 1, z => 2}],
+      nifs: [P.Nif],
+      notification_handlers: [
+        %{:handler => {P, :h, 1}, :match => %{:type => "t", a => 1, z => 2}, :plugin => :p}
+      ],
+      plugins: [:p],
+      screens: [%{:default_route => "/p", :module => P.Home, :plugin => :p, a => 1, z => 2}],
+      settings: [
+        %{:plugin => :p, :schema => [%{:default => 3, :key => :x, a => 1, z => 2}]}
+      ],
+      styles: [%{:name => :brand, :theme => %{:colors => %{a => 1, z => 2}, a => 1, z => 2}}]
+    }
+  end
+
+  # Run in a fresh VM: creates `z` before `a` and writes every map literal in
+  # reverse key order, so each atom's creation order is the reverse of this
+  # VM's.
+  @reverse_order_writer """
+  [root, a_name, z_name] = System.argv()
+  z = String.to_atom(z_name)
+  a = String.to_atom(a_name)
+
+  manifest = %{
+    styles: [%{:theme => %{z => 2, a => 1, :colors => %{z => 2, a => 1}}, :name => :brand}],
+    settings: [%{:schema => [%{z => 2, a => 1, :key => :x, :default => 3}], :plugin => :p}],
+    screens: [%{z => 2, a => 1, :plugin => :p, :module => P.Home, :default_route => "/p"}],
+    plugins: [:p],
+    notification_handlers: [
+      %{:plugin => :p, :match => %{z => 2, a => 1, :type => "t"}, :handler => {P, :h, 1}}
+    ],
+    nifs: [P.Nif],
+    lifecycle: [%{z => 2, a => 1, :plugin => :p, :on_start => {P, :start, []}}],
+    default_style: :brand,
+    default_font: %{z => 2, a => 1, :ios => "Inter", :android => "inter_regular"},
+    composites: [%{z => 2, a => 1, :plugin => :p, :expand => {P.Card, :expand}, :atom => :card}]
+  }
+
+  MobDev.Plugin.RuntimeManifest.write(root, manifest)
+  """
+
   describe "build/1" do
     test "combines static and generated screens, each tagged with its plugin" do
       plugins = [
@@ -235,6 +283,46 @@ defmodule MobDev.Plugin.RuntimeManifestTest do
 
       {evaluated, _} = Code.eval_string(RuntimeManifest.render(manifest))
       assert evaluated == manifest
+    end
+
+    # MOB-383: a map prints its keys in atom-creation order (OTP 26+), so a VM
+    # that created the atoms in another order rendered other bytes and
+    # `mix mob.regen_plugin_manifest --check` reported drift right after a regen.
+    # A fresh VM writes the manifest after creating every atom in reverse; this
+    # VM, which created them in forward order, runs the check's comparison.
+    test "a manifest written by a VM with another atom order passes the --check comparison" do
+      id = System.unique_integer([:positive])
+      {a_name, z_name} = {"mob383_alpha_#{id}", "mob383_zeta_#{id}"}
+      a = String.to_atom(a_name)
+      z = String.to_atom(z_name)
+      manifest = every_section_manifest(a, z)
+
+      root = Path.join(System.tmp_dir!(), "mob_rtm_order_#{id}")
+      on_exit(fn -> File.rm_rf!(root) end)
+
+      elixir = System.find_executable("elixir") || flunk("elixir not on PATH")
+
+      {out, status} =
+        System.cmd(
+          elixir,
+          [
+            "-pa",
+            Application.app_dir(:mob_dev, "ebin"),
+            "-e",
+            @reverse_order_writer,
+            root,
+            a_name,
+            z_name
+          ],
+          stderr_to_stdout: true
+        )
+
+      assert status == 0, out
+      path = Path.join([root, "priv", "generated", "mob_plugins.exs"])
+
+      {written, _} = Code.eval_file(path)
+      assert written == manifest
+      assert File.read!(path) == RuntimeManifest.render(manifest)
     end
   end
 
