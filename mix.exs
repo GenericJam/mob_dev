@@ -118,7 +118,8 @@ defmodule MobDev.MixProject do
       # without actually running clang.
       {:mox, "~> 1.2", only: :test},
       # exqlite's source, never compiled or loaded: MobDev.ExqliteTest reads
-      # its Makefile to pin MobDev.Exqlite's SQLite defines (MOB-487).
+      # its Makefile to pin MobDev.Exqlite's SQLite defines (MOB-487). Its
+      # children still resolve, which adds db_connection to the test build.
       {:exqlite, "~> 0.42", only: :test, runtime: false, compile: false, app: false},
       {:erlfmt, "~> 1.8", only: :dev, runtime: false},
       # Dev-only dead-code detector. Wires in via the `:unused` compiler

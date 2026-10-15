@@ -21,10 +21,20 @@ defmodule MobDev.ExqliteTest do
   end
 
   # mob_new is a self-contained archive and can't call MobDev.Exqlite, so its
-  # Android templates carry the list themselves; the templates come from
-  # mob_new, as mob.adopt's do.
+  # Android templates carry the list themselves. Read them from the mob_new
+  # checkout CI provides in MOB_NEW_DIR: an installed mob_new archive or a
+  # stale ~/code/mob_new (MobDev.Adopt.Generator.templates_root/1's other
+  # sources) can predate the list.
+  if is_nil(System.get_env("MOB_NEW_DIR")),
+    do: @tag(skip: "set MOB_NEW_DIR to a mob_new checkout")
+
   test "mob_new's Android build.zig and CMakeLists.txt compile SQLite with the same set" do
-    jni = Path.join(MobDev.Adopt.Generator.templates_root([]), "android/app/src/main/jni")
+    jni =
+      Path.join(
+        System.fetch_env!("MOB_NEW_DIR"),
+        "priv/templates/mob.new/android/app/src/main/jni"
+      )
+
     zig_define = Regex.compile!(~S{^"-D(.+)",$})
 
     zig =
