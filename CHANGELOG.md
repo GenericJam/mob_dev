@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+## [0.7.29] - 2026-10-15
+
 ### Fixed
 
 - **SQLite on the phone has FTS5 and exqlite's other features (MOB-487).**
