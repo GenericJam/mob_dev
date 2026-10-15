@@ -56,7 +56,7 @@ defmodule MobDev.Plugin.RuntimeManifestTest do
 
   # Run in a fresh VM: creates `z` before `a` and writes every map literal in
   # reverse key order, so each atom's creation order is the reverse of this
-  # VM's. Prints the written path.
+  # VM's.
   @reverse_order_writer """
   [root, a_name, z_name] = System.argv()
   z = String.to_atom(z_name)
@@ -77,7 +77,7 @@ defmodule MobDev.Plugin.RuntimeManifestTest do
     composites: [%{z => 2, a => 1, :plugin => :p, :expand => {P.Card, :expand}, :atom => :card}]
   }
 
-  IO.puts(MobDev.Plugin.RuntimeManifest.write(root, manifest))
+  MobDev.Plugin.RuntimeManifest.write(root, manifest)
   """
 
   describe "build/1" do
@@ -300,17 +300,25 @@ defmodule MobDev.Plugin.RuntimeManifestTest do
       root = Path.join(System.tmp_dir!(), "mob_rtm_order_#{id}")
       on_exit(fn -> File.rm_rf!(root) end)
 
-      ebin = RuntimeManifest |> :code.which() |> to_string() |> Path.dirname()
+      elixir = System.find_executable("elixir") || flunk("elixir not on PATH")
 
       {out, status} =
         System.cmd(
-          System.find_executable("elixir"),
-          ["-pa", ebin, "-e", @reverse_order_writer, root, a_name, z_name],
+          elixir,
+          [
+            "-pa",
+            Application.app_dir(:mob_dev, "ebin"),
+            "-e",
+            @reverse_order_writer,
+            root,
+            a_name,
+            z_name
+          ],
           stderr_to_stdout: true
         )
 
       assert status == 0, out
-      path = String.trim(out)
+      path = Path.join([root, "priv", "generated", "mob_plugins.exs"])
 
       {written, _} = Code.eval_file(path)
       assert written == manifest
