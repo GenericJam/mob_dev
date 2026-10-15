@@ -525,6 +525,12 @@ Real fix: `sim_runtime_dir/0` should detect `ios/build.zig` and use
   shipping needs the user to wire the archive into ios/build.zig +
   android/jni/ themselves. Reach for `--type c` if static linking matters
   more than the source language.
+- **Generated files that print terms with `inspect` must pass
+  `custom_options: [sort_maps: true]`.** On OTP 26+ a map prints its keys in
+  atom-creation order, which differs between VMs, so a committed file that a
+  `--check` re-renders and compares byte-for-byte reports drift right after a
+  regen (MOB-383: `RuntimeManifest.render/1`, `priv/generated/mob_plugins.exs`).
+  Text built by iterating a map needs an explicit sort for the same reason.
 - **`mob.regen_driver_tab` reads `:static_nifs` from `mob.exs`** via
   `Config.Reader`, NOT from `Application.get_env`. mob.exs is not
   auto-imported into Mix application env (this matches every other
