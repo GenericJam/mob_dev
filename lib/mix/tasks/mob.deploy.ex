@@ -146,6 +146,7 @@ defmodule Mix.Tasks.Mob.Deploy do
       xcrun devicectl device info files ... --subdirectory Documents/otp/<app>.versions
       xcrun devicectl device copy to --device <udid> ... Documents/otp/<app>.versions/<N>
       xcrun devicectl device copy to --device <udid> ... Documents/otp/<app>.versions/<N>/.mob_complete
+      xcrun devicectl device copy to --device <udid> ... Documents/mob_diag_beams_dir.txt
       xcrun devicectl device process launch --device <udid> --terminate-existing <ios bundle id>
       xcrun devicectl device copy from ... --source Documents/mob_diag_beams_dir.txt
       # (an app on mob < 0.9.20, or not yet launched since its --native

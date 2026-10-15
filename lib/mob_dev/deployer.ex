@@ -1509,6 +1509,8 @@ defmodule MobDev.Deployer do
       Process.delete(:mob_ios_code_upload)
 
       if restart do
+        clear_ios_loaded_dir(udid, bundle, staging_parent)
+
         case IOS.restart_app_physical(udid, bundle, dist_cookie: Atom.to_string(dist_cookie)) do
           {_, 0} -> confirm_ios_code_loaded(udid, bundle, code_dir, staging_parent)
           # Not launched (a locked phone, say): nothing booted to confirm.
@@ -1577,6 +1579,22 @@ defmodule MobDev.Deployer do
   # chose to Documents/mob_diag_beams_dir.txt at boot, so wait for it to name
   # this one.
   @ios_boot_confirm_ms 20_000
+  @ios_loaded_dir_file "Documents/mob_diag_beams_dir.txt"
+  @ios_loaded_dir_placeholder "(relaunched by mix mob.deploy, not booted yet)\n"
+
+  # Overwrites the previous boot's answer before the relaunch, so only the new
+  # boot can satisfy confirm_ios_code_loaded/4: a legacy deploy expects the
+  # same path every time.
+  defp clear_ios_loaded_dir(udid, bundle, staging_parent) do
+    placeholder = Path.join(staging_parent, "mob_diag_placeholder.txt")
+    File.write!(placeholder, @ios_loaded_dir_placeholder)
+    args = ios_code_copy_args(udid, bundle, placeholder, @ios_loaded_dir_file)
+
+    case System.cmd("xcrun", args, stderr_to_stdout: true) do
+      {_, 0} -> :ok
+      {out, _} -> throw({:error, "devicectl could not reset #{@ios_loaded_dir_file}: #{out}"})
+    end
+  end
 
   defp confirm_ios_code_loaded(udid, bundle, code_dir, staging_parent) do
     destination = Path.join(staging_parent, "mob_diag_beams_dir.txt")
@@ -1618,7 +1636,7 @@ defmodule MobDev.Deployer do
       "--domain-identifier",
       bundle,
       "--source",
-      "Documents/mob_diag_beams_dir.txt",
+      @ios_loaded_dir_file,
       "--destination",
       destination
     ]
@@ -1637,10 +1655,11 @@ defmodule MobDev.Deployer do
     end
   end
 
-  defp ios_not_loaded_message(nil, code_dir) do
-    "the app was relaunched but never reported which BEAMs it loaded " <>
-      "(no Documents/mob_diag_beams_dir.txt after #{div(@ios_boot_confirm_ms, 1000)} s), " <>
-      "so #{code_dir} may not be running. Open the app and check the device log."
+  defp ios_not_loaded_message(loaded, code_dir)
+       when loaded in [nil, @ios_loaded_dir_placeholder] do
+    "the app was relaunched but didn't report which BEAMs it loaded within " <>
+      "#{div(@ios_boot_confirm_ms, 1000)} s (#{@ios_loaded_dir_file}), so #{code_dir} " <>
+      "may not be running. Open the app and check the device log."
   end
 
   defp ios_not_loaded_message(loaded, code_dir) do

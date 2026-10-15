@@ -63,12 +63,13 @@ Both together still guess wrong when the project's mob moves across 0.9.20
 without `--native` on a phone that has `<app>.versions/`: a versioned upload
 an old runtime ignores, or a legacy merge that a new runtime's committed
 version shadows (and that runtime then deletes). So the deploy checks the
-result instead of trusting the guess: after relaunching, it reads
-`Documents/mob_diag_beams_dir.txt`, which every mob runtime since 0.6.2
-writes at boot with the directory it loaded, until that names the directory
-just written (up to 20 s), and otherwise fails, naming where the app booted
-from and saying to run `mix mob.deploy --native`. No relaunch (a launch that
-failed, or `restart: false`) means nothing to check.
+result instead of trusting the guess. Every mob runtime since 0.6.2 writes
+the directory it loaded to `Documents/mob_diag_beams_dir.txt` at boot. The
+deploy overwrites that file with a placeholder (a legacy deploy expects the
+same path the previous boot may have written), relaunches, reads it until it
+names the directory just written (up to 20 s), and otherwise fails, naming
+where the app booted from and saying to run `mix mob.deploy --native`. No
+relaunch (a launch that failed, or `restart: false`) means nothing to check.
 
 ## Consequences
 
