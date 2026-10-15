@@ -31,13 +31,13 @@ defmodule MobDev.DeployerDistPersistTest do
     end
 
     test "a physical iPhone is not" do
-      # Two independent reasons, either sufficient. It is discovered by probing
-      # EPMD across the LAN, and a LAN-only device has no `devicectl` route at
-      # all — the first version of this fix turned that documented fallback
-      # into a hard exit 1 on a deploy that previously succeeded. And even over
-      # USB the write is a `--remove-existing-content` replace with no undo, so
-      # a cable knock mid-copy leaves the app unbootable. A hot load could
-      # never damage a device; making it able to, silently, is not a fix.
+      # It is discovered by probing EPMD across the LAN, and a LAN-only device
+      # has no `devicectl` route at all — the first version of this fix turned
+      # that documented fallback into a hard exit 1 on a deploy that previously
+      # succeeded. And even over USB, for an app on mob < 0.9.20 the write
+      # merges into the one directory it boots from, so a cable knock mid-copy
+      # can leave it unbootable. A hot load could never damage a device; making
+      # it able to, silently, is not a fix.
       refute Deployer.persistable?(device(platform: :ios, type: :physical))
     end
   end

@@ -1,3 +1,30 @@
+## [Unreleased]
+
+### Fixed
+
+- **A BEAM deploy to a physical iPhone no longer erases the app's data
+  (MOB-408).** The deploy copied the BEAMs with `xcrun devicectl device copy
+  to ... --remove-existing-content true`, meant to replace
+  `Documents/otp/<app>`. devicectl instead empties the app's whole data
+  container apart from the destination: every deploy deleted the app's SQLite
+  database, sessions, pairing state, the rest of `Documents/`, and `Library/`
+  and `tmp/`. Copies now only add and overwrite. For an app on mob ≥ 0.9.20
+  each deploy goes to a new `Documents/otp/<app>.versions/<N>/`, committed by
+  a `.mob_complete` marker once the bootstrap BEAM reads back correctly; the
+  app loads the newest committed version and deletes the older ones, so an
+  interrupted deploy leaves the previous code running. For an older runtime
+  the BEAMs are merged into `Documents/otp/<app>`; there a module removed
+  from the project stays loadable until the app is reinstalled, and an
+  interrupted copy can still leave old and new BEAMs mixed (the error says
+  so). The new layout is used when the project's mob ships
+  `ios/mob_code_versions.h` and the phone has `Documents/otp/<app>.versions/`,
+  which that runtime creates at each boot. See
+  `decisions/2026-10-15-ios-deploy-never-empties-the-container.md`.
+  **Upgrading:** updating mob_dev stops the wipe, with any mob. For crash-safe
+  deploys also update mob to 0.9.20 and run `mix mob.deploy --native` once;
+  that deploy still merges into `Documents/otp/<app>`, and the ones after it
+  use the numbered directories.
+
 ## [0.7.27] - 2026-10-15
 
 ### Fixed

@@ -139,8 +139,14 @@ defmodule Mix.Tasks.Mob.Deploy do
       rsync -a <compile path>/ ~/.mob/runtime/ios-sim/<app>/
       xcrun simctl launch <udid> <ios bundle id>
 
-      # Any other physical iPhone: replace Documents/otp/<app>, relaunch
-      xcrun devicectl device copy to --device <udid> ... Documents/otp/<app>
+      # Any other physical iPhone: upload into a new numbered directory,
+      # check it, commit it, relaunch. The app loads the newest committed one
+      # and deletes the older ones; nothing outside it is touched (MOB-408).
+      xcrun devicectl device info files ... --subdirectory Documents/otp/<app>.versions
+      xcrun devicectl device copy to --device <udid> ... Documents/otp/<app>.versions/<N>
+      xcrun devicectl device copy to --device <udid> ... Documents/otp/<app>.versions/<N>/.mob_complete
+      # (an app on mob < 0.9.20, or not yet launched since its --native
+      # install: merge into Documents/otp/<app> instead)
 
   The BEAMs come from Mix's active build path (`Mix.Project.compile_path/0`
   and `Mix.Project.build_path/0`): the app and its runtime dependencies, never

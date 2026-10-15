@@ -473,10 +473,16 @@ Real fix: `sim_runtime_dir/0` should detect `ios/build.zig` and use
   `run-as` ERTS probe, exists because after an APK reinstall the root-pushed
   tree can carry the previous install's categories, which `run-as` can't read
   (MOB-478).
-- **Physical iOS BEAM overrides must be exact and self-verifying.** The app
-  prefers `Documents/otp/<app>` over its complete signed bundle. Replace that
-  directory rather than incrementally merging it, require `<app>.beam` before
-  transfer, and verify the received bootstrap bytes before restarting.
+- **Physical iOS BEAM uploads never remove anything and never land in place.**
+  `devicectl --remove-existing-content` empties the app's whole data
+  container (Documents, Library, tmp), whatever `--destination` says
+  (MOB-408); never pass it. For mob ≥ 0.9.20 upload to a fresh
+  `Documents/otp/<app>.versions/<N>`, verify the received bootstrap bytes,
+  then copy `<N>/.mob_complete`; the app loads only committed versions and
+  deletes the old ones itself (devicectl has no delete verb). Older runtimes
+  get a merge into `Documents/otp/<app>`. Require `<app>.beam` before
+  transfer and verify it before restarting, either way. See
+  `decisions/2026-10-15-ios-deploy-never-empties-the-container.md`.
 - **iOS bundle ids resolve through one function per side, never `bundle_id/0`.**
   Consumers (deploy, connect, provision, battery bench) use
   `MobDev.Config.ios_bundle_id/0`; the build (sim bundle, device bundle,

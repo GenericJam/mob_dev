@@ -1128,13 +1128,20 @@ defmodule MobDev.Deployer do
     end
   end
 
-  # Physical iOS deploy: push BEAMs into the app's Documents container via
-  # `xcrun devicectl`. mob_beam.m (MOB_BUNDLE_OTP build) checks
-  # Documents/otp/<app>/ at startup and prefers it over the read-only in-bundle
-  # copy, enabling fast deploys without a full Xcode rebuild.
+  # Physical iOS deploy: upload the BEAMs into the app's Documents with
+  # `xcrun devicectl device copy to`. mob_beam.m (MOB_BUNDLE_OTP build) loads
+  # them in preference to the read-only copy in the signed bundle, enabling
+  # fast deploys without a full Xcode rebuild. Where they go: `ios_code_plan/2`.
   #
-  # The merged staging dir is named <app> so that devicectl's directory-copy
-  # semantics land the files at Documents/otp/<app>/ on device.
+  # Never `--remove-existing-content`: whatever --destination says, it empties
+  # the app's whole data container (Documents, Library, tmp), taking the app's
+  # databases, sessions and settings with it (MOB-408).
+  @ios_versions_suffix ".versions"
+  @ios_complete_marker ".mob_complete"
+  # The mob runtime that reads <app>.versions/ ships this header; see
+  # `mob_reads_ios_versions?/1`.
+  @ios_versions_header "ios/mob_code_versions.h"
+
   @doc false
   @spec validate_ios_override(String.t(), String.t(), String.t()) ::
           :ok | {:error, String.t()}
@@ -1169,8 +1176,110 @@ defmodule MobDev.Deployer do
   end
 
   @doc false
-  @spec ios_override_copy_args(String.t(), String.t(), String.t(), String.t()) :: [String.t()]
-  def ios_override_copy_args(udid, bundle, staging_dir, app) do
+  # Where a physical iPhone's BEAMs go on this deploy (MOB-408).
+  #
+  # `{:versioned, n}`: a fresh `Documents/otp/<app>.versions/<n>`, committed by
+  # copying `<n>/.mob_complete` once the upload is verified. mob ≥ 0.9.20 loads
+  # the highest committed `n` (see mob's `ios/mob_code_versions.h`), so a copy
+  # that dies part-way leaves the previous version booting. `n` is above every
+  # entry already there, committed or not, so no upload lands on another's
+  # leftovers.
+  #
+  # `:legacy`: merge into `Documents/otp/<app>`, the one directory older
+  # runtimes read. Nothing is deleted; a module removed from the project
+  # lingers there until the app is reinstalled.
+  #
+  # Versioned only when both sides say so: the project's mob ships the runtime
+  # that reads the layout (`mob_reads_ios_versions?/1`), and the device has
+  # `<app>.versions/`, which that runtime creates at every boot (`listing` is
+  # `{:ok, entries}`). Either alone can be wrong: mob updated without
+  # `--native` leaves an old runtime on the phone, and a phone that ran a newer
+  # mob keeps the directory after a downgrade.
+  @spec ios_code_plan(boolean(), {:ok, [String.t()]} | :absent) ::
+          {:versioned, String.t()} | :legacy
+  def ios_code_plan(true, {:ok, entries}), do: {:versioned, next_ios_code_version(entries)}
+  def ios_code_plan(_mob_reads_versions?, _listing), do: :legacy
+
+  defp next_ios_code_version(entries) do
+    entries
+    |> Enum.filter(&Regex.match?(~r/\A\d{1,18}\z/, &1))
+    |> Enum.map(&String.to_integer/1)
+    |> Enum.max(fn -> 0 end)
+    |> Kernel.+(1)
+    |> Integer.to_string()
+    |> String.pad_leading(10, "0")
+  end
+
+  @doc false
+  # Whether the mob at `mob_dep_path` (the project's `:mob` dependency) has the
+  # iOS runtime that reads `<app>.versions/`.
+  @spec mob_reads_ios_versions?(Path.t() | nil) :: boolean()
+  def mob_reads_ios_versions?(nil), do: false
+
+  def mob_reads_ios_versions?(mob_dep_path),
+    do: File.regular?(Path.join(mob_dep_path, @ios_versions_header))
+
+  @doc false
+  # The app-container directory a plan uploads into.
+  @spec ios_code_dir(String.t(), {:versioned, String.t()} | :legacy) :: String.t()
+  def ios_code_dir(app, {:versioned, n}), do: "Documents/otp/#{app}#{@ios_versions_suffix}/#{n}"
+  def ios_code_dir(app, :legacy), do: "Documents/otp/#{app}"
+
+  @doc false
+  @spec ios_versions_list_args(String.t(), String.t(), String.t(), String.t()) :: [String.t()]
+  def ios_versions_list_args(udid, bundle, app, json_path) do
+    [
+      "devicectl",
+      "device",
+      "info",
+      "files",
+      "--device",
+      udid,
+      "--domain-type",
+      "appDataContainer",
+      "--domain-identifier",
+      bundle,
+      "--subdirectory",
+      "Documents/otp/#{app}#{@ios_versions_suffix}",
+      "--no-recurse",
+      "--json-output",
+      json_path,
+      "-q"
+    ]
+  end
+
+  @doc false
+  # The entry names in `<app>.versions/` from `ios_versions_list_args/4`'s JSON;
+  # `:absent` when devicectl can't list it, which is how it reports both a
+  # missing directory and an app that isn't installed (the copy that follows
+  # tells the two apart); `{:error, reason}` for anything else.
+  @spec parse_ios_versions_listing(String.t()) ::
+          {:ok, [String.t()]} | :absent | {:error, String.t()}
+  def parse_ios_versions_listing(json) do
+    case Jason.decode(json) do
+      {:ok, %{"result" => %{"files" => files}}} when is_list(files) ->
+        {:ok, for(%{"relativePath" => path} <- files, not String.contains?(path, "/"), do: path)}
+
+      {:ok, %{"error" => %{"domain" => "CoreDevice.ActionError", "code" => 3}}} ->
+        :absent
+
+      {:ok, %{"error" => error}} ->
+        {:error, "devicectl could not list the app's files: #{devicectl_error(error)}"}
+
+      _ ->
+        {:error, "devicectl's file listing was not the JSON expected"}
+    end
+  end
+
+  defp devicectl_error(%{"userInfo" => %{"NSLocalizedDescription" => %{"string" => s}}}), do: s
+  defp devicectl_error(%{"domain" => d, "code" => c}), do: "#{d} error #{c}"
+  defp devicectl_error(other), do: inspect(other)
+
+  @doc false
+  # Copies `source` (a directory's contents, or one file) to `destination` in
+  # the app's container. A merge: nothing already on the device is removed.
+  @spec ios_code_copy_args(String.t(), String.t(), String.t(), String.t()) :: [String.t()]
+  def ios_code_copy_args(udid, bundle, source, destination) do
     [
       "devicectl",
       "device",
@@ -1183,17 +1292,16 @@ defmodule MobDev.Deployer do
       "--domain-identifier",
       bundle,
       "--source",
-      staging_dir,
+      source,
       "--destination",
-      "Documents/otp/#{app}",
-      "--remove-existing-content",
-      "true"
+      destination
     ]
   end
 
   @doc false
-  @spec ios_override_verify_args(String.t(), String.t(), String.t(), String.t()) :: [String.t()]
-  def ios_override_verify_args(udid, bundle, destination, app) do
+  @spec ios_code_verify_args(String.t(), String.t(), String.t(), String.t(), String.t()) ::
+          [String.t()]
+  def ios_code_verify_args(udid, bundle, remote_dir, app, destination) do
     [
       "devicectl",
       "device",
@@ -1206,7 +1314,7 @@ defmodule MobDev.Deployer do
       "--domain-identifier",
       bundle,
       "--source",
-      "Documents/otp/#{app}/#{app}.beam",
+      "#{remote_dir}/#{app}.beam",
       "--destination",
       destination
     ]
@@ -1313,8 +1421,8 @@ defmodule MobDev.Deployer do
         File.write!(Path.join(staging_dir, "mob_beam_flags"), beam_flags)
       end
 
-      # Lands in Documents/otp/<app>/ with the BEAMs; mob_beam.m reads it at
-      # boot when the launch env has no MOB_DIST_COOKIE (a tap on the icon).
+      # Lands next to the BEAMs; mob_beam.m reads it at boot when the launch
+      # env has no MOB_DIST_COOKIE (a tap on the icon).
       DistCookie.write_app_file!(staging_dir, dist_cookie)
 
       case validate_ios_override(compile_path, staging_dir, app) do
@@ -1322,20 +1430,18 @@ defmodule MobDev.Deployer do
         {:error, reason} -> throw({:error, reason})
       end
 
-      # devicectl copies the contents of --source into --destination.
-      # To land BEAMs at Documents/otp/<app>/, the destination must include
-      # the app subdirectory explicitly (staging_dir naming alone is not enough).
-      # From here the on-device override is being REPLACED, not merged
-      # (--remove-existing-content). Any failure past this point leaves it in
-      # an unknown state, and mob_beam.m prefers Documents/otp/<app> on mere
-      # directory existence — so there is no falling back to the signed
-      # bundle, and `xcrun devicectl device` has no delete verb to undo it.
-      # Record that we crossed the line so the error can say so.
-      Process.put(:mob_ios_override_replaced, true)
+      plan = plan_ios_code_upload(udid, bundle, app, staging_parent)
+      code_dir = ios_code_dir(app, plan)
+
+      # devicectl copies the contents of --source into --destination, so the
+      # destination names the code directory itself. From here the device may
+      # hold a partial upload; record which, so an error can say what that
+      # means for the next launch.
+      Process.put(:mob_ios_code_upload, {plan, code_dir})
 
       case System.cmd(
              "xcrun",
-             ios_override_copy_args(udid, bundle, staging_dir, app),
+             ios_code_copy_args(udid, bundle, staging_dir, code_dir),
              stderr_to_stdout: true
            ) do
         {_, 0} ->
@@ -1380,7 +1486,7 @@ defmodule MobDev.Deployer do
 
       case System.cmd(
              "xcrun",
-             ios_override_verify_args(udid, bundle, received_bootstrap, app),
+             ios_code_verify_args(udid, bundle, code_dir, app, received_bootstrap),
              stderr_to_stdout: true
            ) do
         {_, 0} ->
@@ -1393,11 +1499,12 @@ defmodule MobDev.Deployer do
           throw({:error, "physical iOS bootstrap verification failed: #{out}"})
       end
 
+      commit_ios_code_upload(udid, bundle, plan, code_dir, staging_parent)
+
       if restart do
         IOS.restart_app_physical(udid, bundle, dist_cookie: Atom.to_string(dist_cookie))
       end
 
-      Process.delete(:mob_ios_override_replaced)
       {:ok, device}
     catch
       {:skipped, reason} ->
@@ -1406,8 +1513,49 @@ defmodule MobDev.Deployer do
       {:error, reason} ->
         finalize_ios_override_result({:error, reason}, app)
     after
-      Process.delete(:mob_ios_override_replaced)
+      Process.delete(:mob_ios_code_upload)
       File.rm_rf!(staging_parent)
+    end
+  end
+
+  # Lists <app>.versions/ only when the project's mob could read it; an older
+  # mob means :legacy whatever the device holds.
+  defp plan_ios_code_upload(udid, bundle, app, staging_parent) do
+    if mob_reads_ios_versions?(MobDev.MobDirCheck.dep_path()) do
+      json_path = Path.join(staging_parent, "versions.json")
+      args = ios_versions_list_args(udid, bundle, app, json_path)
+      # Exits non-zero for a missing directory too; the JSON says which.
+      {out, _status} = System.cmd("xcrun", args, stderr_to_stdout: true)
+
+      listing =
+        case File.read(json_path) do
+          {:ok, json} -> parse_ios_versions_listing(json)
+          {:error, _} -> {:error, "devicectl could not list the app's files: #{out}"}
+        end
+
+      case listing do
+        {:error, reason} -> throw({:error, reason})
+        listing -> ios_code_plan(true, listing)
+      end
+    else
+      ios_code_plan(false, :absent)
+    end
+  end
+
+  # A versioned upload counts only once its marker is there: mob_beam.m never
+  # loads a version without one. Written last, after the bootstrap check.
+  defp commit_ios_code_upload(_udid, _bundle, :legacy, _code_dir, _staging_parent), do: :ok
+
+  defp commit_ios_code_upload(udid, bundle, {:versioned, n}, code_dir, staging_parent) do
+    marker = Path.join(staging_parent, "mob_complete")
+    File.write!(marker, n <> "\n")
+    destination = "#{code_dir}/#{@ios_complete_marker}"
+
+    case System.cmd("xcrun", ios_code_copy_args(udid, bundle, marker, destination),
+           stderr_to_stdout: true
+         ) do
+      {_, 0} -> :ok
+      {out, _} -> throw({:error, "devicectl could not write #{destination}: #{out}"})
     end
   end
 
@@ -1417,30 +1565,29 @@ defmodule MobDev.Deployer do
   def finalize_ios_override_result({:skipped, reason}, _app), do: {:skipped, reason}
 
   def finalize_ios_override_result({:error, reason}, app),
-    do: {:error, annotate_override_state(reason, app)}
+    do: {:error, reason <> ios_partial_upload_note(Process.get(:mob_ios_code_upload), app)}
 
-  # If the destructive copy had already begun, the device is now in a worse
-  # state than we found it: Documents/otp/<app> exists but is incomplete, and
-  # mob_beam.m selects that override on directory existence alone. The app will
-  # boot from it — and fail — on the next launch from Springboard, even though
-  # we correctly skipped the restart.
-  #
-  # There is no clean rollback. `xcrun devicectl device` has no delete verb, and
-  # copying an EMPTY directory does not help: the directory still exists, so it
-  # is still preferred, and the app would then have no BEAMs at all. So say so
-  # plainly and give the two recoveries that do work.
-  defp annotate_override_state(reason, app) do
-    if Process.get(:mob_ios_override_replaced) do
-      reason <>
-        "\n\nThe on-device override at Documents/otp/#{app} was already being " <>
-        "replaced when this failed, so it is now incomplete. The app prefers that " <>
-        "directory over its signed bundle, so the next launch will fail even " <>
-        "though it was not restarted.\n" <>
-        "Recover with a successful `mix mob.deploy` (or `--native`), or delete " <>
-        "and reinstall the app."
-    else
-      reason
-    end
+  @doc false
+  # What a failure after the upload began leaves on the phone, for the error.
+  # `upload` is the `{plan, code_dir}` the deploy had started, or nil.
+  @spec ios_partial_upload_note(
+          {{:versioned, String.t()} | :legacy, String.t()} | nil,
+          String.t()
+        ) :: String.t()
+  def ios_partial_upload_note(nil, _app), do: ""
+
+  def ios_partial_upload_note({{:versioned, _n}, code_dir}, _app) do
+    "\n\nNothing else on the phone was changed, and it keeps running the previous " <>
+      "code: the app loads #{code_dir} only once #{@ios_complete_marker} is in it " <>
+      "(the deploy's last step), and deletes it after the next deploy that boots."
+  end
+
+  def ios_partial_upload_note({:legacy, code_dir}, app) do
+    "\n\nThe copy into #{code_dir} was under way when this failed, so it may now " <>
+      "mix new and old BEAMs, which the app loads at its next launch. Recover with " <>
+      "a successful `mix mob.deploy`. Deploys go to #{app}#{@ios_versions_suffix}/, " <>
+      "where an interrupted one leaves the previous code running, once the app " <>
+      "runs mob ≥ 0.9.20 (`mix mob.deploy --native`) and has been launched."
   end
 
   # ── iOS WiFi UDID resolution ──────────────────────────────────────────────────
@@ -1646,10 +1793,11 @@ defmodule MobDev.Deployer do
   # back to dist-only in the deployer"), and a LAN-only device has no
   # `devicectl` route at all — the first version of this change turned that
   # documented fallback into a hard exit 1 on a deploy that had previously
-  # succeeded. Even with USB attached, the write is an
-  # `xcrun devicectl ... --remove-existing-content` replace with no undo, so a
-  # cable knock mid-copy leaves the app unbootable. A hot load could never
-  # damage a device; making it able to, silently, is not a fix.
+  # succeeded. Even with USB attached, the write could damage the app: for a
+  # runtime older than mob 0.9.20 it merges into the one directory the app
+  # boots from, so a cable knock mid-copy can leave it unbootable (and before
+  # MOB-408 it emptied the app's whole data container). A hot load could
+  # never damage a device; making it able to, silently, is not a fix.
   #
   # The documented physical-iOS dist workflow is USB *unplugged* anyway, which
   # is exactly the state in which the write cannot run.
