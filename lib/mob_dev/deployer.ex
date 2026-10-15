@@ -1656,7 +1656,7 @@ defmodule MobDev.Deployer do
   end
 
   defp ios_not_loaded_message(loaded, code_dir)
-       when loaded in [nil, @ios_loaded_dir_placeholder] do
+       when loaded in [nil, "", @ios_loaded_dir_placeholder] do
     "the app was relaunched but didn't report which BEAMs it loaded within " <>
       "#{div(@ios_boot_confirm_ms, 1000)} s (#{@ios_loaded_dir_file}), so #{code_dir} " <>
       "may not be running. Open the app and check the device log."
