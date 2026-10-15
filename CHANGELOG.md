@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+## [0.7.28] - 2026-10-15
+
 ### Fixed
 
 - **A BEAM deploy to a physical iPhone no longer erases the app's data
