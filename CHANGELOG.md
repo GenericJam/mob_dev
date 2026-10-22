@@ -1,7 +1,20 @@
 ## [Unreleased]
 
+### Changed
+
+- **Zig pin is 0.17.0.** Replaces `0.17.0-dev.269+ebff43698` now that 0.17.0
+  is the stable with the macOS 26 SDK fix the nightly was taken for.
+  `mix mob.doctor` / `mix mob.deploy --native` still require an exact
+  `zig version` match (`mise install zig@0.17.0`). Companion to mob and
+  mob_new.
+
 ### Fixed
 
+- **`mix mob.doctor` fails iOS `build.zig` files that still use `b.build_root`.**
+  Zig 0.17.0 removed `Build.build_root`; a file generated against the
+  nightly panics at configure with `no field named 'build_root'`. The
+  check names the Swift-glob replacement (`std.Io.Dir.openDirAbsolute`)
+  from mob_new's templates.
 - **The Hex package ships `guides/` (MOB-501).** It shipped only the
   default files, so an app had no `deps/mob_dev/guides/` and the publishing
   and security-scan guides were only on hexdocs.
@@ -9,6 +22,13 @@
   `android/keystore.properties.example` (MOB-501).** No generated app has
   one. The task docs and `guides/publishing_to_google_play.md` now list the
   file's four keys and name `mix mob.setup.google_play`, which writes it.
+
+### Upgrading
+
+- **Zig 0.17.0.** Install that exact version. Existing iOS apps must port
+  `ios/build.zig` and `ios/build_device.zig` off `b.build_root` (doctor
+  fails until they do). Android `build.zig` from current templates already
+  configures on 0.17.0.
 
 ## [0.7.30] - 2026-10-23
 

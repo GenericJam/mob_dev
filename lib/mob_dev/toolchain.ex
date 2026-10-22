@@ -3,7 +3,7 @@ defmodule MobDev.Toolchain do
 
   # This value must live in packaged source; the root toolchain file is not in
   # Hex archives. The source test keeps both release authorities in lockstep.
-  @required_zig_version "0.17.0-dev.269+ebff43698"
+  @required_zig_version "0.17.0"
 
   # iPhone Duo needs the iOS 27.1 SDK, which ships with Xcode 27.1 (MOB-201).
   @duo_min_version {27, 1, 0}

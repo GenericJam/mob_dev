@@ -106,6 +106,33 @@ defmodule Mix.Tasks.Mob.DoctorTest do
     end
   end
 
+  describe "__ios_build_root_stale__/1" do
+    test "flags the 0.17-dev glob that calls b.build_root" do
+      stale = """
+      var mob_ios = b.build_root.handle.openDir(glob_io, b.fmt("{s}/ios", .{mob_dir}), .{ .iterate = true }) catch @panic("mob ios dir not found");
+      """
+
+      assert Mix.Tasks.Mob.Doctor.__ios_build_root_stale__(stale)
+    end
+
+    test "does not flag the 0.17.0 glob" do
+      fixed = """
+      var mob_ios = std.Io.Dir.openDirAbsolute(glob_io, b.fmt("{s}/ios", .{mob_dir}), .{ .iterate = true }) catch @panic("mob ios dir not found");
+      """
+
+      refute Mix.Tasks.Mob.Doctor.__ios_build_root_stale__(fixed)
+    end
+
+    test "does not flag a migration comment that names the old field" do
+      migrated = """
+      // Replaced b.build_root.handle.openDir with std.Io.Dir.openDirAbsolute.
+      var mob_ios = std.Io.Dir.openDirAbsolute(glob_io, b.fmt("{s}/ios", .{mob_dir}), .{ .iterate = true }) catch @panic("mob ios dir not found");
+      """
+
+      refute Mix.Tasks.Mob.Doctor.__ios_build_root_stale__(migrated)
+    end
+  end
+
   describe "__component_event_jni_mismatched__/1 (MOB-98 JNI owner check)" do
     test "flags the pre-fix declaration (bare external fun, no @JvmStatic)" do
       pre_fix = """

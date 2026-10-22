@@ -739,6 +739,7 @@ defmodule Mix.Tasks.Mob.Doctor do
         check_compiled(),
         check_driver_tab(),
         check_plugin_build_options(),
+        check_ios_zig_build_root(),
         check_inactive_nif_plugins(),
         check_component_event_jni(),
         check_sheet_dismiss_wire_shape(),
@@ -1041,6 +1042,32 @@ defmodule Mix.Tasks.Mob.Doctor do
   @spec __missing_plugin_options__(String.t(), [String.t()]) :: [String.t()]
   def __missing_plugin_options__(content, required) do
     Enum.reject(required, &String.contains?(content, "\"#{&1}\""))
+  end
+
+  # Zig 0.17.0 removed `Build.build_root`. iOS templates generated against
+  # 0.17.0-dev.269 still call `b.build_root.handle.openDir` to glob mob Swift
+  # sources; configure then exits with `no field named 'build_root'`.
+  defp check_ios_zig_build_root do
+    for path <- ["ios/build.zig", "ios/build_device.zig"],
+        {:ok, content} <- [File.read(path)],
+        __ios_build_root_stale__(content) do
+      {:fail, "zig 0.17.0 (#{path})",
+       "uses b.build_root, which Zig 0.17.0 removed",
+       "In the Swift glob, replace `b.build_root.handle.openDir(...)` with " <>
+         "`std.Io.Dir.openDirAbsolute(...)` — see a freshly generated app " <>
+         "or mob_new's ios/build.zig.eex"}
+    end
+  end
+
+  @doc false
+  @spec __ios_build_root_stale__(String.t()) :: boolean()
+  def __ios_build_root_stale__(content) do
+    content
+    |> String.split("\n")
+    |> Enum.any?(fn line ->
+      code = line |> String.split("//") |> hd() |> String.trim()
+      String.contains?(code, "b.build_root")
+    end)
   end
 
   # ── Installed-but-inactive NIF plugins (MOB-281) ─────────────────────────────
