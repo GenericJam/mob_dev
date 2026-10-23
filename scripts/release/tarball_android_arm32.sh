@@ -2,15 +2,13 @@
 # scripts/release/tarball_android_arm32.sh
 # Stage and tar the Android arm32 (armeabi-v7a) OTP runtime + exqlite BEAMs.
 # Mirrors Step 2 (arm32) of build_release.md.
-#
-# Prerequisite: a separately-built arm32 asn1rt_nif.a at
-# $ASN1RT_NIF_ARM32 (default /tmp/asn1rt_nif_arm32.a — see build_release.md
-# Step 2 arm32 prerequisites for the exact NDK-clang invocation).
+# Same layout as the arm64 sibling. asn1rt_nif.a comes from the OTP build
+# (xcompile_android_arm32.sh runs OTP's static_lib target for it).
 #
 # Inputs (env or default):
 #   OTP_SRC          — OTP source checkout (default: ~/code/otp)
 #   OTP_RELEASE      — Android arm32 install dir (default: /tmp/otp-android-arm32)
-#   ASN1RT_NIF_ARM32 — pre-built arm32 asn1rt_nif.a (default: /tmp/asn1rt_nif_arm32.a)
+#   ASN1RT_NIF_ARM32 — arm32 asn1rt_nif.a (default: the OTP build's)
 #   EXQLITE_BUILD, HASH, OUT_DIR — see _lib.sh / arm64 script
 #
 # Output:
@@ -22,11 +20,11 @@ cd "$(dirname "$0")"
 source ./_lib.sh
 
 : "${OTP_RELEASE:=/tmp/otp-android-arm32}"
-: "${ASN1RT_NIF_ARM32:=/tmp/asn1rt_nif_arm32.a}"
+: "${ASN1RT_NIF_ARM32:=$OTP_SRC/lib/asn1/priv/lib/arm-unknown-linux-androideabi/asn1rt_nif.a}"
 : "${EXQLITE_BUILD:=}"
 
 [ -d "$OTP_RELEASE" ] || fail "missing $OTP_RELEASE — cross-compile Android arm32 first"
-[ -f "$ASN1RT_NIF_ARM32" ] || fail "missing $ASN1RT_NIF_ARM32 — build it per build_release.md Step 2 arm32 prerequisites"
+[ -f "$ASN1RT_NIF_ARM32" ] || fail "missing $ASN1RT_NIF_ARM32 — run xcompile_android_arm32.sh first"
 [ -n "$EXQLITE_BUILD" ] || fail "EXQLITE_BUILD not set"
 [ -d "$EXQLITE_BUILD/ebin" ] || fail "EXQLITE_BUILD ($EXQLITE_BUILD) has no ebin/"
 

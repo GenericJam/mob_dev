@@ -175,7 +175,7 @@ defmodule Mix.Tasks.Mob.Doctor do
         {:fail, "OTP", "#{otp} — OTP #{@min_otp} or later required", elixir_upgrade_hint()}
 
       n < @warn_otp ->
-        {:warn, "OTP", "#{otp} — OTP #{@warn_otp}+ recommended (device runtime is OTP 28)",
+        {:warn, "OTP", "#{otp} — OTP #{@warn_otp}+ recommended (device runtime is OTP 29)",
          elixir_upgrade_hint()}
 
       true ->

@@ -73,7 +73,12 @@ defmodule MobDev.MixProject do
       # by the SAME function `Mob.Theme.font/2` uses on the runtime side.
       # Before this, mob_dev had its own copy of the normalization logic,
       # kept in sync with mob core's copy only by convention — see MOB_FONTS.md.
-      {:mob, "~> 0.7.25 or ~> 0.8.1 or ~> 0.9.0", runtime: false},
+      #
+      # >= 0.9.25 because the OTP runtime this mob_dev downloads (d199a49a,
+      # erts-17.1.1) only boots on a mob that finds its ERTS dir at runtime;
+      # older mob hard-codes erts-17.0 on Android and the iOS simulator
+      # (MOB-493). Hex resolution then keeps an app's mob and mob_dev in step.
+      {:mob, "~> 0.9.25", runtime: false},
       {:eqrcode, "~> 0.2"},
       {:jason, "~> 1.4"},
       {:mix_audit, "~> 2.1", runtime: false},
@@ -121,7 +126,6 @@ defmodule MobDev.MixProject do
       # its Makefile to pin MobDev.Exqlite's SQLite defines (MOB-487). Its
       # children still resolve, which adds db_connection to the test build.
       {:exqlite, "~> 0.42", only: :test, runtime: false, compile: false, app: false},
-      {:erlfmt, "~> 1.8", only: :dev, runtime: false},
       # Dev-only dead-code detector. Wires in via the `:unused` compiler
       # tracer; ignore list maintained inline below since this codebase has
       # legitimate dynamic dispatch (NIF on_load stubs, GenServer

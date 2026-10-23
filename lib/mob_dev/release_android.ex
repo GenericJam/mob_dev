@@ -95,35 +95,11 @@ defmodule MobDev.ReleaseAndroid do
         add_app_priv!(staging, app_name)
         add_exqlite!(staging)
 
-        # Only stub :crypto when the OTP runtime genuinely lacks the
-        # OpenSSL NIF. When crypto.a is present (the Android CMakeLists.txt
-        # statically links crypto.a + libcrypto.a and registers
-        # crypto_nif_init in the driver table), the real :crypto works —
-        # stubbing it replaces crypto.beam with one whose supports/1
-        # returns [], making :ssl.versions/0 raise and breaking every
-        # HTTPS request (TLS handshake never starts).
-        if real_crypto_available?(otp_dir) do
-          log("  real crypto.a present — keeping OpenSSL crypto (no stub)")
-        else
-          patch_crypto_deps!(staging)
-          add_crypto_stub!(staging, app_name)
-        end
-
         {:ok, staging}
 
       {out, _} ->
         {:error, "Failed to copy OTP tree: #{out}"}
     end
-  end
-
-  # True when the OTP runtime ships the real OpenSSL crypto NIF static
-  # archive (crypto.a). The Android native build links it into the app
-  # .so, so the BEAM has working :crypto and must not get the stub.
-  # Public for testing.
-  @doc false
-  @spec real_crypto_available?(Path.t()) :: boolean()
-  def real_crypto_available?(otp_dir) do
-    Path.wildcard(Path.join(otp_dir, "erts-*/lib/crypto.a")) != []
   end
 
   # Flatten all runtime BEAMs (app + deps) into {staging}/{app_name}/.
@@ -170,94 +146,18 @@ defmodule MobDev.ReleaseAndroid do
   end
 
   # Same runtime BEAM collection as deployer.collect_beam_dirs/0: app + deps +
-  # eex (Elixir stdlib, not in _build/) + ssl (Thousand Island dep, not in OTP tree).
+  # eex (Elixir stdlib, not in _build/). No host OTP apps: the runtime ships
+  # ssl, and a host copy here shadowed it in every release (MOB-493).
   defp collect_beam_dirs do
     app_dirs = MobDev.HotPush.runtime_beam_dirs()
 
     eex_ebin = Path.join(to_string(:code.lib_dir(:eex)), "ebin")
     eex = if File.dir?(eex_ebin), do: [eex_ebin], else: []
 
-    ssl_ebin = Path.join(to_string(:code.lib_dir(:ssl)), "ebin")
-    ssl = if File.dir?(ssl_ebin), do: [ssl_ebin], else: []
-
-    app_dirs ++ eex ++ ssl
+    app_dirs ++ eex
   end
 
   defp exqlite_version, do: MobDev.AppFile.dep_version(:exqlite)
-
-  # The Android OTP release lacks :crypto (no cross-compiled OpenSSL NIF).
-  # Many deps (ecto, phoenix_pubsub, plug_crypto, …) declare it as a required
-  # application dependency, which causes Application.ensure_all_started to fail
-  # at startup. We patch every .app file in the staging tree to remove :crypto
-  # from the applications list, then inject a minimal crypto.beam stub
-  # (priv/android/crypto.erl) that implements strong_rand_bytes/1 via :rand.
-  defp patch_crypto_deps!(staging) do
-    staging
-    |> Path.join("**/*.app")
-    |> Path.wildcard()
-    |> Enum.each(&remove_crypto_from_app_file/1)
-  end
-
-  defp remove_crypto_from_app_file(path) do
-    case :file.consult(String.to_charlist(path)) do
-      {:ok, [{:application, name, props}]} ->
-        apps = Keyword.get(props, :applications, [])
-        new_apps = Enum.reject(apps, &(&1 == :crypto))
-
-        if new_apps != apps do
-          new_props = Keyword.put(props, :applications, new_apps)
-          term_str = :io_lib.format("~p.~n", [{:application, name, new_props}])
-          File.write!(path, IO.chardata_to_string(term_str))
-        end
-
-      _ ->
-        :ok
-    end
-  end
-
-  defp add_crypto_stub!(staging, app_name) do
-    stub_src =
-      :code.priv_dir(:mob_dev)
-      |> to_string()
-      |> Path.join("android/crypto.erl")
-
-    dest_dir = Path.join(staging, app_name)
-    tmp_dir = Path.join(System.tmp_dir!(), "mob_crypto_stub")
-    File.mkdir_p!(tmp_dir)
-
-    case System.cmd("erlc", ["-o", tmp_dir, stub_src], stderr_to_stdout: true) do
-      {_, 0} ->
-        beam = Path.join(tmp_dir, "crypto.beam")
-
-        if File.exists?(beam) do
-          File.cp!(beam, Path.join(dest_dir, "crypto.beam"))
-          File.rm!(beam)
-        end
-
-        # Write crypto.app so the OTP application controller can load and
-        # start the :crypto application. Without this file, ensure_all_started
-        # fails with {error, {crypto, {"no such file or directory", "crypto.app"}}}
-        # even when crypto.beam is present — the app controller requires the
-        # .app spec to register the application before starting it.
-        # No {mod, ...} entry: starting :crypto just marks it as started,
-        # with no NIF initialization (our stub uses :rand instead).
-        crypto_app = """
-        {application,crypto,[
-          {description,"CRYPTO stub for Android"},
-          {vsn,"5.5"},
-          {modules,[crypto]},
-          {registered,[]},
-          {applications,[kernel,stdlib]},
-          {env,[]}
-        ]}.
-        """
-
-        File.write!(Path.join(dest_dir, "crypto.app"), crypto_app)
-
-      {out, _} ->
-        Mix.shell().info("  warning: could not compile crypto stub: #{out}")
-    end
-  end
 
   # ── otp.zip ──────────────────────────────────────────────────────────────────
 

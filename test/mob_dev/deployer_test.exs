@@ -275,126 +275,6 @@ defmodule MobDev.DeployerTest do
     end
   end
 
-  # ── generate_crypto_shim/0 ────────────────────────────────────────────────
-
-  describe "generate_crypto_shim/0" do
-    @tag :tmp_dir
-    test "compiles successfully into a fresh directory", %{tmp_dir: root} do
-      assert {:ok, dir} = Deployer.generate_crypto_shim(root)
-      assert File.exists?(Path.join(dir, "crypto.beam"))
-      assert File.exists?(Path.join(dir, "crypto.app"))
-      # No staging directory is left behind.
-      assert [_shim_dir] = File.ls!(root)
-    end
-
-    # MOB-339: every build wrote the one shared $TMPDIR/mob_crypto_shim in
-    # place, so concurrent deploys or test runs on a machine broke each other
-    # ("crypto.beam: error writing file: no such file or directory").
-    @tag :tmp_dir
-    test "concurrent first builds all succeed with the same complete shim", %{tmp_dir: root} do
-      results =
-        1..8
-        |> Task.async_stream(fn _ -> Deployer.generate_crypto_shim(root) end,
-          max_concurrency: 8,
-          timeout: :infinity
-        )
-        |> Enum.map(fn {:ok, result} -> result end)
-
-      assert [{:ok, dir}] = Enum.uniq(results)
-      beam = String.to_charlist(Path.join(dir, "crypto.beam"))
-      assert {:ok, {:crypto, _vsn}} = :beam_lib.version(beam)
-      assert [_shim_dir] = File.ls!(root)
-    end
-
-    test "is idempotent — second call reuses cached shim" do
-      assert {:ok, dir1} = Deployer.generate_crypto_shim()
-      assert {:ok, dir2} = Deployer.generate_crypto_shim()
-      assert dir1 == dir2
-    end
-
-    test "shim exports pbkdf2_hmac/5" do
-      {:ok, dir} = Deployer.generate_crypto_shim()
-
-      {:ok, {_, chunks}} =
-        :beam_lib.chunks(Path.join(dir, "crypto.beam") |> String.to_charlist(), [:exports])
-
-      exports = chunks[:exports]
-      assert {:pbkdf2_hmac, 5} in exports
-    end
-
-    test "shim exports exor/2" do
-      {:ok, dir} = Deployer.generate_crypto_shim()
-
-      {:ok, {_, chunks}} =
-        :beam_lib.chunks(Path.join(dir, "crypto.beam") |> String.to_charlist(), [:exports])
-
-      exports = chunks[:exports]
-      assert {:exor, 2} in exports
-    end
-
-    test "shim exports strong_rand_bytes/1, mac/4, mac/3, hash/2, supports/1" do
-      {:ok, dir} = Deployer.generate_crypto_shim()
-
-      {:ok, {_, chunks}} =
-        :beam_lib.chunks(Path.join(dir, "crypto.beam") |> String.to_charlist(), [:exports])
-
-      exports = chunks[:exports]
-
-      for {name, arity} <- [
-            {:strong_rand_bytes, 1},
-            {:mac, 4},
-            {:mac, 3},
-            {:hash, 2},
-            {:supports, 1}
-          ] do
-        assert {name, arity} in exports, "expected #{name}/#{arity} in exports"
-      end
-    end
-
-    test "pbkdf2_hmac/5 returns binary of requested length" do
-      {:ok, dir} = Deployer.generate_crypto_shim()
-      :code.add_patha(String.to_charlist(dir))
-      # Call via apply to avoid compile-time crypto dependency
-      result = apply(:crypto, :pbkdf2_hmac, [:sha256, "password", "salt", 1000, 32])
-      assert byte_size(result) == 32
-      :code.del_path(String.to_charlist(dir))
-    end
-
-    test "pbkdf2_hmac/5 is deterministic" do
-      {:ok, dir} = Deployer.generate_crypto_shim()
-      :code.add_patha(String.to_charlist(dir))
-      r1 = apply(:crypto, :pbkdf2_hmac, [:sha256, "pw", "salt", 100, 16])
-      r2 = apply(:crypto, :pbkdf2_hmac, [:sha256, "pw", "salt", 100, 16])
-      assert r1 == r2
-      :code.del_path(String.to_charlist(dir))
-    end
-
-    test "exor/2 XORs two binaries" do
-      {:ok, dir} = Deployer.generate_crypto_shim()
-      :code.add_patha(String.to_charlist(dir))
-      result = apply(:crypto, :exor, [<<0xFF, 0x00>>, <<0x0F, 0xFF>>])
-      assert result == <<0xF0, 0xFF>>
-      :code.del_path(String.to_charlist(dir))
-    end
-
-    test "mac/4 returns a non-empty binary" do
-      {:ok, dir} = Deployer.generate_crypto_shim()
-      :code.add_patha(String.to_charlist(dir))
-      result = apply(:crypto, :mac, [:hmac, :sha256, "key", "data"])
-      assert byte_size(result) > 0
-      :code.del_path(String.to_charlist(dir))
-    end
-
-    test "mac/4 is deterministic for same inputs" do
-      {:ok, dir} = Deployer.generate_crypto_shim()
-      :code.add_patha(String.to_charlist(dir))
-      r1 = apply(:crypto, :mac, [:hmac, :sha256, "key", "data"])
-      r2 = apply(:crypto, :mac, [:hmac, :sha256, "key", "data"])
-      assert r1 == r2
-      :code.del_path(String.to_charlist(dir))
-    end
-  end
-
   # ── categorize_results/1 ────────────────────────────────────────────────
 
   describe "categorize_results/1" do
@@ -636,6 +516,29 @@ defmodule MobDev.DeployerTest do
       File.mkdir_p!(keep)
       {_, 0} = System.cmd("sh", ["-c", Deployer.prune_other_versions_cmd(keep, "exqlite")])
       assert File.dir?(keep)
+    end
+  end
+
+  describe "stale_host_ssl_rm_cmd/2" do
+    # Runs the generated command with the host's sh against a beams dir that
+    # holds what a pre-MOB-493 deploy left: the app's BEAMs plus host ssl.
+    @tag :tmp_dir
+    test "removes the host ssl and crypto shim files and keeps the app files", %{tmp_dir: dir} do
+      ssl = Deployer.stale_host_ssl_files()
+      assert "ssl.app" in ssl
+      assert "ssl.beam" in ssl
+      assert "crypto.beam" in ssl
+
+      app_files = ~w(my_app.app my_app.beam Elixir.MyApp.beam mob_beam_flags)
+      for f <- ssl ++ app_files, do: File.write!(Path.join(dir, f), "")
+
+      {_, 0} = System.cmd("sh", ["-c", Deployer.stale_host_ssl_rm_cmd(dir)])
+
+      assert Enum.sort(File.ls!(dir)) == Enum.sort(app_files)
+    end
+
+    test "is nil when there is nothing to remove" do
+      assert Deployer.stale_host_ssl_rm_cmd("/x", []) == nil
     end
   end
 

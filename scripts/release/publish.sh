@@ -8,7 +8,7 @@
 #   OUT_DIR — where the tarballs were written (default: /tmp)
 #   REPO    — GitHub repo (default: GenericJam/mob)
 #   ASSETS  — space-separated list of tarball basenames to upload. Defaults
-#             to all four if all exist; otherwise only the ones present.
+#             to all five if all exist; otherwise only the ones present.
 #
 # Behaviour:
 #   - Creates the release `otp-$HASH` if it doesn't exist.
@@ -29,6 +29,7 @@ if [ -z "${ASSETS:-}" ]; then
     candidates=(
         "otp-android-$HASH.tar.gz"
         "otp-android-arm32-$HASH.tar.gz"
+        "otp-android-x86_64-$HASH.tar.gz"
         "otp-ios-sim-$HASH.tar.gz"
         "otp-ios-device-$HASH.tar.gz"
     )
@@ -51,7 +52,7 @@ if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
     log "creating release $TAG..."
     gh release create "$TAG" --repo "$REPO" \
         --title "OTP pre-built runtime $HASH" \
-        --notes "Pre-built OTP for Android (aarch64 + arm32), iOS simulator (aarch64-apple-iossimulator), and iOS device (aarch64-apple-ios). OTP source commit: $HASH."
+        --notes "Pre-built OTP for Android (aarch64, arm32, x86_64), iOS simulator (aarch64-apple-iossimulator), and iOS device (aarch64-apple-ios). OTP source commit: $HASH."
 else
     log "release $TAG already exists; will replace existing assets..."
 fi

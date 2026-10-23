@@ -867,6 +867,11 @@ defmodule MobDev.Deployer do
       :rooted ->
         run_adb(["-s", serial, "shell", "mkdir -p #{android_beams_dir()}"])
 
+        case stale_host_ssl_rm_cmd(android_beams_dir()) do
+          nil -> :ok
+          cmd -> run_adb(["-s", serial, "shell", cmd])
+        end
+
         # Labelled by deploy_android's final relabel_otp_android/1.
         Enum.reduce_while(beam_dirs, :ok, fn dir, _ ->
           case run_adb(["-s", serial, "push", "#{Path.expand(dir)}/.", "#{android_beams_dir()}/"]) do
@@ -921,6 +926,11 @@ defmodule MobDev.Deployer do
         "shell",
         "run-as #{android_package()} mkdir -p #{android_beams_dir()}"
       ])
+
+      case stale_host_ssl_rm_cmd(android_beams_dir()) do
+        nil -> :ok
+        cmd -> run_adb(["-s", serial, "shell", "run-as #{android_package()} sh -c '#{cmd}'"])
+      end
 
       # Redirect stderr and always exit 0: Android's Toybox tar cannot chown to
       # macOS UID 501 and exits 1, but the files are extracted correctly.
@@ -1048,6 +1058,7 @@ defmodule MobDev.Deployer do
 
     try do
       File.mkdir_p!(ios_beams_dir())
+      remove_stale_host_ssl!(ios_beams_dir())
 
       # Use rsync rather than cp -r for two reasons that hit Nix users hard:
       #
@@ -1955,163 +1966,65 @@ defmodule MobDev.Deployer do
     eex_ebin = Path.join(to_string(:code.lib_dir(:eex)), "ebin")
     stdlib_dirs = if File.dir?(eex_ebin), do: [eex_ebin], else: []
 
-    # ssl is a required OTP app (thousand_island lists it as a dependency) but the
-    # iOS and Android OTP builds omit it. ssl is pure Erlang (no NIFs), so host
-    # BEAM files run identically on both targets. For HTTP-only Phoenix at loopback,
-    # ssl starts but no TLS sockets are opened.
-    ssl_ebin = Path.join(to_string(:code.lib_dir(:ssl)), "ebin")
-    ssl_dirs = if File.dir?(ssl_ebin), do: [ssl_ebin], else: []
-
-    # crypto is a required OTP app. Older device-side OTP builds (pre-2026-05)
-    # were configured `--without-ssl` to skip OpenSSL, so the device runtime
-    # had no real crypto and we shipped a deliberately-insecure shim
-    # (md5-only hash, no x25519, no AEAD) just to let `ensure_all_started`
-    # succeed for HTTP-only Phoenix at loopback.
-    #
-    # Newer tarballs ship a real crypto.so NIF + crypto.beam built against
-    # OpenSSL 3.x. When the host has a cached OTP runtime that already
-    # contains crypto.beam, we MUST NOT push the shim — its `crypto.beam`
-    # would land first in the on-device code path and shadow the real one,
-    # making `crypto:generate_key/2` undef even though the NIF is loaded.
-    shim_dirs =
-      if real_device_crypto_available?() do
-        []
-      else
-        case generate_crypto_shim() do
-          {:ok, dir} -> [dir]
-          _ -> []
-        end
-      end
-
-    app_dirs ++ stdlib_dirs ++ ssl_dirs ++ shim_dirs
+    # Never push the host's OTP apps or shims of them (host ssl and a crypto
+    # shim were, until MOB-493). The flat beams_dir is first on -pa, so either
+    # shadows the runtime's patched lib/{ssl,crypto}-*: every device ran the
+    # developer's ssl, e.g. OTP 29.0's 11.7 with CVE-2026-89422, whatever
+    # runtime it had. Every runtime tarball ships ssl, public_key and crypto.
+    app_dirs ++ stdlib_dirs
   end
 
-  # Detects whether any cached device-side OTP runtime under ~/.mob/cache/
-  # already ships a real crypto.beam. If yes, the deployer must skip the
-  # shim — pushing the shim's crypto.beam shadows the real one in the
-  # on-device code path, making :crypto.generate_key/2 (and friends) undef
-  # despite the NIF being loaded.
-  @spec real_device_crypto_available?() :: boolean()
-  defp real_device_crypto_available? do
-    cache = Path.join([System.user_home!(), ".mob", "cache"])
-
-    Path.wildcard(Path.join([cache, "otp-*", "lib", "crypto-*", "ebin", "crypto.beam"]))
-    |> Enum.any?()
-  end
-
-  # Generates crypto.beam + crypto.app in a temp dir and returns {:ok, dir}.
-  # Returns {:error, reason} if erlc is not available.
-  #
-  # Used only as a fallback when the device-side OTP runtime was built
-  # `--without-ssl` (pre-2026-05 tarballs). Modern tarballs ship a real
-  # crypto.so NIF; in that case `real_device_crypto_available?/0` returns
-  # true and this shim is skipped.
   @doc false
-  @spec generate_crypto_shim(Path.t()) :: {:ok, String.t()} | {:error, term()}
-  def generate_crypto_shim(root \\ System.tmp_dir!()) do
-    source = """
-    -module(crypto).
-    -export([strong_rand_bytes/1, hash/2, mac/4, mac/3, supports/1, pbkdf2_hmac/5, exor/2]).
-
-    strong_rand_bytes(N) -> rand:bytes(N).
-
-    hash(_Type, Data) -> erlang:md5(Data).
-
-    %% HMAC-MD5 (ignores hash algorithm) — dev-only shim, no OpenSSL required.
-    mac(hmac, _Alg, Key, Data) -> hmac_md5(Key, Data);
-    mac(_Type, _SubType, _Key, _Data) -> <<>>.
-
-    mac(hmac, Key, Data) -> hmac_md5(Key, Data);
-    mac(_Type, _Key, _Data) -> <<>>.
-
-    supports(_Type) -> [].
-
-    %% PBKDF2-HMAC shim using HMAC-MD5 as PRF. Not cryptographically secure;
-    %% suitable only for local dev on-device where 127.0.0.1 is the only listener.
-    pbkdf2_hmac(_Hash, Password0, Salt0, Iterations, DerivedLen) ->
-        Password = iolist_to_binary(Password0),
-        Salt     = iolist_to_binary(Salt0),
-        Blocks = (DerivedLen + 15) div 16,
-        Derived = iolist_to_binary([pbkdf2_block(Password, Salt, Iterations, I)
-                                    || I <- lists:seq(1, Blocks)]),
-        binary:part(Derived, 0, DerivedLen).
-
-    pbkdf2_block(Password, Salt, Iterations, BlockNum) ->
-        U1 = hmac_md5(Password, <<Salt/binary, BlockNum:32/big>>),
-        pbkdf2_iterate(Password, U1, Iterations - 1, U1).
-
-    pbkdf2_iterate(_Password, _Prev, 0, Acc) -> Acc;
-    pbkdf2_iterate(Password, Prev, N, Acc) ->
-        U = hmac_md5(Password, Prev),
-        pbkdf2_iterate(Password, U, N - 1, xor_bins(Acc, U)).
-
-    hmac_md5(Key0, Data0) ->
-        Key  = iolist_to_binary(Key0),
-        Data = iolist_to_binary(Data0),
-        BS = 64,
-        K = case byte_size(Key) > BS of
-            true  -> erlang:md5(Key);
-            false -> Key
-        end,
-        Pad = binary:copy(<<0>>, BS - byte_size(K)),
-        KPad = <<K/binary, Pad/binary>>,
-        IKey = << <<(X bxor 16#36)>> || <<X>> <= KPad >>,
-        OKey = << <<(X bxor 16#5c)>> || <<X>> <= KPad >>,
-        erlang:md5(<<OKey/binary, (erlang:md5(<<IKey/binary, Data/binary>>))/binary>>).
-
-    xor_bins(A, B) ->
-        list_to_binary([X bxor Y || {X, Y} <- lists:zip(binary_to_list(A), binary_to_list(B))]).
-
-    exor(A, B) ->
-        xor_bins(iolist_to_binary(A), iolist_to_binary(B)).
-    """
-
-    app =
-      "{application,crypto,[{modules,[crypto]},{applications,[kernel,stdlib]}," <>
-        "{description,\"Crypto shim for mobile (no OpenSSL; uses rand:bytes)\"}," <>
-        "{registered,[]},{vsn,\"5.6\"}]}."
-
-    # One directory per shim content, never written in place: each call
-    # compiles in its own staging dir and renames it there whole. A shared,
-    # rewritten-in-place dir let two deploys or test runs on one machine
-    # delete or truncate each other's crypto.beam mid-compile (MOB-339).
-    dir = Path.join(root, "mob_crypto_shim_#{:erlang.phash2({source, app})}")
-
-    if File.regular?(Path.join(dir, "crypto.beam")),
-      do: {:ok, dir},
-      else: build_crypto_shim(dir, source, app)
-  end
-
-  defp build_crypto_shim(dir, source, app) do
-    staging = "#{dir}.#{System.pid()}.#{System.unique_integer([:positive])}.tmp"
-    File.mkdir_p!(staging)
-
-    try do
-      src = Path.join(staging, "crypto.erl")
-      File.write!(src, source)
-      File.write!(Path.join(staging, "crypto.app"), app)
-
-      case System.cmd("erlc", ["-o", staging, src], stderr_to_stdout: true) do
-        {_, 0} -> publish_crypto_shim(staging, dir)
-        {out, _} -> {:error, "crypto shim compile failed: #{out}"}
+  # The files a pre-MOB-493 mob_dev put into the flat beams dir that shadow
+  # the runtime's OTP apps: the host's ssl app and the crypto shim. A deploy
+  # only adds files, so on a device deployed before then they stay; every
+  # deploy deletes them first. The host that pushed them may have run another
+  # OTP than this one, so the ssl names come from this host's ssl ebin and
+  # from every cached runtime's ssl ebin (beam/app/appup).
+  @spec stale_host_ssl_files() :: [String.t()]
+  def stale_host_ssl_files do
+    host =
+      case :code.lib_dir(:ssl) do
+        dir when is_list(dir) -> [Path.join(to_string(dir), "ebin")]
+        _ -> []
       end
-    after
-      File.rm_rf(staging)
-    end
+
+    # The cache dirs come from OtpDownloader so MOB_CACHE_DIR is honoured.
+    runtimes =
+      [
+        MobDev.OtpDownloader.android_otp_dir("arm64-v8a"),
+        MobDev.OtpDownloader.android_otp_dir("armeabi-v7a"),
+        MobDev.OtpDownloader.android_otp_dir("x86_64"),
+        MobDev.OtpDownloader.ios_sim_otp_dir(),
+        MobDev.OtpDownloader.ios_device_otp_dir()
+      ]
+      |> Enum.flat_map(&Path.wildcard(Path.join(&1, "lib/ssl-*/ebin")))
+
+    # crypto.beam/crypto.app: the crypto shim, also pre-MOB-493. The real
+    # crypto lives in the runtime's lib/crypto-*, never in the beams dir.
+    (host ++ runtimes)
+    |> Enum.flat_map(fn ebin ->
+      case File.ls(ebin) do
+        {:ok, names} -> names
+        _ -> []
+      end
+    end)
+    |> Enum.filter(&(Path.extname(&1) in [".beam", ".app", ".appup"]))
+    |> Enum.concat(["crypto.beam", "crypto.app"])
+    |> Enum.uniq()
+    |> Enum.sort()
   end
 
-  # Losing the rename to a concurrent build is fine: the winner's directory
-  # holds the same compiled shim.
-  defp publish_crypto_shim(staging, dir) do
-    case File.rename(staging, dir) do
-      :ok ->
-        {:ok, dir}
+  @doc false
+  @spec stale_host_ssl_rm_cmd(String.t(), [String.t()]) :: String.t() | nil
+  def stale_host_ssl_rm_cmd(beams_dir, files \\ stale_host_ssl_files())
+  def stale_host_ssl_rm_cmd(_beams_dir, []), do: nil
 
-      {:error, reason} ->
-        if File.regular?(Path.join(dir, "crypto.beam")),
-          do: {:ok, dir},
-          else: {:error, "crypto shim install failed: #{inspect(reason)}"}
-    end
+  def stale_host_ssl_rm_cmd(beams_dir, files),
+    do: ~s(cd "#{beams_dir}" && rm -f #{Enum.join(files, " ")})
+
+  defp remove_stale_host_ssl!(beams_dir) do
+    Enum.each(stale_host_ssl_files(), &File.rm(Path.join(beams_dir, &1)))
   end
 
   defp count_beams(beam_dirs) do

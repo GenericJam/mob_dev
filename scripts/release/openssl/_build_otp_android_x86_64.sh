@@ -20,6 +20,10 @@ export PATH="$NDK_ROOT/toolchains/llvm/prebuilt/darwin-x86_64/bin:$PATH"
 export NDK_ABI_PLAT
 export RELEASE_LIBBEAM=yes
 
+# Resolved before the cd below: $0 may be relative, and a relative path
+# made the old `[ -f ] && cp` skip the conf silently.
+VENDORED_CONF="$(cd "$(dirname "$0")/../xcomp" && pwd)/erl-xcomp-x86_64-android.conf"
+
 cd "$OTP_SRC"
 
 # Install mob's corrected x86_64 xcomp conf into the OTP source. Upstream
@@ -27,8 +31,8 @@ cd "$OTP_SRC"
 # --without-* flags; references the removed ld.gold) — see
 # scripts/release/xcomp/erl-xcomp-x86_64-android.conf. Vendored here so a
 # fresh OTP checkout builds without manual patching.
-VENDORED_CONF="$(dirname "$0")/../xcomp/erl-xcomp-x86_64-android.conf"
-[ -f "$VENDORED_CONF" ] && cp "$VENDORED_CONF" "$OTP_SRC/xcomp/erl-xcomp-x86_64-android.conf"
+[ -f "$VENDORED_CONF" ] || { echo "missing $VENDORED_CONF" >&2; exit 1; }
+cp "$VENDORED_CONF" "$OTP_SRC/xcomp/erl-xcomp-x86_64-android.conf"
 
 
 # Clean any stale config from a prior arch (arm64, iOS, etc.).
@@ -40,6 +44,11 @@ make distclean >/dev/null 2>&1 || true
     --disable-dynamic-ssl-lib
 
 ./otp_build boot
+
+# Static asn1 NIF for the tarball's erts-*/lib/asn1rt_nif.a (linked into the
+# app like crypto.a). `boot` only builds it with --enable-static-nifs, which
+# Android doesn't use, so build OTP's own static_lib target directly.
+ERL_TOP="$OTP_SRC" make -C lib/asn1/c_src TARGET=x86_64-pc-linux-android static_lib
 
 rm -rf "$OTP_RELEASE"
 ./otp_build release -a "$OTP_RELEASE"
