@@ -398,6 +398,92 @@ defmodule MobDev.SecurityScan.Layers.BundledRuntimeTest do
     end
   end
 
+  describe "SQLite CVEs" do
+    @sqlite_ids_after_3_45 ~w(CVE-2025-29087 CVE-2025-29088 CVE-2025-3277 CVE-2025-52099
+                              CVE-2025-6965 CVE-2025-70873 CVE-2025-7709 CVE-2026-11822
+                              CVE-2026-11824)
+
+    defp write_sqlite(dir, version) do
+      c_src = Path.join([dir, "deps", "exqlite", "c_src"])
+      File.mkdir_p!(c_src)
+
+      File.write!(
+        Path.join(c_src, "sqlite3.c"),
+        ~s(/* amalgamation */\n#define SQLITE_VERSION        "#{version}"\n)
+      )
+    end
+
+    defp sqlite_ids(result) do
+      for %Finding{source: :sqlite_cves, id: id} <- result.findings, do: id
+    end
+
+    test "exqlite 0.37.0's SQLite 3.53.2 has no CVEs, even with no tarball cache",
+         %{tmp_dir: dir} do
+      write_sqlite(dir, "3.53.2")
+      cache = Path.join(dir, "empty_cache")
+      File.mkdir_p!(cache)
+
+      result = run_with_feeds(dir, cache, feed_server())
+
+      assert result.status == :ok
+      assert sqlite_ids(result) == []
+      assert "sqlite.org CVE table" in result.tools_used
+
+      assert Enum.any?(
+               result.notes,
+               &(&1 =~ "SQLite 3.53.2 (deps/exqlite/c_src/sqlite3.c): 0 of 13 fixed CVEs on " and
+                   &1 =~ "(fetched just now)")
+             )
+    end
+
+    test "an older SQLite reports each CVE fixed after it, beside the runtime findings",
+         %{tmp_dir: dir} do
+      write_sqlite(dir, "3.45.0")
+      cache = Path.join(dir, "cache")
+      runtime_29_0(cache, :android, real_hash())
+
+      result = run_with_feeds(dir, cache, feed_server())
+
+      assert Enum.sort(sqlite_ids(result)) == @sqlite_ids_after_3_45
+      assert Enum.any?(result.findings, &(&1.id == "OPENSSL-EOL-3.4"))
+
+      assert %Finding{severity: :medium, package: "sqlite", version: "3.45.0", fixed_in: "3.52.0"} =
+               Enum.find(result.findings, &(&1.id == "CVE-2025-70873"))
+
+      assert Enum.any?(result.notes, &(&1 =~ "SQLite 3.45.0" and &1 =~ "9 of 13 fixed CVEs"))
+    end
+
+    test "offline without a cached page still completes and warns", %{tmp_dir: dir} do
+      write_sqlite(dir, "3.45.0")
+      cache = Path.join(dir, "empty_cache")
+      File.mkdir_p!(cache)
+
+      result = run_offline(dir, cache)
+
+      assert result.status == :ok
+      assert sqlite_ids(result) == []
+
+      assert Enum.any?(
+               result.notes,
+               &(&1 =~ "⚠ SQLite 3.45.0 (deps/exqlite/c_src/sqlite3.c): advisory data unavailable" and
+                   &1 =~ "https://www.sqlite.org/cves.html")
+             )
+    end
+
+    test "offline after a successful scan reuses the cached page, flagged stale",
+         %{tmp_dir: dir} do
+      write_sqlite(dir, "3.45.0")
+      cache = Path.join(dir, "empty_cache")
+      File.mkdir_p!(cache)
+      run_with_feeds(dir, cache, feed_server())
+
+      result = run_offline(dir, cache, advisory_ttl: 0)
+
+      assert Enum.sort(sqlite_ids(result)) == @sqlite_ids_after_3_45
+      assert Enum.any?(result.notes, &(&1 =~ "⚠ SQLite 3.45.0" and &1 =~ "STALE copy"))
+    end
+  end
+
   # The 5c9c69fc runtime as cached: OTP 29.0, ssl 11.7, OpenSSL 3.4.0.
   defp runtime_29_0(cache, platform, hash) do
     build_tarball(cache, platform, hash,
@@ -412,6 +498,7 @@ defmodule MobDev.SecurityScan.Layers.BundledRuntimeTest do
     otp = File.read!(Path.join(@fixtures, "otp_security_advisories.json"))
     openssl = File.read!(Path.join(@fixtures, "openssl_vulnerabilities_3.4.html"))
     eol = File.read!(Path.join(@fixtures, "endoflife_openssl.json"))
+    sqlite = File.read!(Path.join(@fixtures, "sqlite_cves.html"))
 
     fn
       "https://api.github.com/repos/erlang/otp/" <> _, _ ->
@@ -422,6 +509,9 @@ defmodule MobDev.SecurityScan.Layers.BundledRuntimeTest do
 
       "https://endoflife.date/api/openssl.json", _ ->
         {:ok, 200, [], eol}
+
+      "https://www.sqlite.org/cves.html", _ ->
+        {:ok, 200, [], sqlite}
 
       _url, _ ->
         {:ok, 404, [], "Not Found"}

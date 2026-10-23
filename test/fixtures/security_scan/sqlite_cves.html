@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html><head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="content-type" content="text/html; charset=UTF-8">
+<link href="sqlite.css" rel="stylesheet">
+<title>Vulnerabilities</title>
+<!-- path= -->
+</head>
+<body>
+<div class=nosearch>
+<a href="index.html">
+<img class="logo" src="images/sqlite370_banner.svg" alt="SQLite" border="0">
+</a>
+<div><!-- IE hack to prevent disappearing logo --></div>
+<div class="tagline desktoponly">
+Small. Fast. Reliable.<br>Choose any three.
+</div>
+<div class="menu mainmenu">
+<ul>
+<li><a href="index.html">Home</a>
+<li class='mobileonly'><a href="javascript:void(0)" onclick='toggle_div("submenu")'>Menu</a>
+<li class='wideonly'><a href='about.html'>About</a>
+<li class='desktoponly'><a href="docs.html">Documentation</a>
+<li class='desktoponly'><a href="download.html">Download</a>
+<li class='wideonly'><a href='copyright.html'>License</a>
+<li class='desktoponly'><a href="support.html">Support</a>
+<li class='desktoponly'><a href="prosupport.html">Purchase</a>
+<li class='search' id='search_menubutton'>
+<a href="javascript:void(0)" onclick='toggle_search()'>Search</a>
+</ul>
+</div>
+<div class="menu submenu" id="submenu">
+<ul>
+<li><a href='about.html'>About</a>
+<li><a href='docs.html'>Documentation</a>
+<li><a href='download.html'>Download</a>
+<li><a href='support.html'>Support</a>
+<li><a href='prosupport.html'>Purchase</a>
+</ul>
+</div>
+<div class="searchmenu" id="searchmenu">
+<form method="GET" action="search">
+<select name="s" id="searchtype">
+<option value="d">Search Documentation</option>
+<option value="c">Search Changelog</option>
+</select>
+<input type="text" name="q" id="searchbox" value="">
+<input type="submit" value="Go">
+</form>
+</div>
+</div>
+<script>
+function toggle_div(nm) {
+var w = document.getElementById(nm);
+if( w.style.display=="block" ){
+w.style.display = "none";
+}else{
+w.style.display = "block";
+}
+}
+function toggle_search() {
+var w = document.getElementById("searchmenu");
+if( w.style.display=="block" ){
+w.style.display = "none";
+} else {
+w.style.display = "block";
+setTimeout(function(){
+document.getElementById("searchbox").focus()
+}, 30);
+}
+}
+function div_off(nm){document.getElementById(nm).style.display="none";}
+window.onbeforeunload = function(e){div_off("submenu");}
+/* Disable the Search feature if we are not operating from CGI, since */
+/* Search is accomplished using CGI and will not work without it. */
+if( !location.origin || !location.origin.match || !location.origin.match(/http/) ){
+document.getElementById("search_menubutton").style.display = "none";
+}
+/* Used by the Hide/Show button beside syntax diagrams, to toggle the */
+function hideorshow(btn,obj){
+var x = document.getElementById(obj);
+var b = document.getElementById(btn);
+if( x.style.display!='none' ){
+x.style.display = 'none';
+b.innerHTML='show';
+}else{
+x.style.display = '';
+b.innerHTML='hide';
+}
+return false;
+}
+var antiRobot = 0;
+function antiRobotGo(){
+if( antiRobot!=3 ) return;
+antiRobot = 7;
+var j = document.getElementById("mtimelink");
+if(j && j.hasAttribute("data-href")) j.href=j.getAttribute("data-href");
+}
+function antiRobotDefense(){
+document.body.onmousedown=function(){
+antiRobot |= 2;
+antiRobotGo();
+document.body.onmousedown=null;
+}
+document.body.onmousemove=function(){
+antiRobot |= 2;
+antiRobotGo();
+document.body.onmousemove=null;
+}
+setTimeout(function(){
+antiRobot |= 1;
+antiRobotGo();
+}, 100)
+antiRobotGo();
+}
+antiRobotDefense();
+</script>
+<div class=fancy>
+<div class=nosearch>
+<div class="fancy_title">
+Vulnerabilities
+</div>
+<details class="fancy_toc">
+<summary>Table Of Contents</summary>
+<div id="toc_sub"><div class="fancy-toc1"><a href="#executive_summary">1. Executive Summary</a></div>
+<div class="fancy-toc1"><a href="#about_cves">2. About CVEs</a></div>
+<div class="fancy-toc2"><a href="#a_separate_sql_injection_vulnerability_is_usually_required">2.1. A separate SQL injection vulnerability is usually required</a></div>
+<div class="fancy-toc2"><a href="#defense_against_dark_arts">2.2. Defense Against Dark Arts</a></div>
+<div class="fancy-toc2"><a href="#the_sqlite_developer_policy_toward_cves">2.3. The SQLite Developer Policy Toward CVEs</a></div>
+<div class="fancy-toc1"><a href="#status_of_recent_sqlite_cves">3. Status Of Recent SQLite CVEs</a></div>
+</div>
+</details>
+</div>
+
+
+
+
+
+<h1 id="executive_summary"><span>1. </span>Executive Summary</h1>
+
+<ul>
+<li><p>
+CVEs about SQLite probably do not apply to your use of SQLite.
+
+</p></li><li><p>
+All historical vulnerabilities reported against SQLite require at least
+one of these preconditions:
+</p><ol type="1">
+<li><p>
+The attacker can submit and run arbitrary SQL statements.
+</p></li><li><p>
+The attacker can submit a maliciously crafted database file to the
+application that the application will then open and query.
+</p></li></ol>
+
+</li><li><p>
+Few real-world applications meet either of these preconditions, and hence
+few real-world applications are vulnerable, even if they use older
+and unpatched versions of SQLite.
+
+</p></li><li><p>
+The SQLite development team fixes bugs promptly,
+usually within hours of discovery.  New releases of SQLite
+are issued if the bug seems likely to impact real-world
+applications.
+
+</p></li><li><p>
+Grey-hat hackers are rewarded based on the number and severity of 
+CVEs that they write.  This results in a proliferation of CVEs that
+have minor impact, or no impact at all, but which make
+exaggerated impact claims.
+
+</p></li><li><p><a name="notnew"></a>
+Very few CVEs written about SQLite are real vulnerabilities in the 
+sense that they do not give any new capabilities to an attacker.
+Consider:
+</p><ol type="a">
+<li><p>
+    Almost all CVEs written against SQLite require the ability to
+    inject and run arbitrary SQL.
+</p></li><li><p>
+    The advertised consequence of most CVEs is "denial of service",
+    typically by causing a crash through a NULL pointer dereference or
+    a division by zero, or similar.
+</p></li><li><p>
+    But if an attacker can already run
+    arbitrary SQL, they do not need a bug to cause a denial of service.
+    There are plenty of perfectly legal and valid SQL statements
+    that will consume unlimited CPU, memory, and disk I/O in order
+    to create a denial-of-service without requiring help from bugs.
+</p></li><li><p>
+    Hence, the mere fact that an attacker has a way to inject and run
+    arbitrary SQL is in and of itself a denial-of-service attack.  That
+    the arbitrary SQL might also tickle a bug in SQLite and cause a
+    crash is not a new vulnerability.
+</p></li></ol>
+
+</li><li><p>
+The SQLite developers do not write CVEs.  Any CVEs you find on
+SQLite are generated by third-parties, often without any input from the
+core developers.  A common scenario is that someone will report a bug in
+SQLite, which will promptly be fixed, then weeks later a CVE for that bug will
+appear, unbeknownst to the developers.
+
+</p></li><li><p>
+You should not assume that a CVE about
+SQLite contains authoritative information.
+CVEs often contain inaccuracies.
+The SQLite developers have attempted to add clarifications and
+corrections to CVEs about SQLite.  
+
+</p></li></ul>
+
+<h1 id="about_cves"><span>2. </span>About CVEs</h1>
+
+<p>CVEs ("Common Vulnerabilities and Exposures") are reports of software
+bugs that might allow a system to be hacked.  The idea
+behind CVEs is sound.  They provide a common naming scheme whereby 
+software bugs that might compromise information security can be easily
+tracked.
+
+</p><p>While the original idea behind CVEs is sound, the current processes for
+creating and managing CVEs are inadequate.  There are countless grey-hat
+hackers running fuzzers against a wide-variety of open-source software
+products (SQLite as well as many others) and writing up CVEs against
+any problems they find.  The grey-hats are rewarded, sometimes with
+prestige and sometimes financially, by the number and severity of
+the CVEs they write.  This incentive results in a proliferation
+of CVEs which are often not well-vetted and which can have exaggerated
+impact claims.  The quality-control procedures for CVEs are unable
+to cope with this flood of inputs, making it difficult to correct
+exaggerated, misleading, omitted, or inaccurate claims.
+
+</p><p>This is not to say that CVEs are useless.  CVEs do still (mostly)
+report actual bugs.  But in most cases the bugs are not true vulnerabilities,
+in the sense that they do not contribute to data loss or compromise
+in and of themselves.
+It is good that bugs are reported and fixed.  But not every bug is
+accessible from every application.  In the case of SQLite, most of the
+bugs reported by CVEs are inaccessible in most applications.  Upgrading
+to the latest version of SQLite is always a good plan, but it need not
+be an emergency just because an anonymous grey-hat on the internet
+wrote up a CVE.
+
+</p><h2 id="a_separate_sql_injection_vulnerability_is_usually_required"><span>2.1. </span>A separate SQL injection vulnerability is usually required</h2>
+
+<p>
+Other C-libraries that process complex structured inputs will
+routinely be asked to deal with unvetted inputs from untrusted
+sources.  Libraries like libjpeg, or libzip, or OpenSSL are
+handed input streams that come directly from potentially hostile
+agents.
+
+</p><p>
+But database engines like SQLite are usually not this way.
+The SQL scripts that are passed into SQLite come from the
+(trusted) application itself, not from an attacker.  Sometimes
+applications contain bugs by which an external attacker can
+trick the application into sending SQL of the attackers design
+into the database engine.  This is a separate bug in the
+application called an
+<a href="https://en.wikipedia.org/wiki/SQL_injection">SQL Injection
+vulnerability</a>.  Since SQL text is executable code, an
+SQL Injection vulnerability is actually a special case of a
+<a href="https://en.wikipedia.org/wiki/Arbitrary_code_execution">Remote
+Code Execution (RCE) vulnerability</a>.  An SQL Injection is perhaps not
+quite as bad as other kinds of RCEs because,
+while SQL is a powerful language, it is not as convenient
+for crafting an exploit as Python or shell script or raw machine code.
+Nevertheless, an SQL Injection is a serious problem.
+
+</p><p>
+Most CVEs written about SQLite assume that the attacker is
+able to run arbitrary SQL scripts in SQLite.  In most applications,
+this means that there must first be an SQL Injection vulnerability
+that allows the attacker to inject the malicious SQL.
+
+</p><p>
+A few applications do allow untrusted SQL scripts received from
+potentially hostile agents to be run direct in SQLite.  The main
+example of this is the Chrome and Safari web browsers, which allow
+an anonymous web page to run SQL using the WebSQL feature of Javascript.
+This is done inside a sandbox with tightly controlled constraints on
+resources, lest the SQL script try to soak up all available memory
+or CPU cycles in a denial-of-service attack.  Chrome and Safari
+have the infrastructure in place to allow a hostile agent to run
+code which does not harm or compromise the rest of the machine.
+They have to, as they also run Javascript which could, if not
+tightly controlled, do even more damage than unrestrained SQL.
+Apart from Chrome and Safari, no applications known to the
+SQLite developers deliberately allows an anonymous remote agent
+to run arbitrary SQL text.
+
+</p><p>However, most CVEs written against SQLite flippantly assume
+that an attacker is free to run any arbitrary SQL in the database
+engine.  So to a good approximation, this means most CVEs
+written against SQLite really only apply to SQLite as it is
+used in Chrome and Safari.  Or, in other words, most CVEs
+for SQLite do not apply to you unless you are one of the
+developers of Chrome or Safari.
+
+</p><h2 id="defense_against_dark_arts"><span>2.2. </span>Defense Against Dark Arts</h2>
+
+<p>
+Most applications can use SQLite without having to worry about
+bugs in obscure SQL inputs.  If the application controls
+the SQL, and the application is not deliberately trying to break
+SQLite, then everything should just work.
+It is not necessary to have the latest patched version of SQLite.
+Any older version should work just fine.
+
+</p><p>
+However, there are some occasions where an application does need
+to be able to safely run untrusted SQL. The SQLite developers work hard
+to make SQLite safe for this purpose, though there are occasional
+slip-ups.  It is good to keep up-to-date with the latest patches
+in this case.  The separate <a href="security.html">defense against dark arts</a> document
+contains additional suggestions that can help prevent zero-day
+attacks in cases where SQLite is given inputs that come directly
+from untrusted sources. 
+
+</p><h2 id="the_sqlite_developer_policy_toward_cves"><span>2.3. </span>The SQLite Developer Policy Toward CVEs</h2>
+
+<p>SQLite developers fix all bugs in SQLite as soon as they are reported,
+usually within a few hours.  The fixes are immediately available on the
+<a href="https://sqlite.org/src/timeline">public SQLite source tree</a>.
+If a bug seems like it might cause problems for existing applications,
+a new patch release for SQLite will be issued.
+
+</p><p>However, the SQLite developers do not track CVEs.  There are 
+various reasons for this:
+
+</p><ol>
+<li><p>
+The developers often do not find out about CVEs until long after the
+bug is fixed.  You can see this by the fact that many CVEs reference the
+bug fix in their initial report.
+
+</p></li><li><p>
+CVEs are a low-quality source of information about bugs in SQLite
+that are likely to affect most applications.
+
+</p></li><li><p>
+Almost all bugs reported by CVEs are just bugs and not
+true vulnerabilities.  Claiming that they are vulnerabilities is
+stretching the meaning of the word "vulnerability" and the SQLite
+developers do not wish to participate in that deception.
+
+</p></li><li><p>
+The developers have no editorial influence on the content of CVEs,
+and they do not like to be controlled by groups in which they have
+no voice.
+</p></li></ol>
+
+
+<a name="cvetab"></a>
+
+<h1 id="status_of_recent_sqlite_cves"><span>3. </span>Status Of Recent SQLite CVEs</h1>
+
+<p>Though the SQLite developers do not consider CVEs to be a reliable
+source of information about bugs in SQLite, they recognize that many
+groups, and especially small teams working at the bottom of tall
+bureaucracies, sometimes need to track CVEs, whether they are useful
+or not.  To aid in this chore, the following table of recent CVEs
+affecting SQLite is provided.
+
+</p><p>If you notice new CVEs associated with SQLite that are not in
+the table below, please bring them to the attention of the developers
+on the <a href="https://sqlite.org/forum/about">SQLite Forum</a> so they can
+be added.
+
+</p><table border="1" cellpadding="5" cellspacing="0" style="margin-left:5ex;">
+<thead>
+<tr>
+<th valign="bottom">CVE Number</th>
+<th valign="bottom">Fix</th>
+<th valign="bottom">Comments</th>
+</tr>
+</thead>
+<tbody>
+
+<tr><td valign='top'>
+<a id='CVE-2026-11822'></a>
+<a href='https://nvd.nist.gov/vuln/detail/CVE-2026-11822'>CVE-2026-11822</a>
+<br>
+<a id='CVE-2026-11824'></a>
+<a href='https://nvd.nist.gov/vuln/detail/CVE-2026-11824'>CVE-2026-11824</a>
+</td>
+<td valign='top'><a href="releaselog/3_53_2.html">3.53.2</a><br>(2026-06-03)</td>
+<td valign='top'>An attacker who can execute arbitrary SQL (for example via SQL injection) on
+  a system that has the <a href="c3ref/c_dbconfig_defensive.html#sqlitedbconfigdefensive">SQLITE_DBCONFIG_DEFENSIVE</a> disabled and which
+  has <a href="fts5.html">FTS5</a> enabled, can cause a write off the end of a heap buffer.
+  There are two separate CVEs for this same exact problem.</td>
+</tr>
+
+<tr><td valign='top'>
+<a id='CVE-2026-51296'></a>
+<a href='https://nvd.nist.gov/vuln/detail/CVE-2026-51296'>CVE-2026-51296</a>
+<br>
+<a id='CVE-2026-51297'></a>
+<a href='https://nvd.nist.gov/vuln/detail/CVE-2026-51297'>CVE-2026-51297</a>
+<br>
+<a id='CVE-2026-51300'></a>
+<a href='https://nvd.nist.gov/vuln/detail/CVE-2026-51300'>CVE-2026-51300</a>
+<br>
+<a id='CVE-2026-51302'></a>
+<a href='https://nvd.nist.gov/vuln/detail/CVE-2026-51302'>CVE-2026-51302</a>
+<br>
+<a id='CVE-2026-51303'></a>
+<a href='https://nvd.nist.gov/vuln/detail/CVE-2026-51303'>CVE-2026-51303</a>
+<br>
+<a id='CVE-2026-51304'></a>
+<a href='https://nvd.nist.gov/vuln/detail/CVE-2026-51304'>CVE-2026-51304</a>
+</td>
+<td valign='top'>Not a bug in SQLite</td>
+<td valign='top'>These are unreproducible. They appear to be AI hallucinations.
+  See the analysis at
+  <a href="https://research.jfrog.com/post/sqlite-critical-cves-or-llm-slops/">JFrog.com</a>.</td>
+</tr>
+
+<tr><td valign='top'>
+<a id='CVE-2025-3277'></a>
+<a href='https://nvd.nist.gov/vuln/detail/CVE-2025-3277'>CVE-2025-3277</a>
+<br>
+<a id='CVE-2025-29087'></a>
+<a href='https://nvd.nist.gov/vuln/detail/CVE-2025-29087'>CVE-2025-29087</a>
+</td>
+<td valign='top'><a href="releaselog/3_49_1.html">3.49.1</a><br>(2025-02-18)</td>
+<td valign='top'>A bug in the <a href="lang_corefunc.html#concat_ws">concat_ws() SQL function</a> can cause a write past the end of an array
+  obtained from malloc().  If an attacker can control the first argument to concat_ws(),
+  so that the separator string is large - more than 2MB - then an integer overflow
+  in the calculation of the size of the result buffer might cause a short malloc() and
+  subsequent write past the end of the allocated space.  Fixed by
+  <a href="https://sqlite.org/src/info/2025-02-16T10:57z">check-in 2025-02-16T10:57z</a>.</td>
+</tr>
+
+<tr><td valign='top'>
+<a id='CVE-2025-6965'></a>
+<a href='https://nvd.nist.gov/vuln/detail/CVE-2025-6965'>CVE-2025-6965</a>
+</td>
+<td valign='top'><a href="releaselog/3_50_2.html">3.50.2</a><br>(2025-06-28)</td>
+<td valign='top'>An attacker who can inject arbitrary SQL statements into an application
+  might be able to cause an integer overflow resulting in a read off the end
+  of an array.
+  <a href="https://sqlite.org/src/info/5508b56fd24016c1">Fixed on 2025-06-27</a>.</td>
+</tr>
+
+<tr><td valign='top'>
+<a id='CVE-2025-7458'></a>
+<a href='https://nvd.nist.gov/vuln/detail/CVE-2025-7458'>CVE-2025-7458</a>
+</td>
+<td valign='top'><a href="releaselog/3_42_0.html">3.42.0</a><br>(2023-05-16)</td>
+<td valign='top'>An attacker who can inject arbitrary SQL statements into an application
+  might be able to cause an integer overflow resulting in a read off the end
+  of an array.
+  <a href="https://sqlite.org/src/info/12ad822d9b827777">Fixed on 2023-03-16</a>.</td>
+</tr>
+
+<tr><td valign='top'>
+<a id='CVE-2025-7709'></a>
+<a href='https://nvd.nist.gov/vuln/detail/CVE-2025-7709'>CVE-2025-7709</a>
+</td>
+<td valign='top'><a href="releaselog/3_50_3.html">3.50.3</a><br>(2025-07-17)</td>
+<td valign='top'>An attacker who has complete control over the database content could
+  create a corrupt <a href="fts5.html">FTS5</a> index resulting access to memory outside the
+  bounds of an array due to integer overflow.
+  <a href="https://sqlite.org/src/info/63595b74956a9391">Fixed on 2025-07-15</a>.</td>
+</tr>
+
+<tr><td valign='top'>
+<a id='CVE-2025-29088'></a>
+<a href='https://nvd.nist.gov/vuln/detail/CVE-2025-29088'>CVE-2025-29088</a>
+<br>
+<a id='CVE-2025-52099'></a>
+<a href='https://nvd.nist.gov/vuln/detail/CVE-2025-52099'>CVE-2025-52099</a>
+</td>
+<td valign='top'><a href="releaselog/3_49_1.html">3.49.1</a><br>(2025-02-18)</td>
+<td valign='top'>Passing out-of-bounds arguments to the C-language API routine
+  <a href="c3ref/db_config.html">sqlite3_db_config</a>(db,<a href="c3ref/c_dbconfig_defensive.html#sqlitedbconfiglookaside">SQLITE_DBCONFIG_LOOKASIDE</a>,...) can lead
+  to a crash and denial of service.  Reported by
+  <a href="https://sqlite.org/forum/forumpost/48f365daec">Forum post 48f365daec</a>.
+  Complaint addressed by
+  <a href="https://sqlite.org/src/info/202502171416Z">check-in 2025-02-17T14:16Z</a>.</td>
+</tr>
+
+<tr><td valign='top'>
+<a id='CVE-2025-70873'></a>
+<a href='https://nvd.nist.gov/vuln/detail/CVE-2025-70873'>CVE-2025-70873</a>
+</td>
+<td valign='top'><a href="releaselog/3_52_0.html">3.52.0</a><br>(2026-03-06)</td>
+<td valign='top'>When using the <a href="zipfile.html">zipfile extension</a> (not a part of standard SQLite but usually
+  included in builds of the <a href="cli.html">CLI</a>), a malformed ZIP file input can result in an out-of-bounds read.
+  Reported by <a href="https://sqlite.org/forum/forumpost/761eac3c82">forum post 2025-12-06T16:46:32Z</a>
+  and fixed in trunk by
+  <a href="https://sqlite.org/src/info/9766b47beb9ec72f">check-in 2025-12-06T23:58:09.413Z</a>.</td>
+</tr>
+
+<tr><td valign='top'>
+<a id='CVE-2024-0232'></a>
+<a href='https://nvd.nist.gov/vuln/detail/CVE-2024-0232'>CVE-2024-0232</a>
+</td>
+<td valign='top'><a href="releaselog/3_43_2.html">3.43.2</a><br>(2023-10-10)</td>
+<td valign='top'>An attacker who can inject arbitrary SQL statements into an application
+  might be able to provoke a use-after-free bug in SQLite's JSON parser that
+  can (in theory) lead to an application crash and denial of service. See
+  <a href="https://sqlite.org/forum/forumpost/b25edc1d4662ebca">forum thread b25edc1d4662</a>
+  for the bug report.</td>
+</tr>
+
+<tr><td valign='top'>
+<a id='CVE-2023-32697'></a>
+<a href='https://nvd.nist.gov/vuln/detail/CVE-2023-32697'>CVE-2023-32697</a>
+</td>
+<td valign='top'>Not a bug in SQLite</td>
+<td valign='top'>This is a bug in the SQLite JDBC library, which is a wrapper library that
+  provides access to SQLite from Java.  SQLite JDBC is created and maintained
+  independently from SQLite.  Despite the use of "SQLite" in the name, the
+  SQLite JDBC library is not affiliated with the SQLite project in any way.
+  The vulnerability identified by this CVE is in the separate SQLite JDBC
+  wrapper library and does not affect SQLite itself.</td>
+</tr>
+
+<tr><td valign='top'>
+<a id='CVE-2023-7104'></a>
+<a href='https://nvd.nist.gov/vuln/detail/CVE-2023-7104'>CVE-2023-7104</a>
+</td>
+<td valign='top'><a href="releaselog/3_43_1.html">3.43.1</a><br>(2023-09-11)</td>
+<td valign='top'>This is a bug in the <a href="sessionintro.html">session extension</a> of SQLite, not in the SQLite core.
+  This bug is only reachable by applications that recompile SQLite using the
+  <a href="compile.html#enable_session">-DSQLITE_ENABLE_SESSION</a> compile-time option and then use the Session
+  C-language APIs to process a <a href="sessionintro.html#changeset">changeset</a> that has been subtly corrupted by an
+  adversary.  So this bug probably does not apply to you.  See
+  <a href="https://sqlite.org/forum/forumpost/f935c4708dd528d9">forum post f935c4708dd528d9</a>
+  for additional information.</td>
+</tr>
+
+<tr><td valign='top'>
+<a id='CVE-2022-46908'></a>
+<a href='https://nvd.nist.gov/vuln/detail/CVE-2022-46908'>CVE-2022-46908</a>
+</td>
+<td valign='top'>Not a bug in the core SQLite library</td>
+<td valign='top'>This is a bug in the --safe command-line option of the <a href="cli.html">command-line shell</a>
+  program that is available for accessing SQLite database files.  The bug does
+  not exist in the SQLite library.  Nor is it an issue for the <a href="cli.html">CLI</a> as long as
+  the user does not depend on the --safe option.  It is not serious.  It is
+  debatable whether or not this is a security issue.</td>
+</tr>
+
+<tr><td valign='top'>
+<a id='CVE-2022-35737'></a>
+<a href='https://nvd.nist.gov/vuln/detail/CVE-2022-35737'>CVE-2022-35737</a>
+</td>
+<td valign='top'><a href="releaselog/3_39_2.html">3.39.2</a><br>(2022-07-21)</td>
+<td valign='top'>This bug is an array-bounds overflow.  The bug is only accessible when using some
+  of the C-language APIs provided by SQLite.  The bug cannot be reached using SQL
+  nor can it be reached by providing SQLite with a corrupt database file.
+  The bug only comes up when very long string inputs (greater than 2 billion bytes
+  in length) are provided as arguments to a few specific C-language interfaces,
+  and even then only under special circumstances.</td>
+</tr>
+</tbody>
+</table>
+<p align="center"><small><i>This page was last updated on 2026-08-01 14:33:42Z </small></i></p>
+

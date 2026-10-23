@@ -515,7 +515,7 @@ app binary, not declared in any lockfile).
 | `hex_deps` | [`mix_audit`](https://hexdocs.pm/mix_audit/) + [`osv-scanner`](https://google.github.io/osv-scanner/) | Hex dependencies in `mix.lock` |
 | `gradle_deps` | `osv-scanner` | Android Gradle dependencies (when `gradle.lockfile` is enabled) |
 | `swift_deps` | `osv-scanner` | iOS `Package.resolved` / `Podfile.lock` |
-| `bundled_runtime` | `BundledVersions` manifest + binary fingerprint + upstream advisories | OpenSSL, ERTS, Elixir, exqlite, SQLite *baked into the OTP tarball* — drift between the manifest and the binaries, plus known CVEs in the bundled OTP applications and OpenSSL and OpenSSL branch end-of-life |
+| `bundled_runtime` | `BundledVersions` manifest + binary fingerprint + upstream advisories | OpenSSL, ERTS, Elixir, exqlite, SQLite *baked into the OTP tarball* — drift between the manifest and the binaries, plus known CVEs in the bundled OTP applications and OpenSSL, OpenSSL branch end-of-life, and known CVEs in the project's exqlite SQLite |
 | `c_source` | [`semgrep`](https://semgrep.dev/) + [`flawfinder`](https://dwheeler.com/flawfinder/) | Mob's NIF C/Objective-C plus the exqlite NIF wrapper |
 | `kotlin_source` | [`detekt`](https://detekt.dev/) | Kotlin/Java under `android/app/src/main/` |
 | `swift_source` | [`swiftlint`](https://github.com/realm/SwiftLint) | Swift under `ios/` |
@@ -538,13 +538,20 @@ matches what it found against upstream advisories:
   [endoflife.date](https://endoflife.date/openssl). A branch past EOL is a
   `:high` finding.
 
+It also reads the SQLite version from the project's
+`deps/exqlite/c_src/sqlite3.c` (SQLite is compiled per app, not shipped
+in the tarball) and reports every CVE on
+[sqlite.org/cves.html](https://www.sqlite.org/cves.html) fixed in a later
+release. Rows SQLite marks "not a bug" are ignored; the page gives no
+severity, so these are `:medium`.
+
 Each affected advisory is a finding with the upstream severity, the
 installed and fixed versions, and a link. The data is cached in
 `~/.mob/cache/advisories/` for 24 hours. Offline, the scan uses the
 cached copy (marked stale once it's older than that); with no copy it
 warns and lists the pages to check by hand. A `GITHUB_TOKEN`/`GH_TOKEN`
-or `gh auth token` is used when available; it isn't required. Elixir
-and SQLite versions are still reported for manual checking.
+or `gh auth token` is used when available; it isn't required. The Elixir
+version is still reported for manual checking.
 
 ### Usage
 

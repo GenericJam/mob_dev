@@ -29,7 +29,7 @@ defmodule MobDev.SecurityScan.BundledRuntime.AdvisoryFeed do
 
   alias MobDev.SecurityScan.BundledRuntime.Advisories
 
-  @type source :: :otp | {:openssl, String.t()} | :openssl_eol
+  @type source :: :otp | {:openssl, String.t()} | :openssl_eol | :sqlite
   @typedoc """
   Where the data came from. A fetch whose cache write failed carries the
   write error, since the next offline run will have nothing to fall back to.
@@ -52,7 +52,8 @@ defmodule MobDev.SecurityScan.BundledRuntime.AdvisoryFeed do
 
   @doc """
   Load one source's decoded data: `[advisory]` for `:otp`, the parsed
-  page entries for `{:openssl, branch}`, `[cycle]` for `:openssl_eol`.
+  page entries for `{:openssl, branch}` and `:sqlite`, `[cycle]` for
+  `:openssl_eol`.
   """
   @spec load(source(), keyword()) :: {:ok, term(), provenance()} | {:error, String.t()}
   def load(source, opts) do
@@ -93,6 +94,7 @@ defmodule MobDev.SecurityScan.BundledRuntime.AdvisoryFeed do
   defp cache_file(:otp), do: "erlang-otp-security-advisories.json"
   defp cache_file({:openssl, branch}), do: "openssl-vulnerabilities-#{branch}.html"
   defp cache_file(:openssl_eol), do: "endoflife-openssl.json"
+  defp cache_file(:sqlite), do: "sqlite-cves.html"
 
   # A cache file that no longer decodes (truncated, or written by an older
   # parser) is treated as absent rather than trusted.
@@ -152,6 +154,13 @@ defmodule MobDev.SecurityScan.BundledRuntime.AdvisoryFeed do
     end
   end
 
+  defp decode(:sqlite, body) do
+    case Advisories.parse_sqlite_cves_page(body) do
+      {:ok, entries} -> {:ok, entries}
+      {:error, :unrecognised_page} -> {:error, "SQLite CVE page not recognised"}
+    end
+  end
+
   defp advisory_shaped?(%{"ghsa_id" => id, "vulnerabilities" => vulns})
        when is_binary(id) and is_list(vulns) do
     Enum.all?(vulns, &match?(%{"package" => %{"name" => name}} when is_binary(name), &1))
@@ -172,21 +181,15 @@ defmodule MobDev.SecurityScan.BundledRuntime.AdvisoryFeed do
     end
   end
 
-  defp fetch({:openssl, branch}, opts) do
-    url = Advisories.openssl_page_url(branch)
+  defp fetch({:openssl, branch}, opts), do: fetch_page(Advisories.openssl_page_url(branch), opts)
+  defp fetch(:openssl_eol, opts), do: fetch_page(@eol_url, opts)
+  defp fetch(:sqlite, opts), do: fetch_page(Advisories.sqlite_cves_url(), opts)
 
+  defp fetch_page(url, opts) do
     case http_get(opts).(url, [{"user-agent", user_agent()}]) do
       {:ok, 200, _headers, body} -> {:ok, body}
       {:ok, status, _headers, _body} -> {:error, "#{url}: HTTP #{status}"}
       {:error, reason} -> {:error, "#{url}: #{format_reason(reason)}"}
-    end
-  end
-
-  defp fetch(:openssl_eol, opts) do
-    case http_get(opts).(@eol_url, [{"user-agent", user_agent()}]) do
-      {:ok, 200, _headers, body} -> {:ok, body}
-      {:ok, status, _headers, _body} -> {:error, "#{@eol_url}: HTTP #{status}"}
-      {:error, reason} -> {:error, "#{@eol_url}: #{format_reason(reason)}"}
     end
   end
 
