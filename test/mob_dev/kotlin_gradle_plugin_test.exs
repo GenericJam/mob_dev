@@ -230,10 +230,16 @@ defmodule MobDev.KotlinGradlePluginTest do
     test "map notation reads through other keys between group, name and version", %{
       tmp_dir: root
     } do
-      assert [{:vulnerable, "android/build.gradle.kts", ["1.9.22"]}] =
+      assert [
+               {:vulnerable, "android/app/build.gradle.kts", ["2.0.0"]},
+               {:vulnerable, "android/build.gradle.kts", ["1.9.22"]}
+             ] =
                project(root, %{
                  "android/build.gradle.kts" => """
                  classpath(group = "org.jetbrains.kotlin", classifier = "x", name = "kotlin-gradle-plugin", ext = "jar", version = "1.9.22")
+                 """,
+                 "android/app/build.gradle.kts" => """
+                 classpath(classifier = "a", ext = "b", configuration = "c", transitive = false, changing = true, group = "org.jetbrains.kotlin", name = "kotlin-gradle-plugin", version = "2.0.0")
                  """
                })
     end
