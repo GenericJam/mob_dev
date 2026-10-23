@@ -268,4 +268,64 @@ defmodule Mix.Tasks.Mob.DoctorTest do
                ["setStartupPhase"]
     end
   end
+
+  describe "__kotlin_gradle_plugin_rows__/1 (MOB-497 CVE-2026-53914)" do
+    @tag :tmp_dir
+    test "warns, naming the file and version, for a pre-migration mob_new app", %{
+      tmp_dir: root
+    } do
+      write!(root, "android/build.gradle", """
+      buildscript {
+          dependencies {
+              classpath 'com.android.tools.build:gradle:8.2.0'
+              classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.22'
+          }
+      }
+      """)
+
+      assert [{:warn, "Kotlin Gradle plugin (android/build.gradle)", problem, _fix}] =
+               Mix.Tasks.Mob.Doctor.__kotlin_gradle_plugin_rows__(root)
+
+      assert problem =~ "1.9.22"
+      assert problem =~ "CVE-2026-53914"
+    end
+
+    @tag :tmp_dir
+    test "is silent for the migrated template", %{tmp_dir: root} do
+      write!(root, "android/build.gradle", """
+      buildscript {
+          dependencies {
+              classpath 'com.android.tools.build:gradle:9.3.3'
+              classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:2.4.21'
+              classpath 'org.jetbrains.kotlin:compose-compiler-gradle-plugin:2.4.21'
+          }
+      }
+      """)
+
+      assert Mix.Tasks.Mob.Doctor.__kotlin_gradle_plugin_rows__(root) == []
+    end
+
+    @tag :tmp_dir
+    test "warns when AGP 9's built-in Kotlin is left on its own KGP", %{tmp_dir: root} do
+      write!(root, "android/build.gradle", """
+      buildscript { dependencies { classpath 'com.android.tools.build:gradle:9.3.3' } }
+      """)
+
+      assert [{:warn, "Kotlin Gradle plugin (android/build.gradle)", problem, _fix}] =
+               Mix.Tasks.Mob.Doctor.__kotlin_gradle_plugin_rows__(root)
+
+      assert problem =~ "2.2.10"
+    end
+
+    @tag :tmp_dir
+    test "is silent when there is no Android project", %{tmp_dir: root} do
+      assert Mix.Tasks.Mob.Doctor.__kotlin_gradle_plugin_rows__(root) == []
+    end
+  end
+
+  defp write!(root, rel, content) do
+    path = Path.join(root, rel)
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, content)
+  end
 end
