@@ -126,7 +126,6 @@ defmodule MobDev.MixProject do
       # its Makefile to pin MobDev.Exqlite's SQLite defines (MOB-487). Its
       # children still resolve, which adds db_connection to the test build.
       {:exqlite, "~> 0.42", only: :test, runtime: false, compile: false, app: false},
-      {:erlfmt, "~> 1.8", only: :dev, runtime: false},
       # Dev-only dead-code detector. Wires in via the `:unused` compiler
       # tracer; ignore list maintained inline below since this codebase has
       # legitimate dynamic dispatch (NIF on_load stubs, GenServer

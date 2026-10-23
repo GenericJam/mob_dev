@@ -231,7 +231,6 @@ Before committing changes, run **all** in this order:
 mix test                   # full suite must pass (call out any pre-existing flake explicitly)
 mix format                 # apply Elixir formatting
 mix credo --strict         # **whole tree, not just changed files** — includes ExSlop (catches AI-generated patterns: blanket rescue, narrator docs, etc). Pre-existing issues are tracked separately, but new ones (including in tests) must be fixed
-mix erlfmt --check priv/android/crypto.erl     # Erlang formatting
 mix mob.security_scan --strict                 # surface new CVEs / drift before they ship
 ```
 
@@ -242,11 +241,6 @@ mix ex_dna             # code duplication report (22 clones baseline, ~581 dup l
 mix reach.check --smells   # 132 style/refactor findings
 mix reach.check --dead-code  # 71 findings (some macro DSL false positives)
 mix reach                  # interactive HTML architecture report
-```
-
-Auto-fix:
-```bash
-mix erlfmt --write priv/android/crypto.erl
 ```
 
 `mix mob.security_scan` covers Hex deps, Android Gradle deps, iOS
