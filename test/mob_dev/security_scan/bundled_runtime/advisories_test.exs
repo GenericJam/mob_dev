@@ -489,6 +489,19 @@ defmodule MobDev.SecurityScan.BundledRuntime.AdvisoriesTest do
       refute "CVE-2023-32697" in ids
     end
 
+    test "an 'unreproducible' Fix cell is a dispute, not a fix or a parse failure" do
+      html =
+        String.replace(
+          @sqlite_html,
+          "<td valign='top'>Not a bug in SQLite</td>",
+          "<td valign='top'>Unreproducible</td>"
+        )
+
+      assert {:ok, entries} = Advisories.parse_sqlite_cves_page(html)
+      assert Enum.count(entries, &is_nil(&1.fixed_in)) == 3
+      assert Enum.count(Advisories.sqlite_findings(entries, "3.0.0")) == 13
+    end
+
     test "a Severity column, when the page has one, sets the severity" do
       html =
         @sqlite_html

@@ -83,8 +83,10 @@
 
 - **SQLite CVEs.** A project on exqlite 0.36.x (SQLite 3.51.3) now gets
   CVE-2026-11822, CVE-2026-11824 (fixed in 3.53.2) and CVE-2025-70873 (fixed
-  in 3.52.0), which fail `--strict` and `--security-gate`. exqlite 0.37.0
-  bundles SQLite 3.53.2 and clears them.
+  in 3.52.0), which fail `--strict` and `--security-gate`. Matching is by
+  version only, so CVE-2025-70873 is reported although it is in the zipfile
+  extension, which exqlite doesn't compile. exqlite 0.37.0 bundles SQLite
+  3.53.2 and clears all three.
 
 ## [0.7.29] - 2026-10-15
 

@@ -695,10 +695,13 @@ defmodule MobDev.SecurityScan.BundledRuntime.Advisories do
       version: version,
       fixed_in: entry.fixed_in,
       title: first_sentence(entry.comment),
+      # Matching is by version only: some rows are in extensions exqlite's
+      # amalgamation doesn't compile (zipfile, session), so say "predates".
       description:
-        "The SQLite #{version} compiled into exqlite (deps/exqlite/c_src/sqlite3.c) is " <>
-          "affected; fixed in #{entry.fixed_in}. Upgrade exqlite to a release bundling " <>
-          "SQLite #{entry.fixed_in} or later. sqlite.org: #{entry.comment}",
+        "The SQLite #{version} compiled into exqlite (deps/exqlite/c_src/sqlite3.c) " <>
+          "predates #{entry.fixed_in}, which fixed this. Upgrade exqlite to a release " <>
+          "bundling SQLite #{entry.fixed_in} or later, or check sqlite.org's note for " <>
+          "whether the affected feature is compiled in. sqlite.org: #{entry.comment}",
       url: "#{@sqlite_cves_url}##{cve}",
       source: :sqlite_cves,
       layer: :bundled_runtime

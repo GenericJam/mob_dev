@@ -28,9 +28,19 @@ clean while CVE-2026-11822/11824 (FTS5 heap write, fixed in 3.53.2) applied.
   calls the report unreproducible are parsed and ignored.
 - **Severity**: the page has no severity column, so findings are `:medium`. If a
   `Severity` column appears it is used (columns are found by header name).
-  `:medium` fails `--strict` and `--security-gate`; that is intended — every
-  fixed row on the page is a memory-safety or crash bug reachable from SQL or
-  database content.
+  `:medium` fails `--strict` and `--security-gate`; that is intended for the
+  core-library rows (CVE-2026-11822/11824 is a heap write reachable from SQL
+  with FTS5, which exqlite enables).
+- **Version only**: matching uses the Fix version alone; the page has no
+  machine-readable "which component" field. So rows in extensions exqlite's
+  amalgamation does not compile are reported too: CVE-2025-70873 is in the
+  zipfile extension (absent from `deps/exqlite/c_src/sqlite3.c`), CVE-2023-7104
+  in the session extension (not enabled by exqlite's Makefile), and the
+  CVE-2021-20223 row says it "is not a vulnerability". The finding therefore says
+  the SQLite *predates* the fix, not that it is affected, and quotes sqlite.org's
+  note. A curated exclusion list was not added: it would rot silently as the page
+  changes, and every such row so far sits below a core-library fix that fails the
+  gate anyway (anything older than 3.52.0 is also older than 3.53.2).
 - **Validation**: the page must carry the table heading and its `CVE Number`,
   `Fix` and `Comments` columns, every row must name a CVE and have a Fix cell
   that is a version or a recognised dispute, and at least one row must name a
@@ -47,8 +57,9 @@ clean while CVE-2026-11822/11824 (FTS5 heap write, fixed in 3.53.2) applied.
 ## Consequences
 
 - Projects on exqlite 0.36.x get three `:medium` findings (CVE-2026-11822,
-  CVE-2026-11824, CVE-2025-70873) and fail `--strict`; exqlite 0.37.0
-  (SQLite 3.53.2) is clean.
+  CVE-2026-11824, and CVE-2025-70873, which is zipfile-only and does not apply
+  to exqlite's build) and fail `--strict`; exqlite 0.37.0 (SQLite 3.53.2) is
+  clean.
 - The page lists *recent* CVEs only. A very old SQLite can be missing CVEs that
   fell off the table; the layer can't see those.
 - The finding reports the fixing SQLite release, not an exqlite version, because

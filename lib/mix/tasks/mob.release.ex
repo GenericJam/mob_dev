@@ -16,7 +16,7 @@ defmodule Mix.Tasks.Mob.Release do
   ## --security-gate
 
   Runs the full security scan against the project (every layer:
-  Hex/Gradle/Swift dep CVEs, bundled-runtime drift and OTP/OpenSSL CVEs, C/Kotlin/Swift
+  Hex/Gradle/Swift dep CVEs, bundled-runtime drift and OTP/OpenSSL/SQLite CVEs, C/Kotlin/Swift
   static analysis) **before** building or signing. If the scan
   surfaces any critical/high/medium finding, the release aborts
   with a non-zero exit code — nothing is built, nothing is signed.
