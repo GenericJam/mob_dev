@@ -639,6 +639,28 @@ defmodule MobDev.DeployerTest do
     end
   end
 
+  describe "stale_host_ssl_rm_cmd/2" do
+    # Runs the generated command with the host's sh against a beams dir that
+    # holds what a pre-MOB-493 deploy left: the app's BEAMs plus host ssl.
+    @tag :tmp_dir
+    test "removes the host ssl files and keeps the app files", %{tmp_dir: dir} do
+      ssl = Deployer.stale_host_ssl_files()
+      assert "ssl.app" in ssl
+      assert "ssl.beam" in ssl
+
+      app_files = ~w(my_app.app my_app.beam Elixir.MyApp.beam mob_beam_flags)
+      for f <- ssl ++ app_files, do: File.write!(Path.join(dir, f), "")
+
+      {_, 0} = System.cmd("sh", ["-c", Deployer.stale_host_ssl_rm_cmd(dir)])
+
+      assert Enum.sort(File.ls!(dir)) == Enum.sort(app_files)
+    end
+
+    test "is nil when there is nothing to remove" do
+      assert Deployer.stale_host_ssl_rm_cmd("/x", []) == nil
+    end
+  end
+
   # MOB-49: hot loading the new mob into an app whose Mob.Dist started on the
   # public cookie leaves that cookie and its all-interface listener in place.
   describe "hot_load_nodes/1" do

@@ -53,6 +53,13 @@ export RELEASE_LIBBEAM=yes
 
 cd "$OTP_SRC"
 
+# Install mob's arm32 xcomp conf over upstream's stub (llvm-ar, 16 KB pages,
+# -Os/gc-sections, trimmed apps) — see the header of
+# scripts/release/xcomp/erl-xcomp-arm-android.conf.
+VENDORED_CONF="$SCRIPT_DIR/xcomp/erl-xcomp-arm-android.conf"
+[ -f "$VENDORED_CONF" ] || fail "missing $VENDORED_CONF"
+cp "$VENDORED_CONF" "$OTP_SRC/xcomp/erl-xcomp-arm-android.conf"
+
 # Clean any stale config from a prior arch (iOS, arm64, etc.).
 make distclean >/dev/null 2>&1 || true
 
@@ -71,6 +78,10 @@ log "configuring for arm-unknown-linux-androideabi..."
 
 log "building (this takes ~5–10 min)..."
 ./otp_build boot
+
+# Static asn1 NIF for the tarball's erts-*/lib/asn1rt_nif.a, as the arm64 and
+# x86_64 scripts do. (This used to be a manual NDK clang step.)
+ERL_TOP="$OTP_SRC" make -C lib/asn1/c_src TARGET=arm-unknown-linux-androideabi static_lib
 
 log "installing to $RELEASE_ROOT..."
 rm -rf "$RELEASE_ROOT"

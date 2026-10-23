@@ -1984,7 +1984,6 @@ defmodule MobDev.NativeBuild do
            :ok <- install_nx_eigen_otp_lib(otp_root),
            :ok <- maybe_setup_pythonx_sim(otp_root, erts_vsn, sdkroot, python_bundle, app_module),
            :ok <- maybe_install_crypto_shim(otp_root, app_module),
-           :ok <- maybe_copy_ssl_beams(otp_root, app_module),
            :ok <- maybe_build_phoenix_assets(otp_root, app_module),
            :ok <- copy_priv_repo_assets(otp_root, app_module),
            :ok <- copy_elixir_stdlib_to_otp(elixir_lib, otp_root),
@@ -2065,6 +2064,9 @@ defmodule MobDev.NativeBuild do
     beams_dir = Path.join(otp_root, app_module)
     File.mkdir_p!(beams_dir)
     chmod_writable(beams_dir)
+
+    # Host ssl BEAMs an older mob_dev copied here shadow the runtime's ssl.
+    Enum.each(MobDev.Deployer.stale_host_ssl_files(), &File.rm(Path.join(beams_dir, &1)))
 
     # The generated mob_app_config.beam (the project's config/*.exs for the
     # device, see MobDev.AppConfig) lands in the app's own ebin, which the
@@ -2603,41 +2605,6 @@ defmodule MobDev.NativeBuild do
   defp crypto_shim_app do
     ~S|{application,crypto,[{modules,[crypto]},{applications,[kernel,stdlib]},{description,"Crypto shim for iOS (HTTP-only; no OpenSSL)"},{registered,[]},{vsn,"5.6"},{mod,{crypto,[]}}]}.| <>
       "\n"
-  end
-
-  defp maybe_copy_ssl_beams(otp_root, app_module) do
-    if liveview_project?() do
-      # thousand_island lists :ssl as a required app. Pure Erlang — host
-      # macOS .beam files run unchanged on iOS sim. We grab the latest
-      # available ssl-* dir from the host OTP install.
-      home = System.get_env("HOME") || ""
-      host_ssl_dirs = Path.wildcard(home <> "/.local/share/mise/installs/erlang/*/lib/ssl-*")
-      latest_ssl = host_ssl_dirs |> Enum.sort(:desc) |> List.first()
-
-      case latest_ssl do
-        nil ->
-          IO.puts("  === ssl beams not found in host OTP -- thousand_island may fail to start")
-          :ok
-
-        host_ssl ->
-          IO.puts("  === Copying ssl beams from host OTP")
-          beams_dir = Path.join(otp_root, app_module)
-          ebin = Path.join(host_ssl, "ebin")
-
-          if File.dir?(ebin) do
-            Path.wildcard("#{ebin}/*.beam")
-            |> Enum.each(&File.cp!(&1, Path.join(beams_dir, Path.basename(&1))))
-
-            ssl_app = Path.join(ebin, "ssl.app")
-            if File.exists?(ssl_app), do: File.cp!(ssl_app, Path.join(beams_dir, "ssl.app"))
-            IO.puts("  * ssl copied from #{host_ssl}")
-          end
-
-          :ok
-      end
-    else
-      :ok
-    end
   end
 
   defp maybe_build_phoenix_assets(otp_root, app_module) do
@@ -3691,134 +3658,6 @@ defmodule MobDev.NativeBuild do
     :ok
   end
 
-  defp maybe_install_ssl_shim(otp_root, app_module) do
-    if liveview_project?() do
-      IO.puts("  === Creating ssl shim (LV)")
-      ssl_tmp = Path.join(System.tmp_dir!(), "mob_ssl_#{System.unique_integer([:positive])}")
-      File.mkdir_p!(ssl_tmp)
-      beams_dir = Path.join(otp_root, app_module)
-
-      try do
-        File.write!(Path.join(ssl_tmp, "ssl.erl"), ssl_shim_erl())
-
-        case System.cmd("erlc", ["-o", beams_dir, Path.join(ssl_tmp, "ssl.erl")],
-               stderr_to_stdout: true,
-               into: IO.stream()
-             ) do
-          {_, 0} ->
-            File.write!(Path.join(beams_dir, "ssl.app"), ssl_shim_app())
-            :ok
-
-          {_, _} ->
-            {:error, "ssl shim erlc failed"}
-        end
-      after
-        File.rm_rf!(ssl_tmp)
-      end
-    else
-      :ok
-    end
-  end
-
-  defp ssl_shim_erl do
-    """
-    -module(ssl).
-    -behaviour(application).
-    -export([start/2, stop/1, start/0, stop/0,
-             connect/3, connect/4, connect/5,
-             listen/2, accept/2, accept/3,
-             close/1, send/2, recv/2, recv/3,
-             controlling_process/2, getopts/2, setopts/2,
-             peername/1, sockname/1, peercert/1,
-             negotiated_protocol/1, cipher_suites/0,
-             cipher_suites/2, cipher_suites/3,
-             versions/0, format_error/1,
-             clear_pem_cache/0, handshake/1, handshake/2, handshake/3,
-             handshake_continue/2, handshake_continue/3,
-             handshake_cancel/1, shutdown/2,
-             transport_info/1, connection_information/1,
-             connection_information/2]).
-    start(_Type, _Args) ->
-        Pid = spawn(fun() -> receive stop -> ok end end),
-        {ok, Pid}.
-    stop(_State) -> ok.
-    start() -> ok.
-    stop() -> ok.
-    connect(_, _, _) -> {error, ssl_not_supported}.
-    connect(_, _, _, _) -> {error, ssl_not_supported}.
-    connect(_, _, _, _, _) -> {error, ssl_not_supported}.
-    listen(_, _) -> {error, ssl_not_supported}.
-    accept(_, _) -> {error, ssl_not_supported}.
-    accept(_, _, _) -> {error, ssl_not_supported}.
-    close(_) -> ok.
-    send(_, _) -> {error, closed}.
-    recv(_, _) -> {error, closed}.
-    recv(_, _, _) -> {error, closed}.
-    controlling_process(_, _) -> ok.
-    getopts(_, _) -> {ok, []}.
-    setopts(_, _) -> ok.
-    peername(_) -> {error, ssl_not_supported}.
-    sockname(_) -> {error, ssl_not_supported}.
-    peercert(_) -> {error, ssl_not_supported}.
-    negotiated_protocol(_) -> {error, ssl_not_supported}.
-    cipher_suites() -> [].
-    cipher_suites(_, _) -> [].
-    cipher_suites(_, _, _) -> [].
-    versions() -> [].
-    format_error(_) -> "ssl not available on iOS (HTTP-only)".
-    clear_pem_cache() -> ok.
-    handshake(_) -> {error, ssl_not_supported}.
-    handshake(_, _) -> {error, ssl_not_supported}.
-    handshake(_, _, _) -> {error, ssl_not_supported}.
-    handshake_continue(_, _) -> {error, ssl_not_supported}.
-    handshake_continue(_, _, _) -> {error, ssl_not_supported}.
-    handshake_cancel(_) -> ok.
-    shutdown(_, _) -> ok.
-    transport_info(_) -> {error, ssl_not_supported}.
-    connection_information(_) -> {error, ssl_not_supported}.
-    connection_information(_, _) -> {error, ssl_not_supported}.
-    """
-  end
-
-  defp ssl_shim_app do
-    ~S|{application,ssl,[{modules,[ssl]},{applications,[kernel,stdlib,crypto,public_key]},{description,"SSL shim for iOS (HTTP-only)"},{registered,[]},{vsn,"11.2"},{mod,{ssl,[]}}]}.| <>
-      "\n"
-  end
-
-  defp copy_otp_libs_for_phoenix(otp_root) do
-    IO.puts("  === Copying OTP standard libraries (Phoenix deps)")
-    # Phoenix and its deps require runtime_tools (extra_applications),
-    # asn1 (public_key dep), and public_key (cookie/cert infra). The Mob
-    # iOS-device tarball does not bundle these; copy from the host.
-    for app <- ~w(runtime_tools asn1 public_key) do
-      case :code.lib_dir(String.to_atom(app)) do
-        src when is_list(src) ->
-          src_dir = to_string(src)
-          ebin = Path.join(src_dir, "ebin")
-
-          if File.dir?(ebin) do
-            vsn_dir = Path.basename(src_dir)
-            dst_ebin = Path.join([otp_root, "lib", vsn_dir, "ebin"])
-            File.mkdir_p!(dst_ebin)
-
-            Path.wildcard("#{ebin}/*.beam")
-            |> Enum.each(&File.cp!(&1, Path.join(dst_ebin, Path.basename(&1))))
-
-            app_file = Path.join(ebin, "#{app}.app")
-            if File.exists?(app_file), do: File.cp!(app_file, Path.join(dst_ebin, "#{app}.app"))
-            IO.puts("  + #{vsn_dir}")
-          else
-            IO.puts("  ! #{app} not found on host — skipping")
-          end
-
-        _ ->
-          IO.puts("  ! #{app} not found on host — skipping")
-      end
-    end
-
-    :ok
-  end
-
   defp install_app_in_otp_lib(otp_root, app_module) do
     # Plug.Static (from: :app_name) resolves the priv dir via code:lib_dir/1,
     # which requires a code-path entry named "app_name-vsn" (not just
@@ -3875,32 +3714,35 @@ defmodule MobDev.NativeBuild do
     # but the call site still references the symbol, so the link fails
     # with "Undefined symbols: _run_daemon". Idempotent inline patch wraps
     # the call in `#ifndef NO_DAEMON` so both halves go away together.
+    #
+    # Already-patched is detected at the call site: upstream epmd.c has its
+    # own `#ifndef NO_DAEMON` around run_daemon's *definition*, so looking
+    # for that string anywhere (as this did before MOB-493) skipped the patch.
     epmd_c = Path.join([epmd_build_src, "erts/epmd/src/epmd.c"])
+    guarded = Regex.compile!("#ifndef NO_DAEMON\\n\\s*run_daemon\\(g\\);")
 
-    cond do
-      not File.exists?(epmd_c) ->
-        :ok
+    unguarded =
+      Regex.compile!(
+        "(    if \\(g->is_daemon\\)  \\{\\n)(\\trun_daemon\\(g\\);\\n)(    \\} else \\{\\n)"
+      )
 
-      File.read!(epmd_c) =~ "ifndef NO_DAEMON" ->
-        :ok
+    with true <- File.exists?(epmd_c),
+         original = File.read!(epmd_c),
+         false <- Regex.match?(guarded, original) do
+      IO.puts("  patching #{epmd_c} (NO_DAEMON guard around run_daemon call)")
 
-      true ->
-        IO.puts("  patching #{epmd_c} (NO_DAEMON guard around run_daemon call)")
-        original = File.read!(epmd_c)
+      case Regex.replace(unguarded, original, "\\1#ifndef NO_DAEMON\n\\2#endif\n\\3",
+             global: false
+           ) do
+        ^original ->
+          {:error, "epmd.c patch pattern did not match — manual fix required"}
 
-        # Match the exact signature from the OTP source.
-        pattern = ~r/(    if \(g->is_daemon\)  \{\n)(\trun_daemon\(g\);\n)(    \} else \{\n)/
-
-        case Regex.replace(pattern, original, "\\1#ifndef NO_DAEMON\n\\2#endif\n\\3",
-               global: false
-             ) do
-          ^original ->
-            {:error, "epmd.c patch pattern did not match — manual fix required"}
-
-          patched ->
-            File.write!(epmd_c, patched)
-            :ok
-        end
+        patched ->
+          File.write!(epmd_c, patched)
+          :ok
+      end
+    else
+      _ -> :ok
     end
   end
 
@@ -4871,10 +4713,8 @@ defmodule MobDev.NativeBuild do
          :ok <-
            maybe_setup_pythonx_device(otp_root, erts_vsn, sdkroot, python_bundle, app_module),
          :ok <- maybe_install_crypto_shim(otp_root, app_module),
-         :ok <- maybe_install_ssl_shim(otp_root, app_module),
          :ok <- copy_elixir_stdlib_to_otp(elixir_lib, otp_root),
          :ok <- copy_eex_stdlib_to_app(elixir_lib, otp_root, app_module),
-         :ok <- copy_otp_libs_for_phoenix(otp_root),
          :ok <- copy_priv_repo_assets(otp_root, app_module),
          :ok <- maybe_build_phoenix_assets(otp_root, app_module),
          :ok <- install_app_in_otp_lib(otp_root, app_module),

@@ -37,7 +37,24 @@ fi
 
 [ -d "$OPENSSL_PREFIX" ] || fail "OPENSSL_PREFIX missing at $OPENSSL_PREFIX — run scripts/release/openssl/ios_sim.sh first (used later by build_crypto_static_ios_sim.sh, not the OTP cross-compile itself)"
 
+# {spawn, LinkedInDriver} fix (see the patch header). The sim doesn't need
+# the device-only fork patches 0001/0002. Resolved before leaving the
+# script dir (line 23 cd'd here).
+SPAWN_PATCH="$PWD/patches/0003-ios-spawn-linked-in-driver.patch"
+VENDORED_CONF="$PWD/xcomp/erl-xcomp-arm64-iossimulator.conf"
+
 cd "$OTP_SRC"
+
+if grep -q "mob_dev iOS spawn patch" erts/emulator/beam/io.c; then
+    log "0003-ios-spawn-linked-in-driver.patch already applied"
+else
+    log "applying 0003-ios-spawn-linked-in-driver.patch..."
+    patch -p1 < "$SPAWN_PATCH" || fail "patch application failed — inspect $SPAWN_PATCH manually"
+fi
+
+# mob's sim xcomp conf (DED_LD through the cc driver) over upstream's.
+[ -f "$VENDORED_CONF" ] || fail "missing $VENDORED_CONF"
+cp "$VENDORED_CONF" xcomp/erl-xcomp-arm64-iossimulator.conf
 
 # Match the device build: emit static libbeam.a so the simulator app can link
 # the same way (target_link_libraries against an .a, not an .so).
@@ -64,6 +81,12 @@ log "configuring for arm64-apple-iossimulator..."
 
 log "building (this takes ~5–10 min)..."
 ./otp_build boot
+
+# OTP 29.1's xmerl deps file, generated during the iOS boot, lists
+# xmerl_xsd_re_parse.beam as depending on a bare `yeccpre.hrl`, so `make
+# release` stops with "No rule to make target 'yeccpre.hrl'". Regenerated
+# here, it carries the right ../../parsetools/include path.
+rm -f lib/xmerl/src/deps/deps.mk lib/xmerl/src/xmerl_xsd_re_parse.erl
 
 log "installing to $RELEASE_ROOT..."
 rm -rf "$RELEASE_ROOT"

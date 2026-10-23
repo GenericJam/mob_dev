@@ -760,6 +760,9 @@ defmodule MobDev.Release do
 
       echo "=== Copying BEAM files to $BEAMS_DIR ==="
       mkdir -p "$BEAMS_DIR"
+      # A dev device build by mob_dev < 0.7.30 compiled a no-op ssl shim into
+      # this (reused) dir for LiveView apps; on -pa it shadows lib/ssl-*.
+      rm -f "$BEAMS_DIR/ssl.beam" "$BEAMS_DIR/ssl.app"
       for lib_dir in _build/dev/lib/*/ebin; do
           cp "$lib_dir"/* "$BEAMS_DIR/" 2>/dev/null || true
       done
@@ -811,21 +814,10 @@ defmodule MobDev.Release do
       cp "$ELIXIR_LIB/eex/ebin/"*.beam  "$BEAMS_DIR/" 2>/dev/null || true
       cp "$ELIXIR_LIB/eex/ebin/eex.app" "$BEAMS_DIR/" 2>/dev/null || true
 
-      copy_otp_lib() {
-          local APP="$1"
-          local SRC
-          SRC=$(elixir -e "IO.puts(:code.lib_dir(:${APP}))" 2>/dev/null)
-          if [ -n "$SRC" ] && [ -d "$SRC/ebin" ]; then
-              local VSN
-              VSN=$(basename "$SRC")
-              mkdir -p "$OTP_ROOT/lib/$VSN/ebin"
-              cp "$SRC/ebin/"*.beam "$OTP_ROOT/lib/$VSN/ebin/"
-              cp "$SRC/ebin/${APP}.app" "$OTP_ROOT/lib/$VSN/ebin/"
-          fi
-      }
-      copy_otp_lib runtime_tools
-      copy_otp_lib asn1
-      copy_otp_lib public_key
+      # runtime_tools, asn1 and public_key come from the runtime tarball (every
+      # current one ships them). They used to be copied from the host here,
+      # which could replace the runtime's patched public_key with the
+      # build machine's (MOB-493).
 
       echo "=== Copying priv (migrations, assets, bundled ebins, app priv) ==="
       if [ -d "assets" ]; then

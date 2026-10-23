@@ -40,10 +40,13 @@ defmodule MobDev.SecurityScan.BundledRuntime.FingerprintTest do
   end
 
   describe "locate_cached_tarballs/1" do
-    test "decodes android, android_arm32, ios_sim, ios_device dirs", %{tmp_dir: dir} do
+    test "decodes android, android_arm32, android_x86_64, ios_sim, ios_device dirs", %{
+      tmp_dir: dir
+    } do
       for name <- [
             "otp-android-abc123",
             "otp-android-arm32-abc123",
+            "otp-android-x86_64-abc123",
             "otp-ios-sim-abc123",
             "otp-ios-device-abc123",
             "otp-something-else-zzz",
@@ -55,7 +58,7 @@ defmodule MobDev.SecurityScan.BundledRuntime.FingerprintTest do
       tarballs = Fingerprint.locate_cached_tarballs(cache_dir: dir)
 
       platforms = Enum.map(tarballs, & &1.platform) |> Enum.sort()
-      assert platforms == [:android, :android_arm32, :ios_device, :ios_sim]
+      assert platforms == [:android, :android_arm32, :android_x86_64, :ios_device, :ios_sim]
       assert Enum.all?(tarballs, &(&1.hash == "abc123"))
     end
 

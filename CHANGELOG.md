@@ -2,6 +2,37 @@
 
 ### Security
 
+- **Device runtime rebuilt on OTP 29.1.2 and OpenSSL 3.5.9 (`@otp_hash`
+  `5c9c69fc` → `d199a49a`; MOB-493, MOB-494).** Every app shipped OTP 29.0
+  (erts 17.0, ssl 11.7, public_key 1.21), which lacks 47 OTP security fixes.
+  Among them: CVE-2026-89422 and CVE-2026-55953 (critical; TLS clients that
+  skip or bypass server authentication), CVE-2026-42789 (public_key accepts a
+  non-CA as an intermediate issuer), CVE-2026-94200 (TLS client ticket-store
+  poisoning) and CVE-2026-75538 (inet TCP driver overflow from an
+  unauthenticated peer). The crypto NIF was statically linked against
+  OpenSSL 3.4.0, which had 55 CVEs fixed in later 3.4.x releases, and the 3.4
+  branch reached end of life on 2026-10-22. The new runtime is erts 17.1.1,
+  ssl 11.7.8, public_key 1.21.8 and inets 9.8.1, with OpenSSL 3.5.9 (LTS
+  until 2030). Elixir 1.20.1 and the bundled exqlite BEAMs are unchanged.
+  `bundled_versions.exs` records the new bundle, including its OTP tag.
+- **Apps run the runtime's ssl, not the developer's (MOB-493).** `mix
+  mob.deploy` (Android and the iOS simulator) and `mix mob.release --android`
+  copied the *host's* OTP `ssl` app into the app's own BEAM directory. That
+  directory comes first on the code path, so it shadowed the runtime's
+  `lib/ssl-*`: every Android release and dev install ran whatever ssl the
+  building machine had. With a 29.0 host that is 11.7, which has
+  CVE-2026-89422 and CVE-2026-55953, whatever runtime the app shipped. The
+  copy dates from runtimes without ssl; every current runtime ships it.
+  Deploys now also delete those files from a device that an older mob_dev
+  left them on. Verified on a Moto G: before, `code:which(ssl)` was
+  `files/otp/<app>/ssl.beam` (11.7); after, `lib/ssl-11.7.8`. On iOS, the
+  physical-device dev build no longer compiles a no-op `ssl` shim for
+  LiveView apps (on a phone their TLS failed with `ssl_not_supported`, and
+  `mix mob.release --ios` could pick the shim up). That build and the iOS
+  release no longer copy the host's runtime_tools, asn1 and public_key over
+  the runtime's. The fallback EPMD patch now checks the `run_daemon(g)` call
+  site rather than any `#ifndef NO_DAEMON`, which upstream `epmd.c` already
+  has.
 - **Dev server: bandit 1.12.5 → 1.13.1 (MOB-482).** Fixes EEF-CVE-2026-105659
   (a client trickling HTTP/2 `WINDOW_UPDATE` frames could pin stream processes
   indefinitely) and EEF-CVE-2026-105660 (an HTTP/1 absolute-form request
@@ -41,6 +72,23 @@
   a failed boot on an app generated before mob_new added them shows a blank
   screen. Detected, not patched: `MobBridge.kt` is app-owned.
 
+### Upgrading
+
+- **Needs mob ≥ 0.9.25.** The new runtime's ERTS directory is `erts-17.1.1`.
+  Older mob hard-codes `erts-17.0` in the Android launcher and in the
+  iOS-simulator build, so an app on mob ≤ 0.9.24 crashes at boot with this
+  runtime. Physical-iOS and release builds already read the version from the
+  tarball. Update both: `mix deps.update mob mob_dev`, then
+  `mix mob.deploy --native`.
+- Host `.tool-versions` moves to erlang 29.1.2 (mob_dev, mob, mob_new and
+  generated apps).
+- **MOB-495.** `mix mob.security_scan --strict` and `mix mob.release
+  --security-gate` now fail on a `5c9c69fc` runtime (critical ssl advisories
+  CVE-2026-89422 and CVE-2026-55953, OpenSSL 3.4 end of life). The
+  `d199a49a` runtime in this release passes them; delete the old
+  `~/.mob/cache/otp-*-5c9c69fc` dirs once no app on this machine still uses
+  that runtime.
+
 ### Changed
 
 - **`mix mob.security_scan` reports CVEs in the bundled OTP and OpenSSL
@@ -61,7 +109,23 @@
   passes, instead of only "security scan clean".
 - `mix mob.doctor`'s JDK rows no longer name AGP 8.2.0, which new apps no
   longer use.
+- **The release scripts rebuild the runtime from a clean OTP tag.** The
+  Android builds and both iOS builds now install vendored xcomp confs from
+  `scripts/release/xcomp/`, as x86_64 already did:
+  - arm64 and arm32 Android: `llvm-ar`/`llvm-ranlib` (upstream's stubs link
+    an empty `libei.a` on macOS), 16 KB page alignment, `-Os` with
+    gc-sections, and no debugger/observer/et/cdv. arm32 also passes
+    `--disable-year2038`, because 32-bit bionic's `time_t` can't widen.
+  - iOS: `DED_LD` goes through the cc driver, because OTP 29.1's hardening
+    flags break raw `ld`.
 
+  The Android scripts also build the static `asn1rt_nif.a`, which `boot`
+  only emits with `--enable-static-nifs`. The iOS `{spawn, LinkedInDriver}`
+  erts fix, which was hand-applied to earlier builds, is now
+  `scripts/release/patches/0003-ios-spawn-linked-in-driver.patch`, applied by
+  both iOS xcompile scripts. The device script's check for patch 0002 (EPMD
+  `NO_DAEMON`) looked for `#ifndef NO_DAEMON`, which upstream `epmd.c` already
+  contains, so it skipped the patch; it now looks for the patch's own comment.
 - **`mix mob.security_scan` reports CVEs in the project's SQLite.** SQLite is
   compiled per app from `deps/exqlite/c_src/sqlite3.c`, and the
   `bundled_runtime` layer only printed its version beside a link to

@@ -21,7 +21,7 @@ defmodule MobDev.SecurityScan.BundledRuntime.Fingerprint do
   OTP commit hash from `MobDev.OtpDownloader`.
   """
   @type tarball :: %{
-          platform: :android | :android_arm32 | :ios_sim | :ios_device,
+          platform: :android | :android_arm32 | :android_x86_64 | :ios_sim | :ios_device,
           hash: String.t(),
           path: Path.t()
         }
@@ -71,11 +71,15 @@ defmodule MobDev.SecurityScan.BundledRuntime.Fingerprint do
     # Regex.compile!/1 (not ~r/.../) to sidestep OTP 28.0's `:re.import/1`
     # undefined-function bug on sigil-precompiled regexes loaded from beam
     # files. See MobDev.NdkVersion.project_pinned/1 for the same workaround.
-    pattern = Regex.compile!("^otp-(android-arm32|android|ios-sim|ios-device)-([0-9a-f]+)$")
+    pattern =
+      Regex.compile!(
+        "^otp-(android-arm32|android-x86_64|android|ios-sim|ios-device)-([0-9a-f]+)$"
+      )
 
     case Regex.run(pattern, Path.basename(path)) do
       [_, "android", hash] -> [%{platform: :android, hash: hash, path: path}]
       [_, "android-arm32", hash] -> [%{platform: :android_arm32, hash: hash, path: path}]
+      [_, "android-x86_64", hash] -> [%{platform: :android_x86_64, hash: hash, path: path}]
       [_, "ios-sim", hash] -> [%{platform: :ios_sim, hash: hash, path: path}]
       [_, "ios-device", hash] -> [%{platform: :ios_device, hash: hash, path: path}]
       _ -> []

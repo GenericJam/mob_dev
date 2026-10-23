@@ -170,17 +170,15 @@ defmodule MobDev.ReleaseAndroid do
   end
 
   # Same runtime BEAM collection as deployer.collect_beam_dirs/0: app + deps +
-  # eex (Elixir stdlib, not in _build/) + ssl (Thousand Island dep, not in OTP tree).
+  # eex (Elixir stdlib, not in _build/). No host OTP apps: the runtime ships
+  # ssl, and a host copy here shadowed it in every release (MOB-493).
   defp collect_beam_dirs do
     app_dirs = MobDev.HotPush.runtime_beam_dirs()
 
     eex_ebin = Path.join(to_string(:code.lib_dir(:eex)), "ebin")
     eex = if File.dir?(eex_ebin), do: [eex_ebin], else: []
 
-    ssl_ebin = Path.join(to_string(:code.lib_dir(:ssl)), "ebin")
-    ssl = if File.dir?(ssl_ebin), do: [ssl_ebin], else: []
-
-    app_dirs ++ eex ++ ssl
+    app_dirs ++ eex
   end
 
   defp exqlite_version, do: MobDev.AppFile.dep_version(:exqlite)

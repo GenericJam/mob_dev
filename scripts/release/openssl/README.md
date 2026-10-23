@@ -23,15 +23,18 @@ gotchas (BSD `ar`'s empty-archive trap, Android `RTLD_LOCAL`).
 
 ## Source
 
-OpenSSL 3.4.0, cloned shallow at `~/code/openssl`:
+OpenSSL 3.5.9, cloned shallow at `~/code/openssl`:
 
 ```bash
-git clone --depth 1 --branch openssl-3.4.0 https://github.com/openssl/openssl.git ~/code/openssl
+git clone --depth 1 --branch openssl-3.5.9 https://github.com/openssl/openssl.git ~/code/openssl
 ```
 
-Pinning to 3.4.0 (not 3.5.x) for now because 3.4 is the latest stable
-LTS. Bump after running each script clean against a newer tag and
-verifying tarball boots end-to-end.
+3.5 is the current LTS branch (supported until 2030-04-08). Before
+2026-10 this pinned 3.4.0 and never took a 3.4.x point release; 3.4 went
+end-of-life on 2026-10-22 with 55 CVEs unpatched in 3.4.0 (MOB-494).
+Take every 3.5.x point release: bump the tag here, rebuild all targets,
+and update `openssl` / `openssl_release_date` in
+`priv/security/bundled_versions.exs`.
 
 ## Configure flags (all targets)
 

@@ -867,6 +867,11 @@ defmodule MobDev.Deployer do
       :rooted ->
         run_adb(["-s", serial, "shell", "mkdir -p #{android_beams_dir()}"])
 
+        case stale_host_ssl_rm_cmd(android_beams_dir()) do
+          nil -> :ok
+          cmd -> run_adb(["-s", serial, "shell", cmd])
+        end
+
         # Labelled by deploy_android's final relabel_otp_android/1.
         Enum.reduce_while(beam_dirs, :ok, fn dir, _ ->
           case run_adb(["-s", serial, "push", "#{Path.expand(dir)}/.", "#{android_beams_dir()}/"]) do
@@ -921,6 +926,11 @@ defmodule MobDev.Deployer do
         "shell",
         "run-as #{android_package()} mkdir -p #{android_beams_dir()}"
       ])
+
+      case stale_host_ssl_rm_cmd(android_beams_dir()) do
+        nil -> :ok
+        cmd -> run_adb(["-s", serial, "shell", "run-as #{android_package()} sh -c '#{cmd}'"])
+      end
 
       # Redirect stderr and always exit 0: Android's Toybox tar cannot chown to
       # macOS UID 501 and exits 1, but the files are extracted correctly.
@@ -1048,6 +1058,7 @@ defmodule MobDev.Deployer do
 
     try do
       File.mkdir_p!(ios_beams_dir())
+      remove_stale_host_ssl!(ios_beams_dir())
 
       # Use rsync rather than cp -r for two reasons that hit Nix users hard:
       #
@@ -1955,12 +1966,11 @@ defmodule MobDev.Deployer do
     eex_ebin = Path.join(to_string(:code.lib_dir(:eex)), "ebin")
     stdlib_dirs = if File.dir?(eex_ebin), do: [eex_ebin], else: []
 
-    # ssl is a required OTP app (thousand_island lists it as a dependency) but the
-    # iOS and Android OTP builds omit it. ssl is pure Erlang (no NIFs), so host
-    # BEAM files run identically on both targets. For HTTP-only Phoenix at loopback,
-    # ssl starts but no TLS sockets are opened.
-    ssl_ebin = Path.join(to_string(:code.lib_dir(:ssl)), "ebin")
-    ssl_dirs = if File.dir?(ssl_ebin), do: [ssl_ebin], else: []
+    # Never push the host's OTP apps (ssl was, until MOB-493). The flat
+    # beams_dir is first on -pa, so a host ssl shadows the runtime's patched
+    # lib/ssl-*: every device ran the developer's ssl, e.g. OTP 29.0's 11.7
+    # with CVE-2026-89422, whatever runtime it had. Every runtime tarball
+    # ships ssl, public_key and crypto.
 
     # crypto is a required OTP app. Older device-side OTP builds (pre-2026-05)
     # were configured `--without-ssl` to skip OpenSSL, so the device runtime
@@ -1983,7 +1993,48 @@ defmodule MobDev.Deployer do
         end
       end
 
-    app_dirs ++ stdlib_dirs ++ ssl_dirs ++ shim_dirs
+    app_dirs ++ stdlib_dirs ++ shim_dirs
+  end
+
+  @doc false
+  # The files a pre-MOB-493 mob_dev pushed from the host's ssl app into the
+  # flat beams dir. A deploy only adds files, so on a device deployed before
+  # then they stay and keep shadowing the runtime's lib/ssl-*; every deploy
+  # deletes them first. The host that pushed them may have run another OTP
+  # than this one, so the names come from this host's ssl ebin and from every
+  # cached runtime's ssl ebin (beam/app/appup).
+  @spec stale_host_ssl_files() :: [String.t()]
+  def stale_host_ssl_files do
+    host =
+      case :code.lib_dir(:ssl) do
+        dir when is_list(dir) -> [Path.join(to_string(dir), "ebin")]
+        _ -> []
+      end
+
+    runtimes = Path.wildcard(Path.join([System.user_home!(), ".mob/cache/otp-*/lib/ssl-*/ebin"]))
+
+    (host ++ runtimes)
+    |> Enum.flat_map(fn ebin ->
+      case File.ls(ebin) do
+        {:ok, names} -> names
+        _ -> []
+      end
+    end)
+    |> Enum.filter(&(Path.extname(&1) in [".beam", ".app", ".appup"]))
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  @doc false
+  @spec stale_host_ssl_rm_cmd(String.t(), [String.t()]) :: String.t() | nil
+  def stale_host_ssl_rm_cmd(beams_dir, files \\ stale_host_ssl_files())
+  def stale_host_ssl_rm_cmd(_beams_dir, []), do: nil
+
+  def stale_host_ssl_rm_cmd(beams_dir, files),
+    do: ~s(cd "#{beams_dir}" && rm -f #{Enum.join(files, " ")})
+
+  defp remove_stale_host_ssl!(beams_dir) do
+    Enum.each(stale_host_ssl_files(), &File.rm(Path.join(beams_dir, &1)))
   end
 
   # Detects whether any cached device-side OTP runtime under ~/.mob/cache/

@@ -1,0 +1,45 @@
+iOS: allow {spawn, Name} to open a linked-in driver (mob_dev iOS spawn patch).
+
+Upstream erts_open_driver returns BADARG on iOS for any spawn_type with the
+EXECUTABLE bit before looking the name up among linked-in drivers, so plain
+{spawn, "ram_file_drv"} fails. That breaks file:open(_, [ram]), in-memory
+erl_tar extract, hex_tarball:unpack and Mix.install on iOS. Move the guard
+after the lookup so it only fires when no linked-in driver matched.
+
+Previously applied by hand to the 7d46fdd4 build; recorded here so rebuilds
+carry it.
+
+diff --git a/erts/emulator/beam/io.c b/erts/emulator/beam/io.c
+index 24468ad..3c76b61 100644
+--- a/erts/emulator/beam/io.c
++++ b/erts/emulator/beam/io.c
+@@ -588,12 +588,7 @@ erts_open_driver(erts_driver_t* driver,	/* Pointer to driver. */
+ 	if (!(opts->spawn_type & ERTS_SPAWN_EXECUTABLE)) {
+ 	    /* No spawn driver default */
+ 	    driver = NULL;
+-	} else {
+-#ifdef __IOS__ 
+-	    erts_rwmtx_runlock(&erts_driver_list_lock);
+-	    ERTS_OPEN_DRIVER_RET(NULL, -3, BADARG);	   
+-#endif
+-    }
++	}
+ 
+ 
+ 	if (opts->spawn_type != ERTS_SPAWN_EXECUTABLE) {
+@@ -620,6 +615,15 @@ erts_open_driver(erts_driver_t* driver,	/* Pointer to driver. */
+ 	    if (p != NULL)
+ 		*p = ' ';
+ 	}
++#ifdef __IOS__
++	/* mob_dev iOS spawn patch: iOS can't fork/exec, so only a linked-in
++	 * driver is openable. Refuse here, after the driver-name lookup, so
++	 * {spawn, "ram_file_drv"} etc. still resolve. */
++	if (driver == &spawn_driver) {
++	    erts_rwmtx_runlock(&erts_driver_list_lock);
++	    ERTS_OPEN_DRIVER_RET(NULL, -3, BADARG);
++	}
++#endif
+     }
+ 
+     if (driver == NULL || (driver != &spawn_driver && opts->exit_status)) {

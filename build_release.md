@@ -55,31 +55,16 @@ Built from a full cross-compiled OTP release for `arm-unknown-linux-androideabi`
 (armeabi-v7a). Same structure as arm64. Required for 32-bit-only devices (e.g.
 Motorola E 2020).
 
-`asn1rt_nif.a` must be compiled separately — it is not emitted by the OTP build
-system for arm32. Build it with:
+`asn1rt_nif.a`: OTP only emits the static asn1 NIF when configured with
+`--enable-static-nifs`, which the Android builds don't use, so the
+Android scripts build it with OTP's own target after `boot`:
 
 ```bash
-NDK=~/Library/Android/sdk/ndk/27.2.12479018/toolchains/llvm/prebuilt/darwin-x86_64/bin
-OTP_SRC=~/code/otp
-
-$NDK/armv7a-linux-androideabi21-clang \
-  -march=armv7-a -mfloat-abi=softfp -mthumb \
-  -fvisibility=hidden -fno-common -fno-strict-aliasing \
-  -fstack-protector-strong -O2 \
-  -I "$OTP_SRC/erts/arm-unknown-linux-androideabi" \
-  -I "$OTP_SRC/erts/include/arm-unknown-linux-androideabi" \
-  -I "$OTP_SRC/erts/emulator/beam" \
-  -I "$OTP_SRC/erts/include" \
-  -DHAVE_CONFIG_H \
-  -DSTATIC_ERLANG_NIF_LIBNAME=asn1rt_nif \
-  -c "$OTP_SRC/lib/asn1/c_src/asn1_erl_nif.c" \
-  -o /tmp/asn1rt_nif_arm32.o
-
-$NDK/llvm-ar rc /tmp/asn1rt_nif_arm32.a /tmp/asn1rt_nif_arm32.o
-$NDK/llvm-ranlib /tmp/asn1rt_nif_arm32.a
+ERL_TOP=~/code/otp make -C ~/code/otp/lib/asn1/c_src TARGET=arm-unknown-linux-androideabi static_lib
 ```
 
-Then include it in the tarball at `erts-<vsn>/lib/asn1rt_nif.a` (see Step 2b).
+(`xcompile_android_arm32.sh` does this; arm64 and x86_64 likewise.) The
+tarball script picks it up from `lib/asn1/priv/lib/<triple>/asn1rt_nif.a`.
 
 ### iOS device (`otp-ios-device-<hash>.tar.gz`)
 
@@ -127,8 +112,17 @@ Built from a cross-compiled OTP for `aarch64-apple-iossimulator`. Needs:
 
 ## Prerequisites
 
-- A cross-compiled OTP build. The OTP source tree at `~/code/otp` (commit `7721ab74`)
-  has iOS simulator and Android targets already compiled.
+- The OTP source at `~/code/otp`, checked out at an **upstream release tag**
+  (`otp-d199a49a` was built from `OTP-29.1.2`):
+  `git clone --depth 1 --branch OTP-29.1.2 https://github.com/erlang/otp.git ~/code/otp`.
+  Take the newest patch release of the current major; the security fixes only
+  land there (29.0.x stopped getting them once 29.1 shipped).
+- OpenSSL at `~/code/openssl` — see [`scripts/release/openssl/README.md`](scripts/release/openssl/README.md)
+  for the pinned tag. Build all targets with the `openssl/*.sh` scripts first.
+- The mob patches in [`scripts/release/patches/`](scripts/release/patches/) are applied by the
+  iOS xcompile scripts (0001/0002 device-only fork guards, 0003 the
+  `{spawn, LinkedInDriver}` fix for both iOS targets). Each one must still apply
+  to the new tag; if a patch fails, port it before building.
 - `gh` CLI authenticated to the `GenericJam` GitHub account.
 
 ---
@@ -137,10 +131,11 @@ Built from a cross-compiled OTP for `aarch64-apple-iossimulator`. Needs:
 
 ```bash
 cd ~/code/otp
-git rev-parse --short HEAD   # e.g. 7721ab74
+git rev-parse --short=8 HEAD   # e.g. d199a49a for OTP-29.1.2
 ```
 
-Use this hash everywhere below as `<hash>`.
+Use this hash everywhere below as `<hash>`, and record the tag in the
+`bundled_versions.exs` entry (`otp_version`) so the source is recoverable.
 
 ---
 
@@ -226,7 +221,7 @@ ERTS_LIB32="$STAGE32/erts-16.3/lib"
 cp "$OTP_SRC/erts/emulator/zstd/obj/arm-unknown-linux-androideabi/opt/libzstd.a"   "$ERTS_LIB32/"
 cp "$OTP_SRC/erts/emulator/pcre/obj/arm-unknown-linux-androideabi/opt/libepcre.a"  "$ERTS_LIB32/"
 cp "$OTP_SRC/erts/emulator/ryu/obj/arm-unknown-linux-androideabi/opt/libryu.a"    "$ERTS_LIB32/"
-cp /tmp/asn1rt_nif_arm32.a "$ERTS_LIB32/asn1rt_nif.a"
+cp "$OTP_SRC/lib/asn1/priv/lib/arm-unknown-linux-androideabi/asn1rt_nif.a" "$ERTS_LIB32/asn1rt_nif.a"
 
 ERTS_INC32="$STAGE32/erts-16.3/include"
 mkdir -p "$ERTS_INC32"

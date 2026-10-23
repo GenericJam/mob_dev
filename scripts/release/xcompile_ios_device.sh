@@ -62,12 +62,25 @@ apply_patch "$PATCHES_DIR/0001-ios-device-skip-forker-fork.patch" \
             "mob_dev iOS device patch" \
             erts/emulator/sys/unix/sys_drivers.c
 
+# The marker is the patch's own comment: upstream epmd.c already contains
+# `#ifndef NO_DAEMON` (around run_daemon's definition), so checking for
+# that skipped the patch and left the call site unguarded.
 apply_patch "$PATCHES_DIR/0002-ios-device-epmd-no-daemon.patch" \
-            "ifndef NO_DAEMON" \
+            "NO_DAEMON strips run_daemon" \
             erts/epmd/src/epmd.c
+
+# __IOS__-guarded, so it is also applied by xcompile_ios_sim.sh.
+apply_patch "$PATCHES_DIR/0003-ios-spawn-linked-in-driver.patch" \
+            "mob_dev iOS spawn patch" \
+            erts/emulator/beam/io.c
 
 # iOS doesn't allow shared libraries; emit static libbeam.a instead of .so.
 export RELEASE_LIBBEAM=yes
+
+# mob's device xcomp conf (DED_LD through the cc driver) over upstream's.
+VENDORED_CONF="$SCRIPT_DIR/xcomp/erl-xcomp-arm64-ios.conf"
+[ -f "$VENDORED_CONF" ] || fail "missing $VENDORED_CONF"
+cp "$VENDORED_CONF" xcomp/erl-xcomp-arm64-ios.conf
 
 # Clean prior arch's config so configure doesn't get confused.
 make distclean >/dev/null 2>&1 || true
@@ -91,6 +104,10 @@ log "configuring for arm64-apple-ios..."
 # Build everything for the target.
 log "building (this takes ~5–10 min)..."
 ./otp_build boot
+
+# Same xmerl deps fix as xcompile_ios_sim.sh (bare `yeccpre.hrl` breaks
+# `make release`); regenerated here it carries the right include path.
+rm -f lib/xmerl/src/deps/deps.mk lib/xmerl/src/xmerl_xsd_re_parse.erl
 
 # Assemble install tree.
 log "installing to $RELEASE_ROOT..."
