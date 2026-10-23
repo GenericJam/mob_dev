@@ -62,6 +62,17 @@
 - `mix mob.doctor`'s JDK rows no longer name AGP 8.2.0, which new apps no
   longer use.
 
+- **`mix mob.security_scan` reports CVEs in the project's SQLite.** SQLite is
+  compiled per app from `deps/exqlite/c_src/sqlite3.c`, and the
+  `bundled_runtime` layer only printed its version beside a link to
+  sqlite.org. It now matches that version against the "Status Of Recent SQLite
+  CVEs" table on https://www.sqlite.org/cves.html and reports each CVE whose
+  fixing release is newer, as `:medium` (the page gives no severity). Rows
+  SQLite marks "Not a bug" or unreproducible are ignored. The page is cached
+  and handled offline like the OTP/OpenSSL feeds, and the check runs even with
+  no OTP tarballs cached. See
+  `decisions/2026-10-22-sqlite-cves-from-sqlite-org.md`.
+
 ### Upgrading
 
 - **MOB-495.** With the current `5c9c69fc` runtime cached, `mix
@@ -69,6 +80,11 @@
   (critical ssl advisories CVE-2026-89422 and CVE-2026-55953, OpenSSL 3.4 end
   of life). They pass again once mob_dev ships a runtime on patched OTP and
   OpenSSL; until then `--skip bundled_runtime` skips the layer.
+
+- **SQLite CVEs.** A project on exqlite 0.36.x (SQLite 3.51.3) now gets
+  CVE-2026-11822, CVE-2026-11824 (fixed in 3.53.2) and CVE-2025-70873 (fixed
+  in 3.52.0), which fail `--strict` and `--security-gate`. exqlite 0.37.0
+  bundles SQLite 3.53.2 and clears them.
 
 ## [0.7.29] - 2026-10-15
 

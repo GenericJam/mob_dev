@@ -11,7 +11,8 @@ defmodule Mix.Tasks.Mob.SecurityScan do
     * Bundled-runtime CVEs — OpenSSL/SQLite/OTP/Elixir baked into
       Mob's pre-built OTP tarballs (manifest + fingerprint verification,
       erlang/otp GitHub advisories, OpenSSL vulnerability pages and
-      branch end-of-life; cached in `~/.mob/cache/advisories/`)
+      branch end-of-life), and the project's exqlite SQLite against
+      sqlite.org/cves.html; cached in `~/.mob/cache/advisories/`
     * C source static analysis (semgrep, flawfinder)
     * Kotlin static analysis (detekt)
     * Swift static analysis (`xcodebuild analyze`)

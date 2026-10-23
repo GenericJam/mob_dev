@@ -25,7 +25,7 @@ reports `tool missing`), not a failure.
 | `hex_deps` | [`mix_audit`](https://hexdocs.pm/mix_audit/) + [`osv-scanner`](https://google.github.io/osv-scanner/) | Hex deps in `mix.lock`. Two sources because they miss different things — the Erlef CNA feed (osv-scanner) tends to surface CVE-numbered advisories Mirego's curated database (mix_audit) hasn't ingested yet. |
 | `gradle_deps` | `osv-scanner` | Android Gradle deps. Best results when you've turned on Gradle dependency locking — see "Enabling Gradle dependency locking" below. |
 | `swift_deps` | `osv-scanner` | iOS Swift Package Manager (`Package.resolved`) and CocoaPods (`Podfile.lock`). |
-| `bundled_runtime` | manifest + binary fingerprint + upstream advisories | OpenSSL, ERTS, Elixir, exqlite, SQLite **baked into Mob's pre-built OTP tarball**. Generic dep scanners can't see these because they're in static archives, not lockfiles. Known CVEs in the bundled OTP applications and OpenSSL, and OpenSSL branch end-of-life, are findings. |
+| `bundled_runtime` | manifest + binary fingerprint + upstream advisories | OpenSSL, ERTS, Elixir, exqlite, SQLite **baked into Mob's pre-built OTP tarball**. Generic dep scanners can't see these because they're in static archives, not lockfiles. Known CVEs in the bundled OTP applications and OpenSSL, OpenSSL branch end-of-life, and CVEs on `sqlite.org/cves.html` fixed after the project's exqlite SQLite (`:medium`, rows SQLite disputes ignored) are findings. |
 | `c_source` | [`semgrep`](https://semgrep.dev/) + [`flawfinder`](https://dwheeler.com/flawfinder/) | Mob's NIF C/Objective-C plus the exqlite NIF wrapper. Excludes the SQLite amalgamation (huge, battle-tested, would generate thousands of low-value findings). |
 | `kotlin_source` | [`detekt`](https://detekt.dev/) | Kotlin/Java under `android/app/src/main/`. Set `MOB_DETEKT_CONFIG=path` to use a security-focused rule config. |
 | `swift_source` | [`swiftlint`](https://github.com/realm/SwiftLint) | Swift under `ios/`. Mob's iOS bridge is mostly Objective-C, which is covered by `c_source` instead. |
@@ -247,10 +247,15 @@ its CVEs.
   With no network and no cache it warns and points at the pages to
   check by hand.
 
-- **No live SQLite or Elixir CVE feed.** The layer reports the exact
-  SQLite and Elixir versions it found and points at
-  `sqlite.org/cves.html` and the Elixir security advisories so you
-  can verify manually. The manifest-drift detection runs every scan
+- **SQLite CVEs come from `sqlite.org/cves.html`.** The layer matches
+  the SQLite version in `deps/exqlite/c_src/sqlite3.c` against that
+  table's "Fix" column; it has no severity, so findings are
+  `:medium`. Like the OpenSSL page, a redesign is reported as
+  unrecognised and the cached copy is used.
+
+- **No live Elixir CVE feed.** The layer reports the Elixir version
+  it found and points at the Elixir security advisories so you can
+  verify manually. The manifest-drift detection runs every scan
   — that catches your manifest lying about what shipped.
 
 - **`xcodebuild analyze` is not in the Swift layer.** The Clang
@@ -263,5 +268,5 @@ its CVEs.
 - **SQLite amalgamation is excluded from C-source scanning.** It's
   ~9MB of well-tested code; running general C rules over it would
   produce thousands of low-value findings. Use the
-  `bundled_runtime` layer to track its version against the SQLite
-  advisory page instead.
+  `bundled_runtime` layer, which matches its version against
+  `sqlite.org/cves.html`, instead.

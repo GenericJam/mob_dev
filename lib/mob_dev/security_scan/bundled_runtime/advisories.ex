@@ -1,11 +1,12 @@
 defmodule MobDev.SecurityScan.BundledRuntime.Advisories do
   @moduledoc """
   Matches upstream advisory data against the OTP and OpenSSL versions
-  fingerprinted from a cached runtime, producing `Finding`s.
+  fingerprinted from a cached runtime, and the SQLite version compiled
+  into the project's exqlite, producing `Finding`s.
 
   Pure: callers pass the decoded feed bodies (fetched or cached by
   `MobDev.SecurityScan.BundledRuntime.AdvisoryFeed`) and the installed
-  versions. Three sources:
+  versions. Four sources:
 
     * **Erlang/OTP** — the GitHub repository security advisories of
       `erlang/otp`. OSV.dev is no help here: the EEF records it carries
@@ -14,6 +15,9 @@ defmodule MobDev.SecurityScan.BundledRuntime.Advisories do
       one page per release branch. OpenSSL retired its JSON feed; the
       HTML page is the published record.
     * **OpenSSL branch EOL** — `endoflife.date/api/openssl.json`.
+    * **SQLite** — the "Status Of Recent SQLite CVEs" table on
+      `www.sqlite.org/cves.html`: CVE ids, the release that fixed them
+      (or "Not a bug in SQLite", which is skipped) and a comment.
 
   ## How an OTP advisory is matched
 
@@ -533,6 +537,193 @@ defmodule MobDev.SecurityScan.BundledRuntime.Advisories do
       :error -> []
     end
   end
+
+  @sqlite_cves_url "https://www.sqlite.org/cves.html"
+
+  @doc "URL of SQLite's CVE status page."
+  @spec sqlite_cves_url() :: String.t()
+  def sqlite_cves_url, do: @sqlite_cves_url
+
+  @doc """
+  Parse the "Status Of Recent SQLite CVEs" table of `sqlite.org/cves.html`
+  into one `%{cves, fixed_in, severity, comment}` entry per row.
+
+  `fixed_in` is the release named in the Fix column, or `nil` for rows
+  SQLite disputes ("Not a bug in SQLite", "unreproducible"); those are
+  kept so callers can count them, never matched. `severity` is the
+  page's Severity column when it has one (it has none today), else `nil`.
+
+  Returns `{:error, :unrecognised_page}` unless the page carries the
+  table heading and its CVE Number / Fix / Comments columns, every row
+  names a CVE and has a Fix cell that is a version or a recognised
+  dispute, and at least one row names a fix. A redesigned page then
+  fails loudly instead of reading as "no CVEs".
+  """
+  @spec parse_sqlite_cves_page(String.t()) :: {:ok, [map()]} | {:error, :unrecognised_page}
+  def parse_sqlite_cves_page(html) do
+    table =
+      Regex.compile!(
+        "<h1[^>]*>(?:(?!</h1>).)*Status Of Recent SQLite CVEs\\s*</h1>.*?<table[^>]*>(.*?)</table>",
+        "si"
+      )
+
+    with [_, body] <- Regex.run(table, html),
+         {:ok, columns} <- sqlite_columns(body),
+         {:ok, entries} <- sqlite_rows(body, columns),
+         true <- Enum.any?(entries, & &1.fixed_in) do
+      {:ok, entries}
+    else
+      _ -> {:error, :unrecognised_page}
+    end
+  end
+
+  defp sqlite_columns(body) do
+    headers =
+      "<th[^>]*>(.*?)</th>"
+      |> Regex.compile!("si")
+      |> Regex.scan(body, capture: :all_but_first)
+      |> Enum.map(fn [cell] -> cell |> cell_text() |> String.downcase() end)
+
+    index = fn name -> Enum.find_index(headers, &(&1 == name)) end
+
+    case {index.("cve number"), index.("fix"), index.("comments")} do
+      {cve, fix, comment} when is_integer(cve) and is_integer(fix) and is_integer(comment) ->
+        {:ok,
+         %{
+           cve: cve,
+           fix: fix,
+           comment: comment,
+           severity: index.("severity"),
+           count: length(headers)
+         }}
+
+      _ ->
+        :error
+    end
+  end
+
+  defp sqlite_rows(body, columns) do
+    row = Regex.compile!("<tr[^>]*>(.*?)</tr>", "si")
+    cell = Regex.compile!("<td[^>]*>(.*?)</td>", "si")
+
+    row
+    |> Regex.scan(body, capture: :all_but_first)
+    |> Enum.map(fn [content] -> Regex.scan(cell, content, capture: :all_but_first) end)
+    # The header row has <th> cells only.
+    |> Enum.reject(&(&1 == []))
+    |> Enum.reduce_while({:ok, []}, fn cells, {:ok, acc} ->
+      case sqlite_entry(Enum.map(cells, &hd/1), columns) do
+        {:ok, entry} -> {:cont, {:ok, [entry | acc]}}
+        :error -> {:halt, :error}
+      end
+    end)
+    |> case do
+      {:ok, [_ | _] = entries} -> {:ok, Enum.reverse(entries)}
+      _ -> :error
+    end
+  end
+
+  defp sqlite_entry(cells, %{count: count} = columns) when length(cells) == count do
+    cves =
+      ~S"CVE-\d{4}-\d+"
+      |> Regex.compile!()
+      |> Regex.scan(Enum.at(cells, columns.cve))
+      |> List.flatten()
+      |> Enum.uniq()
+
+    with [_ | _] <- cves,
+         {:ok, fixed_in} <- sqlite_fix(cell_text(Enum.at(cells, columns.fix))) do
+      {:ok,
+       %{
+         cves: cves,
+         fixed_in: fixed_in,
+         severity: columns.severity && cell_text(Enum.at(cells, columns.severity)),
+         comment: cell_text(Enum.at(cells, columns.comment))
+       }}
+    else
+      _ -> :error
+    end
+  end
+
+  defp sqlite_entry(_cells, _columns), do: :error
+
+  # "3.53.2 (2026-06-03)" names the fixing release; the disputed rows say
+  # "Not a bug in SQLite", "Not a bug in the core SQLite library" or call
+  # the report unreproducible. Anything else is a layout we don't know.
+  defp sqlite_fix(text) do
+    disputed = Regex.compile!("not a bug|unreproducible|not reproducible", "i")
+
+    case Regex.run(Regex.compile!("^(\\d+\\.\\d+(?:\\.\\d+)*)\\b"), text, capture: :all_but_first) do
+      [version] -> {:ok, version}
+      nil -> if Regex.match?(disputed, text), do: {:ok, nil}, else: :error
+    end
+  end
+
+  defp cell_text(html) do
+    html
+    |> then(&Regex.replace(Regex.compile!("<br\\s*/?>", "i"), &1, " "))
+    |> then(&Regex.replace(Regex.compile!("<[^>]*>"), &1, ""))
+    |> decode_entities()
+    |> String.split()
+    |> Enum.join(" ")
+  end
+
+  @doc """
+  Findings for every CVE on the SQLite page whose fixing release is
+  newer than `version`. Disputed rows are skipped. Severity is the
+  page's, or `:medium` when the page gives none.
+  """
+  @spec sqlite_findings([map()], String.t()) :: [Finding.t()]
+  def sqlite_findings(entries, version) do
+    with {:ok, installed} <- parse_version(version) do
+      for %{fixed_in: fixed_in} = entry when is_binary(fixed_in) <- entries,
+          {:ok, fix} <- [parse_version(fixed_in)],
+          compare(installed, fix) == :lt,
+          cve <- entry.cves do
+        sqlite_finding(entry, cve, version)
+      end
+    else
+      _ -> []
+    end
+  end
+
+  defp sqlite_finding(entry, cve, version) do
+    %Finding{
+      id: cve,
+      severity: sqlite_severity(entry.severity),
+      package: "sqlite",
+      version: version,
+      fixed_in: entry.fixed_in,
+      title: first_sentence(entry.comment),
+      description:
+        "The SQLite #{version} compiled into exqlite (deps/exqlite/c_src/sqlite3.c) is " <>
+          "affected; fixed in #{entry.fixed_in}. Upgrade exqlite to a release bundling " <>
+          "SQLite #{entry.fixed_in} or later. sqlite.org: #{entry.comment}",
+      url: "#{@sqlite_cves_url}##{cve}",
+      source: :sqlite_cves,
+      layer: :bundled_runtime
+    }
+  end
+
+  defp sqlite_severity(label) do
+    case severity(label) do
+      :unknown -> :medium
+      sev -> sev
+    end
+  end
+
+  defp first_sentence(text) do
+    case Regex.run(Regex.compile!("^(.*?\\.)(?:\\s|$)"), text, capture: :all_but_first) do
+      [sentence] -> sentence
+      nil -> text
+    end
+  end
+
+  @doc """
+  Whether `version` is a dotted version the SQLite matcher can compare.
+  """
+  @spec sqlite_version?(String.t()) :: boolean()
+  def sqlite_version?(version), do: match?({:ok, _}, parse_version(version))
 
   @doc """
   Map an upstream severity label (GitHub `critical/high/medium/low`,

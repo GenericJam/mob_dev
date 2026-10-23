@@ -415,4 +415,110 @@ defmodule MobDev.SecurityScan.BundledRuntime.AdvisoriesTest do
     assert Advisories.openssl_compare("1.1.1zj", "1.1.1zi") == :gt
     assert Advisories.openssl_compare("x", "1.0") == :error
   end
+
+  describe "SQLite CVE page" do
+    # The real www.sqlite.org/cves.html (2026-10-22) with its table cut to 13
+    # rows: ten with a fixing release, three SQLite disputes.
+    @sqlite_html File.read!(Path.join(@fixtures, "sqlite_cves.html"))
+
+    @before_3_45 ~w(CVE-2025-29087 CVE-2025-29088 CVE-2025-3277 CVE-2025-52099 CVE-2025-6965
+                    CVE-2025-70873 CVE-2025-7709 CVE-2026-11822 CVE-2026-11824)
+
+    setup do
+      {:ok, entries} = Advisories.parse_sqlite_cves_page(@sqlite_html)
+      %{entries: entries}
+    end
+
+    test "parses each row's CVEs, fixing release and comment", %{entries: entries} do
+      assert Enum.count(entries, & &1.fixed_in) == 10
+
+      assert %{
+               cves: ["CVE-2026-11822", "CVE-2026-11824"],
+               fixed_in: "3.53.2",
+               severity: nil,
+               comment: "An attacker who can execute arbitrary SQL" <> _
+             } = hd(entries)
+
+      disputed = for %{fixed_in: nil, cves: cves} <- entries, cve <- cves, do: cve
+
+      assert Enum.sort(disputed) ==
+               ~w(CVE-2022-46908 CVE-2023-32697 CVE-2026-51296 CVE-2026-51297 CVE-2026-51300
+                  CVE-2026-51302 CVE-2026-51303 CVE-2026-51304)
+    end
+
+    test "SQLite 3.53.2 (exqlite 0.37.0) has none: 11822/11824 were fixed in it",
+         %{entries: entries} do
+      assert Advisories.sqlite_findings(entries, "3.53.2") == []
+      assert Advisories.sqlite_findings(entries, "3.100.0") == []
+    end
+
+    test "SQLite 3.53.1 is one release short of the 3.53.2 fix", %{entries: entries} do
+      assert [
+               %Finding{
+                 id: "CVE-2026-11822",
+                 severity: :medium,
+                 package: "sqlite",
+                 version: "3.53.1",
+                 fixed_in: "3.53.2",
+                 source: :sqlite_cves,
+                 layer: :bundled_runtime,
+                 url: "https://www.sqlite.org/cves.html#CVE-2026-11822"
+               } = finding,
+               %Finding{id: "CVE-2026-11824", fixed_in: "3.53.2"}
+             ] = Advisories.sqlite_findings(entries, "3.53.1")
+
+      assert String.starts_with?(finding.title, "An attacker who can execute arbitrary SQL")
+      assert String.ends_with?(finding.title, "write off the end of a heap buffer.")
+      assert finding.description =~ "SQLITE_DBCONFIG_DEFENSIVE disabled"
+    end
+
+    test "SQLite 3.45.0 gets every CVE fixed after it, disputes skipped", %{entries: entries} do
+      findings = Advisories.sqlite_findings(entries, "3.45.0")
+
+      assert findings |> Enum.map(& &1.id) |> Enum.sort() == @before_3_45
+      assert Enum.all?(findings, &(&1.severity == :medium))
+
+      fixes = Map.new(findings, &{&1.id, &1.fixed_in})
+      assert fixes["CVE-2025-6965"] == "3.50.2"
+      assert fixes["CVE-2025-70873"] == "3.52.0"
+    end
+
+    test "versions compare numerically, not as strings", %{entries: entries} do
+      ids = entries |> Advisories.sqlite_findings("3.9.0") |> Enum.map(& &1.id)
+      assert "CVE-2022-35737" in ids
+      refute "CVE-2023-32697" in ids
+    end
+
+    test "a Severity column, when the page has one, sets the severity" do
+      html =
+        @sqlite_html
+        |> String.replace(
+          ~s(<th valign="bottom">Comments</th>),
+          ~s(<th valign="bottom">Comments</th>\n<th valign="bottom">Severity</th>)
+        )
+        |> String.replace("</td>\n</tr>", "</td>\n<td valign='top'>High</td>\n</tr>")
+
+      assert {:ok, entries} = Advisories.parse_sqlite_cves_page(html)
+      assert [%Finding{severity: :high}, _] = Advisories.sqlite_findings(entries, "3.53.1")
+    end
+
+    test "a redesigned or wrong page is rejected, not read as clean" do
+      unknown_fix = String.replace(@sqlite_html, "Not a bug in SQLite</td>", "Pending</td>")
+      no_fix_column = String.replace(@sqlite_html, ">Fix</th>", ">Fixed by</th>")
+
+      no_table =
+        String.replace(@sqlite_html, "Status Of Recent SQLite CVEs", "Recent SQLite news")
+
+      no_versions =
+        Regex.replace(
+          Regex.compile!("<a href=\"releaselog/[^\"]+\">[^<]+</a><br>\\([^)]+\\)"),
+          @sqlite_html,
+          "Not a bug in SQLite"
+        )
+
+      for html <- [unknown_fix, no_fix_column, no_table, no_versions, "<html>maintenance</html>"] do
+        assert Advisories.parse_sqlite_cves_page(html) == {:error, :unrecognised_page}
+      end
+    end
+  end
 end

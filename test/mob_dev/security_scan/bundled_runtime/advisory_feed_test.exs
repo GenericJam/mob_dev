@@ -91,6 +91,25 @@ defmodule MobDev.SecurityScan.BundledRuntime.AdvisoryFeedTest do
     assert File.read!(Path.join(dir, file)) == before
   end
 
+  test "the SQLite CVE page is fetched, cached, and a bad body keeps the good copy",
+       %{tmp_dir: dir} do
+    sqlite_html = File.read!(Path.join(@fixtures, "sqlite_cves.html"))
+
+    assert {:ok, [_ | _] = entries, {:fetched, @now}} =
+             AdvisoryFeed.load(:sqlite, opts(dir, serving(sqlite_html)))
+
+    assert_received {:http_get, "https://www.sqlite.org/cves.html", _}
+    assert File.ls!(dir) == ["sqlite-cves.html"]
+
+    age_cache(dir, 3 * 86_400)
+
+    assert {:ok, ^entries, {:stale, _at, reason}} =
+             AdvisoryFeed.load(:sqlite, opts(dir, serving("<html>maintenance</html>")))
+
+    assert reason =~ "SQLite CVE page not recognised"
+    assert File.read!(Path.join(dir, "sqlite-cves.html")) == sqlite_html
+  end
+
   test "empty or misshapen feed bodies are refused, keeping the good cache", %{tmp_dir: dir} do
     {:ok, advisories, _} = AdvisoryFeed.load(:otp, opts(dir, serving(@otp_json)))
     {:ok, cycles, _} = AdvisoryFeed.load(:openssl_eol, opts(dir, serving(@eol_json)))

@@ -27,9 +27,13 @@ defmodule MobDev.SecurityScan.Layers.BundledRuntime do
      it means the manifest is lying about what shipped, which is the
      exact failure mode the manifest exists to prevent.
 
-  3. **SQLite fingerprint** — read `deps/exqlite/c_src/sqlite3.c` from
-     the scanned project and extract `SQLITE_VERSION`. SQLite isn't
-     in the OTP tarball; it's compiled per-app via exqlite.
+  3. **SQLite** — read `deps/exqlite/c_src/sqlite3.c` from the scanned
+     project, extract `SQLITE_VERSION`, and report every CVE on
+     `www.sqlite.org/cves.html` whose fixing release is newer (severity
+     from the page, `:medium` when it gives none; rows SQLite marks
+     "not a bug" are skipped). SQLite isn't in the OTP tarball; it's
+     compiled per-app via exqlite, so this runs with or without cached
+     tarballs.
 
   4. **Upstream advisories** — for the tarballs of the active runtime
      (the manifest's `active_hash`, i.e. what this mob_dev deploys),
@@ -41,7 +45,7 @@ defmodule MobDev.SecurityScan.Layers.BundledRuntime do
      the matching rules and `MobDev.SecurityScan.BundledRuntime.AdvisoryFeed`
      for caching. Offline, a cached copy is used (flagged when stale);
      with no copy at all the layer warns and lists the advisory pages to
-     check by hand. Elixir and SQLite remain manual-check notes.
+     check by hand. Elixir remains a manual-check note.
 
   Stale tarballs of other hashes are fingerprinted for drift but not
   matched against advisories: they are not what ships.
@@ -89,8 +93,9 @@ defmodule MobDev.SecurityScan.Layers.BundledRuntime do
     e -> {:error, Exception.message(e)}
   end
 
-  defp analyze([], _manifest, project_root, _opts) do
-    sqlite_notes = sqlite_notes(project_root)
+  defp analyze([], _manifest, project_root, opts) do
+    {sqlite_status, sqlite_findings, sqlite_notes, sqlite_tools} =
+      sqlite_check(project_root, opts)
 
     notes =
       [
@@ -98,7 +103,9 @@ defmodule MobDev.SecurityScan.Layers.BundledRuntime do
         "run `mix mob.deploy --native` from a Mob app to populate the cache"
       ] ++ sqlite_notes
 
-    {[], notes, :not_applicable, nil, []}
+    # SQLite is compiled from the project's deps, not the tarball, so it
+    # is checked even with an empty cache.
+    {sqlite_findings, notes, sqlite_status, nil, sqlite_tools}
   end
 
   defp analyze(_tarballs, {:error, reason}, _project_root, _opts) do
@@ -114,13 +121,14 @@ defmodule MobDev.SecurityScan.Layers.BundledRuntime do
 
     active = Enum.filter(fingerprinted, fn {tb, _versions} -> tb.hash == manifest.active_hash end)
     {advisory_findings, advisory_notes, feed_tools} = advisory_check(active, manifest, opts)
-    sqlite_notes = sqlite_notes(project_root)
+    {_status, sqlite_findings, sqlite_notes, sqlite_tools} = sqlite_check(project_root, opts)
 
     notes =
       ["scanned #{length(tarballs)} cached OTP tarball(s)"] ++
         per_tarball_notes ++ advisory_notes ++ sqlite_notes
 
-    {drift_findings ++ advisory_findings, notes, :ok, nil, feed_tools}
+    {drift_findings ++ advisory_findings ++ sqlite_findings, notes, :ok, nil,
+     feed_tools ++ sqlite_tools}
   end
 
   defp project_exqlite_version(project_root) do
@@ -514,22 +522,52 @@ defmodule MobDev.SecurityScan.Layers.BundledRuntime do
 
   defp timestamp(%DateTime{} = at), do: Calendar.strftime(at, "%Y-%m-%d %H:%M UTC")
 
-  defp sqlite_notes(project_root) do
+  defp sqlite_check(project_root, opts) do
     case Fingerprint.fingerprint_sqlite(project_root) do
       {:ok, version} ->
-        [
-          "  SQLite #{version} (from #{Path.relative_to_cwd(Path.join([project_root, "deps/exqlite/c_src/sqlite3.c"]))}) — https://www.sqlite.org/cves.html"
-        ]
+        sqlite_cves(version, opts)
 
       {:error, :not_found} ->
-        [
-          "  SQLite: no deps/exqlite/c_src/sqlite3.c — exqlite not in this project's deps tree"
-        ]
+        {:not_applicable, [],
+         ["  SQLite: no deps/exqlite/c_src/sqlite3.c — exqlite not in this project's deps tree"],
+         []}
 
       {:error, :unparseable} ->
-        [
-          "  SQLite: deps/exqlite/c_src/sqlite3.c present but version macro could not be parsed"
-        ]
+        {:ok, [],
+         [
+           "  ⚠ SQLite: deps/exqlite/c_src/sqlite3.c present but version macro could not be " <>
+             "parsed — not checked; #{Advisories.sqlite_cves_url()}"
+         ], []}
+    end
+  end
+
+  defp sqlite_cves(version, opts) do
+    label = "SQLite #{version} (deps/exqlite/c_src/sqlite3.c)"
+
+    with true <- Advisories.sqlite_version?(version),
+         {:ok, entries, provenance} <- AdvisoryFeed.load(:sqlite, opts) do
+      findings =
+        entries |> Advisories.sqlite_findings(version) |> Enum.sort_by(&Finding.sort_key/1)
+
+      fixed =
+        for %{fixed_in: fix, cves: cves} when is_binary(fix) <- entries, cve <- cves, do: cve
+
+      note =
+        feed_note(
+          "#{label}: #{length(findings)} of #{length(fixed)} fixed CVEs on " <>
+            "#{Advisories.sqlite_cves_url()} apply",
+          provenance
+        )
+
+      {:ok, findings, [note], ["sqlite.org CVE table"]}
+    else
+      false ->
+        {:ok, [],
+         ["  ⚠ #{label}: unrecognised version — not checked; #{Advisories.sqlite_cves_url()}"],
+         []}
+
+      {:error, reason} ->
+        {:ok, [], [unavailable_note(label, reason, Advisories.sqlite_cves_url())], []}
     end
   end
 end
