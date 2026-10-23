@@ -1,6 +1,7 @@
 defmodule MobDev.SecurityScan.BundledRuntime.Fingerprint do
   @moduledoc """
-  Extracts versions from `~/.mob/cache/otp-*-{hash}/` and from exqlite
+  Extracts versions from `otp-*-{hash}/` in the runtime cache
+  (`$MOB_CACHE_DIR`, default `~/.mob/cache/`) and from exqlite
   C sources in a project's `deps/`.
 
   This module is the *receipt* side of the manifest-first design.
@@ -12,8 +13,6 @@ defmodule MobDev.SecurityScan.BundledRuntime.Fingerprint do
   judgements. The fingerprinter answers "what version is this binary?"
   and nothing else.
   """
-
-  @cache_dir Path.join([System.user_home() || "/", ".mob", "cache"])
 
   @typedoc """
   One cached tarball found on disk.
@@ -42,7 +41,7 @@ defmodule MobDev.SecurityScan.BundledRuntime.Fingerprint do
         }
 
   @doc """
-  Locate every cached OTP tarball under `~/.mob/cache/`.
+  Locate every cached OTP tarball in `cache_dir/0`.
 
   Returns a list of `tarball/0` entries, sorted by platform then hash
   for stable output. Filters out anything that isn't a directory or
@@ -52,7 +51,7 @@ defmodule MobDev.SecurityScan.BundledRuntime.Fingerprint do
   """
   @spec locate_cached_tarballs(keyword()) :: [tarball()]
   def locate_cached_tarballs(opts \\ []) do
-    cache_dir = Keyword.get(opts, :cache_dir, @cache_dir)
+    cache_dir = Keyword.get_lazy(opts, :cache_dir, &cache_dir/0)
 
     case File.ls(cache_dir) do
       {:ok, entries} ->
@@ -84,6 +83,15 @@ defmodule MobDev.SecurityScan.BundledRuntime.Fingerprint do
       [_, "ios-device", hash] -> [%{platform: :ios_device, hash: hash, path: path}]
       _ -> []
     end
+  end
+
+  @doc """
+  The runtime cache `MobDev.OtpDownloader` extracts tarballs into:
+  `$MOB_CACHE_DIR`, else `~/.mob/cache`. Read per call, not at compile time.
+  """
+  @spec cache_dir() :: Path.t()
+  def cache_dir do
+    System.get_env("MOB_CACHE_DIR") || Path.join([System.user_home() || "/", ".mob", "cache"])
   end
 
   @doc """

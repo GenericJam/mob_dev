@@ -3,8 +3,9 @@
 #
 # `:active_hash` MUST match `@otp_hash` in
 # `lib/mob_dev/otp_downloader.ex` — the security-scan layer
-# fingerprints `~/.mob/cache/otp-*-{hash}/` against the bundle
-# entry for this hash and raises if they disagree.
+# fingerprints `otp-*-{hash}/` in the runtime cache (`$MOB_CACHE_DIR`,
+# default `~/.mob/cache`) against the bundle entry for this hash and
+# raises if they disagree. The active bundle must record `:otp_version`.
 #
 # When updating:
 #

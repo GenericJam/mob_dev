@@ -87,17 +87,28 @@ defmodule MobDev.SecurityScan.BundledVersions do
     Map.fetch!(manifest.bundles, manifest.active_hash)
   end
 
-  defp validate!(%{active_hash: hash, bundles: bundles})
-       when is_binary(hash) and is_map(bundles) do
+  @doc false
+  # Public for tests: load/0 always reads priv/security/bundled_versions.exs.
+  @spec validate!(term()) :: :ok
+  def validate!(%{active_hash: hash, bundles: bundles})
+      when is_binary(hash) and is_map(bundles) do
     unless Map.has_key?(bundles, hash) do
       raise "bundled versions manifest: active_hash #{inspect(hash)} not found in :bundles"
     end
 
     Enum.each(bundles, fn {h, bundle} -> validate_bundle!(h, bundle) end)
+
+    # The scan checks otp_version against the tarball's OTP_VERSION, and the
+    # advisory match uses it; bundles recorded before it existed don't have
+    # one, but the active bundle must.
+    unless is_binary(bundles[hash][:otp_version]) do
+      raise "bundled versions manifest: active bundle #{inspect(hash)} missing required field :otp_version"
+    end
+
     :ok
   end
 
-  defp validate!(other) do
+  def validate!(other) do
     raise "bundled versions manifest must be %{active_hash: ..., bundles: %{...}}; got #{inspect(other)}"
   end
 

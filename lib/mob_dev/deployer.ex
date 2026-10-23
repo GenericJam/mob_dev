@@ -867,18 +867,21 @@ defmodule MobDev.Deployer do
       :rooted ->
         run_adb(["-s", serial, "shell", "mkdir -p #{android_beams_dir()}"])
 
-        case stale_host_ssl_rm_cmd(android_beams_dir()) do
-          nil -> :ok
-          cmd -> run_adb(["-s", serial, "shell", cmd])
+        with :ok <- remove_stale_host_ssl_android(serial, & &1) do
+          # Labelled by deploy_android's final relabel_otp_android/1.
+          Enum.reduce_while(beam_dirs, :ok, fn dir, _ ->
+            case run_adb([
+                   "-s",
+                   serial,
+                   "push",
+                   "#{Path.expand(dir)}/.",
+                   "#{android_beams_dir()}/"
+                 ]) do
+              {:ok, _} -> {:cont, :ok}
+              {:error, reason} -> {:halt, {:error, "push failed: #{reason}"}}
+            end
+          end)
         end
-
-        # Labelled by deploy_android's final relabel_otp_android/1.
-        Enum.reduce_while(beam_dirs, :ok, fn dir, _ ->
-          case run_adb(["-s", serial, "push", "#{Path.expand(dir)}/.", "#{android_beams_dir()}/"]) do
-            {:ok, _} -> {:cont, :ok}
-            {:error, reason} -> {:halt, {:error, "push failed: #{reason}"}}
-          end
-        end)
 
       :not_rooted ->
         # Fall back to run-as tar (non-rooted physical devices).
@@ -927,10 +930,12 @@ defmodule MobDev.Deployer do
         "run-as #{android_package()} mkdir -p #{android_beams_dir()}"
       ])
 
-      case stale_host_ssl_rm_cmd(android_beams_dir()) do
-        nil -> :ok
-        cmd -> run_adb(["-s", serial, "shell", "run-as #{android_package()} sh -c '#{cmd}'"])
-      end
+      with {:error, _} = error <-
+             remove_stale_host_ssl_android(
+               serial,
+               &"run-as #{android_package()} sh -c '#{&1}'"
+             ),
+           do: throw(error)
 
       # Redirect stderr and always exit 0: Android's Toybox tar cannot chown to
       # macOS UID 501 and exits 1, but the files are extracted correctly.
@@ -1058,7 +1063,7 @@ defmodule MobDev.Deployer do
 
     try do
       File.mkdir_p!(ios_beams_dir())
-      remove_stale_host_ssl!(ios_beams_dir())
+      with {:error, _} = error <- remove_stale_host_ssl(ios_beams_dir()), do: throw(error)
 
       # Use rsync rather than cp -r for two reasons that hit Nix users hard:
       #
@@ -2023,8 +2028,37 @@ defmodule MobDev.Deployer do
   def stale_host_ssl_rm_cmd(beams_dir, files),
     do: ~s(cd "#{beams_dir}" && rm -f #{Enum.join(files, " ")})
 
-  defp remove_stale_host_ssl!(beams_dir) do
-    Enum.each(stale_host_ssl_files(), &File.rm(Path.join(beams_dir, &1)))
+  # A file left behind stays first on -pa and shadows the runtime's ssl or
+  # crypto, so a failed delete fails the deploy instead of passing silently.
+  defp remove_stale_host_ssl_android(serial, wrap) do
+    case stale_host_ssl_rm_cmd(android_beams_dir()) do
+      nil ->
+        :ok
+
+      cmd ->
+        case run_adb(["-s", serial, "shell", wrap.(cmd)]) do
+          {:ok, _} -> :ok
+          {:error, reason} -> {:error, "removing stale host ssl/crypto BEAMs failed: #{reason}"}
+        end
+    end
+  end
+
+  @doc false
+  @spec remove_stale_host_ssl(Path.t()) :: :ok | {:error, String.t()}
+  def remove_stale_host_ssl(beams_dir) do
+    Enum.reduce_while(stale_host_ssl_files(), :ok, fn name, :ok ->
+      path = Path.join(beams_dir, name)
+
+      case File.rm(path) do
+        result when result in [:ok, {:error, :enoent}] ->
+          {:cont, :ok}
+
+        {:error, reason} ->
+          {:halt,
+           {:error,
+            "removing stale host ssl/crypto BEAM #{path} failed: #{:file.format_error(reason)}"}}
+      end
+    end)
   end
 
   defp count_beams(beam_dirs) do

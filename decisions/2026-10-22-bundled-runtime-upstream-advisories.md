@@ -7,7 +7,7 @@
 ## Context
 
 `mix mob.security_scan` ran in every release preflight while the device
-runtime (OTP 29.0, OpenSSL 3.4.0, tarball `5c9c69fc`) fell about 46 erlang/otp
+runtime (OTP 29.0, OpenSSL 3.4.0, tarball `5c9c69fc`) fell 47 erlang/otp
 advisories and 56 OpenSSL CVEs behind, and OpenSSL 3.4 reached end of life. The
 `bundled_runtime` layer only printed "verify upstream" links; its moduledoc said
 no machine-readable feed existed. That is true of OSV for OTP (the EEF records
@@ -58,7 +58,7 @@ GitHub list must be non-empty with every advisory carrying `ghsa_id` and
 `cycle`/`eol` maps; the OpenSSL page must carry its `Vulnerabilities <branch>`
 heading, every CVE block must yield a known severity and an affected range, and
 a page mentioning a CVE must yield at least one block. A body failing that is a
-refresh failure, never "no advisories". The cache (`~/.mob/cache/advisories/`,
+refresh failure, never "no advisories". The cache (`advisories/` under `$MOB_CACHE_DIR`, default `~/.mob/cache`,
 24 h TTL by mtime) is used when fresh; on a failed refresh the cached copy is used
 and the note says STALE with the reason; a fetch that couldn't be written says so;
 with no copy the layer warns and prints the page to check by hand, and the drift

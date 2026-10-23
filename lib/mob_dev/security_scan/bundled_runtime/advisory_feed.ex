@@ -5,7 +5,7 @@ defmodule MobDev.SecurityScan.BundledRuntime.AdvisoryFeed do
 
   The scan has to complete offline and must not hammer the unauthenticated
   GitHub API (60 requests/hour), so every source goes through a file cache
-  at `~/.mob/cache/advisories/`:
+  at `advisories/` in the runtime cache (`$MOB_CACHE_DIR`, default `~/.mob/cache`):
 
     1. a cached copy younger than the TTL (default 24 h) is used as-is;
     2. otherwise the source is fetched, validated, and written to the cache;
@@ -18,7 +18,7 @@ defmodule MobDev.SecurityScan.BundledRuntime.AdvisoryFeed do
 
   ## Options
 
-    * `:advisory_cache_dir` — cache directory (default `~/.mob/cache/advisories`)
+    * `:advisory_cache_dir` — cache directory (default `default_cache_dir/0`)
     * `:advisory_ttl` — seconds a cached copy counts as fresh (default 86_400)
     * `:advisory_http_get` — `(url, headers) -> {:ok, status, headers, body} |
       {:error, reason}`; defaults to `:httpc`. Tests inject a stub.
@@ -46,9 +46,10 @@ defmodule MobDev.SecurityScan.BundledRuntime.AdvisoryFeed do
   @eol_url "https://endoflife.date/api/openssl.json"
   @max_pages 20
 
-  @doc "Default cache directory for advisory data."
+  @doc "Default cache directory for advisory data: `advisories/` in the runtime cache."
   @spec default_cache_dir() :: Path.t()
-  def default_cache_dir, do: Path.join([System.user_home() || "/", ".mob", "cache", "advisories"])
+  def default_cache_dir,
+    do: Path.join(MobDev.SecurityScan.BundledRuntime.Fingerprint.cache_dir(), "advisories")
 
   @doc """
   Load one source's decoded data: `[advisory]` for `:otp`, the parsed

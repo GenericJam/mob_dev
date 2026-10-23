@@ -245,11 +245,12 @@ mix reach                  # interactive HTML architecture report
 
 `mix mob.security_scan` covers Hex deps, Android Gradle deps, iOS
 Swift Package deps, the **bundled OpenSSL/OTP/Elixir/SQLite versions**
-(via fingerprint of `~/.mob/cache/otp-*-{hash}/` against
+(via fingerprint of `otp-*-{hash}/` in `$MOB_CACHE_DIR`, default
+`~/.mob/cache`, against
 `priv/security/bundled_versions.exs`, plus erlang/otp and OpenSSL
 advisories and OpenSSL branch EOL for the active hash, and the project's
 `deps/exqlite` SQLite against `sqlite.org/cves.html`, cached in
-`~/.mob/cache/advisories/`), and C/Kotlin/Swift static
+`advisories/` under the same dir), and C/Kotlin/Swift static
 analysis. See [`README.md`](README.md#security-scan-mix-mobsecurity_scan)
 for the full layer list and the one-time `brew install` of external
 scanners.

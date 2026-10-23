@@ -361,7 +361,8 @@ defmodule MobDev.NativeBuild do
     mob_dir = Path.expand(cfg[:mob_dir])
     warn_missing_app_lifecycle_hooks(mob_dir)
 
-    with {:ok, otp} <- ensure_android_otps(abis),
+    with :ok <- mob_finds_erts(mob_dir),
+         {:ok, otp} <- ensure_android_otps(abis),
          {:ok, python_android_bundle} <- maybe_ensure_python_android_bundle(),
          :ok <- each_ok(otp, fn {abi, dir} -> ensure_jni_libs(dir, abi) end),
          :ok <- ensure_python_android_libs(python_android_bundle),
@@ -458,6 +459,26 @@ defmodule MobDev.NativeBuild do
     end)
     |> List.flatten()
     |> Enum.uniq()
+  end
+
+  # mob < 0.9.25 hard-codes erts-17.0 in the Android launcher and in the
+  # iOS-simulator fallback, but the OTP 29.1.2 runtime is erts-17.1.1: the
+  # app would build, install and die at boot (MOB-493). Hex resolution keeps
+  # mob at ~> 0.9.25; a path or override :mob dep (mob_dir, --local apps)
+  # doesn't, so check the native source itself. Physical-iOS and release
+  # builds pass ERTS_VSN at compile time and don't need it.
+  @doc false
+  @spec mob_finds_erts(Path.t()) :: :ok | {:error, String.t()}
+  def mob_finds_erts(mob_dir) do
+    if File.regular?(Path.join(mob_dir, "android/jni/mob_erts_dir.zig")) and
+         File.regular?(Path.join(mob_dir, "ios/mob_erts_dir.h")) do
+      :ok
+    else
+      {:error,
+       "mob at #{mob_dir} is older than 0.9.25: its launcher hard-codes erts-17.0, " <>
+         "and this mob_dev's runtime (OTP 29.1.2) is erts-17.1.1, so the app would " <>
+         "die at boot. Update that checkout, or use {:mob, \"~> 0.9.25\"} from Hex."}
+    end
   end
 
   # An app that upgraded mob but kept its pre-0.9.6 MainActivity.kt / beam_jni.c
@@ -1958,8 +1979,12 @@ defmodule MobDev.NativeBuild do
 
   # ── iOS ──────────────────────────────────────────────────────────────────────
 
-  defp build_ios(cfg, device_ids) do
+  @doc false
+  @spec build_ios(keyword(), [String.t()] | String.t() | nil) ::
+          {:ok, String.t()} | {:error, String.t(), term()}
+  def build_ios(cfg, device_ids) do
     with :ok <- check_path(cfg[:mob_dir], "mob_dir"),
+         :ok <- mob_finds_erts(Path.expand(cfg[:mob_dir])),
          :ok <- check_path(cfg[:elixir_lib], "elixir_lib"),
          {:ok, otp_root} <- MobDev.OtpDownloader.ensure_ios_sim(),
          {:ok, python_bundle} <- maybe_ensure_python_bundle(),
@@ -2064,8 +2089,10 @@ defmodule MobDev.NativeBuild do
     File.mkdir_p!(beams_dir)
     chmod_writable(beams_dir)
 
-    # Host ssl BEAMs an older mob_dev copied here shadow the runtime's ssl.
-    Enum.each(MobDev.Deployer.stale_host_ssl_files(), &File.rm(Path.join(beams_dir, &1)))
+    # Host ssl BEAMs and the crypto shim an older mob_dev put here shadow
+    # the runtime's ssl and crypto.
+    with {:error, message} <- MobDev.Deployer.remove_stale_host_ssl(beams_dir),
+         do: Mix.raise(message)
 
     # The generated mob_app_config.beam (the project's config/*.exs for the
     # device, see MobDev.AppConfig) lands in the app's own ebin, which the

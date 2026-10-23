@@ -47,7 +47,8 @@ per-branch [vulnerability page](https://openssl-library.org/news/vulnerabilities
 and [endoflife.date](https://endoflife.date/openssl). Each affected
 advisory is a finding with the upstream severity and the fixed
 version; an OpenSSL branch past end of life is `:high`. Fetched data
-is cached in `~/.mob/cache/advisories/` for 24 hours, and a cached
+is cached in `advisories/` under `$MOB_CACHE_DIR` (default
+`~/.mob/cache`) for 24 hours, and a cached
 copy is used (flagged stale) when the network is unavailable.
 
 ---

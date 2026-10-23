@@ -2827,4 +2827,38 @@ defmodule MobDev.NativeBuildTest do
       assert_raise ArgumentError, ~r/style :sfonts declares font "priv\/fonts\/Gone.ttf"/, collect
     end
   end
+
+  # MOB-493: a path/override mob older than 0.9.25 hard-codes erts-17.0 and
+  # would build fine, then die at boot on the erts-17.1.1 runtime.
+  describe "mob_finds_erts/1" do
+    @tag :tmp_dir
+    test "accepts a mob that finds the ERTS dir at runtime, rejects one that doesn't",
+         %{tmp_dir: mob_dir} do
+      assert {:error, message} = NativeBuild.mob_finds_erts(mob_dir)
+      assert message =~ "older than 0.9.25"
+
+      for rel <- ["android/jni/mob_erts_dir.zig", "ios/mob_erts_dir.h"] do
+        File.mkdir_p!(Path.dirname(Path.join(mob_dir, rel)))
+        File.write!(Path.join(mob_dir, rel), "")
+      end
+
+      assert NativeBuild.mob_finds_erts(mob_dir) == :ok
+    end
+
+    @tag :tmp_dir
+    test "the Android and iOS-simulator builds stop on such a mob before fetching a runtime",
+         %{tmp_dir: mob_dir} do
+      ExUnit.CaptureIO.capture_io(fn ->
+        assert {:error, android} =
+                 NativeBuild.build_android_native([mob_dir: mob_dir], abis: ["arm64-v8a"])
+
+        assert android =~ "older than 0.9.25"
+
+        assert {:error, "iOS", ios} =
+                 NativeBuild.build_ios([mob_dir: mob_dir, elixir_lib: mob_dir], [])
+
+        assert ios =~ "older than 0.9.25"
+      end)
+    end
+  end
 end
