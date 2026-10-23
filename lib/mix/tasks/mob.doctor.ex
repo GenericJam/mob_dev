@@ -408,12 +408,12 @@ defmodule Mix.Tasks.Mob.Doctor do
               cond do
                 major > 0 and major < @min_jdk ->
                   {:fail, "java",
-                   "JDK #{major} found — JDK #{@min_jdk}+ required by Android Gradle Plugin 8.x",
+                   "JDK #{major} found — JDK #{@min_jdk}+ required by the Android Gradle Plugin",
                    "Install a supported JDK:\n      #{java_install_hint()}"}
 
                 major > 21 ->
                   {:warn, "java", "#{version_line} — JDK #{major} detected",
-                   "AGP 8.2.0 is tested through JDK 21. JDK #{major} may cause Kotlin compilation errors.\n      Switch to JDK 17 or 21:\n        macOS:          brew install --cask temurin@21 && export JAVA_HOME=$(/usr/libexec/java_home -v 21)\n        Ubuntu/Debian:  sudo apt install openjdk-21-jdk && sudo update-alternatives --config java\n        Arch:           sudo pacman -S jdk21-openjdk && sudo archlinux-java set java-21-openjdk\n        Fedora:         sudo dnf install java-21-openjdk && sudo alternatives --config java"}
+                   "Mob's Android builds are tested on JDK 17 (pinned in .tool-versions) through 21. JDK #{major} may cause Kotlin compilation errors.\n      Switch to JDK 17 or 21:\n        macOS:          brew install --cask temurin@21 && export JAVA_HOME=$(/usr/libexec/java_home -v 21)\n        Ubuntu/Debian:  sudo apt install openjdk-21-jdk && sudo update-alternatives --config java\n        Arch:           sudo pacman -S jdk21-openjdk && sudo archlinux-java set java-21-openjdk\n        Fedora:         sudo dnf install java-21-openjdk && sudo alternatives --config java"}
 
                 true ->
                   {:ok, "java", version_line, nil}
@@ -743,7 +743,8 @@ defmodule Mix.Tasks.Mob.Doctor do
         check_component_event_jni(),
         check_sheet_dismiss_wire_shape(),
         check_startup_status_hooks(),
-        check_app_lifecycle_hooks()
+        check_app_lifecycle_hooks(),
+        check_kotlin_gradle_plugin()
       ])
     else
       []
@@ -952,6 +953,51 @@ defmodule Mix.Tasks.Mob.Doctor do
     Enum.reject(~w(setStartupPhase setStartupError), fn name ->
       Regex.match?(Regex.compile!("@JvmStatic\\s+(?:public\\s+)?fun\\s+#{name}\\s*\\("), content)
     end)
+  end
+
+  # ── Kotlin Gradle plugin CVE-2026-53914 (MOB-497) ─────────────────────────
+  #
+  # KGP before 2.4.20 deserializes build-cache metadata unsafely
+  # (GHSA-r937-wjx7-w2jp), so a poisoned shared or remote Gradle build cache
+  # runs code on whoever builds. mob_new's template pinned 1.9.22 until the
+  # Kotlin 2 migration; there is no 1.9.x fix. The Android build files are
+  # app-owned and hand-edited, so this warns instead of patching (see
+  # decisions/2026-08-25-detect-dont-autopatch-native-source.md).
+  defp check_kotlin_gradle_plugin, do: __kotlin_gradle_plugin_rows__(File.cwd!())
+
+  @kgp_cve "CVE-2026-53914 (GHSA-r937-wjx7-w2jp), code execution through unsafe " <>
+             "deserialization of Gradle build-cache metadata. Reaches any build that " <>
+             "uses a shared or remote build cache; the shipped app is not affected"
+
+  @doc false
+  # The doctor rows for the Android project under `root`. Public for tests.
+  @spec __kotlin_gradle_plugin_rows__(Path.t()) :: [tuple()]
+  def __kotlin_gradle_plugin_rows__(root) do
+    root
+    |> MobDev.KotlinGradlePlugin.check()
+    |> Enum.map(&kotlin_gradle_plugin_row/1)
+  end
+
+  defp kotlin_gradle_plugin_row({:vulnerable, path, versions}) do
+    {:warn, "Kotlin Gradle plugin (#{path})",
+     "Kotlin #{Enum.join(versions, ", ")} is below 2.4.20: #{@kgp_cve}",
+     "Port the Kotlin 2 migration from a freshly generated app (mix mob.new) " <>
+       "or mob_new's android/build.gradle.eex and android/app/build.gradle.eex: " <>
+       "kotlin-gradle-plugin and compose-compiler-gradle-plugin 2.4.21 on the " <>
+       "buildscript classpath with AGP 9.3.3 and the Gradle 9.7.0 wrapper; in " <>
+       "app/build.gradle drop the kotlin-android plugin, composeOptions and " <>
+       "kotlinOptions, and apply org.jetbrains.kotlin.plugin.compose. mob_new's " <>
+       "CHANGELOG (MOB-497) lists every edit."}
+  end
+
+  defp kotlin_gradle_plugin_row({:builtin_kotlin_unpinned, path, agp}) do
+    {:warn, "Kotlin Gradle plugin (#{path})",
+     "AGP #{agp} declares no Kotlin Gradle plugin, so its built-in Kotlin " <>
+       "runs on the KGP 2.2.10 AGP 9 depends on, below 2.4.20: #{@kgp_cve}",
+     "Add `classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:2.4.21'` to " <>
+       "android/build.gradle's buildscript dependencies (as mob_new's template " <>
+       "does), plus compose-compiler-gradle-plugin at the same version if the " <>
+       "app uses Compose."}
   end
 
   # ── Plugin build options ──────────────────────────────────────────────────────
