@@ -218,4 +218,54 @@ defmodule Mix.Tasks.Mob.DoctorTest do
       assert Mix.Tasks.Mob.Doctor.__sheet_dismiss_wire_shape_stale__(pre_fix)
     end
   end
+
+  describe "__startup_status_hooks_missing__/1 (Android boot status)" do
+    test "reports both methods for a MobBridge that predates them" do
+      pre_fix = """
+      object MobBridge {
+          @JvmStatic
+          fun setTheme(json: String) {}
+      }
+      """
+
+      assert Mix.Tasks.Mob.Doctor.__startup_status_hooks_missing__(pre_fix) ==
+               ["setStartupPhase", "setStartupError"]
+    end
+
+    test "reports only the one still missing from a partial port" do
+      partial = """
+      object MobBridge {
+          @JvmStatic fun setStartupPhase(phase: String) {}
+      }
+      """
+
+      assert Mix.Tasks.Mob.Doctor.__startup_status_hooks_missing__(partial) == ["setStartupError"]
+    end
+
+    test "reports nothing once both are ported, @JvmStatic on its own line" do
+      fixed = """
+      object MobBridge {
+          @JvmStatic
+          fun setStartupPhase(phase: String) {}
+
+          @JvmStatic
+          public fun setStartupError(error: String) {}
+      }
+      """
+
+      assert Mix.Tasks.Mob.Doctor.__startup_status_hooks_missing__(fixed) == []
+    end
+
+    test "reports a port missing @JvmStatic, which GetStaticMethodID can't find" do
+      instance_only = """
+      object MobBridge {
+          fun setStartupPhase(phase: String) {}
+          @JvmStatic fun  setStartupError (error: String) {}
+      }
+      """
+
+      assert Mix.Tasks.Mob.Doctor.__startup_status_hooks_missing__(instance_only) ==
+               ["setStartupPhase"]
+    end
+  end
 end

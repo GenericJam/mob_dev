@@ -33,6 +33,14 @@
   `mix mob.release --security-gate` now prints these warnings when the scan
   passes, instead of only "security scan clean".
 
+### Added
+
+- **`mix mob.doctor` warns when an Android app's `MobBridge.kt` lacks
+  `setStartupPhase` / `setStartupError`.** mob's NIF reports boot progress
+  and boot failures through them and skips the call when they're missing, so
+  a failed boot on an app generated before mob_new added them shows a blank
+  screen. Detected, not patched: `MobBridge.kt` is app-owned.
+
 ### Upgrading
 
 - **MOB-495.** With the current `5c9c69fc` runtime cached, `mix
