@@ -49,9 +49,17 @@ defmodule Mix.Tasks.Mob.Release do
 
   ## --android prerequisites
 
-    1. `android/keystore.properties` filled in with your upload keystore
-       credentials. `android/upload_jks.keystore` must exist. See
-       `android/keystore.properties.example`.
+    1. `android/upload_jks.keystore` and `android/keystore.properties`.
+       `mix mob.setup.google_play` writes both when it generates the
+       keystore (it skips an existing one). By hand, the properties file is
+       (paths relative to `android/`):
+
+           storeFile=upload_jks.keystore
+           storePassword=<passphrase>
+           keyAlias=upload
+           keyPassword=<passphrase>
+
+       See guides/publishing_to_google_play.md.
 
   ## What --android does
 

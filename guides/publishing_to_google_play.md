@@ -112,13 +112,9 @@ something real (it goes into the certificate, which Google sees).
 
 ### Fill in `android/keystore.properties`
 
-Copy from the example and fill in your passphrase:
-
-```bash
-cp android/keystore.properties.example android/keystore.properties
-```
-
-Edit `android/keystore.properties`:
+`mix mob.setup.google_play` writes this file when it creates the keystore.
+To write it by hand, create `android/keystore.properties` with your
+passphrase (`storeFile` is relative to `android/`):
 
 ```
 storeFile=upload_jks.keystore

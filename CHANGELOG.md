@@ -1,5 +1,15 @@
 ## [Unreleased]
 
+### Fixed
+
+- **The Hex package ships `guides/` (MOB-501).** It shipped only the
+  default files, so an app had no `deps/mob_dev/guides/` and the publishing
+  and security-scan guides were only on hexdocs.
+- **`mix mob.release --android` no longer points at a missing
+  `android/keystore.properties.example` (MOB-501).** No generated app has
+  one. The task docs and `guides/publishing_to_google_play.md` now list the
+  file's four keys and name `mix mob.setup.google_play`, which writes it.
+
 ## [0.7.30] - 2026-10-23
 
 ### Security

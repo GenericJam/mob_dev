@@ -22,6 +22,12 @@ defmodule MobDev.ToolchainPackageTest do
 
     assert pack_status == 0, pack_output
     refute File.exists?(Path.join(package, ".tool-versions"))
+    # Apps read these offline under deps/mob_dev/guides (MOB-501); Hex's
+    # default file list leaves guides/ out.
+    for guide <- File.ls!(Path.join(root, "guides")) do
+      assert File.regular?(Path.join([package, "guides", guide])), "#{guide} not packaged"
+    end
+
     File.cp!(Path.join(root, "mix.lock"), Path.join(package, "mix.lock"))
     link_compiled_dependencies(root, build)
 

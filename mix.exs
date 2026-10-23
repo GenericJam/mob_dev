@@ -173,7 +173,10 @@ defmodule MobDev.MixProject do
   defp package do
     [
       licenses: ["MIT"],
-      links: %{"GitHub" => "https://github.com/genericjam/mob_dev"}
+      links: %{"GitHub" => "https://github.com/genericjam/mob_dev"},
+      # Hex's default list plus guides/, so an app has the publishing and
+      # security-scan guides under deps/mob_dev/guides offline (MOB-501).
+      files: ~w(lib priv guides .formatter.exs mix.exs README.md CHANGELOG.md)
     ]
   end
 end

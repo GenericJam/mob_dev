@@ -85,7 +85,9 @@ defmodule MobDev.DeployerStaleSslTest do
     end
   end
 
-  describe "remove_stale_host_ssl/1 (iOS simulator deploy and native build)" do
+  # The helper only; the iOS-simulator deploy and copy_app_beams fail on its
+  # {:error, _} but aren't exercised here.
+  describe "remove_stale_host_ssl/1" do
     test "files that aren't there are fine", %{tmp_dir: tmp} do
       assert Deployer.remove_stale_host_ssl(tmp) == :ok
     end
