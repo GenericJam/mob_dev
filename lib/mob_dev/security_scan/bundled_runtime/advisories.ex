@@ -649,9 +649,10 @@ defmodule MobDev.SecurityScan.BundledRuntime.Advisories do
 
   # "3.53.2 (2026-06-03)" names the fixing release; the disputed rows say
   # "Not a bug in SQLite", "Not a bug in the core SQLite library" or call
-  # the report unreproducible. Anything else is a layout we don't know.
+  # the report unreproducible (the 2023 page said "Bug not in the SQLite
+  # library"). Anything else is a layout we don't know.
   defp sqlite_fix(text) do
-    disputed = Regex.compile!("not a bug|unreproducible|not reproducible", "i")
+    disputed = Regex.compile!("not a bug|bug not in|unreproducible|not reproducible", "i")
 
     case Regex.run(Regex.compile!("^(\\d+\\.\\d+(?:\\.\\d+)*)\\b"), text, capture: :all_but_first) do
       [version] -> {:ok, version}

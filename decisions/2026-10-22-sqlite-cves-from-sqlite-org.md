@@ -24,8 +24,9 @@ clean while CVE-2026-11822/11824 (FTS5 heap write, fixed in 3.53.2) applied.
   (`3.53.2 (2026-06-03)`). Each CVE in a row whose fix is newer than the
   project's version is a finding; SQLite versions are linear, so the OpenSSL
   linear comparison is reused (numeric per component: `3.9` < `3.10`). Rows whose
-  Fix cell says "Not a bug in SQLite", "Not a bug in the core SQLite library" or
-  calls the report unreproducible are parsed and ignored.
+  Fix cell says "Not a bug in SQLite", "Not a bug in the core SQLite library",
+  "Bug not in the SQLite library" (the 2023 wording) or calls the report
+  unreproducible are parsed and ignored.
 - **Severity**: the page has no severity column, so findings are `:medium`. If a
   `Severity` column appears it is used (columns are found by header name).
   `:medium` fails `--strict` and `--security-gate`; that is intended for the
