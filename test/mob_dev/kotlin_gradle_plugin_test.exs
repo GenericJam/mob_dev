@@ -180,6 +180,53 @@ defmodule MobDev.KotlinGradlePluginTest do
       end
     end
 
+    test "kotlin(\"gradle-plugin\", <expression>) counts as declared under AGP 9", %{
+      tmp_dir: root
+    } do
+      for kgp <- [
+            ~s|classpath(kotlin("gradle-plugin", extra["kotlin_version"] as String))|,
+            ~s|classpath(kotlin("gradle-plugin", version = rootProject.extra["v"] as String))|,
+            ~s|classpath(kotlin("gradle-plugin", libs.versions.kotlin.get()))|
+          ] do
+        assert [] =
+                 project(root, %{
+                   "android/build.gradle.kts" => """
+                   buildscript {
+                       dependencies {
+                           classpath("com.android.tools.build:gradle:9.3.3")
+                           #{kgp}
+                       }
+                   }
+                   """
+                 }),
+               kgp
+      end
+    end
+
+    test "map-notation keys are read in any order", %{tmp_dir: root} do
+      assert [
+               {:vulnerable, "android/app/build.gradle", ["2.0.0"]},
+               {:vulnerable, "android/build.gradle.kts", ["1.9.22"]}
+             ] =
+               project(root, %{
+                 "android/build.gradle.kts" => """
+                 classpath(name = "kotlin-gradle-plugin", version = "1.9.22", group = "org.jetbrains.kotlin")
+                 """,
+                 "android/app/build.gradle" => """
+                 classpath version: '2.0.0', name: 'kotlin-gradle-plugin', group: 'org.jetbrains.kotlin'
+                 """
+               })
+
+      assert [] =
+               project(root, %{
+                 "android/build.gradle.kts" => """
+                 classpath("com.android.tools.build:gradle:9.3.3")
+                 classpath(name = "kotlin-gradle-plugin", group = "org.jetbrains.kotlin")
+                 """,
+                 "android/app/build.gradle" => "\n"
+               })
+    end
+
     test "reads [plugins.<alias>] tables", %{tmp_dir: root} do
       assert [{:vulnerable, "android/gradle/libs.versions.toml", ["1.9.22"]}] =
                project(root, %{

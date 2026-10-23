@@ -189,8 +189,7 @@ defmodule MobDev.KotlinGradlePlugin do
         # id 'x' version '1' / id("x") version "1" / id("x").version("1") /
         # id("x") version kotlinVersion
         "id\\s*\\(?\\s*['\"](?:#{ids})['\"]\\s*\\)?\\s*\\.?\\s*version\\s*\\(?\\s*#{@version_arg}"
-      ] ++
-        map_notation_patterns(spec) ++ shorthand_pattern(spec) ++ kotlin_dependency_pattern(spec)
+      ] ++ shorthand_pattern(spec) ++ kotlin_dependency_pattern(spec)
 
     # A versionless `classpath("g:a")` (version from a BOM, a catalog or a
     # strictly block) still declares the artifact.
@@ -198,6 +197,7 @@ defmodule MobDev.KotlinGradlePlugin do
       for _ <- Regex.scan(Regex.compile!("#{module}['\"]"), content), do: :unresolved
 
     versionless ++
+      map_notation(content, spec, vars) ++
       Enum.flat_map(patterns, fn pattern ->
         pattern
         |> Regex.compile!()
@@ -219,19 +219,40 @@ defmodule MobDev.KotlinGradlePlugin do
   end
 
   # Groovy `classpath group: 'g', name: 'a', version: '1.2.3'` or Kotlin DSL
-  # `classpath(group = "g", name = "a", version = "1.2.3")`; version optional.
-  defp map_notation_patterns(spec) do
-    for module <- spec.modules do
-      [group, name] = module |> String.split(":") |> Enum.map(&Regex.escape/1)
+  # `classpath(group = "g", name = "a", version = "1.2.3")`, keys in any
+  # order, version optional.
+  defp map_notation(content, spec, vars) do
+    value = "(?:['\"][^'\"]+['\"]|[A-Za-z_][\\w.]*)"
+    key_value = "(?:group|name|version)\\s*[:=]\\s*#{value}"
+    list = Regex.compile!("#{key_value}(?:\\s*,\\s*#{key_value}){1,2}")
+    pair = Regex.compile!("(group|name|version)\\s*[:=]\\s*#{@version_arg}")
 
-      "group\\s*[:=]\\s*['\"]#{group}['\"]\\s*,\\s*name\\s*[:=]\\s*['\"]#{name}['\"]" <>
-        "(?:\\s*,\\s*version\\s*[:=]\\s*#{@version_arg})?"
+    for [args] <- Regex.scan(list, content),
+        keys = map_notation_keys(pair, args),
+        "#{keys["group"]}:#{keys["name"]}" in spec.modules do
+      case keys["version"] do
+        {:literal, raw} -> resolve(raw, vars)
+        _identifier_or_missing -> :unresolved
+      end
+    end
+  end
+
+  defp map_notation_keys(pair, args) do
+    for [key, literal | identifier] <- Regex.scan(pair, args, capture: :all_but_first),
+        into: %{} do
+      case {key, literal, identifier} do
+        {"version", "", _} -> {key, :identifier}
+        {"version", raw, _} -> {key, {:literal, raw}}
+        {_, raw, _} -> {key, raw}
+      end
     end
   end
 
   # Kotlin DSL `kotlin("gradle-plugin", "1.2.3")` /
   # `kotlin("gradle-plugin", version = v)` expands to
-  # `org.jetbrains.kotlin:kotlin-gradle-plugin`.
+  # `org.jetbrains.kotlin:kotlin-gradle-plugin`. Any other argument
+  # expression (`extra["v"] as String`, `libs.versions.kotlin.get()`) starts
+  # with an identifier, so it is declared but unresolved.
   defp kotlin_dependency_pattern(spec) do
     case for("org.jetbrains.kotlin:kotlin-" <> name <- spec.modules, do: Regex.escape(name)) do
       [] ->
@@ -240,7 +261,7 @@ defmodule MobDev.KotlinGradlePlugin do
       names ->
         [
           "kotlin\\s*\\(\\s*\"(?:#{Enum.join(names, "|")})\"" <>
-            "(?:\\s*,\\s*(?:version\\s*=\\s*)?#{@version_arg})?\\s*\\)"
+            "(?:\\s*,\\s*(?:version\\s*=\\s*)?#{@version_arg})?"
         ]
     end
   end
