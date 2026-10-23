@@ -224,7 +224,7 @@ defmodule MobDev.KotlinGradlePlugin do
   defp map_notation(content, spec, vars) do
     value = "(?:['\"][^'\"]+['\"]|[A-Za-z_][\\w.]*)"
     key_value = "\\b\\w+\\s*[:=]\\s*#{value}"
-    list = Regex.compile!("#{key_value}(?:\\s*,\\s*#{key_value}){1,6}")
+    list = Regex.compile!("#{key_value}(?:\\s*,\\s*#{key_value})+")
     pair = Regex.compile!("\\b(group|name|version)\\s*[:=]\\s*#{@version_arg}")
 
     for [args] <- Regex.scan(list, content),
