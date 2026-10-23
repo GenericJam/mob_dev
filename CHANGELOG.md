@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+## [0.7.30] - 2026-10-23
+
 ### Security
 
 - **Device runtime rebuilt on OTP 29.1.2 and OpenSSL 3.5.9 (`@otp_hash`
