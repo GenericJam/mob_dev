@@ -45,7 +45,10 @@ defmodule MobDev.SecurityScan.Layers.BundledRuntimeTest do
       File.mkdir_p!(Path.join([path, "lib", "exqlite-#{exqlite_vsn}"]))
     end
 
-    if otp_vsn = opts[:otp] do
+    # A real tarball always has releases/*/OTP_VERSION; default to the
+    # active bundle's so only tests about it need to say so.
+    if otp_vsn =
+         Keyword.get(opts, :otp, MobDev.SecurityScan.BundledVersions.active()[:otp_version]) do
       release_dir = Path.join([path, "releases", otp_vsn |> String.split(".") |> hd()])
       File.mkdir_p!(release_dir)
       File.write!(Path.join(release_dir, "OTP_VERSION"), otp_vsn <> "\n")
@@ -114,6 +117,29 @@ defmodule MobDev.SecurityScan.Layers.BundledRuntimeTest do
 
     assert finding.title =~ "Elixir manifest=#{bundle.elixir}"
     assert finding.title =~ "binary=9.9.9-rc.1"
+  end
+
+  test ":high finding when the OTP release drifts from the manifest's otp_version", %{
+    tmp_dir: dir
+  } do
+    cache = Path.join(dir, "cache")
+    File.mkdir_p!(cache)
+
+    bundle = real_bundle()
+
+    build_tarball(cache, :android, real_hash(),
+      openssl: bundle.openssl,
+      elixir: bundle.elixir,
+      exqlite: bundle.exqlite_beam,
+      otp: "29.0"
+    )
+
+    result = run_offline(dir, cache)
+
+    assert [%Finding{severity: :high, id: "MOB-DRIFT-android-otp_version"} = finding] =
+             Enum.filter(result.findings, &String.starts_with?(&1.id, "MOB-DRIFT"))
+
+    assert finding.title =~ "OTP manifest=#{bundle.otp_version} binary=29.0"
   end
 
   test "per-platform override suppresses missing-artifact drift", %{tmp_dir: dir} do

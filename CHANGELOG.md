@@ -10,7 +10,7 @@
   non-CA as an intermediate issuer), CVE-2026-94200 (TLS client ticket-store
   poisoning) and CVE-2026-75538 (inet TCP driver overflow from an
   unauthenticated peer). The crypto NIF was statically linked against
-  OpenSSL 3.4.0, which had 55 CVEs fixed in later 3.4.x releases, and the 3.4
+  OpenSSL 3.4.0, which had 56 CVEs fixed in later 3.4.x releases, and the 3.4
   branch reached end of life on 2026-10-22. The new runtime is erts 17.1.1,
   ssl 11.7.8, public_key 1.21.8 and inets 9.8.1, with OpenSSL 3.5.9 (LTS
   until 2030). Elixir 1.20.1 and the bundled exqlite BEAMs are unchanged.
@@ -38,6 +38,19 @@
   crypto, are gone. The fallback EPMD patch now checks the `run_daemon(g)`
   call site rather than any `#ifndef NO_DAEMON`, which upstream `epmd.c`
   already has.
+  A failed delete of those files now fails the deploy or build instead of
+  leaving them first on the code path.
+- **A native build with a mob older than 0.9.25 stops before compiling
+  (MOB-493).** Such a mob hard-codes `erts-17.0`, which this runtime doesn't
+  have, so the app would build, install and die at boot. Hex resolution
+  already requires mob 0.9.25; the check covers a path or override `:mob`
+  dep (`mob_dir`, `--local` apps), for Android and the iOS simulator.
+- **`mix mob.security_scan` honours `MOB_CACHE_DIR` (MOB-493).** It read
+  runtimes and its advisory cache from `~/.mob/cache` even when the runtime
+  the app uses was downloaded to `$MOB_CACHE_DIR`, so `--strict` could pass
+  without scanning it. It also now checks a bundle's recorded OTP release
+  (`otp_version` in `bundled_versions.exs`) against the tarball's
+  `releases/*/OTP_VERSION`.
 - **Dev server: bandit 1.12.5 → 1.13.1 (MOB-482).** Fixes EEF-CVE-2026-105659
   (a client trickling HTTP/2 `WINDOW_UPDATE` frames could pin stream processes
   indefinitely) and EEF-CVE-2026-105660 (an HTTP/1 absolute-form request
@@ -87,12 +100,13 @@
   `mix mob.deploy --native`.
 - Host `.tool-versions` moves to erlang 29.1.2 (mob_dev, mob, mob_new and
   generated apps).
-- **MOB-495.** `mix mob.security_scan --strict` and `mix mob.release
-  --security-gate` now fail on a `5c9c69fc` runtime (critical ssl advisories
-  CVE-2026-89422 and CVE-2026-55953, OpenSSL 3.4 end of life). The
-  `d199a49a` runtime in this release passes them; delete the old
-  `~/.mob/cache/otp-*-5c9c69fc` dirs once no app on this machine still uses
-  that runtime.
+- **MOB-495.** On mob_dev 0.7.29, `mix mob.security_scan --strict` and
+  `mix mob.release --security-gate` fail against its active `5c9c69fc`
+  runtime (critical ssl advisories CVE-2026-89422 and CVE-2026-55953,
+  OpenSSL 3.4 end of life). The `d199a49a` runtime in this release passes
+  them. Advisories are matched against the active runtime only, so leftover
+  `~/.mob/cache/otp-*-5c9c69fc` dirs get drift checks, not CVE checks:
+  delete them once no app on this machine still uses that runtime.
 - **SQLite CVEs.** A project on exqlite 0.36.x (SQLite 3.51.3) now gets
   CVE-2026-11822, CVE-2026-11824 (fixed in 3.53.2) and CVE-2025-70873 (fixed
   in 3.52.0), which fail `--strict` and `--security-gate`. Matching is by
@@ -105,14 +119,15 @@
 - **`mix mob.security_scan` reports CVEs in the bundled OTP and OpenSSL
   (MOB-495).** The `bundled_runtime` layer used to print "verify upstream"
   links, so the scan stayed green while the device runtime (OTP 29.0,
-  OpenSSL 3.4.0) fell ~46 erlang/otp advisories and 56 OpenSSL CVEs behind.
+  OpenSSL 3.4.0) fell 47 erlang/otp advisories and 56 OpenSSL CVEs behind.
   For the active runtime's cached tarballs it now matches the OTP application
   versions (`ssl`, `public_key`, `erts`, …) against the erlang/otp GitHub
   security advisories, the OpenSSL version against its branch's
   openssl-library.org vulnerability page, and the branch against
   endoflife.date. Each affected advisory is a finding with the upstream
   severity, installed and fixed versions and a link; an OpenSSL branch past
-  end of life is `:high`. Data is cached in `~/.mob/cache/advisories/` for
+  end of life is `:high`. Data is cached in `advisories/` under
+  `$MOB_CACHE_DIR` (default `~/.mob/cache`) for
   24 h; offline the scan uses the cached copy (flagged stale) or, with none,
   warns and lists the pages to check. See
   `decisions/2026-10-22-bundled-runtime-upstream-advisories.md`.

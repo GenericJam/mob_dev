@@ -18,7 +18,8 @@ defmodule MobDev.SecurityScan.Layers.BundledRuntime do
 
   ## What it does
 
-  1. **Fingerprint** — locate cached tarballs at `~/.mob/cache/otp-*-{hash}/`,
+  1. **Fingerprint** — locate cached tarballs at `otp-*-{hash}/` in the
+     runtime cache (`$MOB_CACHE_DIR`, default `~/.mob/cache`),
      extract real versions of OpenSSL, ERTS, Elixir, and the bundled
      exqlite BEAMs.
 
@@ -99,7 +100,7 @@ defmodule MobDev.SecurityScan.Layers.BundledRuntime do
 
     notes =
       [
-        "no cached OTP tarballs found at ~/.mob/cache/",
+        "no cached OTP tarballs found in #{Keyword.get_lazy(opts, :cache_dir, &Fingerprint.cache_dir/0)}",
         "run `mix mob.deploy --native` from a Mob app to populate the cache"
       ] ++ sqlite_notes
 
@@ -193,6 +194,7 @@ defmodule MobDev.SecurityScan.Layers.BundledRuntime do
   defp check_bundle(tb, versions, bundle, project_exqlite) do
     fields = [
       {:erts, "ERTS"},
+      {:otp_version, "OTP"},
       {:elixir, "Elixir"},
       {:openssl, "OpenSSL"},
       {:exqlite_beam, "exqlite (BEAM)"}
@@ -210,6 +212,13 @@ defmodule MobDev.SecurityScan.Layers.BundledRuntime do
 
         {:exqlite_beam, label} when is_nil(exqlite_expected) ->
           stray_exqlite(tb, label, versions.exqlite_beam, project_exqlite)
+
+        # Bundles recorded before otp_version existed don't claim one.
+        {:otp_version, label} ->
+          case expected_for(bundle, tb.platform, :otp_version) do
+            nil -> []
+            expected -> compare_field(tb, label, :otp_version, expected, versions.otp)
+          end
 
         {key, label} ->
           compare_field(tb, label, key, expected_for(bundle, tb.platform, key), versions[key])
