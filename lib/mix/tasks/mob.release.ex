@@ -50,8 +50,9 @@ defmodule Mix.Tasks.Mob.Release do
   ## --android prerequisites
 
     1. `android/upload_jks.keystore` and `android/keystore.properties`.
-       `mix mob.setup.google_play` creates both. By hand, the properties
-       file is (paths relative to `android/`):
+       `mix mob.setup.google_play` writes both when it generates the
+       keystore (it skips an existing one). By hand, the properties file is
+       (paths relative to `android/`):
 
            storeFile=upload_jks.keystore
            storePassword=<passphrase>
