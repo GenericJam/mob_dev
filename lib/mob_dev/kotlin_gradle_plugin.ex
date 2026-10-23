@@ -82,7 +82,7 @@ defmodule MobDev.KotlinGradlePlugin do
 
   # A plugin `version` argument: a quoted literal (group 1) or a bare
   # identifier such as `kotlinVersion` (group 2).
-  @version_arg "(?:['\"]([^'\"]+)|([A-Za-z_][\\w.]*))"
+  @version_arg "(?:['\"]([^'\"]+)['\"]|([A-Za-z_][\\w.]*))"
 
   @typedoc "A reason to warn, with the project-relative file it was read from."
   @type finding ::
@@ -189,7 +189,8 @@ defmodule MobDev.KotlinGradlePlugin do
         # id 'x' version '1' / id("x") version "1" / id("x").version("1") /
         # id("x") version kotlinVersion
         "id\\s*\\(?\\s*['\"](?:#{ids})['\"]\\s*\\)?\\s*\\.?\\s*version\\s*\\(?\\s*#{@version_arg}"
-      ] ++ shorthand_pattern(spec)
+      ] ++
+        map_notation_patterns(spec) ++ shorthand_pattern(spec) ++ kotlin_dependency_pattern(spec)
 
     # A versionless `classpath("g:a")` (version from a BOM, a catalog or a
     # strictly block) still declares the artifact.
@@ -203,7 +204,8 @@ defmodule MobDev.KotlinGradlePlugin do
         |> Regex.scan(content, capture: :all_but_first)
         |> Enum.map(fn
           [raw] -> resolve(raw, vars)
-          # A bare identifier version: declared, never guessed.
+          # No version, or a bare identifier one: declared, never guessed.
+          [] -> :unresolved
           ["", _identifier] -> :unresolved
         end)
       end)
@@ -214,6 +216,33 @@ defmodule MobDev.KotlinGradlePlugin do
   defp shorthand_pattern(%{kotlin_shorthand: names}) do
     alts = Enum.map_join(names, "|", &Regex.escape/1)
     ["kotlin\\s*\\(\\s*\"(?:#{alts})\"\\s*\\)\\s*\\.?\\s*version\\s*\\(?\\s*#{@version_arg}"]
+  end
+
+  # Groovy `classpath group: 'g', name: 'a', version: '1.2.3'` or Kotlin DSL
+  # `classpath(group = "g", name = "a", version = "1.2.3")`; version optional.
+  defp map_notation_patterns(spec) do
+    for module <- spec.modules do
+      [group, name] = module |> String.split(":") |> Enum.map(&Regex.escape/1)
+
+      "group\\s*[:=]\\s*['\"]#{group}['\"]\\s*,\\s*name\\s*[:=]\\s*['\"]#{name}['\"]" <>
+        "(?:\\s*,\\s*version\\s*[:=]\\s*#{@version_arg})?"
+    end
+  end
+
+  # Kotlin DSL `kotlin("gradle-plugin", "1.2.3")` /
+  # `kotlin("gradle-plugin", version = v)` expands to
+  # `org.jetbrains.kotlin:kotlin-gradle-plugin`.
+  defp kotlin_dependency_pattern(spec) do
+    case for("org.jetbrains.kotlin:kotlin-" <> name <- spec.modules, do: Regex.escape(name)) do
+      [] ->
+        []
+
+      names ->
+        [
+          "kotlin\\s*\\(\\s*\"(?:#{Enum.join(names, "|")})\"" <>
+            "(?:\\s*,\\s*(?:version\\s*=\\s*)?#{@version_arg})?\\s*\\)"
+        ]
+    end
   end
 
   # `ext.kotlin_version = '1.9.22'`, `def v = "…"`, `val v = "…"`,
@@ -268,7 +297,18 @@ defmodule MobDev.KotlinGradlePlugin do
       end
     end)
     |> elem(1)
-    |> Map.new(fn {section, lines} -> {section, Enum.reverse(lines)} end)
+    |> Enum.reduce(%{}, fn {section, lines}, acc ->
+      lines = Enum.reverse(lines)
+
+      # A `[plugins.<alias>]` / `[libraries.<alias>]` table is one entry.
+      case String.split(section, ".", parts: 2) do
+        [kind, _alias] when kind in ["plugins", "libraries"] ->
+          Map.update(acc, kind, [Enum.join(lines, " ")], &(&1 ++ [Enum.join(lines, " ")]))
+
+        _ ->
+          Map.update(acc, section, lines, &(lines ++ &1))
+      end
+    end)
   end
 
   # `kotlin = "1.9.22"` or `kotlin = { strictly = "1.9.22" }`.

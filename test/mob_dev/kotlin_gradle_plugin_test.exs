@@ -141,6 +141,58 @@ defmodule MobDev.KotlinGradlePluginTest do
                  """
                })
     end
+
+    test "reads the kotlin(\"gradle-plugin\") and Groovy map-notation classpaths", %{
+      tmp_dir: root
+    } do
+      assert [
+               {:vulnerable, "android/app/build.gradle", ["2.0.0"]},
+               {:vulnerable, "android/build.gradle.kts", ["1.9.22"]}
+             ] =
+               project(root, %{
+                 "android/build.gradle.kts" => """
+                 buildscript { dependencies { classpath(kotlin("gradle-plugin", "1.9.22")) } }
+                 """,
+                 "android/app/build.gradle" => """
+                 dependencies { classpath group: 'org.jetbrains.kotlin', name: 'kotlin-gradle-plugin', version: '2.0.0' }
+                 """
+               })
+    end
+
+    test "fixed kotlin(\"gradle-plugin\") and map-notation pins satisfy AGP 9", %{tmp_dir: root} do
+      for kgp <- [
+            ~s|classpath(kotlin("gradle-plugin", version = "2.4.21"))|,
+            ~s|classpath(kotlin("gradle-plugin", version = kotlinVersion))|,
+            ~s|classpath(group = "org.jetbrains.kotlin", name = "kotlin-gradle-plugin")|
+          ] do
+        assert [] =
+                 project(root, %{
+                   "android/build.gradle.kts" => """
+                   buildscript {
+                       dependencies {
+                           classpath("com.android.tools.build:gradle:9.3.3")
+                           #{kgp}
+                       }
+                   }
+                   """
+                 }),
+               kgp
+      end
+    end
+
+    test "reads [plugins.<alias>] tables", %{tmp_dir: root} do
+      assert [{:vulnerable, "android/gradle/libs.versions.toml", ["1.9.22"]}] =
+               project(root, %{
+                 "android/gradle/libs.versions.toml" => """
+                 [versions]
+                 kotlin = "1.9.22"
+
+                 [plugins.kotlin-android]
+                 id = "org.jetbrains.kotlin.android"
+                 version.ref = "kotlin"
+                 """
+               })
+    end
   end
 
   describe "version catalog" do
