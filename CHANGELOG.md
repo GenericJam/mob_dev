@@ -1,5 +1,19 @@
 ## [Unreleased]
 
+### Security
+
+- **Dev server: bandit 1.12.5 → 1.13.1 (MOB-482).** Fixes EEF-CVE-2026-105659
+  (a client trickling HTTP/2 `WINDOW_UPDATE` frames could pin stream processes
+  indefinitely) and EEF-CVE-2026-105660 (an HTTP/1 absolute-form request
+  target could set `conn.host`/`conn.port` to unvalidated values). Both reach
+  the `mix mob.server` dev server on the developer's machine, not shipped apps.
+  thousand_island, finch and req moved up with it (1.6.0, 0.24.0, 0.7.5).
+- **`mix mob.icon`: vix 0.38.0 → 0.42.0, libvips 8.17.1 → 8.18.7 (MOB-499).**
+  The precompiled libvips that vix 0.38 downloads has the GIF, TIFF and VIPS
+  decoder CVEs fixed in libvips 8.18.3 (CVE-2026-33327, CVE-2026-33328,
+  CVE-2026-35590, CVE-2026-35591, CVE-2026-69242). Only `mix mob.icon` loads
+  it, on the host. `image` stays on 0.55.x because `avatarz` pins `~> 0.55.2`.
+
 ## [0.7.29] - 2026-10-15
 
 ### Fixed
