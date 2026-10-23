@@ -742,6 +742,7 @@ defmodule Mix.Tasks.Mob.Doctor do
         check_inactive_nif_plugins(),
         check_component_event_jni(),
         check_sheet_dismiss_wire_shape(),
+        check_startup_status_hooks(),
         check_app_lifecycle_hooks()
       ])
     else
@@ -898,6 +899,55 @@ defmodule Mix.Tasks.Mob.Doctor do
     renders_sheets = Regex.match?(Regex.compile!("fun\\s+MobSheet\\s*\\("), content)
 
     renders_sheets and not String.contains?(content, "nativeSendDismiss")
+  end
+
+  # ── Startup status hooks (Android) ────────────────────────────────────────────
+  #
+  # mob's NIF reports boot progress and boot failures through
+  # MobBridge.setStartupPhase/setStartupError, looked up by name with
+  # signature (Ljava/lang/String;)V. An app generated before mob_new added them
+  # has neither, and the NIF skips the calls without a word: a boot that fails
+  # (an OTP runtime missing from the APK, say) leaves a blank screen and only a
+  # logcat line. MobBridge.kt is app-owned, so this detects rather than patches
+  # (decisions/2026-08-25-detect-dont-autopatch-native-source.md).
+  defp check_startup_status_hooks do
+    "android/app/src/main/java/**/MobBridge.kt"
+    |> Path.wildcard()
+    |> Enum.flat_map(fn path ->
+      with {:ok, content} <- File.read(path),
+           [_ | _] = missing <- __startup_status_hooks_missing__(content) do
+        [
+          {:warn, "startup status hooks (#{path})",
+           "MobBridge has no static #{Enum.join(missing, " / ")}, so mob's " <>
+             "#{Enum.map_join(missing, " and ", &startup_hook_role/1)} never " <>
+             "reach the screen — a failed boot shows a blank screen",
+           "Port from a freshly generated app (mix mob.new) or mob_new's " <>
+             "templates: add " <>
+             Enum.map_join(missing, " and ", &"`@JvmStatic fun #{&1}(value: String)`") <>
+             " to object MobBridge, and the StartupStatus composable " <>
+             "MainActivity shows while no screen has rendered."}
+        ]
+      else
+        _ -> []
+      end
+    end)
+  end
+
+  defp startup_hook_role("setStartupPhase"), do: "boot progress messages"
+  defp startup_hook_role("setStartupError"), do: "boot errors"
+
+  @doc false
+  # Pure kernel: the startup-status methods this MobBridge.kt lacks, in the
+  # order mob_nif.zig caches them. Public for tests. @JvmStatic is part of the
+  # match because the NIF uses GetStaticMethodID, and an object member without
+  # it compiles to an instance method the lookup can't find. Whitespace,
+  # including @JvmStatic on its own line, is tolerated so a correct hand-port
+  # isn't reported as missing forever.
+  @spec __startup_status_hooks_missing__(String.t()) :: [String.t()]
+  def __startup_status_hooks_missing__(content) do
+    Enum.reject(~w(setStartupPhase setStartupError), fn name ->
+      Regex.match?(Regex.compile!("@JvmStatic\\s+fun\\s+#{name}\\s*\\("), content)
+    end)
   end
 
   # ── Plugin build options ──────────────────────────────────────────────────────
