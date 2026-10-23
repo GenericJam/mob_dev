@@ -9,8 +9,9 @@ defmodule MobDev.SecurityScan do
     * Android Gradle dependency CVEs (`osv-scanner`)
     * iOS Swift Package dependency CVEs (`osv-scanner`)
     * Bundled-runtime CVEs — OpenSSL/SQLite/OTP/Elixir baked into
-      the OTP tarballs (manifest + fingerprint verification +
-      OpenSSL/SQLite/Erlef advisory feeds)
+      the OTP tarballs (manifest + fingerprint verification,
+      erlang/otp GitHub advisories, OpenSSL vulnerability pages and
+      branch end-of-life)
     * C source static analysis (semgrep, flawfinder)
     * Kotlin static analysis (detekt)
     * Swift static analysis (`xcodebuild analyze`)

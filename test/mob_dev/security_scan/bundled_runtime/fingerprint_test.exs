@@ -107,6 +107,35 @@ defmodule MobDev.SecurityScan.BundledRuntime.FingerprintTest do
 
       assert %{openssl: nil} = Fingerprint.fingerprint_tarball(dir)
     end
+
+    test "reads the OTP release and the packaged application versions", %{tmp_dir: dir} do
+      build_tarball(dir, [])
+      File.mkdir_p!(Path.join(dir, "releases/29"))
+      File.write!(Path.join(dir, "releases/29/OTP_VERSION"), "29.0\n")
+
+      # Mirrors the 5c9c69fc layout: versioned OTP apps, unversioned Elixir
+      # apps, and a project app deployed into the iOS cache.
+      for app <- ~w(ssl-11.7 public_key-1.21 elixir eex my_app-0.1.0 not_an_app.txt) do
+        File.mkdir_p!(Path.join([dir, "lib", app]))
+      end
+
+      versions = Fingerprint.fingerprint_tarball(dir)
+
+      assert versions.otp == "29.0"
+
+      assert versions.apps == [
+               {"erts", "16.3"},
+               {"exqlite", "0.36.0"},
+               {"my_app", "0.1.0"},
+               {"public_key", "1.21"},
+               {"ssl", "11.7"}
+             ]
+    end
+
+    test "no OTP_VERSION leaves :otp nil", %{tmp_dir: dir} do
+      build_tarball(dir, [])
+      assert %{otp: nil} = Fingerprint.fingerprint_tarball(dir)
+    end
   end
 
   describe "fingerprint_sqlite/1" do

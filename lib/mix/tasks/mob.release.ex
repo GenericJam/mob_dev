@@ -16,7 +16,7 @@ defmodule Mix.Tasks.Mob.Release do
   ## --security-gate
 
   Runs the full security scan against the project (every layer:
-  Hex/Gradle/Swift dep CVEs, bundled-runtime drift, C/Kotlin/Swift
+  Hex/Gradle/Swift dep CVEs, bundled-runtime drift and OTP/OpenSSL CVEs, C/Kotlin/Swift
   static analysis) **before** building or signing. If the scan
   surfaces any critical/high/medium finding, the release aborts
   with a non-zero exit code — nothing is built, nothing is signed.
@@ -112,6 +112,12 @@ defmodule Mix.Tasks.Mob.Release do
           "Run `mix mob.security_scan` for the full breakdown, fix or `--skip` the offending layer, " <>
           "and rerun."
       )
+    end
+
+    # A passing scan can still have checks that didn't run (bundled_runtime's
+    # ⚠ notes: advisory data unavailable or stale); don't let "clean" hide that.
+    for layer <- report.layers, note <- layer.notes, String.contains?(note, "⚠") do
+      Mix.shell().info("  #{layer.name}: #{String.trim(note)}")
     end
 
     Mix.shell().info(

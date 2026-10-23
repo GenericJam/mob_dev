@@ -1,0 +1,350 @@
+<!doctype html>
+<html><body>
+<main class="flex-1 flex max-md:flex-col py-10 justify-center container px-4 mx-auto">
+      <div class="px-8 basis-8/12">
+        
+  
+  <header>
+    <h1>Vulnerabilities 3.4</h1>
+  </header>
+
+  <p>If you think you have found a security bug in OpenSSL, please <a href="/community/#reporting-security-bugssecurityreports">report it to us</a>.</p>
+
+  <p>Show issues fixed only in OpenSSL
+  <a href="/news/vulnerabilities-4.0/">4.0</a>, <a href="/news/vulnerabilities-3.6/">3.6</a>, <a href="/news/vulnerabilities-3.5/">3.5</a>, 3.4, <a href="/news/vulnerabilities-3.3/">3.3</a>, <a href="/news/vulnerabilities-3.2/">3.2</a>, <a href="/news/vulnerabilities-3.1/">3.1</a>, <a href="/news/vulnerabilities-3.0/">3.0</a>, <a href="/news/vulnerabilities-1.1.1/">1.1.1</a>, <a href="/news/vulnerabilities-1.1.0/">1.1.0</a>, <a href="/news/vulnerabilities-1.0.2/">1.0.2</a>, <a href="/news/vulnerabilities-1.0.1/">1.0.1</a>, <a href="/news/vulnerabilities-1.0.0/">1.0.0</a>, <a href="/news/vulnerabilities-0.9.8/">0.9.8</a>, <a href="/news/vulnerabilities-0.9.7/">0.9.7</a>, <a href="/news/vulnerabilities-0.9.6/">0.9.6</a>, or <a href="/news/vulnerabilities/">all versions</a>.
+  </p>
+
+  
+  
+
+  
+    <a href="#CVE-2026-35189">
+      <h2 id="CVE-2026-35189">CVE-2026-35189</h2>
+    </a>
+
+    <div class="grid grid-cols-6 gap-2">
+
+
+
+    <div><span class="font-semibold">Severity</span></div>
+    <div class="col-span-5">Low</div>
+
+    <div><span class="font-semibold">Published at</span></div>
+    <div class="col-span-5">29 September 2026</div>
+
+    <div><span class="font-semibold">Title</span></div>
+    <div class="col-span-5">Excessive Memory Allocation in Relative CRLDP Processing</div>
+
+
+
+
+
+  
+
+
+    <div><span class="font-semibold">Found by</span></div>
+    <div class="col-span-5">Fuzz0x (ZKSC Institute of Security Research)</div>
+
+
+
+
+
+
+  
+
+
+    <div><span class="font-semibold">Fix developed by</span></div>
+    <div class="col-span-5">Viktor Dukhovni</div>
+
+
+    <div><span class="font-semibold">Affected</span></div>
+    <div class="col-span-5 prose-li:m-0 prose-ul:m-0 prose-ul:ps-4">
+      <ul>
+        
+        
+        <li>from 4.0.0 before 4.0.3 </li>
+        
+        <li>from 3.6.0 before 3.6.5 </li>
+        
+        <li>from 3.5.0 before 3.5.9 </li>
+        
+        <li>from 3.4.0 before 3.4.8 </li>
+        
+        <li>from 3.0.0 before 3.0.23 </li>
+        
+        <li>from 1.1.1 before 1.1.1zj </li>
+        
+        <li>from 1.0.2 before 1.0.2zs </li>
+        
+      </ul>
+    </div>
+    <div><span class="font-semibold">References</span></div>
+    <div class="col-span-5 prose-li:m-0 prose-ul:m-0 prose-ul:ps-4">
+      <ul>
+        <li><a href="https://www.cve.org/CVERecord?id=CVE-2026-35189" target="_blank">CVE Record</a></li>
+        
+        <li><a href="https://openssl-library.org/news/secadv/20260929.txt" target="_blank">OpenSSL Advisory</a></li>
+        
+        <li><a href="https://github.com/openssl/openssl/commit/2b93c73b2c70ddc4c61c5e4bfaaa6bd71379eb84" target="_blank">4.0.3 git commit</a></li>
+        
+        <li><a href="https://github.com/openssl/openssl/commit/8e0efc7549b7ff8246d40e585e3fd604f728473f" target="_blank">3.6.5 git commit</a></li>
+        
+        <li><a href="https://github.com/openssl/openssl/commit/3842516cc15e8b2cf55747011045e77547e71d89" target="_blank">3.5.9 git commit</a></li>
+        
+        <li><a href="https://github.com/openssl/openssl/commit/c72ae182cac17a82e4246c6ecd4e9c4ec3586ec9" target="_blank">3.4.8 git commit</a></li>
+        
+      </ul>
+    </div>
+</div>
+
+
+    <p>Issue summary: A certificate with many nameRelativeToCRLIssuer CRL
+distribution points causes disproportionate heap growth when OpenSSL caches
+X.509 extensions.</p>
+<p>Impact summary: Receiving a crafted certificate from a malicious peer can lead
+to significant memory pressure and possible Denial of Service in clients or
+in servers that solicit client certificates.</p>
+<p>CWE: CWE-770: Allocation of Resources Without Limits or Throttling</p>
+<p>Description: A certificate or a set of certificates that fits under the limit for
+size of certificates accepted from the peer (~100 KiB) can result in allocation
+of several hundred MiB of resident memory on the receiving side
+during a normal TLS handshake.  This may be enough to crash the client or
+server, if multiple concurrent connections lead to similarly large memory
+allocations.</p>
+<p>The fix postpones processing of the CRL distribution points extensions in
+certificates to the time when the processed value is required for CRL processing.
+This avoids keeping large memory allocations for a long time when such
+certificates are received.</p>
+<p>FIPS impact: no
+The affected code is outside the FIPS module boundary.</p>
+
+  
+    <a href="#CVE-2026-84782">
+      <h2 id="CVE-2026-84782">CVE-2026-84782</h2>
+    </a>
+
+    <div class="grid grid-cols-6 gap-2">
+
+
+
+    <div><span class="font-semibold">Severity</span></div>
+    <div class="col-span-5">High</div>
+
+    <div><span class="font-semibold">Published at</span></div>
+    <div class="col-span-5">29 September 2026</div>
+
+    <div><span class="font-semibold">Title</span></div>
+    <div class="col-span-5">DTLS Retransmits Handshake Messages From a Stale Buffer Offset</div>
+
+
+
+
+
+  
+
+
+    <div><span class="font-semibold">Found by</span></div>
+    <div class="col-span-5">Laurent Gaffie (secorizon.com)</div>
+
+
+
+
+
+
+  
+
+
+    <div><span class="font-semibold">Fix developed by</span></div>
+    <div class="col-span-5">Ryan Hooper</div>
+
+
+    <div><span class="font-semibold">Affected</span></div>
+    <div class="col-span-5 prose-li:m-0 prose-ul:m-0 prose-ul:ps-4">
+      <ul>
+        
+        
+        <li>from 4.0.0 before 4.0.3 </li>
+        
+        <li>from 3.6.0 before 3.6.5 </li>
+        
+        <li>from 3.5.0 before 3.5.9 </li>
+        
+        <li>from 3.4.0 before 3.4.8 </li>
+        
+        <li>from 3.0.0 before 3.0.23 </li>
+        
+        <li>from 1.1.1 before 1.1.1zj </li>
+        
+        <li>from 1.0.2 before 1.0.2zs </li>
+        
+      </ul>
+    </div>
+    <div><span class="font-semibold">References</span></div>
+    <div class="col-span-5 prose-li:m-0 prose-ul:m-0 prose-ul:ps-4">
+      <ul>
+        <li><a href="https://www.cve.org/CVERecord?id=CVE-2026-84782" target="_blank">CVE Record</a></li>
+        
+        <li><a href="https://openssl-library.org/news/secadv/20260929.txt" target="_blank">OpenSSL Advisory</a></li>
+        
+        <li><a href="https://github.com/openssl/openssl/commit/d951e02ede8f6a6ff8150546db44b34f0518192c" target="_blank">4.0.3 git commit</a></li>
+        
+        <li><a href="https://github.com/openssl/openssl/commit/a383dafdd754eb5b22bf45e37e1bff9d07277a58" target="_blank">3.6.5 git commit</a></li>
+        
+        <li><a href="https://github.com/openssl/openssl/commit/906cf0ef1c85ca40ce69163e9086d6d3fe292943" target="_blank">3.5.9 git commit</a></li>
+        
+        <li><a href="https://github.com/openssl/openssl/commit/9f6b34422af7eb5dac61322e33dac1ae989fa628" target="_blank">3.4.8 git commit</a></li>
+        
+      </ul>
+    </div>
+</div>
+
+
+    <p>Issue summary: The DTLS retransmission logic does not correctly handle
+a handshake message write that is suspended part-way through.
+The retransmitted message can be read past the message buffer and
+the retransmission overwrites the internal state the suspended write
+needs to resume correctly.</p>
+<p>Impact summary: The retransmitted message can disclose a heap memory
+to the peer as plaintext handshake data or cause a crash and a Denial
+of Service when the read reaches an unmapped memory region.</p>
+<p>CWE: CWE-125: Out-of-bounds Read</p>
+<p>Description: DTLS handshake messages can be written out in multiple
+fragments, and a write can suspend mid-message (returning WANT_WRITE)
+if the underlying transport temporarily cannot accept more data. While
+such a write is suspended, the DTLS retransmission timer may
+independently fire and ask the retransmission logic to resend an
+earlier, already-acknowledged-as-sent message from its retransmit
+queue.</p>
+<p>The retransmission logic reused the same internal buffer and position
+tracking as the message that was still being written, without
+resetting the position back to the start of the message being
+retransmitted. As a result the retransmission was read starting from
+wherever the suspended write had left off, producing a mislabelled
+message whose body was leftover bytes from the other, larger message
+still in flight - content that was never meant to be sent at that
+point, and which could run past the end of the allocated buffer.</p>
+<p>Separately, even when the retransmission is positioned correctly,
+allowing it to run to completion while another write is suspended
+overwrites the same shared bookkeeping that the suspended write
+depends on to resume. When the application later resumes the
+suspended write (via a subsequent SSL_read(), SSL_write(),
+SSL_accept(), or SSL_connect() call), it finds that bookkeeping in a
+state inconsistent with the message and aborts the process in
+a debugging build.</p>
+<p>The fix resets the retransmission&rsquo;s read position to the start of the
+message before resending, and skips retransmission entirely whenever a
+handshake write is still suspended, deferring to the next call that
+resumes it instead.</p>
+<p>FIPS impact: no
+The affected code is outside the FIPS module boundary.</p>
+
+  
+    <a href="#CVE-2026-63072">
+      <h2 id="CVE-2026-63072">CVE-2026-63072</h2>
+    </a>
+
+    <div class="grid grid-cols-6 gap-2">
+
+
+
+    <div><span class="font-semibold">Severity</span></div>
+    <div class="col-span-5">Moderate</div>
+
+    <div><span class="font-semibold">Published at</span></div>
+    <div class="col-span-5">25 August 2026</div>
+
+    <div><span class="font-semibold">Title</span></div>
+    <div class="col-span-5">Heap Buffer Overflow in CMS Key Unwrapping</div>
+
+
+
+
+
+  
+
+  
+
+
+    <div><span class="font-semibold">Found by</span></div>
+    <div class="col-span-5">Bhabani Sankar Das and Filipe Casal(Trail of Bits)</div>
+
+
+
+
+
+
+  
+
+
+    <div><span class="font-semibold">Fix developed by</span></div>
+    <div class="col-span-5">Daniel Kubec</div>
+
+
+    <div><span class="font-semibold">Affected</span></div>
+    <div class="col-span-5 prose-li:m-0 prose-ul:m-0 prose-ul:ps-4">
+      <ul>
+        
+        
+        <li>from 4.0.0 before 4.0.2 </li>
+        
+        <li>from 3.6.0 before 3.6.4 </li>
+        
+        <li>from 3.5.0 before 3.5.8 </li>
+        
+        <li>from 3.4.0 before 3.4.7 </li>
+        
+        <li>from 3.0.0 before 3.0.22 </li>
+        
+        <li>from 1.1.1 before 1.1.1zi </li>
+        
+      </ul>
+    </div>
+    <div><span class="font-semibold">References</span></div>
+    <div class="col-span-5 prose-li:m-0 prose-ul:m-0 prose-ul:ps-4">
+      <ul>
+        <li><a href="https://www.cve.org/CVERecord?id=CVE-2026-63072" target="_blank">CVE Record</a></li>
+        
+        <li><a href="https://openssl-library.org/news/secadv/20260825.txt" target="_blank">OpenSSL Advisory</a></li>
+        
+        <li><a href="https://github.com/openssl/openssl/commit/9530a5fd1aacaeccdced4478ea2340a480613335" target="_blank">4.0.2 git commit</a></li>
+        
+        <li><a href="https://github.com/openssl/openssl/commit/2a3dac874c8057c1f0186849bf1ede1ae7b6b756" target="_blank">3.6.4 git commit</a></li>
+        
+        <li><a href="https://github.com/openssl/openssl/commit/87784ad619af36b8807c2044b3940006fccc1e42" target="_blank">3.5.8 git commit</a></li>
+        
+        <li><a href="https://github.com/openssl/openssl/commit/9ec2f6d2ae2bcad907cf7ee38584855bafe4979a" target="_blank">3.4.7 git commit</a></li>
+        
+        <li><a href="https://github.com/openssl/openssl/commit/a0c8ec557d9cac078f032d76cdf684fe743eb382" target="_blank">3.0.22 git commit</a></li>
+        
+      </ul>
+    </div>
+</div>
+
+
+    <p>Issue summary: OpenSSL CMS decryption sizes the key-unwrap output buffer based
+on querying the unwrapped key size, but the AES-WRAP-PAD unwrap primitive
+can write and cleanse more bytes than that query reports, causing an 8-byte
+out-of-bounds heap write.</p>
+<p>Impact summary: An attacker who supplies a crafted CMS message can trigger a
+deterministic 8-byte out-of-bounds heap write when the victim decrypts it
+with CMS_decrypt(), corrupting the heap and typically resulting in a Denial
+of Service.</p>
+<p>CWE: CWE-787: Out-of-bounds Write</p>
+<p>Description: The key-wrap OID is potentially attacker-controlled on the wire.
+CMS unwrapping allows both id-aesNNN-wrap-pad and id-aesNNN-wrap ciphers.
+An attacker can take a legitimate message and change a single OID byte to
+select the padded variant while leaving the message otherwise valid. Since
+the unwrap key is derived from the recipient&rsquo;s private operation (ECDH key
+agreement or ML-KEM decapsulation), the RFC 5649 integrity check cannot
+pass, and the decryption fails with integrity failure.</p>
+<p>The write is a fixed-size (8-byte), fixed-value (zero) heap overflow
+immediately past the allocation, requires no special configuration, and is
+reachable from the public CMS_decrypt() function. The consequence is
+a heap corruption leading to a Denial of Service. The fix in the CMS code
+sizes the unwrap output buffer for the worst case so a failed unwrap cannot
+write past the allocation.</p>
+<p>FIPS impact: no</p>
+<p>As the CMS code lives outside the FIPS module boundary, no FIPS
+modules are affected by this CVE.</p>
+</div></main>
+</body></html>
