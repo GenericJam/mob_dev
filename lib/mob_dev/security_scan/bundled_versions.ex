@@ -94,6 +94,14 @@ defmodule MobDev.SecurityScan.BundledVersions do
     end
 
     Enum.each(bundles, fn {h, bundle} -> validate_bundle!(h, bundle) end)
+
+    # The scan checks otp_version against the tarball's OTP_VERSION, and the
+    # advisory match uses it; bundles recorded before it existed don't have
+    # one, but the active bundle must.
+    unless is_binary(bundles[hash][:otp_version]) do
+      raise "bundled versions manifest: active bundle #{inspect(hash)} missing required field :otp_version"
+    end
+
     :ok
   end
 

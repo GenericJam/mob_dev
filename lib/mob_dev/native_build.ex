@@ -1979,7 +1979,10 @@ defmodule MobDev.NativeBuild do
 
   # ── iOS ──────────────────────────────────────────────────────────────────────
 
-  defp build_ios(cfg, device_ids) do
+  @doc false
+  @spec build_ios(keyword(), [String.t()] | String.t() | nil) ::
+          {:ok, String.t()} | {:error, String.t(), term()}
+  def build_ios(cfg, device_ids) do
     with :ok <- check_path(cfg[:mob_dir], "mob_dir"),
          :ok <- mob_finds_erts(Path.expand(cfg[:mob_dir])),
          :ok <- check_path(cfg[:elixir_lib], "elixir_lib"),

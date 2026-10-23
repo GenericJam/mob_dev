@@ -2844,5 +2844,21 @@ defmodule MobDev.NativeBuildTest do
 
       assert NativeBuild.mob_finds_erts(mob_dir) == :ok
     end
+
+    @tag :tmp_dir
+    test "the Android and iOS-simulator builds stop on such a mob before fetching a runtime",
+         %{tmp_dir: mob_dir} do
+      ExUnit.CaptureIO.capture_io(fn ->
+        assert {:error, android} =
+                 NativeBuild.build_android_native([mob_dir: mob_dir], abis: ["arm64-v8a"])
+
+        assert android =~ "older than 0.9.25"
+
+        assert {:error, "iOS", ios} =
+                 NativeBuild.build_ios([mob_dir: mob_dir, elixir_lib: mob_dir], [])
+
+        assert ios =~ "older than 0.9.25"
+      end)
+    end
   end
 end

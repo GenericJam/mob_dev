@@ -16,6 +16,8 @@ defmodule MobDev.SecurityScan.BundledVersionsTest do
 
       assert is_binary(bundle.erts) and byte_size(bundle.erts) > 0
       assert is_binary(bundle.otp_release) and byte_size(bundle.otp_release) > 0
+      # The scan's OTP drift check and advisory match key off it.
+      assert is_binary(bundle.otp_version) and byte_size(bundle.otp_version) > 0
       assert is_binary(bundle.elixir) and byte_size(bundle.elixir) > 0
       assert is_binary(bundle.openssl) and byte_size(bundle.openssl) > 0
       assert is_binary(bundle.exqlite_beam) and byte_size(bundle.exqlite_beam) > 0
