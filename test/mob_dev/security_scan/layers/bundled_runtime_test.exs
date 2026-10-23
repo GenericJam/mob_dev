@@ -142,6 +142,27 @@ defmodule MobDev.SecurityScan.Layers.BundledRuntimeTest do
     assert finding.title =~ "OTP manifest=#{bundle.otp_version} binary=29.0"
   end
 
+  test "a cached older bundle that records no otp_version gets no OTP drift finding", %{
+    tmp_dir: dir
+  } do
+    cache = Path.join(dir, "cache")
+    File.mkdir_p!(cache)
+
+    {:ok, old} = MobDev.SecurityScan.BundledVersions.for_hash("5c9c69fc")
+    refute Map.has_key?(old, :otp_version)
+
+    build_tarball(cache, :android, "5c9c69fc",
+      openssl: old.openssl,
+      elixir: old.elixir,
+      exqlite: old.exqlite_beam,
+      otp: "29.0"
+    )
+
+    result = run_offline(dir, cache)
+
+    refute Enum.any?(result.findings, &(&1.id =~ "otp_version"))
+  end
+
   test "per-platform override suppresses missing-artifact drift", %{tmp_dir: dir} do
     # iOS sim does NOT ship exqlite per the active manifest. Building a
     # tarball without exqlite should NOT generate a drift finding for it.

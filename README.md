@@ -547,7 +547,7 @@ severity, so these are `:medium`.
 
 Each affected advisory is a finding with the upstream severity, the
 installed and fixed versions, and a link. The data is cached in
-`~/.mob/cache/advisories/` for 24 hours. Offline, the scan uses the
+`advisories/` under `$MOB_CACHE_DIR` (default `~/.mob/cache`) for 24 hours. Offline, the scan uses the
 cached copy (marked stale once it's older than that); with no copy it
 warns and lists the pages to check by hand. A `GITHUB_TOKEN`/`GH_TOKEN`
 or `gh auth token` is used when available; it isn't required. The Elixir

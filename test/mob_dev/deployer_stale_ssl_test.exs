@@ -55,7 +55,7 @@ defmodule MobDev.DeployerStaleSslTest do
   end
 
   for {label, root} <- [{"rooted", "yes"}, {"run-as", "no"}] do
-    test "a failed delete fails the #{label} Android deploy before any BEAM is pushed",
+    test "a failed delete fails the #{label} Android deploy before any BEAM is installed",
          %{tmp_dir: tmp} do
       System.put_env("FAKE_ADB_ROOT", unquote(root))
 

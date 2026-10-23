@@ -87,8 +87,11 @@ defmodule MobDev.SecurityScan.BundledVersions do
     Map.fetch!(manifest.bundles, manifest.active_hash)
   end
 
-  defp validate!(%{active_hash: hash, bundles: bundles})
-       when is_binary(hash) and is_map(bundles) do
+  @doc false
+  # Public for tests: load/0 always reads priv/security/bundled_versions.exs.
+  @spec validate!(term()) :: :ok
+  def validate!(%{active_hash: hash, bundles: bundles})
+      when is_binary(hash) and is_map(bundles) do
     unless Map.has_key?(bundles, hash) do
       raise "bundled versions manifest: active_hash #{inspect(hash)} not found in :bundles"
     end
@@ -105,7 +108,7 @@ defmodule MobDev.SecurityScan.BundledVersions do
     :ok
   end
 
-  defp validate!(other) do
+  def validate!(other) do
     raise "bundled versions manifest must be %{active_hash: ..., bundles: %{...}}; got #{inspect(other)}"
   end
 

@@ -36,28 +36,31 @@ defmodule MobDev.SecurityScan.BundledVersionsTest do
     end
   end
 
-  describe "validation (synthetic manifest written to a tmp file)" do
-    @tag :tmp_dir
-    test "valid manifest loads", %{tmp_dir: dir} do
-      path = Path.join(dir, "manifest.exs")
+  describe "validate!/1" do
+    @base %{
+      erts: "17.1.1",
+      otp_release: "29",
+      elixir: "1.20.1",
+      openssl: "3.5.9",
+      exqlite_beam: "0.36.0"
+    }
 
-      File.write!(path, """
-      %{
-        active_hash: "abcdef",
-        bundles: %{
-          "abcdef" => %{
-            erts: "16.3",
-            otp_release: "28",
-            elixir: "1.19.5",
-            openssl: "3.4.0",
-            exqlite_beam: "0.36.0"
-          }
-        }
-      }
-      """)
+    test "the active bundle must record its OTP release; older bundles needn't" do
+      legacy = %{"old" => @base}
 
-      {manifest, _} = Code.eval_file(path)
-      assert manifest.active_hash == "abcdef"
+      assert BundledVersions.validate!(%{
+               active_hash: "new",
+               bundles: Map.put(legacy, "new", Map.put(@base, :otp_version, "29.1.2"))
+             }) == :ok
+
+      assert_raise RuntimeError,
+                   ~r/active bundle "new" missing required field :otp_version/,
+                   fn ->
+                     BundledVersions.validate!(%{
+                       active_hash: "new",
+                       bundles: Map.put(legacy, "new", @base)
+                     })
+                   end
     end
   end
 end
