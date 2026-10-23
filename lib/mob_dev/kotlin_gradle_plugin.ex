@@ -12,20 +12,25 @@ defmodule MobDev.KotlinGradlePlugin do
   Read from the root, settings and app build scripts (Groovy or Kotlin DSL)
   and `gradle/libs.versions.toml`:
 
-    * the `org.jetbrains.kotlin:kotlin-gradle-plugin` coordinate, with a
-      literal version, a `$var` resolved from an assignment in the same file,
-      or a `strictly`/`require`/`prefer` block;
-    * the plugin ids that resolve to that artifact
-      (`org.jetbrains.kotlin.android`, `.jvm`, `.multiplatform`, `.kapt`, and
-      the `kotlin("…")` shorthand) with a version;
-    * catalog `[libraries]` and `[plugins]` entries for either, with
+    * the `org.jetbrains.kotlin:kotlin-gradle-plugin` coordinate, or
+      `org.jetbrains.kotlin:compose-compiler-gradle-plugin` (whose POM
+      requires KGP at the same version), with a literal version, a `$var`
+      resolved from an assignment in the same file, or a
+      `strictly`/`require`/`prefer` block;
+    * the plugin ids that resolve to KGP or pin it (`org.jetbrains.kotlin.`
+      `android`, `jvm`, `multiplatform`, `kapt`, `js`, `native.cocoapods`,
+      `android.extensions`, `plugin.compose`, `plugin.parcelize`, and the
+      `kotlin("…")` shorthand) with a version;
+    * catalog `[libraries]` and `[plugins]` entries for any of them, with
       `version = "…"` or `version.ref` resolved through `[versions]`.
 
-  Only those count. Other Kotlin plugins (serialization, compose), a
-  `kotlin` catalog key that nothing above references, and commented-out
-  lines are ignored, and a version that can't be resolved to a literal is
-  never guessed: doctor only warns, so a false positive would tell a fixed
-  app it is still exposed every time it runs.
+  Only those count. Other Kotlin plugins (serialization), look-alike
+  artifacts (`kotlin-gradle-plugin-api`), a `kotlin` catalog key that
+  nothing above references, and commented-out lines are ignored. A version
+  that can't be resolved to a literal (`version kotlinVersion`, an unknown
+  `$var`) still declares KGP but is never guessed: doctor only warns, so a
+  false positive would tell a fixed app it is still exposed every time it
+  runs.
 
   AGP 9 compiles Kotlin itself and depends on KGP 2.2.10 at runtime, so an
   AGP 9 build that declares no KGP at all is on 2.2.10 and is reported too.
@@ -44,22 +49,40 @@ defmodule MobDev.KotlinGradlePlugin do
 
   @catalog "android/gradle/libs.versions.toml"
 
+  # The compose compiler plugin's POM requires KGP at its own version, and
+  # the parcelize/js/cocoapods/android-extensions markers resolve to KGP
+  # itself, so each pins KGP as surely as `kotlin-android` does.
   @kgp %{
-    module: "org.jetbrains.kotlin:kotlin-gradle-plugin",
+    modules: ~w(
+      org.jetbrains.kotlin:kotlin-gradle-plugin
+      org.jetbrains.kotlin:compose-compiler-gradle-plugin
+    ),
     plugin_ids: ~w(
       org.jetbrains.kotlin.android
       org.jetbrains.kotlin.jvm
       org.jetbrains.kotlin.multiplatform
       org.jetbrains.kotlin.kapt
+      org.jetbrains.kotlin.js
+      org.jetbrains.kotlin.native.cocoapods
+      org.jetbrains.kotlin.android.extensions
+      org.jetbrains.kotlin.plugin.compose
+      org.jetbrains.kotlin.plugin.parcelize
     ),
-    kotlin_shorthand: ~w(android jvm multiplatform kapt)
+    kotlin_shorthand: ~w(
+      android jvm multiplatform kapt js native.cocoapods android.extensions
+      plugin.compose plugin.parcelize
+    )
   }
 
   @agp %{
-    module: "com.android.tools.build:gradle",
+    modules: ~w(com.android.tools.build:gradle),
     plugin_ids: ~w(com.android.application com.android.library),
     kotlin_shorthand: []
   }
+
+  # A plugin `version` argument: a quoted literal (group 1) or a bare
+  # identifier such as `kotlinVersion` (group 2).
+  @version_arg "(?:['\"]([^'\"]+)|([A-Za-z_][\\w.]*))"
 
   @typedoc "A reason to warn, with the project-relative file it was read from."
   @type finding ::
@@ -133,10 +156,16 @@ defmodule MobDev.KotlinGradlePlugin do
   defp strip_comments(@catalog, content),
     do: Regex.replace(Regex.compile!("(?m)#.*$"), content, "")
 
-  # `(?<!:)` keeps `https://…` URLs intact.
+  # Quoted strings are matched first and kept, so `'META-INF/*'` doesn't
+  # open a block comment and `'file:///…'` isn't cut at `//`.
   defp strip_comments(_build_file, content) do
-    content = Regex.replace(Regex.compile!("(?s)/\\*.*?\\*/"), content, "")
-    Regex.replace(Regex.compile!("(?m)(?<!:)//.*$"), content, "")
+    "\"(?:\\\\.|[^\"\\\\\\n])*\"|'(?:\\\\.|[^'\\\\\\n])*'|(?s:/\\*.*?\\*/)|//[^\\n]*"
+    |> Regex.compile!()
+    |> Regex.replace(content, fn
+      "/*" <> _ -> ""
+      "//" <> _ -> ""
+      string -> string
+    end)
   end
 
   # ── Build scripts ─────────────────────────────────────────────────────────
@@ -148,7 +177,7 @@ defmodule MobDev.KotlinGradlePlugin do
 
   defp declared(_build_file, content, spec) do
     vars = assignments(content)
-    module = Regex.escape(spec.module)
+    module = "(?:#{Enum.map_join(spec.modules, "|", &Regex.escape/1)})"
     ids = Enum.map_join(spec.plugin_ids, "|", &Regex.escape/1)
 
     patterns =
@@ -157,8 +186,9 @@ defmodule MobDev.KotlinGradlePlugin do
         "#{module}:([^'\"\\s)]+)",
         # classpath("g:a") { version { strictly("1.2.3") } }
         "#{module}['\"]\\s*\\)?\\s*\\{[^}]*?(?:strictly|require|prefer)\\s*\\(?\\s*['\"]([^'\"]+)",
-        # id 'x' version '1' / id("x") version "1" / id("x").version("1")
-        "id\\s*\\(?\\s*['\"](?:#{ids})['\"]\\s*\\)?\\s*\\.?\\s*version\\s*\\(?\\s*['\"]([^'\"]+)"
+        # id 'x' version '1' / id("x") version "1" / id("x").version("1") /
+        # id("x") version kotlinVersion
+        "id\\s*\\(?\\s*['\"](?:#{ids})['\"]\\s*\\)?\\s*\\.?\\s*version\\s*\\(?\\s*#{@version_arg}"
       ] ++ shorthand_pattern(spec)
 
     # A versionless `classpath("g:a")` (version from a BOM, a catalog or a
@@ -171,7 +201,11 @@ defmodule MobDev.KotlinGradlePlugin do
         pattern
         |> Regex.compile!()
         |> Regex.scan(content, capture: :all_but_first)
-        |> Enum.map(fn [raw] -> resolve(raw, vars) end)
+        |> Enum.map(fn
+          [raw] -> resolve(raw, vars)
+          # A bare identifier version: declared, never guessed.
+          ["", _identifier] -> :unresolved
+        end)
       end)
   end
 
@@ -179,7 +213,7 @@ defmodule MobDev.KotlinGradlePlugin do
 
   defp shorthand_pattern(%{kotlin_shorthand: names}) do
     alts = Enum.map_join(names, "|", &Regex.escape/1)
-    ["kotlin\\s*\\(\\s*\"(?:#{alts})\"\\s*\\)\\s*\\.?\\s*version\\s*\\(?\\s*\"([^\"]+)"]
+    ["kotlin\\s*\\(\\s*\"(?:#{alts})\"\\s*\\)\\s*\\.?\\s*version\\s*\\(?\\s*#{@version_arg}"]
   end
 
   # `ext.kotlin_version = '1.9.22'`, `def v = "…"`, `val v = "…"`,
@@ -207,17 +241,17 @@ defmodule MobDev.KotlinGradlePlugin do
     sections = catalog_sections(content)
     versions = catalog_versions(Map.get(sections, "versions", []))
 
-    library_lines =
-      sections
-      |> Map.get("libraries", [])
-      |> Enum.filter(&catalog_library?(&1, spec.module))
+    libraries =
+      for line <- Map.get(sections, "libraries", []),
+          module = Enum.find(spec.modules, &catalog_library?(line, &1)),
+          do: {line, module}
 
     plugin_lines =
       sections
       |> Map.get("plugins", [])
       |> Enum.filter(&catalog_plugin?(&1, spec.plugin_ids))
 
-    Enum.flat_map(library_lines, &catalog_version(&1, spec.module, versions)) ++
+    Enum.flat_map(libraries, fn {line, module} -> catalog_version(line, module, versions) end) ++
       Enum.flat_map(plugin_lines, &catalog_plugin_version(&1, spec.plugin_ids, versions))
   end
 
@@ -252,10 +286,11 @@ defmodule MobDev.KotlinGradlePlugin do
 
   defp rich_value(rich, rhs), do: Regex.run(rich, rhs, capture: :all_but_first) || []
 
+  # `"g:a"` or `"g:a:…"`, never `"g:a-api…"`; or split `group`/`name` keys.
   defp catalog_library?(line, module) do
     [group, name] = String.split(module, ":")
 
-    String.contains?(line, "\"#{module}") or
+    String.contains?(line, "\"#{module}\"") or String.contains?(line, "\"#{module}:") or
       (String.contains?(line, "\"#{group}\"") and String.contains?(line, "\"#{name}\""))
   end
 

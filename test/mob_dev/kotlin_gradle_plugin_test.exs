@@ -102,6 +102,45 @@ defmodule MobDev.KotlinGradlePluginTest do
                    "buildscript { dependencies { classpath 'com.android.tools.build:gradle:8.2.0' } }"
                })
     end
+
+    test "a plugin id with a variable version counts as declared under AGP 9", %{tmp_dir: root} do
+      for plugin <- [
+            ~s|id("org.jetbrains.kotlin.android") version kotlinVersion|,
+            ~s|kotlin("android") version kotlinVersion|
+          ] do
+        assert [] =
+                 project(root, %{
+                   "android/build.gradle.kts" => """
+                   plugins {
+                       id("com.android.application") version "9.3.3" apply false
+                       #{plugin} apply false
+                   }
+                   """
+                 })
+      end
+    end
+
+    test "quoted /* and // do not start comments", %{tmp_dir: root} do
+      assert [{:vulnerable, "android/app/build.gradle", ["1.9.22", "2.0.0"]}] =
+               project(root, %{
+                 "android/app/build.gradle" => """
+                 android { packaging { resources { excludes += ['META-INF/*'] } } }
+                 dependencies { classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.22' }
+                 def u = 'file:///tmp'; classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:2.0.0'
+                 fileTree(include: '/*.jar', exclude: '**/*.so')
+                 """
+               })
+    end
+
+    test "parcelize and compose-compiler pins are version-checked like KGP", %{tmp_dir: root} do
+      assert [{:vulnerable, "android/build.gradle", ["2.3.0", "2.0.0"]}] =
+               project(root, %{
+                 "android/build.gradle" => """
+                 plugins { id 'org.jetbrains.kotlin.plugin.parcelize' version '2.0.0' apply false }
+                 dependencies { classpath 'org.jetbrains.kotlin:compose-compiler-gradle-plugin:2.3.0' }
+                 """
+               })
+    end
   end
 
   describe "version catalog" do
@@ -156,6 +195,42 @@ defmodule MobDev.KotlinGradlePluginTest do
 
                  [plugins]
                  android-application = { id = "com.android.application", version.ref = "agp" }
+                 """
+               })
+    end
+
+    test "the Android Studio AGP 9 + Compose catalog is not reported", %{tmp_dir: root} do
+      assert [] =
+               project(root, %{
+                 "android/gradle/libs.versions.toml" => """
+                 [versions]
+                 agp = "9.3.3"
+                 kotlin = "2.4.21"
+
+                 [plugins]
+                 android-application = { id = "com.android.application", version.ref = "agp" }
+                 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+                 """
+               })
+    end
+
+    test "KGP module names are anchored", %{tmp_dir: root} do
+      assert [] =
+               project(root, %{
+                 "android/gradle/libs.versions.toml" => """
+                 [libraries]
+                 api = "org.jetbrains.kotlin:kotlin-gradle-plugin-api:1.9.22"
+                 bom = { module = "org.jetbrains.kotlin:kotlin-gradle-plugins-bom", version = "1.9.22" }
+                 """
+               })
+    end
+
+    test "gradle-api is not AGP", %{tmp_dir: root} do
+      assert [] =
+               project(root, %{
+                 "android/gradle/libs.versions.toml" => """
+                 [libraries]
+                 agp-api = { module = "com.android.tools.build:gradle-api", version = "9.3.3" }
                  """
                })
     end
