@@ -1,7 +1,8 @@
 # Ship real OpenSSL crypto + ssl on device, not md5/no-op shims
 
 - Date: 2026-05-25
-- Status: accepted
+- Status: accepted; the Android stub fallback and the iOS LiveView crypto shim
+  were removed by 2026-10-22-otp-29.1.2-runtime-no-host-otp-apps.md
 
 ## Context
 Early device OTP runtimes were built `--without-ssl`, so the release scripts

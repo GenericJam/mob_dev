@@ -332,7 +332,7 @@ doesn't lock Mob into wheel ecosystem maintenance.
 
 **App crashes silently on launch with no Python output.** First check
 for OTP version mismatch — your local Erlang must match the device
-runtime's ERTS (currently OTP 29 / erts-17.0). `mise` reads
+runtime's ERTS (currently OTP 29.1.2 / erts-17.1.1). `mise` reads
 `.tool-versions`; if `mise current` disagrees with `mise exec -- erl`,
 your shell hasn't picked up the project's pinned version.
 

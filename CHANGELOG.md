@@ -33,8 +33,9 @@
   `ssl_not_supported`. `mix mob.release --ios` reused that directory and
   now deletes both shims from it. The iOS build and release no longer copy
   the host's runtime_tools, asn1 and public_key over the runtime's. The
-  Android deployer's crypto-shim fallback, dead since every runtime ships
-  crypto, is gone. The fallback EPMD patch now checks the `run_daemon(g)`
+  Android crypto-shim fallbacks in the deployer and in `mix mob.release
+  --android` (`priv/android/crypto.erl`), dead since every runtime ships
+  crypto, are gone. The fallback EPMD patch now checks the `run_daemon(g)`
   call site rather than any `#ifndef NO_DAEMON`, which upstream `epmd.c`
   already has.
 - **Dev server: bandit 1.12.5 → 1.13.1 (MOB-482).** Fixes EEF-CVE-2026-105659

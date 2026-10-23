@@ -632,36 +632,16 @@ step 5 => {'EXIT',{{badmatch,{error,{crypto,{"no such file or directory","crypto
 The BEAM started, but application boot failed when starting `:ecto_sqlite3` → `:ecto`
 → `:crypto`.
 
-**Root cause**: The Mob pre-built Android OTP release does not include the `:crypto`
-OTP application. Cross-compiling OpenSSL for Android was not part of the initial OTP
-build. Many common deps (ecto, phoenix_pubsub, plug_crypto, phoenix) declare
-`:crypto` in their `{applications, [...]}` list in their `.app` files. When
-`Application.ensure_all_started` walks the dep tree, the OTP application controller
-tries to load `crypto.app` and fails — even if `crypto.beam` were present, the
-controller requires the `.app` spec to register the application before starting it.
+**Root cause**: The release's OTP tree has no `:crypto` application. Many common deps
+(ecto, phoenix_pubsub, plug_crypto, phoenix) list `:crypto` in their `.app` files, so
+`Application.ensure_all_started` fails without it. Early Mob Android runtimes were
+built without OpenSSL and `mix mob.release --android` stubbed `:crypto` for them.
+Every current runtime ships the real `crypto` application, and the native build links
+its OpenSSL NIF (`crypto.a` + `libcrypto.a`), so the stub is gone (MOB-493).
 
-**Fix**: `mix mob.release --android` (via `MobDev.ReleaseAndroid`) now handles this
-automatically in two steps during staging:
-
-1. **Patch all `.app` files** (`patch_crypto_deps!/1`): Walks every `*.app` file in
-   the staging tree and removes `:crypto` from each `{applications, [...]}` list.
-   This prevents `ensure_all_started` from even trying to start `:crypto` as a dep.
-
-2. **Inject a crypto stub** (`add_crypto_stub!/2`): Compiles
-   `mob_dev/priv/android/crypto.erl` — a minimal module that implements only
-   `crypto:strong_rand_bytes/1` via `:rand` (the only function Ecto calls at runtime,
-   for UUID generation). Also writes a `crypto.app` spec with no `{mod, ...}` entry,
-   so the app controller can load and "start" `:crypto` without invoking any NIF
-   initialization.
-
-This is transparent as of the version where these functions were added. If you are on
-an older `mob_dev` that doesn't have `patch_crypto_deps!/1`, upgrade `mob_dev` or
-check `release_android.ex` for the current staging pipeline.
-
-**Note on cryptographic strength**: The stub uses `:rand` seeded at BEAM start —
-not a cryptographically secure RNG. This is acceptable for a local-only mobile app
-that has no TLS or encryption use cases. If your app does require real crypto, you
-will need to cross-compile OpenSSL and include the real `:crypto` NIF.
+**Fix**: Upgrade `mob_dev`, delete the cached runtime (`~/.mob/cache/otp-android-*`)
+so it is downloaded again, and rerun `mix mob.release --android`. Check that the
+staged tree contains `lib/crypto-*/ebin/crypto.app`.
 
 ### App crashes immediately on launch (before any UI appears)
 
