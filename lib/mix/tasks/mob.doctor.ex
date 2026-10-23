@@ -920,7 +920,11 @@ defmodule Mix.Tasks.Mob.Doctor do
           {:warn, "startup status hooks (#{path})",
            "MobBridge has no static #{Enum.join(missing, " / ")}, so mob's " <>
              "#{Enum.map_join(missing, " and ", &startup_hook_role/1)} never " <>
-             "reach the screen — a failed boot shows a blank screen",
+             "reach the screen" <>
+             if("setStartupError" in missing,
+               do: " — a failed boot shows a blank screen",
+               else: ""
+             ),
            "Port from a freshly generated app (mix mob.new) or mob_new's " <>
              "templates: add " <>
              Enum.map_join(missing, " and ", &"`@JvmStatic fun #{&1}(value: String)`") <>
@@ -946,7 +950,7 @@ defmodule Mix.Tasks.Mob.Doctor do
   @spec __startup_status_hooks_missing__(String.t()) :: [String.t()]
   def __startup_status_hooks_missing__(content) do
     Enum.reject(~w(setStartupPhase setStartupError), fn name ->
-      Regex.match?(Regex.compile!("@JvmStatic\\s+fun\\s+#{name}\\s*\\("), content)
+      Regex.match?(Regex.compile!("@JvmStatic\\s+(?:public\\s+)?fun\\s+#{name}\\s*\\("), content)
     end)
   end
 

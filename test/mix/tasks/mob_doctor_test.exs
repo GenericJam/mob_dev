@@ -249,7 +249,7 @@ defmodule Mix.Tasks.Mob.DoctorTest do
           fun setStartupPhase(phase: String) {}
 
           @JvmStatic
-          fun setStartupError(error: String) {}
+          public fun setStartupError(error: String) {}
       }
       """
 
