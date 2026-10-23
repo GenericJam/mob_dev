@@ -515,7 +515,7 @@ app binary, not declared in any lockfile).
 | `hex_deps` | [`mix_audit`](https://hexdocs.pm/mix_audit/) + [`osv-scanner`](https://google.github.io/osv-scanner/) | Hex dependencies in `mix.lock` |
 | `gradle_deps` | `osv-scanner` | Android Gradle dependencies (when `gradle.lockfile` is enabled) |
 | `swift_deps` | `osv-scanner` | iOS `Package.resolved` / `Podfile.lock` |
-| `bundled_runtime` | `BundledVersions` manifest + binary fingerprint | OpenSSL, ERTS, Elixir, exqlite, SQLite *baked into the OTP tarball* — drift detection between the manifest and the actual binaries |
+| `bundled_runtime` | `BundledVersions` manifest + binary fingerprint + upstream advisories | OpenSSL, ERTS, Elixir, exqlite, SQLite *baked into the OTP tarball* — drift between the manifest and the binaries, plus known CVEs in the bundled OTP applications and OpenSSL and OpenSSL branch end-of-life |
 | `c_source` | [`semgrep`](https://semgrep.dev/) + [`flawfinder`](https://dwheeler.com/flawfinder/) | Mob's NIF C/Objective-C plus the exqlite NIF wrapper |
 | `kotlin_source` | [`detekt`](https://detekt.dev/) | Kotlin/Java under `android/app/src/main/` |
 | `swift_source` | [`swiftlint`](https://github.com/realm/SwiftLint) | Swift under `ios/` |
@@ -526,6 +526,25 @@ version banner directly out of the static archive. Generic dep
 scanners can't do this because the OpenSSL version isn't in any
 lockfile. See [`priv/security/bundled_versions.exs`](priv/security/bundled_versions.exs)
 for the manifest of what versions ship in each tarball.
+
+For the active runtime (the tarball hash this mob_dev deploys) it then
+matches what it found against upstream advisories:
+
+- **Erlang/OTP** — the [erlang/otp GitHub security advisories](https://github.com/erlang/otp/security/advisories),
+  compared per application (`ssl`, `public_key`, `erts`, …) against the
+  `lib/<app>-<vsn>` directories in the tarball.
+- **OpenSSL** — the branch's page on [openssl-library.org](https://openssl-library.org/news/vulnerabilities/)
+  ("Affected: from X before Y"), and the branch end-of-life date from
+  [endoflife.date](https://endoflife.date/openssl). A branch past EOL is a
+  `:high` finding.
+
+Each affected advisory is a finding with the upstream severity, the
+installed and fixed versions, and a link. The data is cached in
+`~/.mob/cache/advisories/` for 24 hours. Offline, the scan uses the
+cached copy (marked stale once it's older than that); with no copy it
+warns and lists the pages to check by hand. A `GITHUB_TOKEN`/`GH_TOKEN`
+or `gh auth token` is used when available; it isn't required. Elixir
+and SQLite versions are still reported for manual checking.
 
 ### Usage
 

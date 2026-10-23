@@ -45,6 +45,16 @@ defmodule MobDev.SecurityScan.Layers.BundledRuntimeTest do
       File.mkdir_p!(Path.join([path, "lib", "exqlite-#{exqlite_vsn}"]))
     end
 
+    if otp_vsn = opts[:otp] do
+      release_dir = Path.join([path, "releases", otp_vsn |> String.split(".") |> hd()])
+      File.mkdir_p!(release_dir)
+      File.write!(Path.join(release_dir, "OTP_VERSION"), otp_vsn <> "\n")
+    end
+
+    for {app, vsn} <- Keyword.get(opts, :apps, []) do
+      File.mkdir_p!(Path.join([path, "lib", "#{app}-#{vsn}"]))
+    end
+
     path
   end
 
@@ -52,7 +62,7 @@ defmodule MobDev.SecurityScan.Layers.BundledRuntimeTest do
     cache = Path.join(dir, "empty_cache")
     File.mkdir_p!(cache)
 
-    result = BundledRuntime.run(project_root: dir, cache_dir: cache)
+    result = run_offline(dir, cache)
 
     assert result.status == :not_applicable
     assert Enum.any?(result.notes, &String.contains?(&1, "no cached OTP tarballs"))
@@ -70,7 +80,7 @@ defmodule MobDev.SecurityScan.Layers.BundledRuntimeTest do
       exqlite: bundle.exqlite_beam
     )
 
-    result = BundledRuntime.run(project_root: dir, cache_dir: cache)
+    result = run_offline(dir, cache)
 
     assert result.status == :ok
     assert result.findings == []
@@ -89,7 +99,7 @@ defmodule MobDev.SecurityScan.Layers.BundledRuntimeTest do
       exqlite: bundle.exqlite_beam
     )
 
-    result = BundledRuntime.run(project_root: dir, cache_dir: cache)
+    result = run_offline(dir, cache)
 
     assert result.status == :ok
 
@@ -120,7 +130,7 @@ defmodule MobDev.SecurityScan.Layers.BundledRuntimeTest do
       # no exqlite — matches per_platform override
     )
 
-    result = BundledRuntime.run(project_root: dir, cache_dir: cache)
+    result = run_offline(dir, cache)
 
     refute Enum.any?(result.findings, &(&1.id == "MOB-DRIFT-ios_sim-exqlite_beam"))
   end
@@ -173,7 +183,7 @@ defmodule MobDev.SecurityScan.Layers.BundledRuntimeTest do
     write_lock(dir, "0.41.0")
     cache = ios_cache_with_exqlite(dir, "0.41.0")
 
-    result = BundledRuntime.run(project_root: dir, cache_dir: cache)
+    result = run_offline(dir, cache)
 
     assert result.findings == []
 
@@ -189,7 +199,7 @@ defmodule MobDev.SecurityScan.Layers.BundledRuntimeTest do
     write_lock(dir, "0.41.0")
     cache = ios_cache_with_exqlite(dir, "0.40.0")
 
-    result = BundledRuntime.run(project_root: dir, cache_dir: cache)
+    result = run_offline(dir, cache)
 
     ids = result.findings |> Enum.map(& &1.id) |> Enum.sort()
     assert ids == ["MOB-DRIFT-ios_device-exqlite_beam", "MOB-DRIFT-ios_sim-exqlite_beam"]
@@ -204,7 +214,7 @@ defmodule MobDev.SecurityScan.Layers.BundledRuntimeTest do
   test "iOS exqlite in a project without exqlite stays HIGH drift", %{tmp_dir: dir} do
     cache = ios_cache_with_exqlite(dir, "0.41.0")
 
-    result = BundledRuntime.run(project_root: dir, cache_dir: cache)
+    result = run_offline(dir, cache)
 
     assert [_, _] = result.findings
     assert Enum.all?(result.findings, &(&1.title =~ "project has no exqlite"))
@@ -226,9 +236,9 @@ defmodule MobDev.SecurityScan.Layers.BundledRuntimeTest do
     File.mkdir_p!(c_src)
     File.write!(Path.join(c_src, "sqlite3.c"), ~s(#define SQLITE_VERSION "3.51.3"\n))
 
-    result = BundledRuntime.run(project_root: dir, cache_dir: cache)
+    result = run_offline(dir, cache)
 
-    assert Enum.any?(result.notes, &String.contains?(&1, "version pointers"))
+    assert Enum.any?(result.notes, &String.contains?(&1, "upstream advisories"))
     assert Enum.any?(result.notes, &String.contains?(&1, "SQLite 3.51.3"))
     assert Enum.any?(result.notes, &String.contains?(&1, "openssl-library.org"))
   end
@@ -245,10 +255,194 @@ defmodule MobDev.SecurityScan.Layers.BundledRuntimeTest do
       exqlite: bundle.exqlite_beam
     )
 
-    result = BundledRuntime.run(project_root: dir, cache_dir: cache)
+    result = run_offline(dir, cache)
 
     assert result.findings == []
     assert Enum.any?(result.notes, &String.contains?(&1, "hash not in manifest"))
+  end
+
+  describe "upstream advisories" do
+    @fixtures Path.expand("../../../fixtures/security_scan", __DIR__)
+    @advisory_sources [:otp_security_advisories, :openssl_vulnerabilities, :endoflife_date]
+
+    test "flags OTP and OpenSSL advisories for the active runtime, once across platforms",
+         %{tmp_dir: dir} do
+      cache = Path.join(dir, "cache")
+      runtime_29_0(cache, :android, real_hash())
+      runtime_29_0(cache, :ios_sim, real_hash())
+
+      result = run_with_feeds(dir, cache, feed_server())
+      by_id = Enum.group_by(result.findings, & &1.id)
+
+      assert [
+               %Finding{
+                 severity: :critical,
+                 package: "otp/ssl",
+                 version: "11.7",
+                 fixed_in: "11.7.7",
+                 layer: :bundled_runtime
+               } = psk
+             ] = by_id["CVE-2026-89422"]
+
+      assert psk.description =~ "for: android, ios_sim."
+      assert [%Finding{severity: :critical, package: "otp/ssl"}] = by_id["CVE-2026-55953"]
+
+      assert [%Finding{severity: :high, package: "openssl", version: "3.4.0"}] =
+               by_id["CVE-2026-84782"]
+
+      assert [%Finding{severity: :high, title: "OpenSSL 3.4 reached end of life on 2026-10-22"}] =
+               by_id["OPENSSL-EOL-3.4"]
+
+      assert result.status == :ok
+      assert "GitHub erlang/otp security advisories" in result.tools_used
+      assert "endoflife.date" in result.tools_used
+
+      assert Enum.any?(
+               result.notes,
+               &(&1 =~ "erlang/otp security advisories apply (fetched just now)")
+             )
+
+      assert Enum.any?(result.notes, &(&1 =~ "OpenSSL 3.4: END OF LIFE since 2026-10-22"))
+    end
+
+    test "a runtime rebuilt on OTP 29.1.2 / OpenSSL 3.5.9 reports none of them", %{tmp_dir: dir} do
+      cache = Path.join(dir, "cache")
+
+      build_tarball(cache, :android, real_hash(),
+        openssl: "3.5.9",
+        otp: "29.1.2",
+        apps: [{"kernel", "11.0"}, {"ssl", "11.7.8"}, {"public_key", "1.21.8"}]
+      )
+
+      result = run_with_feeds(dir, cache, feed_server())
+      ids = Enum.map(result.findings, & &1.id)
+
+      for id <- ["CVE-2026-89422", "CVE-2026-55953", "CVE-2026-105236", "OPENSSL-EOL-3.4"] do
+        refute id in ids
+      end
+
+      assert Enum.any?(result.notes, &(&1 =~ "OpenSSL 3.5: supported until 2030-04-08"))
+    end
+
+    test "offline with no cached data still runs drift checks and warns", %{tmp_dir: dir} do
+      cache = Path.join(dir, "cache")
+      runtime_29_0(cache, :android, real_hash())
+
+      result = run_offline(dir, cache)
+
+      assert result.status == :ok
+      refute Enum.any?(result.findings, &(&1.source in @advisory_sources))
+
+      assert Enum.any?(
+               result.notes,
+               &(&1 =~ "⚠ Erlang/OTP 29.0: advisory data unavailable" and
+                   &1 =~ "https://github.com/erlang/otp/security/advisories")
+             )
+
+      assert Enum.any?(
+               result.notes,
+               &(&1 =~ "⚠ OpenSSL 3.4.0: advisory data unavailable" and
+                   &1 =~ "vulnerabilities-3.4")
+             )
+    end
+
+    test "offline after a successful scan reuses the cached data, flagged stale",
+         %{tmp_dir: dir} do
+      cache = Path.join(dir, "cache")
+      runtime_29_0(cache, :android, real_hash())
+      run_with_feeds(dir, cache, feed_server())
+
+      result = run_offline(dir, cache, advisory_ttl: 0)
+
+      assert Enum.any?(result.findings, &(&1.id == "CVE-2026-89422"))
+      assert Enum.any?(result.findings, &(&1.id == "OPENSSL-EOL-3.4"))
+      assert Enum.any?(result.notes, &(&1 =~ "⚠ Erlang/OTP 29.0" and &1 =~ "STALE copy"))
+    end
+
+    test "cached tarballs of another hash are not matched against advisories", %{tmp_dir: dir} do
+      cache = Path.join(dir, "cache")
+      runtime_29_0(cache, :android, "deadbe")
+
+      result = run_with_feeds(dir, cache, feed_server())
+
+      refute Enum.any?(result.findings, &(&1.source in @advisory_sources))
+      assert Enum.any?(result.notes, &(&1 =~ "active runtime #{real_hash()} is not in the cache"))
+    end
+
+    test "a tarball with no OTP application versions under lib/ is called out, not passed",
+         %{tmp_dir: dir} do
+      cache = Path.join(dir, "cache")
+
+      # Versioned non-OTP dirs (exqlite, a deploy-installed project app) and
+      # the top-level erts are there; the OTP apps are not.
+      build_tarball(cache, :android, real_hash(),
+        openssl: "3.4.0",
+        otp: "29.0",
+        exqlite: "0.36.0",
+        apps: [{"my_app", "0.1.0"}]
+      )
+
+      result = run_with_feeds(dir, cache, feed_server())
+
+      refute Enum.any?(result.findings, &(&1.source == :otp_security_advisories))
+
+      assert Enum.any?(
+               result.notes,
+               &(&1 =~ "⚠ android (#{real_hash()}): no OTP application versions found under" and
+                   &1 =~ "OTP advisories not checked")
+             )
+
+      refute Enum.any?(result.notes, &(&1 =~ "erlang/otp security advisories apply"))
+      # OpenSSL is still checked.
+      assert Enum.any?(result.findings, &(&1.id == "OPENSSL-EOL-3.4"))
+    end
+  end
+
+  # The 5c9c69fc runtime as cached: OTP 29.0, ssl 11.7, OpenSSL 3.4.0.
+  defp runtime_29_0(cache, platform, hash) do
+    build_tarball(cache, platform, hash,
+      openssl: "3.4.0",
+      otp: "29.0",
+      apps: [{"kernel", "11.0"}, {"stdlib", "8.0"}, {"ssl", "11.7"}, {"public_key", "1.21"}]
+    )
+  end
+
+  # Serves the real feed snapshots in test/fixtures by URL, as the network would.
+  defp feed_server do
+    otp = File.read!(Path.join(@fixtures, "otp_security_advisories.json"))
+    openssl = File.read!(Path.join(@fixtures, "openssl_vulnerabilities_3.4.html"))
+    eol = File.read!(Path.join(@fixtures, "endoflife_openssl.json"))
+
+    fn
+      "https://api.github.com/repos/erlang/otp/" <> _, _ ->
+        {:ok, 200, [], otp}
+
+      "https://openssl-library.org/news/vulnerabilities-3.4/index.html", _ ->
+        {:ok, 200, [], openssl}
+
+      "https://endoflife.date/api/openssl.json", _ ->
+        {:ok, 200, [], eol}
+
+      _url, _ ->
+        {:ok, 404, [], "Not Found"}
+    end
+  end
+
+  defp run_offline(dir, cache, extra \\ []) do
+    run_with_feeds(dir, cache, fn _url, _headers -> {:error, :nxdomain} end, extra)
+  end
+
+  defp run_with_feeds(dir, cache, http_get, extra \\ []) do
+    BundledRuntime.run(
+      [
+        project_root: dir,
+        cache_dir: cache,
+        advisory_cache_dir: Path.join(dir, "advisories"),
+        advisory_http_get: http_get,
+        github_token: nil,
+        today: ~D[2026-10-22]
+      ] ++ extra
+    )
   end
 
   defp real_bundle, do: MobDev.SecurityScan.BundledVersions.active()

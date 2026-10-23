@@ -252,7 +252,9 @@ mix erlfmt --write priv/android/crypto.erl
 `mix mob.security_scan` covers Hex deps, Android Gradle deps, iOS
 Swift Package deps, the **bundled OpenSSL/OTP/Elixir/SQLite versions**
 (via fingerprint of `~/.mob/cache/otp-*-{hash}/` against
-`priv/security/bundled_versions.exs`), and C/Kotlin/Swift static
+`priv/security/bundled_versions.exs`, plus erlang/otp and OpenSSL
+advisories and OpenSSL branch EOL for the active hash, cached in
+`~/.mob/cache/advisories/`), and C/Kotlin/Swift static
 analysis. See [`README.md`](README.md#security-scan-mix-mobsecurity_scan)
 for the full layer list and the one-time `brew install` of external
 scanners.

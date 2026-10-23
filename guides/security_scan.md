@@ -25,7 +25,7 @@ reports `tool missing`), not a failure.
 | `hex_deps` | [`mix_audit`](https://hexdocs.pm/mix_audit/) + [`osv-scanner`](https://google.github.io/osv-scanner/) | Hex deps in `mix.lock`. Two sources because they miss different things — the Erlef CNA feed (osv-scanner) tends to surface CVE-numbered advisories Mirego's curated database (mix_audit) hasn't ingested yet. |
 | `gradle_deps` | `osv-scanner` | Android Gradle deps. Best results when you've turned on Gradle dependency locking — see "Enabling Gradle dependency locking" below. |
 | `swift_deps` | `osv-scanner` | iOS Swift Package Manager (`Package.resolved`) and CocoaPods (`Podfile.lock`). |
-| `bundled_runtime` | manifest + binary fingerprint | OpenSSL, ERTS, Elixir, exqlite, SQLite **baked into Mob's pre-built OTP tarball**. Generic dep scanners can't see these because they're in static archives, not lockfiles. |
+| `bundled_runtime` | manifest + binary fingerprint + upstream advisories | OpenSSL, ERTS, Elixir, exqlite, SQLite **baked into Mob's pre-built OTP tarball**. Generic dep scanners can't see these because they're in static archives, not lockfiles. Known CVEs in the bundled OTP applications and OpenSSL, and OpenSSL branch end-of-life, are findings. |
 | `c_source` | [`semgrep`](https://semgrep.dev/) + [`flawfinder`](https://dwheeler.com/flawfinder/) | Mob's NIF C/Objective-C plus the exqlite NIF wrapper. Excludes the SQLite amalgamation (huge, battle-tested, would generate thousands of low-value findings). |
 | `kotlin_source` | [`detekt`](https://detekt.dev/) | Kotlin/Java under `android/app/src/main/`. Set `MOB_DETEKT_CONFIG=path` to use a security-focused rule config. |
 | `swift_source` | [`swiftlint`](https://github.com/realm/SwiftLint) | Swift under `ios/`. Mob's iOS bridge is mostly Objective-C, which is covered by `c_source` instead. |
@@ -38,6 +38,17 @@ the `.rodata` section for the OpenSSL version banner, and emits a
 claims shipped. That manifest is the source of truth for what's
 inside the static archives Mob distributes; the fingerprinter is
 the receipt that proves the manifest is honest.
+
+For the active runtime (the tarball hash this mob_dev deploys) the
+layer also matches the fingerprinted versions against the
+[erlang/otp GitHub security advisories](https://github.com/erlang/otp/security/advisories)
+(per application: `ssl`, `public_key`, `erts`, …), OpenSSL's
+per-branch [vulnerability page](https://openssl-library.org/news/vulnerabilities/),
+and [endoflife.date](https://endoflife.date/openssl). Each affected
+advisory is a finding with the upstream severity and the fixed
+version; an OpenSSL branch past end of life is `:high`. Fetched data
+is cached in `~/.mob/cache/advisories/` for 24 hours, and a cached
+copy is used (flagged stale) when the network is unavailable.
 
 ---
 
@@ -227,15 +238,20 @@ its CVEs.
 
 ## Tradeoffs and limitations
 
-- **No live OpenSSL/SQLite CVE feed.** OpenSSL retired its JSON
-  feed and OSV.dev doesn't index native libraries as packages.
-  The `bundled_runtime` layer instead reports the exact OpenSSL
-  and SQLite versions it found and points you at the upstream
-  advisory pages (`openssl-library.org/news/vulnerabilities/`,
-  `sqlite.org/cves.html`) so you can verify manually. The
-  manifest-drift detection is real and runs every scan — that
-  catches the most common failure mode (your manifest is lying
-  about what shipped).
+- **OpenSSL/OTP CVEs come from upstream pages, not OSV.** OSV.dev
+  doesn't index native libraries as packages, and its Erlang/OTP
+  records carry git ranges only, so the `bundled_runtime` layer reads
+  the erlang/otp GitHub advisories and OpenSSL's per-branch HTML page
+  directly. If OpenSSL redesigns that page the layer reports it as
+  unrecognised (never as "no CVEs") and falls back to the cached copy.
+  With no network and no cache it warns and points at the pages to
+  check by hand.
+
+- **No live SQLite or Elixir CVE feed.** The layer reports the exact
+  SQLite and Elixir versions it found and points at
+  `sqlite.org/cves.html` and the Elixir security advisories so you
+  can verify manually. The manifest-drift detection runs every scan
+  — that catches your manifest lying about what shipped.
 
 - **`xcodebuild analyze` is not in the Swift layer.** The Clang
   Static Analyzer is the gold standard for Objective-C and Swift

@@ -14,6 +14,33 @@
   CVE-2026-35590, CVE-2026-35591, CVE-2026-69242). Only `mix mob.icon` loads
   it, on the host. `image` stays on 0.55.x because `avatarz` pins `~> 0.55.2`.
 
+### Changed
+
+- **`mix mob.security_scan` reports CVEs in the bundled OTP and OpenSSL
+  (MOB-495).** The `bundled_runtime` layer used to print "verify upstream"
+  links, so the scan stayed green while the device runtime (OTP 29.0,
+  OpenSSL 3.4.0) fell ~46 erlang/otp advisories and 56 OpenSSL CVEs behind.
+  For the active runtime's cached tarballs it now matches the OTP application
+  versions (`ssl`, `public_key`, `erts`, …) against the erlang/otp GitHub
+  security advisories, the OpenSSL version against its branch's
+  openssl-library.org vulnerability page, and the branch against
+  endoflife.date. Each affected advisory is a finding with the upstream
+  severity, installed and fixed versions and a link; an OpenSSL branch past
+  end of life is `:high`. Data is cached in `~/.mob/cache/advisories/` for
+  24 h; offline the scan uses the cached copy (flagged stale) or, with none,
+  warns and lists the pages to check. See
+  `decisions/2026-10-22-bundled-runtime-upstream-advisories.md`.
+  `mix mob.release --security-gate` now prints these warnings when the scan
+  passes, instead of only "security scan clean".
+
+### Upgrading
+
+- **MOB-495.** With the current `5c9c69fc` runtime cached, `mix
+  mob.security_scan --strict` and `mix mob.release --security-gate` now fail
+  (critical ssl advisories CVE-2026-89422 and CVE-2026-55953, OpenSSL 3.4 end
+  of life). They pass again once mob_dev ships a runtime on patched OTP and
+  OpenSSL; until then `--skip bundled_runtime` skips the layer.
+
 ## [0.7.29] - 2026-10-15
 
 ### Fixed

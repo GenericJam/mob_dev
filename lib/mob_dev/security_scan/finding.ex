@@ -3,7 +3,7 @@ defmodule MobDev.SecurityScan.Finding do
   A single normalized security finding.
 
   Findings come from many sources — Hex `mix_audit`, `osv-scanner`,
-  the OpenSSL/SQLite/Erlef advisory feeds, semgrep, etc. — and are
+  the erlang/otp and OpenSSL advisories, semgrep, etc. — and are
   normalized into this struct so the report and rubric treat them
   uniformly. `source` records which scanner produced it; `layer`
   records which surface area it covers (`:hex_deps`, `:bundled_runtime`,

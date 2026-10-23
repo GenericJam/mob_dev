@@ -36,7 +36,9 @@ defmodule MobDev.SecurityScan.BundledRuntime.Fingerprint do
           erts: String.t() | nil,
           elixir: String.t() | nil,
           openssl: String.t() | nil,
-          exqlite_beam: String.t() | nil
+          exqlite_beam: String.t() | nil,
+          otp: String.t() | nil,
+          apps: [{String.t(), String.t()}]
         }
 
   @doc """
@@ -90,8 +92,47 @@ defmodule MobDev.SecurityScan.BundledRuntime.Fingerprint do
       erts: extract_erts_version(tarball_path),
       elixir: extract_elixir_version(tarball_path),
       openssl: extract_openssl_version(tarball_path),
-      exqlite_beam: extract_exqlite_version(tarball_path)
+      exqlite_beam: extract_exqlite_version(tarball_path),
+      otp: extract_otp_version(tarball_path),
+      apps: extract_app_versions(tarball_path)
     }
+  end
+
+  # releases/<major>/OTP_VERSION holds the full release ("29.0", "28.5.0.3").
+  defp extract_otp_version(tarball_path) do
+    [tarball_path, "releases", "*", "OTP_VERSION"]
+    |> Path.join()
+    |> Path.wildcard()
+    |> Enum.sort()
+    |> Enum.find_value(fn path ->
+      case File.read(path) do
+        {:ok, content} -> non_blank(String.trim(content))
+        {:error, _} -> nil
+      end
+    end)
+  end
+
+  defp non_blank(""), do: nil
+  defp non_blank(value), do: value
+
+  # `{app, vsn}` for every `lib/<app>-<vsn>` directory plus the top-level
+  # `erts-<vsn>`. The lib dir, not `releases/*/installed_application_versions`,
+  # is what the native build packages: iOS tarballs omit ssl/crypto from
+  # that list yet carry `lib/ssl-*`.
+  defp extract_app_versions(tarball_path) do
+    pattern = Regex.compile!("^([a-z][a-z0-9_]*)-(\\d+(?:\\.\\d+)*)$")
+
+    [Path.join([tarball_path, "lib", "*"]), Path.join(tarball_path, "erts-*")]
+    |> Enum.flat_map(&Path.wildcard/1)
+    |> Enum.filter(&File.dir?/1)
+    |> Enum.flat_map(fn path ->
+      case Regex.run(pattern, Path.basename(path)) do
+        [_, app, vsn] -> [{app, vsn}]
+        nil -> []
+      end
+    end)
+    |> Enum.uniq()
+    |> Enum.sort()
   end
 
   @doc """
@@ -218,7 +259,9 @@ defmodule MobDev.SecurityScan.BundledRuntime.Fingerprint do
       |> :binary.split(<<0>>)
       |> List.first()
 
-    case Regex.run(Regex.compile!(~S<^OpenSSL\s+(\d+\.\d+\.\d+[a-z]?)\b>), blob) do
+    pattern = Regex.compile!(~S<^OpenSSL\s+(\d+\.\d+\.\d+[a-z]*(?:-[0-9A-Za-z]+)?)\b>)
+
+    case Regex.run(pattern, blob) do
       [_, version] -> version
       _ -> nil
     end
