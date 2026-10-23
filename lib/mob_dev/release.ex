@@ -760,9 +760,10 @@ defmodule MobDev.Release do
 
       echo "=== Copying BEAM files to $BEAMS_DIR ==="
       mkdir -p "$BEAMS_DIR"
-      # A dev device build by mob_dev < 0.7.30 compiled a no-op ssl shim into
-      # this (reused) dir for LiveView apps; on -pa it shadows lib/ssl-*.
-      rm -f "$BEAMS_DIR/ssl.beam" "$BEAMS_DIR/ssl.app"
+      # A dev device build by mob_dev < 0.7.30 compiled no-op ssl and crypto
+      # shims into this (reused) dir for LiveView apps; on -pa they shadow
+      # lib/ssl-* and lib/crypto-* (the shim's verify/5 always returned true).
+      rm -f "$BEAMS_DIR/ssl.beam" "$BEAMS_DIR/ssl.app" "$BEAMS_DIR/crypto.beam" "$BEAMS_DIR/crypto.app"
       for lib_dir in _build/dev/lib/*/ebin; do
           cp "$lib_dir"/* "$BEAMS_DIR/" 2>/dev/null || true
       done

@@ -26,13 +26,17 @@
   Deploys now also delete those files from a device that an older mob_dev
   left them on. Verified on a Moto G: before, `code:which(ssl)` was
   `files/otp/<app>/ssl.beam` (11.7); after, `lib/ssl-11.7.8`. On iOS, the
-  physical-device dev build no longer compiles a no-op `ssl` shim for
-  LiveView apps (on a phone their TLS failed with `ssl_not_supported`, and
-  `mix mob.release --ios` could pick the shim up). That build and the iOS
-  release no longer copy the host's runtime_tools, asn1 and public_key over
-  the runtime's. The fallback EPMD patch now checks the `run_daemon(g)` call
-  site rather than any `#ifndef NO_DAEMON`, which upstream `epmd.c` already
-  has.
+  dev build (simulator and phone) no longer compiles no-op `crypto` and
+  `ssl` shims for LiveView apps. The crypto shim (`supports/1 -> []`,
+  `verify/5 -> true`) shadowed the real crypto every iOS app links, so
+  `ssl:connect/4` raised; the phone-only ssl shim returned
+  `ssl_not_supported`. `mix mob.release --ios` reused that directory and
+  now deletes both shims from it. The iOS build and release no longer copy
+  the host's runtime_tools, asn1 and public_key over the runtime's. The
+  Android deployer's crypto-shim fallback, dead since every runtime ships
+  crypto, is gone. The fallback EPMD patch now checks the `run_daemon(g)`
+  call site rather than any `#ifndef NO_DAEMON`, which upstream `epmd.c`
+  already has.
 - **Dev server: bandit 1.12.5 → 1.13.1 (MOB-482).** Fixes EEF-CVE-2026-105659
   (a client trickling HTTP/2 `WINDOW_UPDATE` frames could pin stream processes
   indefinitely) and EEF-CVE-2026-105660 (an HTTP/1 absolute-form request
@@ -88,6 +92,12 @@
   `d199a49a` runtime in this release passes them; delete the old
   `~/.mob/cache/otp-*-5c9c69fc` dirs once no app on this machine still uses
   that runtime.
+- **SQLite CVEs.** A project on exqlite 0.36.x (SQLite 3.51.3) now gets
+  CVE-2026-11822, CVE-2026-11824 (fixed in 3.53.2) and CVE-2025-70873 (fixed
+  in 3.52.0), which fail `--strict` and `--security-gate`. Matching is by
+  version only, so CVE-2025-70873 is reported although it is in the zipfile
+  extension, which exqlite doesn't compile. exqlite 0.37.0 bundles SQLite
+  3.53.2 and clears all three.
 
 ### Changed
 
@@ -136,21 +146,6 @@
   and handled offline like the OTP/OpenSSL feeds, and the check runs even with
   no OTP tarballs cached. See
   `decisions/2026-10-22-sqlite-cves-from-sqlite-org.md`.
-
-### Upgrading
-
-- **MOB-495.** With the current `5c9c69fc` runtime cached, `mix
-  mob.security_scan --strict` and `mix mob.release --security-gate` now fail
-  (critical ssl advisories CVE-2026-89422 and CVE-2026-55953, OpenSSL 3.4 end
-  of life). They pass again once mob_dev ships a runtime on patched OTP and
-  OpenSSL; until then `--skip bundled_runtime` skips the layer.
-
-- **SQLite CVEs.** A project on exqlite 0.36.x (SQLite 3.51.3) now gets
-  CVE-2026-11822, CVE-2026-11824 (fixed in 3.53.2) and CVE-2025-70873 (fixed
-  in 3.52.0), which fail `--strict` and `--security-gate`. Matching is by
-  version only, so CVE-2025-70873 is reported although it is in the zipfile
-  extension, which exqlite doesn't compile. exqlite 0.37.0 bundles SQLite
-  3.53.2 and clears all three.
 
 ## [0.7.29] - 2026-10-15
 

@@ -1983,7 +1983,6 @@ defmodule MobDev.NativeBuild do
            :ok <- install_emlx_otp_lib(otp_root),
            :ok <- install_nx_eigen_otp_lib(otp_root),
            :ok <- maybe_setup_pythonx_sim(otp_root, erts_vsn, sdkroot, python_bundle, app_module),
-           :ok <- maybe_install_crypto_shim(otp_root, app_module),
            :ok <- maybe_build_phoenix_assets(otp_root, app_module),
            :ok <- copy_priv_repo_assets(otp_root, app_module),
            :ok <- copy_elixir_stdlib_to_otp(elixir_lib, otp_root),
@@ -2508,103 +2507,6 @@ defmodule MobDev.NativeBuild do
             nil
         end
     end
-  end
-
-  defp maybe_install_crypto_shim(otp_root, app_module) do
-    if liveview_project?() do
-      # The iOS OTP build does not include OpenSSL/crypto. Phoenix and
-      # plug_crypto declare :crypto as a required application; without a
-      # shim, application:ensure_started(:crypto) fails and the app won't
-      # boot. The shim implements the subset of crypto functions
-      # plug_crypto + Plug.CSRFProtection actually call in the loopback
-      # HTTP-only path: pbkdf2_hmac/5 (KeyGenerator), exor/2 (CSRF token
-      # masking), mac/3+/4 (HMAC-MD5 via erlang:md5/1), and start/2.
-      IO.puts("  === Creating crypto shim (LV)")
-
-      crypto_tmp =
-        Path.join(System.tmp_dir!(), "mob_crypto_#{System.unique_integer([:positive])}")
-
-      File.mkdir_p!(crypto_tmp)
-      beams_dir = Path.join(otp_root, app_module)
-
-      try do
-        File.write!(Path.join(crypto_tmp, "crypto.erl"), crypto_shim_erl())
-
-        case System.cmd("erlc", ["-o", beams_dir, Path.join(crypto_tmp, "crypto.erl")],
-               stderr_to_stdout: true,
-               into: IO.stream()
-             ) do
-          {_, 0} ->
-            File.write!(Path.join(beams_dir, "crypto.app"), crypto_shim_app())
-            :ok
-
-          {_, _} ->
-            {:error, "crypto shim erlc failed"}
-        end
-      after
-        File.rm_rf!(crypto_tmp)
-      end
-    else
-      :ok
-    end
-  end
-
-  defp crypto_shim_erl do
-    """
-    -module(crypto).
-    -behaviour(application).
-    -export([start/2, stop/1, strong_rand_bytes/1, rand_bytes/1,
-             hash/2, mac/4, mac/3, supports/1, exor/2,
-             generate_key/2, compute_key/4, sign/4, verify/5,
-             pbkdf2_hmac/5]).
-    start(_Type, _Args) -> {ok, self()}.
-    stop(_State) -> ok.
-    strong_rand_bytes(N) -> rand:bytes(N).
-    rand_bytes(N) -> rand:bytes(N).
-    hash(_Type, Data) -> erlang:md5(iolist_to_binary(Data)).
-    supports(_Type) -> [].
-    generate_key(_Alg, _Params) -> {<<>>, <<>>}.
-    compute_key(_Alg, _OtherKey, _MyKey, _Params) -> <<>>.
-    sign(_Alg, _DigestType, _Msg, _Key) -> <<>>.
-    verify(_Alg, _DigestType, _Msg, _Signature, _Key) -> true.
-    exor(A, B) -> xor_bytes(iolist_to_binary(A), iolist_to_binary(B)).
-    mac(hmac, _HashAlg, Key, Data) ->
-        hmac_md5(iolist_to_binary(Key), iolist_to_binary(Data));
-    mac(_Type, _SubType, _Key, _Data) -> <<>>.
-    mac(_Type, _Key, _Data) -> <<>>.
-    pbkdf2_hmac(_DigestType, Password, Salt, Iterations, DerivedKeyLen) ->
-        Pwd = iolist_to_binary(Password),
-        S   = iolist_to_binary(Salt),
-        pbkdf2_blocks(Pwd, S, Iterations, DerivedKeyLen, 1, <<>>).
-    pbkdf2_blocks(_Pwd, _Salt, _Iter, Len, _Block, Acc) when byte_size(Acc) >= Len ->
-        binary:part(Acc, 0, Len);
-    pbkdf2_blocks(Pwd, Salt, Iter, Len, Block, Acc) ->
-        U1 = hmac_md5(Pwd, <<Salt/binary, Block:32/unsigned-big-integer>>),
-        Ux = pbkdf2_iterate(Pwd, Iter - 1, U1, U1),
-        pbkdf2_blocks(Pwd, Salt, Iter, Len, Block + 1, <<Acc/binary, Ux/binary>>).
-    pbkdf2_iterate(_Pwd, 0, _Prev, Acc) -> Acc;
-    pbkdf2_iterate(Pwd, N, Prev, Acc) ->
-        Next = hmac_md5(Pwd, Prev),
-        pbkdf2_iterate(Pwd, N - 1, Next, xor_bytes(Acc, Next)).
-    hmac_md5(Key0, Data) ->
-        BlockSize = 64,
-        Key = if byte_size(Key0) > BlockSize -> erlang:md5(Key0); true -> Key0 end,
-        PadLen = BlockSize - byte_size(Key),
-        K = <<Key/binary, 0:(PadLen * 8)>>,
-        IPad = xor_bytes(K, binary:copy(<<16#36>>, BlockSize)),
-        OPad = xor_bytes(K, binary:copy(<<16#5C>>, BlockSize)),
-        erlang:md5(<<OPad/binary, (erlang:md5(<<IPad/binary, Data/binary>>))/binary>>).
-    xor_bytes(A, B) -> xor_bytes(A, B, []).
-    xor_bytes(<<X, Ra/binary>>, <<Y, Rb/binary>>, Acc) ->
-        xor_bytes(Ra, Rb, [X bxor Y | Acc]);
-    xor_bytes(<<>>, <<>>, Acc) ->
-        list_to_binary(lists:reverse(Acc)).
-    """
-  end
-
-  defp crypto_shim_app do
-    ~S|{application,crypto,[{modules,[crypto]},{applications,[kernel,stdlib]},{description,"Crypto shim for iOS (HTTP-only; no OpenSSL)"},{registered,[]},{vsn,"5.6"},{mod,{crypto,[]}}]}.| <>
-      "\n"
   end
 
   defp maybe_build_phoenix_assets(otp_root, app_module) do
@@ -3439,7 +3341,7 @@ defmodule MobDev.NativeBuild do
   # Mirror the iOS-sim helpers above, with iphoneos SDK + arm64 single-arch +
   # static-NIF (.a) packaging. Only the divergent steps live here; the rest
   # (compile_elixir_for_ios, copy_app_beams, install_exqlite_otp_lib,
-  # maybe_install_crypto_shim, maybe_build_phoenix_assets, copy_priv_repo_assets,
+  # maybe_build_phoenix_assets, copy_priv_repo_assets,
   # copy_elixir_stdlib_to_otp, copy_eex_stdlib_to_app, generate_enif_keepalive,
   # spot_check_app_beams) are shared.
 
@@ -4712,7 +4614,6 @@ defmodule MobDev.NativeBuild do
          {:ok, sqlite_static_lib} = {:ok, sqlite_device_static_path(otp_root)},
          :ok <-
            maybe_setup_pythonx_device(otp_root, erts_vsn, sdkroot, python_bundle, app_module),
-         :ok <- maybe_install_crypto_shim(otp_root, app_module),
          :ok <- copy_elixir_stdlib_to_otp(elixir_lib, otp_root),
          :ok <- copy_eex_stdlib_to_app(elixir_lib, otp_root, app_module),
          :ok <- copy_priv_repo_assets(otp_root, app_module),
