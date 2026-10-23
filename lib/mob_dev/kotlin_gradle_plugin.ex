@@ -220,12 +220,12 @@ defmodule MobDev.KotlinGradlePlugin do
 
   # Groovy `classpath group: 'g', name: 'a', version: '1.2.3'` or Kotlin DSL
   # `classpath(group = "g", name = "a", version = "1.2.3")`, keys in any
-  # order, version optional.
+  # order, version optional, other keys (`classifier`, `ext`) in between.
   defp map_notation(content, spec, vars) do
     value = "(?:['\"][^'\"]+['\"]|[A-Za-z_][\\w.]*)"
-    key_value = "(?:group|name|version)\\s*[:=]\\s*#{value}"
-    list = Regex.compile!("#{key_value}(?:\\s*,\\s*#{key_value}){1,2}")
-    pair = Regex.compile!("(group|name|version)\\s*[:=]\\s*#{@version_arg}")
+    key_value = "\\b\\w+\\s*[:=]\\s*#{value}"
+    list = Regex.compile!("#{key_value}(?:\\s*,\\s*#{key_value}){1,6}")
+    pair = Regex.compile!("\\b(group|name|version)\\s*[:=]\\s*#{@version_arg}")
 
     for [args] <- Regex.scan(list, content),
         keys = map_notation_keys(pair, args),
