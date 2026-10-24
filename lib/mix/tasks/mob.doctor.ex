@@ -1046,27 +1046,53 @@ defmodule Mix.Tasks.Mob.Doctor do
 
   # Zig 0.17.0 removed `Build.build_root`. iOS templates generated against
   # 0.17.0-dev.269 still call `b.build_root.handle.openDir` to glob mob Swift
-  # sources; configure then exits with `no field named 'build_root'`.
+  # sources; configure then exits with `no field named 'build_root'`. 0.17.0
+  # also caches the configure phase, so a glob without
+  # `b.dependOnDirectoryContents` misses a Swift file mob adds until the zig
+  # cache is cleared.
+  @swift_glob_fix "Before the Swift glob, add `b.dependOnDirectoryContents(.{ " <>
+                    ".cwd_relative = b.fmt(\"{s}/ios\", .{mob_dir}) });`, and open " <>
+                    "the directory with `std.Io.Dir.openDirAbsolute(...)`, not " <>
+                    "`b.build_root.handle.openDir(...)`. Or copy the block from a " <>
+                    "freshly generated app (mob_new's ios/build.zig.eex)."
+
   defp check_ios_zig_build_root do
     for path <- ["ios/build.zig", "ios/build_device.zig"],
         {:ok, content} <- [File.read(path)],
-        __ios_build_root_stale__(content) do
-      {:fail, "zig 0.17.0 (#{path})", "uses b.build_root, which Zig 0.17.0 removed",
-       "In the Swift glob, replace `b.build_root.handle.openDir(...)` with " <>
-         "`std.Io.Dir.openDirAbsolute(...)` — see a freshly generated app " <>
-         "or mob_new's ios/build.zig.eex"}
+        status = __ios_swift_glob_status__(content),
+        status != :ok do
+      case status do
+        :build_root ->
+          {:fail, "zig 0.17.0 (#{path})", "uses b.build_root, which Zig 0.17.0 removed",
+           @swift_glob_fix}
+
+        :untracked ->
+          {:warn, "zig 0.17.0 (#{path})",
+           "the mob/ios Swift glob isn't a configure dependency, so a Swift file " <>
+             "mob adds is missed until the zig cache is cleared", @swift_glob_fix}
+      end
     end
   end
 
   @doc false
-  # True when Zig code (not a comment or string) reads `build_root` off a
-  # `b` value, allowing whitespace and line breaks around the dot.
-  @spec __ios_build_root_stale__(String.t()) :: boolean()
-  def __ios_build_root_stale__(content) do
-    Regex.match?(
-      Regex.compile!("\\bb\\s*\\.\\s*build_root\\b"),
-      zig_code_only(content, [])
-    )
+  # :build_root when Zig code (not a comment or string) reads `build_root` off
+  # `b`, whitespace and line breaks allowed around the dot; :untracked for a
+  # glob opened with openDirAbsolute but no dependOnDirectoryContents; else :ok.
+  @spec __ios_swift_glob_status__(String.t()) :: :ok | :build_root | :untracked
+  def __ios_swift_glob_status__(content) do
+    code = zig_code_only(content, [])
+
+    cond do
+      Regex.match?(Regex.compile!("\\bb\\s*\\.\\s*build_root\\b"), code) ->
+        :build_root
+
+      String.contains?(code, "openDirAbsolute") and
+          not String.contains?(code, "dependOnDirectoryContents") ->
+        :untracked
+
+      true ->
+        :ok
+    end
   end
 
   # Blanks out `//` comments, `\\` multiline-string lines and quoted

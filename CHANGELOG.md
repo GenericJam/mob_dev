@@ -9,11 +9,13 @@
 
 ### Fixed
 
-- **`mix mob.doctor` fails iOS `build.zig` files that still use `b.build_root`.**
-  Zig 0.17.0 removed `Build.build_root`; a file generated against the
-  nightly panics at configure with `no field named 'build_root'`. The
-  check ignores comments and strings and names the Swift-glob replacement
-  (`std.Io.Dir.openDirAbsolute`) from mob_new's templates.
+- **`mix mob.doctor` checks the iOS Swift glob for Zig 0.17.0.** It fails
+  `ios/build.zig` / `ios/build_device.zig` that still use `b.build_root`,
+  which 0.17.0 removed (configure panics with `no field named
+  'build_root'`). It warns when the glob opens `mob/ios` without
+  `b.dependOnDirectoryContents`: 0.17.0 caches the configure phase, so a
+  Swift file mob adds is missed until the zig cache is cleared. Comments and
+  strings are ignored. The fix names mob_new's template block.
 - **The Hex package ships `guides/` (MOB-501).** It shipped only the
   default files, so an app had no `deps/mob_dev/guides/` and the publishing
   and security-scan guides were only on hexdocs.
@@ -27,9 +29,11 @@
 - **Zig 0.17.0.** In each app, set `zig 0.17.0` in `.tool-versions`
   (`mise use zig@0.17.0` installs it and edits the file; `mise install
   zig@0.17.0` alone leaves the app on the nightly, and the native build
-  rejects it). Existing iOS apps must port `ios/build.zig` and
-  `ios/build_device.zig` off `b.build_root` (doctor fails until they do).
-  Android `build.zig` from current templates already configures on 0.17.0.
+  rejects it). Existing iOS apps must port the Swift glob in
+  `ios/build.zig` and `ios/build_device.zig`: `std.Io.Dir.openDirAbsolute`
+  instead of `b.build_root`, with `b.dependOnDirectoryContents` on the
+  directory first (doctor says how). Android `build.zig` from current
+  templates already configures on 0.17.0.
 
 ## [0.7.30] - 2026-10-23
 

@@ -106,50 +106,56 @@ defmodule Mix.Tasks.Mob.DoctorTest do
     end
   end
 
-  describe "__ios_build_root_stale__/1" do
-    test "flags the 0.17-dev glob that calls b.build_root" do
-      stale = """
-      var mob_ios = b.build_root.handle.openDir(glob_io, b.fmt("{s}/ios", .{mob_dir}), .{ .iterate = true }) catch @panic("mob ios dir not found");
-      """
+  describe "__ios_swift_glob_status__/1" do
+    @tracked """
+    b.dependOnDirectoryContents(.{ .cwd_relative = b.fmt("{s}/ios", .{mob_dir}) });
+    var mob_ios = std.Io.Dir.openDirAbsolute(glob_io, b.fmt("{s}/ios", .{mob_dir}), .{ .iterate = true }) catch @panic("mob ios dir not found");
+    """
 
-      assert Mix.Tasks.Mob.Doctor.__ios_build_root_stale__(stale)
+    defp status(content), do: Mix.Tasks.Mob.Doctor.__ios_swift_glob_status__(content)
+
+    test "the 0.17-dev glob that calls b.build_root fails" do
+      assert status("""
+             var mob_ios = b.build_root.handle.openDir(glob_io, b.fmt("{s}/ios", .{mob_dir}), .{ .iterate = true }) catch @panic("mob ios dir not found");
+             """) == :build_root
     end
 
-    test "does not flag the 0.17.0 glob" do
-      fixed = """
-      var mob_ios = std.Io.Dir.openDirAbsolute(glob_io, b.fmt("{s}/ios", .{mob_dir}), .{ .iterate = true }) catch @panic("mob ios dir not found");
-      """
+    test "the 0.17.0 glob passes only when it declares the directory a configure dependency" do
+      assert status(@tracked) == :ok
 
-      refute Mix.Tasks.Mob.Doctor.__ios_build_root_stale__(fixed)
+      assert status("""
+             var mob_ios = std.Io.Dir.openDirAbsolute(glob_io, b.fmt("{s}/ios", .{mob_dir}), .{ .iterate = true }) catch @panic("mob ios dir not found");
+             """) == :untracked
+
+      assert status("""
+             // b.dependOnDirectoryContents(.{ .cwd_relative = mob_ios_dir });
+             var mob_ios = std.Io.Dir.openDirAbsolute(glob_io, mob_ios_dir, .{ .iterate = true }) catch @panic("x");
+             """) == :untracked
     end
 
-    test "does not flag a migration comment that names the old field" do
-      migrated = """
-      // Replaced b.build_root.handle.openDir with std.Io.Dir.openDirAbsolute.
-      var mob_ios = std.Io.Dir.openDirAbsolute(glob_io, b.fmt("{s}/ios", .{mob_dir}), .{ .iterate = true }) catch @panic("mob ios dir not found");
-      """
-
-      refute Mix.Tasks.Mob.Doctor.__ios_build_root_stale__(migrated)
+    test "a migration comment that names the old field passes" do
+      assert status("// Replaced b.build_root.handle.openDir with openDirAbsolute.\n" <> @tracked) ==
+               :ok
     end
 
-    test "flags a use after a string holding //, and one split across lines" do
-      assert Mix.Tasks.Mob.Doctor.__ios_build_root_stale__("""
+    test "a use after a string holding //, and one split across lines, fail" do
+      assert status("""
              const url = "https://example"; _ = b.build_root;
-             """)
+             """) == :build_root
 
-      assert Mix.Tasks.Mob.Doctor.__ios_build_root_stale__("""
+      assert status("""
              var dir = b
                  .build_root.handle;
-             """)
+             """) == :build_root
     end
 
-    test "does not flag the name inside a string or a multiline string" do
-      refute Mix.Tasks.Mob.Doctor.__ios_build_root_stale__("""
+    test "the name inside a string or a multiline string passes" do
+      assert status("""
              const note = "b.build_root was removed";
              const text =
                  \\\\see b.build_root
              ;
-             """)
+             """) == :ok
     end
   end
 
