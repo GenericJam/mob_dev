@@ -398,7 +398,7 @@ defmodule Mix.Tasks.Mob.AddNif do
     #
     # `mix zig.get` is still queued so Zigler's executable_path lookup
     # finds the cached Zig before falling through to PATH (which on
-    # mob developer machines points at 0.17-dev, the wrong stdlib for
+    # mob developer machines points at the pinned app toolchain, Zig 0.17.0, the wrong stdlib for
     # the port — needs 0.16.0 specifically).
     igniter
     |> Igniter.Project.Deps.add_dep(
