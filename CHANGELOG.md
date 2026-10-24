@@ -1,7 +1,21 @@
 ## [Unreleased]
 
+### Changed
+
+- **Zig pin is 0.17.0.** Replaces `0.17.0-dev.269+ebff43698` now that 0.17.0
+  is the stable with the macOS 26 SDK fix the nightly was taken for.
+  `mix mob.doctor` / `mix mob.deploy --native` still require an exact
+  `zig version` match. Companion to mob and mob_new.
+
 ### Fixed
 
+- **`mix mob.doctor` checks the iOS Swift glob for Zig 0.17.0.** It fails
+  `ios/build.zig` / `ios/build_device.zig` that still use `b.build_root`,
+  which 0.17.0 removed (configure panics with `no field named
+  'build_root'`). It warns when the glob opens `mob/ios` without
+  `b.dependOnDirectoryContents`: 0.17.0 caches the configure phase, so a
+  Swift file mob adds is missed until the zig cache is cleared. Comments and
+  strings are ignored. The fix names mob_new's template block.
 - **The Hex package ships `guides/` (MOB-501).** It shipped only the
   default files, so an app had no `deps/mob_dev/guides/` and the publishing
   and security-scan guides were only on hexdocs.
@@ -9,6 +23,17 @@
   `android/keystore.properties.example` (MOB-501).** No generated app has
   one. The task docs and `guides/publishing_to_google_play.md` now list the
   file's four keys and name `mix mob.setup.google_play`, which writes it.
+
+### Upgrading
+
+- **Zig 0.17.0.** In each app, set `zig 0.17.0` in `.tool-versions`
+  (`mise use zig@0.17.0` installs it and edits the file; `mise install
+  zig@0.17.0` alone leaves the app on the nightly, and the native build
+  rejects it). Existing iOS apps must port the Swift glob in
+  `ios/build.zig` and `ios/build_device.zig`: `std.Io.Dir.openDirAbsolute`
+  instead of `b.build_root`, with `b.dependOnDirectoryContents` on the
+  directory first (doctor says how). Android `build.zig` from current
+  templates already configures on 0.17.0.
 
 ## [0.7.30] - 2026-10-23
 

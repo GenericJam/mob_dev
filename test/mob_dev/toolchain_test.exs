@@ -34,6 +34,11 @@ defmodule MobDev.ToolchainTest do
              {:version_mismatch, "0.17.0-dev.270+different"}
   end
 
+  test "rejects the previous 0.17.0-dev.269 nightly" do
+    assert Toolchain.zig_status_from_result({"0.17.0-dev.269+ebff43698\n", 0}) ==
+             {:version_mismatch, "0.17.0-dev.269+ebff43698"}
+  end
+
   test "rejects a failed version command" do
     assert Toolchain.zig_status_from_result({"dyld failure\n", 127}) ==
              {:version_command_failed, "dyld failure", 127}

@@ -359,9 +359,8 @@ defmodule MobDev.StaticNifsTest do
       assert out =~ "build_options"
     end
 
-    # The `zig` binary isn't installed in CI (we don't compile Zig in the
-    # Elixir test suite). Skip there via `mix test --exclude requires_zig`;
-    # local dev runs with Zig on PATH still execute this.
+    # Needs the pinned `zig` on PATH. CI's Linux job excludes :requires_zig;
+    # its macOS `zig` job runs these.
     @tag :requires_zig
     test "produces parseable Zig source (round-trip via zig ast-check)" do
       for platform <- [:ios, :android] do

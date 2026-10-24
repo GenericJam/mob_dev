@@ -739,6 +739,7 @@ defmodule Mix.Tasks.Mob.Doctor do
         check_compiled(),
         check_driver_tab(),
         check_plugin_build_options(),
+        check_ios_zig_build_root(),
         check_inactive_nif_plugins(),
         check_component_event_jni(),
         check_sheet_dismiss_wire_shape(),
@@ -1042,6 +1043,93 @@ defmodule Mix.Tasks.Mob.Doctor do
   def __missing_plugin_options__(content, required) do
     Enum.reject(required, &String.contains?(content, "\"#{&1}\""))
   end
+
+  # Zig 0.17.0 removed `Build.build_root`. iOS templates generated against
+  # 0.17.0-dev.269 still call `b.build_root.handle.openDir` to glob mob Swift
+  # sources; configure then exits with `no field named 'build_root'`. 0.17.0
+  # also caches the configure phase, so a glob without
+  # `b.dependOnDirectoryContents` misses a Swift file mob adds until the zig
+  # cache is cleared.
+  @swift_glob_fix "Before the Swift glob, add `b.dependOnDirectoryContents(.{ " <>
+                    ".cwd_relative = b.fmt(\"{s}/ios\", .{mob_dir}) });`, and open " <>
+                    "the directory with `std.Io.Dir.openDirAbsolute(...)`, not " <>
+                    "`b.build_root.handle.openDir(...)`. Or copy the block from a " <>
+                    "freshly generated app (mob_new's ios/build.zig.eex)."
+
+  defp check_ios_zig_build_root do
+    for path <- ["ios/build.zig", "ios/build_device.zig"],
+        {:ok, content} <- [File.read(path)],
+        status = __ios_swift_glob_status__(content),
+        status != :ok do
+      case status do
+        :build_root ->
+          {:fail, "zig 0.17.0 (#{path})", "uses b.build_root, which Zig 0.17.0 removed",
+           @swift_glob_fix}
+
+        :untracked ->
+          {:warn, "zig 0.17.0 (#{path})",
+           "the mob/ios Swift glob isn't a configure dependency, so a Swift file " <>
+             "mob adds is missed until the zig cache is cleared", @swift_glob_fix}
+      end
+    end
+  end
+
+  @doc false
+  # :build_root when Zig code (not a comment or string) reads `build_root` off
+  # `b`, whitespace and line breaks allowed around the dot; :untracked for a
+  # glob opened with openDirAbsolute without the generated template's
+  # `b.dependOnDirectoryContents` on `"{s}/ios"` (a call on some other
+  # directory doesn't count); else :ok.
+  @spec __ios_swift_glob_status__(String.t()) :: :ok | :build_root | :untracked
+  def __ios_swift_glob_status__(content) do
+    code = zig_strip(content, false, [])
+
+    tracked =
+      Regex.compile!(
+        "\\bb\\s*\\.\\s*dependOnDirectoryContents\\s*\\(\\s*\\.\\{\\s*\\.cwd_relative\\s*=" <>
+          "\\s*b\\s*\\.\\s*fmt\\s*\\(\\s*\"\\{s\\}/ios\""
+      )
+
+    cond do
+      Regex.match?(Regex.compile!("\\bb\\s*\\.\\s*build_root\\b"), code) ->
+        :build_root
+
+      String.contains?(code, "openDirAbsolute") and
+          not Regex.match?(tracked, zig_strip(content, true, [])) ->
+        :untracked
+
+      true ->
+        :ok
+    end
+  end
+
+  # Blanks out `//` comments and `\\` multiline-string lines, keeping
+  # newlines. Quoted string/char literals are kept when `keep_strings`, else
+  # blanked.
+  defp zig_strip(<<>>, _keep, acc), do: acc |> Enum.reverse() |> IO.iodata_to_binary()
+  defp zig_strip(<<"//", rest::binary>>, keep, acc), do: zig_strip(skip_line(rest), keep, acc)
+  defp zig_strip(<<"\\\\", rest::binary>>, keep, acc), do: zig_strip(skip_line(rest), keep, acc)
+
+  defp zig_strip(<<q, rest::binary>>, keep, acc) when q in [?", ?'] do
+    {literal, rest} = take_literal(rest, q, [q])
+    zig_strip(rest, keep, [if(keep, do: literal, else: " ") | acc])
+  end
+
+  defp zig_strip(<<c, rest::binary>>, keep, acc), do: zig_strip(rest, keep, [c | acc])
+
+  defp skip_line(rest) do
+    case :binary.split(rest, "\n") do
+      [_, after_newline] -> "\n" <> after_newline
+      [_] -> ""
+    end
+  end
+
+  # Consumes a literal after its opening quote; returns its text and the rest.
+  defp take_literal(<<"\\", e, rest::binary>>, q, acc), do: take_literal(rest, q, [e, ?\\ | acc])
+  defp take_literal(<<q, rest::binary>>, q, acc), do: {Enum.reverse([q | acc]), rest}
+  defp take_literal(<<"\n", _::binary>> = rest, _q, acc), do: {Enum.reverse(acc), rest}
+  defp take_literal(<<c, rest::binary>>, q, acc), do: take_literal(rest, q, [c | acc])
+  defp take_literal(<<>>, _q, acc), do: {Enum.reverse(acc), ""}
 
   # ── Installed-but-inactive NIF plugins (MOB-281) ─────────────────────────────
   #
