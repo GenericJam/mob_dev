@@ -1077,17 +1077,25 @@ defmodule Mix.Tasks.Mob.Doctor do
   @doc false
   # :build_root when Zig code (not a comment or string) reads `build_root` off
   # `b`, whitespace and line breaks allowed around the dot; :untracked for a
-  # glob opened with openDirAbsolute but no dependOnDirectoryContents; else :ok.
+  # glob opened with openDirAbsolute without the generated template's
+  # `b.dependOnDirectoryContents` on `"{s}/ios"` (a call on some other
+  # directory doesn't count); else :ok.
   @spec __ios_swift_glob_status__(String.t()) :: :ok | :build_root | :untracked
   def __ios_swift_glob_status__(content) do
-    code = zig_code_only(content, [])
+    code = zig_strip(content, false, [])
+
+    tracked =
+      Regex.compile!(
+        "\\bb\\s*\\.\\s*dependOnDirectoryContents\\s*\\(\\s*\\.\\{\\s*\\.cwd_relative\\s*=" <>
+          "\\s*b\\s*\\.\\s*fmt\\s*\\(\\s*\"\\{s\\}/ios\""
+      )
 
     cond do
       Regex.match?(Regex.compile!("\\bb\\s*\\.\\s*build_root\\b"), code) ->
         :build_root
 
       String.contains?(code, "openDirAbsolute") and
-          not String.contains?(code, "dependOnDirectoryContents") ->
+          not Regex.match?(tracked, zig_strip(content, true, [])) ->
         :untracked
 
       true ->
@@ -1095,16 +1103,19 @@ defmodule Mix.Tasks.Mob.Doctor do
     end
   end
 
-  # Blanks out `//` comments, `\\` multiline-string lines and quoted
-  # string/char literals, keeping newlines.
-  defp zig_code_only(<<>>, acc), do: acc |> Enum.reverse() |> IO.iodata_to_binary()
-  defp zig_code_only(<<"//", rest::binary>>, acc), do: zig_code_only(skip_line(rest), acc)
-  defp zig_code_only(<<"\\\\", rest::binary>>, acc), do: zig_code_only(skip_line(rest), acc)
+  # Blanks out `//` comments and `\\` multiline-string lines, keeping
+  # newlines. Quoted string/char literals are kept when `keep_strings`, else
+  # blanked.
+  defp zig_strip(<<>>, _keep, acc), do: acc |> Enum.reverse() |> IO.iodata_to_binary()
+  defp zig_strip(<<"//", rest::binary>>, keep, acc), do: zig_strip(skip_line(rest), keep, acc)
+  defp zig_strip(<<"\\\\", rest::binary>>, keep, acc), do: zig_strip(skip_line(rest), keep, acc)
 
-  defp zig_code_only(<<q, rest::binary>>, acc) when q in [?", ?'],
-    do: zig_code_only(skip_literal(rest, q), [?\s | acc])
+  defp zig_strip(<<q, rest::binary>>, keep, acc) when q in [?", ?'] do
+    {literal, rest} = take_literal(rest, q, [q])
+    zig_strip(rest, keep, [if(keep, do: literal, else: " ") | acc])
+  end
 
-  defp zig_code_only(<<c, rest::binary>>, acc), do: zig_code_only(rest, [c | acc])
+  defp zig_strip(<<c, rest::binary>>, keep, acc), do: zig_strip(rest, keep, [c | acc])
 
   defp skip_line(rest) do
     case :binary.split(rest, "\n") do
@@ -1113,11 +1124,12 @@ defmodule Mix.Tasks.Mob.Doctor do
     end
   end
 
-  defp skip_literal(<<"\\", _escaped, rest::binary>>, q), do: skip_literal(rest, q)
-  defp skip_literal(<<q, rest::binary>>, q), do: rest
-  defp skip_literal(<<"\n", _::binary>> = rest, _q), do: rest
-  defp skip_literal(<<_, rest::binary>>, q), do: skip_literal(rest, q)
-  defp skip_literal(<<>>, _q), do: ""
+  # Consumes a literal after its opening quote; returns its text and the rest.
+  defp take_literal(<<"\\", e, rest::binary>>, q, acc), do: take_literal(rest, q, [e, ?\\ | acc])
+  defp take_literal(<<q, rest::binary>>, q, acc), do: {Enum.reverse([q | acc]), rest}
+  defp take_literal(<<"\n", _::binary>> = rest, _q, acc), do: {Enum.reverse(acc), rest}
+  defp take_literal(<<c, rest::binary>>, q, acc), do: take_literal(rest, q, [c | acc])
+  defp take_literal(<<>>, _q, acc), do: {Enum.reverse(acc), ""}
 
   # ── Installed-but-inactive NIF plugins (MOB-281) ─────────────────────────────
   #

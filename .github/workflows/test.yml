@@ -135,6 +135,44 @@ jobs:
       - run: mix deps.get
       - run: mix test --only xcode_live test/mob_dev/xcode_live_test.exs
 
+  # `:requires_zig` tests compile generated driver tables and plugin NIFs with
+  # the pinned Zig (read from .tool-versions so CI can't drift from it). macOS,
+  # because the iOS objects are Mach-O and the test reads them with `nm`.
+  zig:
+    name: Zig (requires_zig)
+    runs-on: macos-26
+    env:
+      MIX_ENV: test
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Elixir
+        run: |
+          brew install elixir
+          mix local.hex --force
+          mix local.rebar --force
+
+      - name: Zig version from .tool-versions
+        id: zig
+        run: echo "version=$(awk '$1 == "zig" {print $2}' .tool-versions)" >> "$GITHUB_OUTPUT"
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ steps.zig.outputs.version }}
+
+      - name: Cache deps + _build
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: mix-zig-macos-26-${{ hashFiles('**/mix.lock') }}
+          restore-keys: mix-zig-macos-26-
+
+      - run: mix deps.get
+      - run: mix test --only requires_zig
+
   security_scan:
     name: Security scan
     needs: test

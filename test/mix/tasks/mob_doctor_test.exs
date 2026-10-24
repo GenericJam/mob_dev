@@ -131,6 +131,11 @@ defmodule Mix.Tasks.Mob.DoctorTest do
              // b.dependOnDirectoryContents(.{ .cwd_relative = mob_ios_dir });
              var mob_ios = std.Io.Dir.openDirAbsolute(glob_io, mob_ios_dir, .{ .iterate = true }) catch @panic("x");
              """) == :untracked
+
+      assert status("""
+             b.dependOnDirectoryContents(.{ .cwd_relative = "some/other/directory" });
+             var mob_ios = std.Io.Dir.openDirAbsolute(glob_io, b.fmt("{s}/ios", .{mob_dir}), .{ .iterate = true }) catch @panic("x");
+             """) == :untracked
     end
 
     test "a migration comment that names the old field passes" do

@@ -82,6 +82,8 @@ defmodule MobDev.ZigBuildTest do
 
   describe "run/4 against a real zig build" do
     @describetag :requires_zig
+    # A cold zig cache (CI) compiles the target's libc and compiler_rt first.
+    @describetag timeout: :timer.minutes(5)
     @describetag :tmp_dir
 
     setup %{tmp_dir: dir} do
