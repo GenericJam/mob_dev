@@ -422,7 +422,7 @@ PR #579.
 The `mob.add_nif --type zigler` scaffold also runs `mix zig.get`
 afterward so Zigler's `executable_path` lookup finds the cached Zig
 0.16.0 before falling through to `PATH` (which on most mob
-developer machines points at Zig 0.17-dev — wrong stdlib for the
+developer machines points at the pinned app toolchain, Zig 0.17.0 — wrong stdlib for the
 port).
 
 ### What stays standard

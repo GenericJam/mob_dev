@@ -6,13 +6,15 @@
   is the stable with the macOS 26 SDK fix the nightly was taken for.
   `mix mob.doctor` / `mix mob.deploy --native` still require an exact
   `zig version` match. Companion to mob and mob_new.
+- **Requires mob `~> 0.9.26`.** mob 0.9.25's Android NIF doesn't compile on
+  Zig 0.17.0 (it calls `std.fmt.bufPrintZ`, which 0.17.0 removed).
 
 ### Fixed
 
 - **`mix mob.doctor` checks the iOS Swift glob for Zig 0.17.0.** It fails
   `ios/build.zig` / `ios/build_device.zig` that still use `b.build_root`,
-  which 0.17.0 removed (configure panics with `no field named
-  'build_root'`). It warns when the glob opens `mob/ios` without
+  which 0.17.0 removed (configure fails with `error: no field named
+  'build_root' in struct 'Build'`). It warns when the glob opens `mob/ios` without
   `b.dependOnDirectoryContents`: 0.17.0 caches the configure phase, so a
   Swift file mob adds is missed until the zig cache is cleared. Comments and
   strings are ignored. The fix names mob_new's template block.
