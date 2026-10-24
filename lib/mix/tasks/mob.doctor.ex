@@ -1051,8 +1051,7 @@ defmodule Mix.Tasks.Mob.Doctor do
     for path <- ["ios/build.zig", "ios/build_device.zig"],
         {:ok, content} <- [File.read(path)],
         __ios_build_root_stale__(content) do
-      {:fail, "zig 0.17.0 (#{path})",
-       "uses b.build_root, which Zig 0.17.0 removed",
+      {:fail, "zig 0.17.0 (#{path})", "uses b.build_root, which Zig 0.17.0 removed",
        "In the Swift glob, replace `b.build_root.handle.openDir(...)` with " <>
          "`std.Io.Dir.openDirAbsolute(...)` — see a freshly generated app " <>
          "or mob_new's ios/build.zig.eex"}
