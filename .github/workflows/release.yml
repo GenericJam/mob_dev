@@ -139,8 +139,20 @@ jobs:
             echo "package=$pkg" >> "$GITHUB_OUTPUT"
           fi
 
+      # Publishing compiles the deps, and the optional :image dep brings vix.
+      # vix's default mode downloads a precompiled NIF and libvips from GitHub
+      # release assets with :httpc, and that download failed with
+      # {:header_too_long, {:max, 10240}} on the GitHub redirect (0.7.31's
+      # release run). Building vix against the runner's libvips needs no
+      # download.
+      - name: Install libvips for vix
+        if: env.HEX_API_KEY != '' && steps.hex_check.outputs.exists == 'false'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvips-dev
+
       - name: mix hex.publish
         if: env.HEX_API_KEY != '' && steps.hex_check.outputs.exists == 'false'
+        env:
+          VIX_COMPILATION_MODE: PLATFORM_PROVIDED_LIBVIPS
         # `--yes` skips the interactive confirm. `mix hex.publish` (no
         # subcommand) ships both the package archive AND docs in one call.
         run: |
