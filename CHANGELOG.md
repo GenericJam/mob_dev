@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+## [0.7.31] - 2026-10-24
+
 ### Changed
 
 - **Zig pin is 0.17.0.** Replaces `0.17.0-dev.269+ebff43698` now that 0.17.0
