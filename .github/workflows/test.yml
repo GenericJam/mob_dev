@@ -161,14 +161,18 @@ jobs:
         with:
           version: ${{ steps.zig.outputs.version }}
 
+      # The Xcode 26.6 lane's cache (same runner, same MIX_ENV): a cold build
+      # fetches vix's precompiled NIF, and that download fails on macOS
+      # runners (httpc header_too_long), falling back to a source build that
+      # needs glib.
       - name: Cache deps + _build
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             deps
             _build
-          key: mix-zig-macos-26-${{ hashFiles('**/mix.lock') }}
-          restore-keys: mix-zig-macos-26-
+          key: mix-macos-26-${{ hashFiles('**/mix.lock') }}
+          restore-keys: mix-macos-26-
 
       - run: mix deps.get
       - run: mix test --only requires_zig
