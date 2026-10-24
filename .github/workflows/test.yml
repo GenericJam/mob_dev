@@ -74,8 +74,8 @@ jobs:
           MOB_NEW_DIR: ${{ github.workspace }}/mob_new
         # `:macos_only` — tests that shell out to /usr/libexec/PlistBuddy
         # and similar macOS-bound tools.
-        # `:requires_zig` — the StaticNifs zig-ast-check round-trip; we
-        # don't install Zig in CI yet (it's a 30 MB download for one test).
+        # `:requires_zig` — run by the macOS `zig` job below, which has the
+        # pinned Zig and reads Mach-O objects with `nm`.
         # Both run by default on a maintainer's laptop; CI explicitly skips.
         run: mix test --exclude macos_only --exclude requires_zig
 
@@ -161,10 +161,10 @@ jobs:
         with:
           version: ${{ steps.zig.outputs.version }}
 
-      # The Xcode 26.6 lane's cache (same runner, same MIX_ENV): a cold build
-      # fetches vix's precompiled NIF, and that download fails on macOS
-      # runners (httpc header_too_long), falling back to a source build that
-      # needs glib.
+      # The Xcode 26.6 lane's cache (same runner, same MIX_ENV). On a cold
+      # cache vix's precompiled downloads failed on this runner (NIF :enoent,
+      # then header_too_long fetching libvips), and the source fallback needs
+      # glib. This job depends on that lane keeping the cache warm.
       - name: Cache deps + _build
         uses: actions/cache/restore@v4
         with:
