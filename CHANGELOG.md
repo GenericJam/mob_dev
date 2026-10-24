@@ -5,9 +5,7 @@
 - **Zig pin is 0.17.0.** Replaces `0.17.0-dev.269+ebff43698` now that 0.17.0
   is the stable with the macOS 26 SDK fix the nightly was taken for.
   `mix mob.doctor` / `mix mob.deploy --native` still require an exact
-  `zig version` match. Companion to mob and mob_new. CI now installs the
-  pinned Zig (read from `.tool-versions`) and runs the `:requires_zig`
-  tests.
+  `zig version` match. Companion to mob and mob_new.
 
 ### Fixed
 
