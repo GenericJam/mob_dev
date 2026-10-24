@@ -1059,15 +1059,39 @@ defmodule Mix.Tasks.Mob.Doctor do
   end
 
   @doc false
+  # True when Zig code (not a comment or string) reads `build_root` off a
+  # `b` value, allowing whitespace and line breaks around the dot.
   @spec __ios_build_root_stale__(String.t()) :: boolean()
   def __ios_build_root_stale__(content) do
-    content
-    |> String.split("\n")
-    |> Enum.any?(fn line ->
-      code = line |> String.split("//") |> hd() |> String.trim()
-      String.contains?(code, "b.build_root")
-    end)
+    Regex.match?(
+      Regex.compile!("\\bb\\s*\\.\\s*build_root\\b"),
+      zig_code_only(content, [])
+    )
   end
+
+  # Blanks out `//` comments, `\\` multiline-string lines and quoted
+  # string/char literals, keeping newlines.
+  defp zig_code_only(<<>>, acc), do: acc |> Enum.reverse() |> IO.iodata_to_binary()
+  defp zig_code_only(<<"//", rest::binary>>, acc), do: zig_code_only(skip_line(rest), acc)
+  defp zig_code_only(<<"\\\\", rest::binary>>, acc), do: zig_code_only(skip_line(rest), acc)
+
+  defp zig_code_only(<<q, rest::binary>>, acc) when q in [?", ?'],
+    do: zig_code_only(skip_literal(rest, q), [?\s | acc])
+
+  defp zig_code_only(<<c, rest::binary>>, acc), do: zig_code_only(rest, [c | acc])
+
+  defp skip_line(rest) do
+    case :binary.split(rest, "\n") do
+      [_, after_newline] -> "\n" <> after_newline
+      [_] -> ""
+    end
+  end
+
+  defp skip_literal(<<"\\", _escaped, rest::binary>>, q), do: skip_literal(rest, q)
+  defp skip_literal(<<q, rest::binary>>, q), do: rest
+  defp skip_literal(<<"\n", _::binary>> = rest, _q), do: rest
+  defp skip_literal(<<_, rest::binary>>, q), do: skip_literal(rest, q)
+  defp skip_literal(<<>>, _q), do: ""
 
   # ── Installed-but-inactive NIF plugins (MOB-281) ─────────────────────────────
   #

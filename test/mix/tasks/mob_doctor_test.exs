@@ -131,6 +131,26 @@ defmodule Mix.Tasks.Mob.DoctorTest do
 
       refute Mix.Tasks.Mob.Doctor.__ios_build_root_stale__(migrated)
     end
+
+    test "flags a use after a string holding //, and one split across lines" do
+      assert Mix.Tasks.Mob.Doctor.__ios_build_root_stale__("""
+             const url = "https://example"; _ = b.build_root;
+             """)
+
+      assert Mix.Tasks.Mob.Doctor.__ios_build_root_stale__("""
+             var dir = b
+                 .build_root.handle;
+             """)
+    end
+
+    test "does not flag the name inside a string or a multiline string" do
+      refute Mix.Tasks.Mob.Doctor.__ios_build_root_stale__("""
+             const note = "b.build_root was removed";
+             const text =
+                 \\\\see b.build_root
+             ;
+             """)
+    end
   end
 
   describe "__component_event_jni_mismatched__/1 (MOB-98 JNI owner check)" do

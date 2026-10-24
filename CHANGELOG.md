@@ -5,16 +5,17 @@
 - **Zig pin is 0.17.0.** Replaces `0.17.0-dev.269+ebff43698` now that 0.17.0
   is the stable with the macOS 26 SDK fix the nightly was taken for.
   `mix mob.doctor` / `mix mob.deploy --native` still require an exact
-  `zig version` match (`mise install zig@0.17.0`). Companion to mob and
-  mob_new.
+  `zig version` match. Companion to mob and mob_new. CI now installs the
+  pinned Zig (read from `.tool-versions`) and runs the `:requires_zig`
+  tests.
 
 ### Fixed
 
 - **`mix mob.doctor` fails iOS `build.zig` files that still use `b.build_root`.**
   Zig 0.17.0 removed `Build.build_root`; a file generated against the
   nightly panics at configure with `no field named 'build_root'`. The
-  check names the Swift-glob replacement (`std.Io.Dir.openDirAbsolute`)
-  from mob_new's templates.
+  check ignores comments and strings and names the Swift-glob replacement
+  (`std.Io.Dir.openDirAbsolute`) from mob_new's templates.
 - **The Hex package ships `guides/` (MOB-501).** It shipped only the
   default files, so an app had no `deps/mob_dev/guides/` and the publishing
   and security-scan guides were only on hexdocs.
@@ -25,10 +26,12 @@
 
 ### Upgrading
 
-- **Zig 0.17.0.** Install that exact version. Existing iOS apps must port
-  `ios/build.zig` and `ios/build_device.zig` off `b.build_root` (doctor
-  fails until they do). Android `build.zig` from current templates already
-  configures on 0.17.0.
+- **Zig 0.17.0.** In each app, set `zig 0.17.0` in `.tool-versions`
+  (`mise use zig@0.17.0` installs it and edits the file; `mise install
+  zig@0.17.0` alone leaves the app on the nightly, and the native build
+  rejects it). Existing iOS apps must port `ios/build.zig` and
+  `ios/build_device.zig` off `b.build_root` (doctor fails until they do).
+  Android `build.zig` from current templates already configures on 0.17.0.
 
 ## [0.7.30] - 2026-10-23
 
