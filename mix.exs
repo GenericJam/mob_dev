@@ -74,11 +74,13 @@ defmodule MobDev.MixProject do
       # Before this, mob_dev had its own copy of the normalization logic,
       # kept in sync with mob core's copy only by convention — see MOB_FONTS.md.
       #
-      # >= 0.9.25 because the OTP runtime this mob_dev downloads (d199a49a,
-      # erts-17.1.1) only boots on a mob that finds its ERTS dir at runtime;
-      # older mob hard-codes erts-17.0 on Android and the iOS simulator
-      # (MOB-493). Hex resolution then keeps an app's mob and mob_dev in step.
-      {:mob, "~> 0.9.25", runtime: false},
+      # >= 0.9.26: this mob_dev requires Zig 0.17.0, and mob's Android NIF
+      # only compiles under it from 0.9.26 (0.9.25 calls std.fmt.bufPrintZ,
+      # which 0.17.0 removed). 0.9.25 was the floor for the OTP runtime this
+      # mob_dev downloads (d199a49a, erts-17.1.1): older mob hard-codes
+      # erts-17.0 on Android and the iOS simulator (MOB-493). Hex resolution
+      # then keeps an app's mob and mob_dev in step.
+      {:mob, "~> 0.9.26", runtime: false},
       {:eqrcode, "~> 0.2"},
       {:jason, "~> 1.4"},
       {:mix_audit, "~> 2.1", runtime: false},

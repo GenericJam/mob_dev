@@ -26,7 +26,10 @@
 
 ### Upgrading
 
-- **Zig 0.17.0.** In each app, set `zig 0.17.0` in `.tool-versions`
+- **Zig 0.17.0, with mob 0.9.26.** mob_dev now requires `mob ~> 0.9.26`:
+  mob 0.9.25's Android NIF calls `std.fmt.bufPrintZ`, which Zig 0.17.0
+  removed, so run `mix deps.update mob mob_dev` (both move). In each app,
+  set `zig 0.17.0` in `.tool-versions`
   (`mise use zig@0.17.0` installs it and edits the file; `mise install
   zig@0.17.0` alone leaves the app on the nightly, and the native build
   rejects it). Existing iOS apps must port the Swift glob in
