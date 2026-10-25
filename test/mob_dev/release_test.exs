@@ -368,7 +368,7 @@ defmodule MobDev.ReleaseTest do
     end
   end
 
-  describe "release_env/4 + plugin_release_env/3 (the env release_device.sh runs with)" do
+  describe "release_env/5 + plugin_release_env/3 (the env release_device.sh runs with)" do
     @describetag :tmp_dir
 
     setup %{tmp_dir: dir} do
@@ -398,6 +398,7 @@ defmodule MobDev.ReleaseTest do
         Release.release_env(
           cfg,
           "/otp",
+          "/app/release_Info.plist",
           Release.plugin_release_env([], build_file, inputs),
           Release.project_release_env([], project_nifs, [])
         )
@@ -406,6 +407,7 @@ defmodule MobDev.ReleaseTest do
       assert {"MOB_PLUGIN_IOS_NIF_SOURCES", ""} in env
       assert {"MOB_PROJECT_NIF_SOURCES", "/app/c_src/fastmath.c"} in env
       assert {"MOB_IOS_DEVICE_OTP_ROOT", "/otp"} in env
+      assert {"MOB_IOS_INFO_PLIST", "/app/release_Info.plist"} in env
       assert File.read!(bootstrap) =~ ~s|@_cdecl("mob_register_plugins")|
     end
 
@@ -417,6 +419,7 @@ defmodule MobDev.ReleaseTest do
         Release.release_env(
           cfg,
           "/otp",
+          "/app/release_Info.plist",
           Release.plugin_release_env([], build_file, inputs),
           Release.project_release_env([], empty, [])
         )
@@ -427,6 +430,7 @@ defmodule MobDev.ReleaseTest do
         Release.release_env(
           cfg ++ [url_schemes: ["https"]],
           "/otp",
+          "/app/release_Info.plist",
           Release.plugin_release_env([], build_file, inputs),
           Release.project_release_env([], empty, [])
         )

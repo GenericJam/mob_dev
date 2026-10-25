@@ -1,5 +1,14 @@
 ## [Unreleased]
 
+### Fixed
+
+- **`mix mob.release --ios` bundles the activated plugins' Info.plist keys.**
+  The release copied `ios/Info.plist` as written, so the `ios.plist_keys` a
+  plugin declares (its privacy strings, its Bonjour service types), which the
+  sim and device builds merge, were missing from the App Store build, and iOS
+  refused what the plugin needed. The release now merges them the way the dev
+  builds do: the project's keys win, plugins fill gaps.
+
 ## [0.7.31] - 2026-10-24
 
 ### Changed

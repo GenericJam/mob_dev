@@ -4497,7 +4497,7 @@ defmodule MobDev.NativeBuild do
   def write_bundle_info_plist!(app_path, cfg, bundle_id) do
     info_plist = Path.join(app_path, "Info.plist")
     File.cp!("ios/Info.plist", info_plist)
-    apply_plugin_plist_keys!(info_plist)
+    apply_plugin_plist_keys!(info_plist, MobDev.Plugin.activated())
     MobDev.IosLayoutPlist.apply!(info_plist, cfg)
     MobDev.UrlSchemes.apply_plist!(info_plist, cfg, bundle_id)
     apply_fonts_to_ios_bundle!(info_plist, app_path)
@@ -4854,16 +4854,22 @@ defmodule MobDev.NativeBuild do
     :ok
   end
 
-  # Adds plugin-declared Info.plist keys via PlistBuddy `Add`. Add fails (and is
-  # ignored) when the key is already present, giving us "project Info.plist wins
-  # on conflict; plugins fill gaps" semantics — so a plugin can ship a default
-  # NSCameraUsageDescription that the app author can override in their own
-  # Info.plist without changing the plugin. See ADR
-  # decisions/2026-05-28-plugin-plist-keys-merge.md. A usage description several
-  # plugins declare arrives combined (Merge.plist_keys/1, MOB-421); say so when
-  # it lands, since the host never wrote that prompt text.
-  defp apply_plugin_plist_keys!(info_plist) do
-    activated_plugins = MobDev.Plugin.activated()
+  @doc """
+  Adds the keys `activated_plugins` declare (`ios.plist_keys`) to the
+  Info.plist at `info_plist`, a copy of the project's: the sim and device
+  bundles (`write_bundle_info_plist!/3`) and `mix mob.release --ios`
+  (`MobDev.Release.write_release_info_plist!/2`) both call it.
+
+  PlistBuddy `Add` fails (and is ignored) when the key is already present,
+  giving "project Info.plist wins on conflict; plugins fill gaps" semantics, so
+  a plugin can ship a default NSCameraUsageDescription that the app author can
+  override in their own Info.plist without changing the plugin. See ADR
+  decisions/2026-05-28-plugin-plist-keys-merge.md. A usage description several
+  plugins declare arrives combined (Merge.plist_keys/1, MOB-421); this says so
+  when it lands, since the host never wrote that prompt text.
+  """
+  @spec apply_plugin_plist_keys!(Path.t(), [MobDev.Plugin.Merge.plugin()]) :: :ok
+  def apply_plugin_plist_keys!(info_plist, activated_plugins) do
     host_keys = MobDev.Plugin.Validator.host_plist_keys(info_plist)
 
     for {key, names} <- MobDev.Plugin.Validator.combined_usage_descriptions(activated_plugins),

@@ -1,5 +1,5 @@
 defmodule MobDev.ReleaseFontsTest do
-  # Not async: the release_env/4 test runs from a project directory (cwd).
+  # Not async: the release_env/5 test runs from a project directory (cwd).
   use ExUnit.Case, async: false
 
   # mix mob.release --ios used to ship no custom fonts at all (MOB-480). The
@@ -174,10 +174,10 @@ defmodule MobDev.ReleaseFontsTest do
     end
   end
 
-  # The path mix mob.release --ios takes: release_env/4 (what build_ipa/1
+  # The path mix mob.release --ios takes: release_env/5 (what build_ipa/1
   # hands release_device.sh) computes the fonts from the project, so a release
   # that stops passing them fails here.
-  test "release_env/4 hands the script the project's fonts", %{dir: dir} do
+  test "release_env/5 hands the script the project's fonts", %{dir: dir} do
     project = Path.join(dir, "project")
     File.mkdir_p!(Path.join(project, "priv/fonts"))
     File.mkdir_p!(Path.join(project, "ios"))
@@ -190,7 +190,7 @@ defmodule MobDev.ReleaseFontsTest do
     env =
       try do
         cfg = [mob_dir: project, elixir_lib: Path.dirname(to_string(:code.lib_dir(:elixir)))]
-        Release.release_env(cfg, "/otp", [], []) |> Map.new()
+        Release.release_env(cfg, "/otp", "ios/Info.plist", [], []) |> Map.new()
       after
         File.cd!(cwd)
       end

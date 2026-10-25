@@ -64,7 +64,7 @@ gets an unknown zig option. That dev-path gap is MOB-376.
 > `2026-10-03-guarded-project-nifs-select-by-target-arch.md`.
 
 `Release.project_release_env/3` maps the three results to env vars (pure,
-tested), and `release_env/4` takes that result as a required argument next to
+tested), and `release_env/4` (now `release_env/5`) takes that result as a required argument next to
 the plugin env, so a release can't leave the project inputs out.
 `build_ipa/1` calls the builders after the OTP download, since the
 cpp_archive build needs the device ERTS headers; the Rust/Zig cross-compiles

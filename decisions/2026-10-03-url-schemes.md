@@ -64,6 +64,14 @@ scheme: an Android `VIEW` intent filter on an activity, an iOS
   `ios/Info.plist`, which the script copies into the bundle with
   `CFBundleURLTypes` untouched. `ios/Info.plist` is never rewritten. Each
   build starts from a fresh copy, so removing the key removes the entry.
+
+  > **Correction (2026-10-25):** the script copies the project's plist with
+  > the activated plugins' keys (`Release.write_release_info_plist!/2`), and
+  > the release now computes these commands from that copy, as the dev build
+  > computes them from the bundle's merged file. Computed from `ios/Info.plist`
+  > they started with `Add :CFBundleURLTypes array`, which aborts the script
+  > when a plugin's `plist_keys` creates the array. See the 2026-10-25
+  > addendum to `2026-05-28-plugin-plist-keys-merge.md`.
   The plist is read through `plutil -convert xml1`, so a binary plist works.
 - **PlistBuddy facts behind the command shape** (checked 2026-10-03 on this
   Mac). `Add :CFBundleURLTypes array` fails ("Entry Already Exists", exit 1)
