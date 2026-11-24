@@ -26,6 +26,9 @@ defmodule MobDev.GooglePlay.CloudSetup do
   @service_usage "https://serviceusage.googleapis.com/v1"
   @publisher_api "androidpublisher.googleapis.com"
   @service_account_id "play-publisher"
+  # Waits between key creation attempts while a new service account
+  # propagates (~90 s in total).
+  @key_retry_delays_ms [2_000, 4_000, 8_000, 15_000, 30_000, 30_000]
 
   # ── Projects ─────────────────────────────────────────────────────────────────
 
@@ -177,7 +180,7 @@ defmodule MobDev.GooglePlay.CloudSetup do
     HTTP.ensure_started!()
     url = "#{@iam}/projects/#{project_id}/serviceAccounts/#{service_account_email}/keys"
 
-    case HTTP.post(url, HTTP.json_headers(token), "{}") do
+    case post_key(url, token, @key_retry_delays_ms) do
       {:ok, %{"privateKeyData" => b64_json}} ->
         save_key_file(b64_json, filename)
 
@@ -188,6 +191,37 @@ defmodule MobDev.GooglePlay.CloudSetup do
         err
     end
   end
+
+  # A service account can take 60 seconds or more to become usable after it
+  # is created; until then IAM answers 404 "does not exist" for it.
+  defp post_key(url, token, delays) do
+    result = HTTP.post(url, HTTP.json_headers(token), "{}")
+
+    case delays do
+      [delay | rest] ->
+        if retry_key_creation?(result) do
+          Process.sleep(delay)
+          post_key(url, token, rest)
+        else
+          result
+        end
+
+      [] ->
+        result
+    end
+  end
+
+  @doc """
+  Whether a key creation result means the service account is not visible yet.
+
+  IAM is eventually consistent: right after `create_service_account/3`, the
+  keys endpoint answers HTTP 404 for the new account.
+
+  Pure function — useful for testing and debugging.
+  """
+  @spec retry_key_creation?({:ok, map()} | {:error, String.t()}) :: boolean()
+  def retry_key_creation?({:error, "HTTP 404: " <> _}), do: true
+  def retry_key_creation?(_), do: false
 
   @doc """
   Decodes a base64url-encoded service account JSON key and saves it to disk.

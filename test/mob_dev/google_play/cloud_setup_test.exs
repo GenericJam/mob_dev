@@ -3,6 +3,29 @@ defmodule MobDev.GooglePlay.CloudSetupTest do
 
   alias MobDev.GooglePlay.CloudSetup
 
+  # ── retry_key_creation?/1 ────────────────────────────────────────────────────
+
+  describe "retry_key_creation?/1" do
+    # Regression: step 5 of `mix mob.setup.google_play` failed when it asked
+    # for a key right after step 4 created the service account.
+    test "retries while a new service account is not visible yet" do
+      result =
+        {:error,
+         "HTTP 404: Service account projects/p/serviceAccounts/play-publisher@p.iam.gserviceaccount.com does not exist."}
+
+      assert CloudSetup.retry_key_creation?(result)
+    end
+
+    test "does not retry other errors" do
+      refute CloudSetup.retry_key_creation?({:error, "HTTP 403: Permission denied"})
+      refute CloudSetup.retry_key_creation?({:error, "HTTP request failed: :timeout"})
+    end
+
+    test "does not retry a success" do
+      refute CloudSetup.retry_key_creation?({:ok, %{"privateKeyData" => "e30="}})
+    end
+  end
+
   # ── build_enable_api_url/2 ───────────────────────────────────────────────────
 
   describe "build_enable_api_url/2" do
