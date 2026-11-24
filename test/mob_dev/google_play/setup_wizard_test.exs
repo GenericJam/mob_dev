@@ -73,24 +73,21 @@ defmodule MobDev.GooglePlay.SetupWizardTest do
   end
 
   # ── grant_request shape integration ─────────────────────────────────────────
-  # Verify the JSON body we'd POST to the grants API is well-formed.
+  # Verify the JSON bodies we'd POST to the users and grants APIs are well-formed.
 
   describe "grant request body" do
-    test "account-level request is valid JSON with required fields" do
-      req = PlaySetup.build_grant_request("sa@proj.iam.gserviceaccount.com", nil)
-      json = Jason.encode!(req)
-      decoded = Jason.decode!(json)
+    test "account-level user request is valid JSON with required fields" do
+      req = PlaySetup.build_user_request("sa@proj.iam.gserviceaccount.com", nil)
+      decoded = req |> Jason.encode!() |> Jason.decode!()
 
-      assert decoded["grantee"] == "sa@proj.iam.gserviceaccount.com"
+      assert decoded["email"] == "sa@proj.iam.gserviceaccount.com"
       assert [_ | _] = decoded["developerAccountPermissions"]
     end
 
-    test "app-level request is valid JSON with required fields" do
-      req = PlaySetup.build_grant_request("sa@proj.iam.gserviceaccount.com", "com.example.app")
-      json = Jason.encode!(req)
-      decoded = Jason.decode!(json)
+    test "app-level grant request is valid JSON with required fields" do
+      req = PlaySetup.build_grant_request("com.example.app")
+      decoded = req |> Jason.encode!() |> Jason.decode!()
 
-      assert decoded["grantee"] == "sa@proj.iam.gserviceaccount.com"
       assert decoded["packageName"] == "com.example.app"
       assert [_ | _] = decoded["appLevelPermissions"]
     end
