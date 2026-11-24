@@ -38,7 +38,7 @@ defmodule MobDev.GooglePlay.CloudSetup do
   @spec list_projects(String.t()) :: {:ok, [map()]} | {:error, String.t()}
   def list_projects(token) do
     HTTP.ensure_started!()
-    url = "#{@crm}/projects?pageSize=100"
+    url = "#{@crm}/projects:search?pageSize=100"
 
     case HTTP.get(url, HTTP.json_headers(token)) do
       {:ok, %{"projects" => projects}} -> {:ok, projects}
