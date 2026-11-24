@@ -24,6 +24,17 @@ defmodule MobDev.GooglePlay.CloudSetupTest do
     end
   end
 
+  # ── build_list_projects_url/0 ────────────────────────────────────────────────
+
+  describe "build_list_projects_url/0" do
+    # Regression: v3 `GET /projects` requires a `parent` and failed step 2 of
+    # `mix mob.setup.google_play` with "invalid parent name".
+    test "searches all accessible projects with Cloud Resource Manager v3" do
+      assert CloudSetup.build_list_projects_url() ==
+               "https://cloudresourcemanager.googleapis.com/v3/projects:search?pageSize=100"
+    end
+  end
+
   # ── parse_projects_response/1 ────────────────────────────────────────────────
 
   describe "parse_projects_response/1" do

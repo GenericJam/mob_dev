@@ -38,13 +38,28 @@ defmodule MobDev.GooglePlay.CloudSetup do
   @spec list_projects(String.t()) :: {:ok, [map()]} | {:error, String.t()}
   def list_projects(token) do
     HTTP.ensure_started!()
-    url = "#{@crm}/projects:search?pageSize=100"
+    url = build_list_projects_url()
 
     case HTTP.get(url, HTTP.json_headers(token)) do
       {:ok, %{"projects" => projects}} -> {:ok, projects}
       {:ok, resp} -> {:ok, Map.get(resp, "projects", [])}
       {:error, _} = err -> err
     end
+  end
+
+  @doc """
+  Builds the Cloud Resource Manager URL that lists the user's projects.
+
+  Uses v3 `projects:search`, which returns every project the caller can
+  access. v3 `projects.list` (`GET /v3/projects`) requires a `parent`
+  (an organization or folder) and fails with "invalid parent name"
+  without one.
+
+  Pure function — useful for testing and debugging.
+  """
+  @spec build_list_projects_url() :: String.t()
+  def build_list_projects_url do
+    "#{@crm}/projects:search?pageSize=100"
   end
 
   @doc """
