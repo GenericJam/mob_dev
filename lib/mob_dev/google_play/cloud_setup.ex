@@ -84,20 +84,37 @@ defmodule MobDev.GooglePlay.CloudSetup do
     HTTP.ensure_started!()
     url = build_enable_api_url(project_id, @publisher_api)
 
-    case HTTP.post(url, HTTP.json_headers(token), "{}") do
-      {:ok, %{"name" => op_name}} ->
-        poll_operation(token, op_name)
-
-      {:ok, %{"done" => true}} ->
-        :ok
-
-      {:ok, resp} ->
-        {:error, "Unexpected enable API response: #{inspect(resp)}"}
-
-      {:error, _} = err ->
-        err
+    with {:ok, resp} <- HTTP.post(url, HTTP.json_headers(token), "{}") do
+      case classify_enable_response(resp) do
+        {:poll, op_name} -> poll_operation(token, op_name)
+        result -> result
+      end
     end
   end
+
+  @doc """
+  Decides what to do with the long-running operation returned by a Service
+  Usage `:enable` call.
+
+  Returns `:ok` when the operation is already done, `{:poll, op_name}` when it
+  is still running, or `{:error, reason}`.
+
+  `done` is checked before `name`: an operation that completes immediately
+  (e.g. the API is already enabled) comes back with `done: true` and a
+  placeholder name such as `"operations/noop.DONE_OPERATION"`, which the
+  operations endpoint rejects with HTTP 400 "Invalid operation id".
+
+  Pure function — useful for testing and debugging.
+  """
+  @spec classify_enable_response(map()) :: :ok | {:poll, String.t()} | {:error, String.t()}
+  def classify_enable_response(%{"done" => true, "error" => err}),
+    do: {:error, "Operation failed: #{inspect(err)}"}
+
+  def classify_enable_response(%{"done" => true}), do: :ok
+  def classify_enable_response(%{"name" => op_name}), do: {:poll, op_name}
+
+  def classify_enable_response(resp),
+    do: {:error, "Unexpected enable API response: #{inspect(resp)}"}
 
   @doc """
   Builds the Service Usage API URL for enabling a specific service.

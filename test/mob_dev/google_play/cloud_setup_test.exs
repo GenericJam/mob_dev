@@ -24,6 +24,32 @@ defmodule MobDev.GooglePlay.CloudSetupTest do
     end
   end
 
+  # ── classify_enable_response/1 ───────────────────────────────────────────────
+
+  describe "classify_enable_response/1" do
+    # Regression: polling this placeholder name failed step 3 of
+    # `mix mob.setup.google_play` with HTTP 400 "Invalid operation id".
+    test "treats an immediately done operation as success without polling" do
+      resp = %{"name" => "operations/noop.DONE_OPERATION", "done" => true, "response" => %{}}
+      assert CloudSetup.classify_enable_response(resp) == :ok
+    end
+
+    test "reports the error of an immediately failed operation" do
+      resp = %{"name" => "operations/abc", "done" => true, "error" => %{"code" => 7}}
+      assert {:error, "Operation failed: " <> _} = CloudSetup.classify_enable_response(resp)
+    end
+
+    test "polls a running operation by name" do
+      assert CloudSetup.classify_enable_response(%{"name" => "operations/acf.p2-123"}) ==
+               {:poll, "operations/acf.p2-123"}
+    end
+
+    test "rejects a response that is neither done nor named" do
+      assert {:error, "Unexpected enable API response: " <> _} =
+               CloudSetup.classify_enable_response(%{})
+    end
+  end
+
   # ── build_list_projects_url/0 ────────────────────────────────────────────────
 
   describe "build_list_projects_url/0" do
