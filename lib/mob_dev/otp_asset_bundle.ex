@@ -43,6 +43,16 @@ defmodule MobDev.OtpAssetBundle do
      untrusted_app. The rest aren't reachable.
   3. **Static archives (`.a`)** — already linked into the app's native lib
      at build time. Shipping them inside the runtime tree is pure waste.
+  4. **Build-time files** — `lib/*/{src,include,doc}`,
+     `erts-*/{doc,man,src,include}` and `usr/include`: sources, headers and
+     documentation, read by no running BEAM.
+  5. **macOS AppleDouble files** (`._*`), which mob's OTP tarballs carry next
+     to almost every file. Removed first: a `._*.beam` is not a BEAM.
+  6. **Optional BEAM chunks** — every `.beam` of the tree, the app's flat
+     directory included, goes through `Mix.Release.strip_beam/2`, as
+     `mix release` does: `Dbgi`, `Docs`, `ExCk`, `CInf`... go, `Attr` stays
+     (`Module.__info__(:attributes)`, behaviours). A BEAM that cannot be
+     stripped fails the build.
 
   `.so` files inside OTP libs (e.g. `priv/lib/asn1.so`) are KEPT in the zip —
   they're loaded by the BEAM at runtime via `dlopen()`, which works fine from
@@ -128,12 +138,20 @@ defmodule MobDev.OtpAssetBundle do
         # runtime_tools, …) a user's deps will need, so stripping any is unsafe.
         if Keyword.get(opts, :slim, true) do
           {prefixes, kept_required} = compute_strip_set(staging, opts)
+          strip_apple_double(staging)
           strip_otp_libs(staging, prefixes)
           strip_standalone_execs(staging)
           strip_static_archives(staging)
           strip_source_and_headers(staging)
-          strip_beam_chunks(staging)
-          {:ok, staging, kept_required}
+
+          case strip_beam_chunks(staging) do
+            :ok ->
+              {:ok, staging, kept_required}
+
+            {:error, _} = error ->
+              File.rm_rf!(staging)
+              error
+          end
         else
           {:ok, staging, []}
         end
@@ -144,40 +162,68 @@ defmodule MobDev.OtpAssetBundle do
     end
   end
 
-  # Drop src/ and include/ from every lib. .erl source and .hrl headers
-  # are needed at compile time, not runtime. Saves ~16 MB on a typical
-  # OTP tree. Same logic as iOS release.ex's strip pass.
-  defp strip_source_and_headers(staging) do
-    Path.wildcard(Path.join(staging, "lib/*/src")) |> Enum.each(&File.rm_rf!/1)
-    Path.wildcard(Path.join(staging, "lib/*/include")) |> Enum.each(&File.rm_rf!/1)
-    :ok
-  end
-
-  # Strip optional chunks (Dbgi/Docs/etc.) from every shipped .beam.
-  # Same as `mix release --strip-beams` and the iOS release pass.
-  # Drops ~30% per .beam file. The host's `erl` and the bundled OTP are
-  # the same major version, so beam_lib:strip_release/1 is binary-safe.
-  #
-  # We're tolerant of strip failures: a stage tree from a test fixture
-  # may contain placeholder "fake beam" files that aren't valid BEAMs.
-  # In production those don't exist; the strip succeeds and shrinks
-  # the bundle. In tests, a failed strip just leaves the file untouched
-  # (which is the same behaviour as not running the step at all).
-  defp strip_beam_chunks(staging) do
-    {_, _status} =
-      System.cmd(
-        "erl",
-        [
-          "-noinput",
-          "-boot",
-          "start_clean",
-          "-eval",
-          ~s|catch beam_lib:strip_release("#{staging}"), erlang:halt(0).|
-        ],
+  # macOS AppleDouble files (`._<name>`, resource forks written by a macOS
+  # `tar` without COPYFILE_DISABLE=1), next to almost every file of mob's OTP
+  # tarballs: 937 `._*.beam` alone. Nothing reads them, and the beam strip
+  # below would take each `._*.beam` for a broken BEAM.
+  defp strip_apple_double(staging) do
+    {_, 0} =
+      System.cmd("find", [staging, "-name", "._*", "-exec", "rm", "-rf", "{}", "+"],
         stderr_to_stdout: true
       )
 
     :ok
+  end
+
+  # Sources, headers and documentation: read at build time, never by a
+  # running BEAM. Same logic as iOS release.ex's strip pass, plus the erts
+  # and lib docs it misses.
+  @build_time_dirs ~w(
+    lib/*/src lib/*/include lib/*/doc
+    erts-*/src erts-*/include erts-*/doc erts-*/man
+    usr/include
+  )
+
+  defp strip_source_and_headers(staging) do
+    for pattern <- @build_time_dirs,
+        dir <- Path.wildcard(Path.join(staging, pattern)),
+        do: File.rm_rf!(dir)
+
+    :ok
+  end
+
+  # Strip optional chunks (Dbgi/Docs/ExCk...) from every shipped .beam, the
+  # app's flat `<app>/` directory included, with Mix.Release.strip_beam/2: the
+  # chunks `mix release --strip-beams` keeps, `Attr` among them, which
+  # `beam_lib:strip/1` would drop. Drops ~30-60% per .beam. The host's OTP
+  # and the bundled one are the same major version, so the rewrite is
+  # binary-safe. A failure is returned, never ignored: the old pass ran
+  # `beam_lib:strip_release/1` under `catch`, which stopped at the first
+  # AppleDouble file and left every BEAM unstripped without a word.
+  defp strip_beam_chunks(staging) do
+    failures =
+      staging
+      |> Path.join("**/*.beam")
+      |> Path.wildcard(match_dot: false)
+      |> Enum.flat_map(fn path ->
+        with {:ok, binary} <- File.read(path),
+             {:ok, stripped} <- Mix.Release.strip_beam(binary),
+             :ok <- File.write(path, stripped) do
+          []
+        else
+          error -> [{Path.relative_to(path, staging), error}]
+        end
+      end)
+
+    case failures do
+      [] ->
+        :ok
+
+      _ ->
+        {:error,
+         "could not strip #{length(failures)} BEAM file(s), first: " <>
+           inspect(Enum.take(failures, 5))}
+    end
   end
 
   # Returns {prefixes to strip, default prefixes kept because the app needs

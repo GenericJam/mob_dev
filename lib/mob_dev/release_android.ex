@@ -17,11 +17,14 @@ defmodule MobDev.ReleaseAndroid do
        - App + dep BEAMs (flattened into `{app_name}/`)
        - App `priv/` → `{app_name}/priv/`
        - exqlite BEAMs → `lib/exqlite-{vsn}/ebin/` (OTP lib structure needed
-         for `:code.lib_dir(:exqlite)` to resolve correctly at runtime)
-    4. Run `MobDev.OtpAssetBundle.build/2` — strips unused OTP libs (never
+         for `:code.lib_dir(:exqlite)` to resolve correctly at runtime),
+         after removing the runtime's own `lib/exqlite-*`
+    4. Run `MobDev.OtpAssetBundle.build/3` — strips unused OTP libs (never
        one the app's runtime dependency closure needs, see
-       `MobDev.OtpRequiredApps`) and optional BEAM chunks, then zips the tree
-       to `src/release/assets/otp.zip`.
+       `MobDev.OtpRequiredApps`, plus mob.exs's
+       `android_strip_extra_prefixes`), build-time files, AppleDouble files
+       and optional BEAM chunks, then zips the tree to
+       `src/release/assets/otp.zip`.
     5. Run `./gradlew bundleRelease` — signs the AAB using the keystore
        configured in `android/keystore.properties`.
 
@@ -63,7 +66,7 @@ defmodule MobDev.ReleaseAndroid do
          log("Staging OTP tree + app BEAMs..."),
          {:ok, staging} <- stage_otp_tree(otp_arm64, app_name),
          log("Building otp.zip (stripping unused OTP libs)..."),
-         {:ok, info} <- build_zip(staging, slim),
+         {:ok, info} <- build_zip(staging, slim, cfg),
          _ = File.rm_rf!(staging),
          log_kept_required(info.kept_required),
          log(
@@ -136,6 +139,7 @@ defmodule MobDev.ReleaseAndroid do
         :ok
 
       {:ok, vsn, ebin} ->
+        prune_otp_lib!(staging, "exqlite")
         lib_dir = Path.join(staging, "lib/exqlite-#{vsn}")
         File.mkdir_p!(Path.join(lib_dir, "ebin"))
         File.mkdir_p!(Path.join(lib_dir, "priv"))
@@ -146,6 +150,20 @@ defmodule MobDev.ReleaseAndroid do
 
         :ok
     end
+  end
+
+  @doc false
+  # Removes every `lib/<name>-*` of the staging tree. The cached OTP runtime
+  # carries its own exqlite (0.36.0 when this was written), which shipped next
+  # to the app's: two `lib/exqlite-*` on the code path, and which one loads
+  # left to chance. `mix mob.deploy` prunes the same way on the device
+  # (`prune_other_versions_cmd`). Public for testing.
+  @spec prune_otp_lib!(Path.t(), String.t()) :: :ok
+  def prune_otp_lib!(staging, name) do
+    staging
+    |> Path.join("lib/#{name}-*")
+    |> Path.wildcard()
+    |> Enum.each(&File.rm_rf!/1)
   end
 
   @doc false
@@ -189,13 +207,17 @@ defmodule MobDev.ReleaseAndroid do
 
   # ── otp.zip ──────────────────────────────────────────────────────────────────
 
-  defp build_zip(staging, slim) do
+  # `config :mob_dev, android_strip_extra_prefixes: [...]` in mob.exs: OTP libs
+  # this app never starts, dropped on top of OtpAssetBundle's default list.
+  # Explicit, so they are dropped even if the app's closure lists one.
+  defp build_zip(staging, slim, cfg) do
     zip_path = otp_zip_path()
     File.mkdir_p!(Path.dirname(zip_path))
 
     MobDev.OtpAssetBundle.build(staging, zip_path,
       slim: slim,
-      required_apps: MobDev.HotPush.runtime_lib_names()
+      required_apps: MobDev.HotPush.runtime_lib_names(),
+      strip_extra_prefixes: cfg[:android_strip_extra_prefixes] || []
     )
   end
 

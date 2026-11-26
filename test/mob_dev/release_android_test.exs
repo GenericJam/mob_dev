@@ -46,4 +46,19 @@ defmodule MobDev.ReleaseAndroidTest do
       assert :none = ReleaseAndroid.exqlite_ebin!(MapSet.new(["ecto"]), dir)
     end
   end
+
+  describe "prune_otp_lib!/2" do
+    @describetag :tmp_dir
+
+    test "removes every version of the lib, and only that lib", %{tmp_dir: dir} do
+      for lib <- ~w(exqlite-0.36.0 exqlite-0.37.0 exqlite_extra-1.0.0 kernel-11.0) do
+        File.mkdir_p!(Path.join([dir, "lib", lib, "ebin"]))
+      end
+
+      assert :ok = ReleaseAndroid.prune_otp_lib!(dir, "exqlite")
+
+      assert dir |> Path.join("lib") |> File.ls!() |> Enum.sort() ==
+               ~w(exqlite_extra-1.0.0 kernel-11.0)
+    end
+  end
 end
