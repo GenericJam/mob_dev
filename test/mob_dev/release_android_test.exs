@@ -20,4 +20,30 @@ defmodule MobDev.ReleaseAndroidTest do
       refute String.contains?(path, "src/main/assets")
     end
   end
+
+  describe "exqlite_ebin!/2" do
+    @describetag :tmp_dir
+
+    test "reads exqlite from the given build path, not _build/dev", %{tmp_dir: dir} do
+      ebin = Path.join([dir, "_build", "prod", "lib", "exqlite", "ebin"])
+      File.mkdir_p!(ebin)
+      File.write!(Path.join(ebin, "exqlite.app"), ~s|{application,exqlite,[{vsn,"0.30.1"}]}.|)
+
+      assert {:ok, "0.30.1", ^ebin} =
+               ReleaseAndroid.exqlite_ebin!(
+                 MapSet.new(["exqlite"]),
+                 Path.join([dir, "_build", "prod"])
+               )
+    end
+
+    test "raises when the app ships exqlite but it is not compiled", %{tmp_dir: dir} do
+      assert_raise Mix.Error, ~r/exqlite is a runtime dependency/, fn ->
+        ReleaseAndroid.exqlite_ebin!(MapSet.new(["exqlite"]), Path.join(dir, "_build/prod"))
+      end
+    end
+
+    test "is :none when the app does not ship exqlite (stale lock entry)", %{tmp_dir: dir} do
+      assert :none = ReleaseAndroid.exqlite_ebin!(MapSet.new(["ecto"]), dir)
+    end
+  end
 end

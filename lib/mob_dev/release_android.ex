@@ -131,17 +131,47 @@ defmodule MobDev.ReleaseAndroid do
   # :code.lib_dir(:exqlite) resolves correctly. mob_beam.c creates the
   # sqlite3_nif.so symlink at runtime from the APK's nativeLibraryDir.
   defp add_exqlite!(staging) do
-    with vsn when is_binary(vsn) <- exqlite_version(),
-         [ebin | _] <- Path.wildcard("_build/dev/lib/exqlite/ebin") do
-      lib_dir = Path.join(staging, "lib/exqlite-#{vsn}")
-      File.mkdir_p!(Path.join(lib_dir, "ebin"))
-      File.mkdir_p!(Path.join(lib_dir, "priv"))
+    case exqlite_ebin!(MobDev.HotPush.runtime_lib_names(), Mix.Project.build_path()) do
+      :none ->
+        :ok
 
-      System.cmd("cp", ["-r", "#{Path.expand(ebin)}/.", Path.join(lib_dir, "ebin")],
-        stderr_to_stdout: true
-      )
-    else
-      _ -> :ok
+      {:ok, vsn, ebin} ->
+        lib_dir = Path.join(staging, "lib/exqlite-#{vsn}")
+        File.mkdir_p!(Path.join(lib_dir, "ebin"))
+        File.mkdir_p!(Path.join(lib_dir, "priv"))
+
+        System.cmd("cp", ["-r", "#{Path.expand(ebin)}/.", Path.join(lib_dir, "ebin")],
+          stderr_to_stdout: true
+        )
+
+        :ok
+    end
+  end
+
+  @doc false
+  # Where the exqlite BEAMs to stage are: `:none` when exqlite is not among
+  # the libs the app ships (a stale mix.lock entry does not count), else its
+  # ebin under the current Mix env's build path. Raises when the app ships
+  # exqlite but it is not compiled there, instead of producing a release
+  # without SQLite (it used to read `_build/dev`, which a `MIX_ENV=prod`
+  # release never compiles). Public for testing.
+  @spec exqlite_ebin!(MapSet.t(String.t()), Path.t()) :: :none | {:ok, String.t(), Path.t()}
+  def exqlite_ebin!(runtime_libs, build_path) do
+    ebin = Path.join([build_path, "lib", "exqlite", "ebin"])
+    app_file = Path.join(ebin, "exqlite.app")
+
+    cond do
+      not MapSet.member?(runtime_libs, "exqlite") ->
+        :none
+
+      vsn = MobDev.AppFile.vsn_from_path(app_file) ->
+        {:ok, vsn, ebin}
+
+      true ->
+        Mix.raise(
+          "exqlite is a runtime dependency but #{app_file} was not found. " <>
+            "Run `mix compile` in this Mix env (MIX_ENV=#{Mix.env()}) before the release."
+        )
     end
   end
 
@@ -156,8 +186,6 @@ defmodule MobDev.ReleaseAndroid do
 
     app_dirs ++ eex
   end
-
-  defp exqlite_version, do: MobDev.AppFile.dep_version(:exqlite)
 
   # ── otp.zip ──────────────────────────────────────────────────────────────────
 

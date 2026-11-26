@@ -22,6 +22,16 @@ defmodule MobDev.ReleaseScriptTest do
     {:ok, sh: Release.release_device_sh()}
   end
 
+  describe "Mix env" do
+    # A MIX_ENV=prod release compiles into _build/prod; a hard-coded
+    # _build/dev shipped stale dev BEAMs, or none at all.
+    test "copies BEAMs from MOB_BUILD_PATH, never _build/dev", %{sh: sh} do
+      assert sh =~ ~s|BUILD_LIB="${MOB_BUILD_PATH:?MOB_BUILD_PATH not set}/lib"|
+      assert sh =~ ~s|for lib_dir in "$BUILD_LIB"/*/ebin; do|
+      refute sh =~ "_build/dev"
+    end
+  end
+
   describe "Apple bundle policy: strip disallowed binaries" do
     # Apple error 90171 — `.so`, `.a`, and standalone executables in the
     # bundle. Apple permits exactly one Mach-O per `.app` (the

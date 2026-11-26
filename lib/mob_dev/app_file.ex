@@ -36,7 +36,8 @@ defmodule MobDev.AppFile do
   @doc """
   Resolve the installed version of a hex dep. Prefers `mix.lock` (most
   reliable, survives across envs); falls back to the compiled .app file
-  under `_build/dev/lib/<dep>/ebin/<dep>.app`. Returns nil if neither
+  under the current Mix env's build path
+  (`<build_path>/lib/<dep>/ebin/<dep>.app`). Returns nil if neither
   source resolves.
   """
   @spec dep_version(String.t() | atom()) :: String.t() | nil
@@ -60,7 +61,7 @@ defmodule MobDev.AppFile do
   end
 
   defp wildcard_app_version(dep) do
-    case Path.wildcard("_build/dev/lib/#{dep}/ebin/#{dep}.app") do
+    case Path.wildcard(Path.join([Mix.Project.build_path(), "lib", dep, "ebin", "#{dep}.app"])) do
       [app_file | _] -> vsn_from_path(app_file)
       _ -> nil
     end
