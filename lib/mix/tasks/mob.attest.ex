@@ -77,11 +77,19 @@ defmodule Mix.Tasks.Mob.Attest do
         Run `mix mob.connect --no-iex` first. Reporting success here would be
         the failure this task exists to catch: a check that could not run is
         not a check that passed.
+        #{cookie_hint(opts)}\
         """)
 
       {nodes, down} ->
         results = Enum.map(nodes, &attest_node(&1, opts))
         report(results, down, opts)
+    end
+  end
+
+  defp cookie_hint(opts) do
+    case MobDev.DistCookie.connect_failure_hint(opts[:cookie]) do
+      nil -> ""
+      hint -> "\n#{hint}\n"
     end
   end
 

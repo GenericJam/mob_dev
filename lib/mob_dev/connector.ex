@@ -40,8 +40,9 @@ defmodule MobDev.Connector do
   @spec connect_all(keyword()) :: {[Device.t()], [Device.t()]}
   def connect_all(opts \\ []) do
     platforms = opts |> Keyword.get(:platforms, [:android, :ios]) |> List.wrap()
-    # The private cookie first; the legacy public one only for apps built
-    # against a pre-MOB-49 mob (see MobDev.DistCookie).
+    # The private cookie first unless a custom `--cookie` replaces it; the
+    # public legacy one only when given explicitly, and never first (MOB-552,
+    # see MobDev.DistCookie.candidates/2).
     cookies = opts |> Keyword.get(:cookie) |> DistCookie.candidates()
     launch_cookie = hd(cookies)
 
@@ -149,6 +150,9 @@ defmodule MobDev.Connector do
             "run without --no-restart to restart it"
         )
       end
+
+      hint = DistCookie.connect_failure_hint(Keyword.get(opts, :cookie))
+      if failed_wait != [] and hint, do: IO.puts("    → #{hint}")
 
       if connected != [] do
         IO.puts(

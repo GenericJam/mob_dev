@@ -63,6 +63,7 @@ defmodule Mix.Tasks.Mob.Push do
     if nodes == [] do
       IO.puts("#{IO.ANSI.yellow()}No running nodes found.#{IO.ANSI.reset()}")
       IO.puts("Start apps first: mix mob.connect")
+      if hint = MobDev.DistCookie.connect_failure_hint(cookie), do: IO.puts(hint)
     else
       IO.puts("  Connected: #{Enum.map_join(nodes, ", ", &to_string/1)}")
 

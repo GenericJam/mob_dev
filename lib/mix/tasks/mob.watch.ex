@@ -148,6 +148,7 @@ defmodule Mix.Tasks.Mob.Watch do
     if nodes == [] do
       IO.puts(" #{IO.ANSI.yellow()}none found#{IO.ANSI.reset()}")
       IO.puts("  Start apps first: mix mob.connect")
+      if hint = MobDev.DistCookie.connect_failure_hint(cookie), do: IO.puts("  #{hint}")
       IO.puts("  Watching anyway — will connect when nodes come up.\n")
     else
       IO.puts(" #{IO.ANSI.green()}#{length(nodes)} node(s)#{IO.ANSI.reset()}")

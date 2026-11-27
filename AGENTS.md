@@ -824,8 +824,9 @@ In an `iex --name me@127.0.0.1 -S mix` session, run
 
 The cookie is per app, kept under `~/.mob/dist_cookies/` and handed to the app
 at deploy/connect time (Android: a file in its private storage; iOS: the launch
-environment). An app built against a mob from before MOB-49 still uses the
-public `mob_secret`; mob_dev's tasks fall back to it with a warning. `--name`
+environment). An app built against a mob from before MOB-49 accepts only the
+public `mob_secret`, which mob_dev's tasks never try on their own (MOB-552):
+pass `--cookie mob_secret` explicitly, or redeploy it. `--name`
 (long names) is required when the device node uses a numeric host like
 `@10.0.0.120`.
 

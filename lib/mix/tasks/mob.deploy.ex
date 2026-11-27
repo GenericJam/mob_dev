@@ -14,10 +14,10 @@ defmodule Mix.Tasks.Mob.Deploy do
   device. When the app's node is reachable over Erlang distribution, the
   modules are hot-loaded in place with no restart; otherwise the BEAMs are
   written to the device and the app is restarted to pick them up. An app built
-  against a pre-MOB-49 mob is restarted instead of hot-loaded, which moves it to
-  its private cookie, except on a physical iPhone: writing BEAMs to a phone over
-  `devicectl` has no undo, so a connected legacy iPhone app is still hot-loaded
-  and keeps `mob_secret` until you deploy with `--native`.
+  against a pre-MOB-49 mob accepts only the public `mob_secret`, which deploy
+  never presents, so it always takes the write-and-restart path; that moves it
+  to its private cookie once it runs the updated mob, which on iOS takes
+  `--native`.
 
       mix mob.deploy
 

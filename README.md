@@ -105,9 +105,13 @@ If dist is not reachable (first deploy, app not running), it falls back to `adb 
 
 **Requirements:** The app must start development distribution. Every launch
 and attach command shares one private cookie per app, kept in
-`~/.mob/dist_cookies/` and handed to the app at deploy/connect time. An app built against a mob from before MOB-49 still uses
-the public `mob_secret`; the tasks fall back to it with a warning until it is
-redeployed. Pass `--cookie` only for an app that sets a custom cookie.
+`~/.mob/dist_cookies/` and handed to the app at deploy/connect time. An app built
+against a mob from before MOB-49 accepts only the public `mob_secret`; the tasks
+never try it on their own. Update its mob dependency and redeploy it
+(`mix mob.deploy`, `--native` for iOS), or reach it as it is with
+`--cookie mob_secret`: up-to-date apps in the same session still connect on the
+private cookie, which stays the Mac node's own. Otherwise pass `--cookie` only for
+an app that sets a custom cookie.
 
 ## Did that deploy actually land? (`mix mob.attest`)
 

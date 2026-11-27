@@ -310,12 +310,9 @@ defmodule MobDev.Adopt.Patcher do
         # Open the WebView pointed at the configured host URL.
         Mob.Screen.start_root(#{module_name}.MobScreen)
 
-        # Distribution for `mix mob.connect`. Optional; remove if you
-        # don't need on-device IEx.
-        Mob.Dist.ensure_started(
-          node: :"#{app_name}_android@127.0.0.1",
-          cookie: :mob_secret
-        )
+        # Distribution for `mix mob.connect`, on the private cookie mob_dev
+        # hands the app. Optional; remove if you don't need on-device IEx.
+        Mob.Dist.ensure_started(node: :"#{app_name}_android@127.0.0.1")
       end
     end
     """
@@ -454,8 +451,9 @@ defmodule MobDev.Adopt.Patcher do
         # The WebView loads http://127.0.0.1:<liveview_port>/ (see mob.exs).
         Mob.Screen.start_root(#{module_name}.MobScreen)
 
-        # Start Erlang distribution so `mix mob.connect` can attach.
-        Mob.Dist.ensure_started(node: :"#{app_name}_android@127.0.0.1", cookie: :mob_secret)
+        # Start Erlang distribution so `mix mob.connect` can attach, on the
+        # private cookie mob_dev hands the app.
+        Mob.Dist.ensure_started(node: :"#{app_name}_android@127.0.0.1")
       end
 
       defp migrations_dir do
