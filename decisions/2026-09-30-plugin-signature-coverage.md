@@ -1,7 +1,7 @@
 # Plugin signatures cover every build input, marked inside the signed list (MOB-297)
 
 - Date: 2026-09-30
-- Status: accepted
+- Status: accepted; "Evaluation order" corrected by [2026-11-26-plugin-trust-verifies-before-eval.md](2026-11-26-plugin-trust-verifies-before-eval.md) (MOB-550)
 - Linear: MOB-297
 - Amends: [2026-09-11-plugin-envelope-v2-verify-before-eval.md](2026-09-11-plugin-envelope-v2-verify-before-eval.md) (points 1 and 3)
 
@@ -117,6 +117,15 @@ trust: a self-signed plugin's manifest is evaluated before
 manifest that fails to evaluate makes `verify_plugin/1` return
 `:invalid_signature`, because completeness can't be checked. In that case
 `load_verified/2` returns the evaluation error message, as it did before.
+
+**Correction (2026-11-26, MOB-550):** step 1 assumed `priv/mob_plugin.exs` is
+among the listed files, and nothing enforced it. Only listed files are
+rehashed, so a validly signed envelope that left the manifest out reached this
+evaluation (and `load_verified/2`'s) with the manifest bytes unverified, and
+"the bytes being evaluated are the bytes the key holder signed" did not hold
+for it. `Verify` now refuses such an envelope with `:invalid_signature` before
+this check runs. See
+[2026-11-26-plugin-trust-verifies-before-eval.md](2026-11-26-plugin-trust-verifies-before-eval.md).
 
 ## Tradeoffs
 

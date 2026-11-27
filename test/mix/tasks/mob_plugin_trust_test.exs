@@ -45,6 +45,10 @@ defmodule Mix.Tasks.Mob.Plugin.TrustTest do
      deps_paths: deps_paths}
   end
 
+  # The fixture project keeps its deps in <workdir>/deps.
+  defp trust(args, deps, workdir),
+    do: Mix.Tasks.Mob.Plugin.Trust.run_with_deps(args, deps, workdir, Path.join(workdir, "deps"))
+
   test "yes at prompt writes the trust entry", %{
     workdir: workdir,
     pub: pub,
@@ -53,7 +57,7 @@ defmodule Mix.Tasks.Mob.Plugin.TrustTest do
   } do
     send(self(), {:mix_shell_input, :yes?, true})
 
-    Mix.Tasks.Mob.Plugin.Trust.run_with_deps([Atom.to_string(name)], deps, workdir)
+    trust([Atom.to_string(name)], deps, workdir)
 
     expected = %{name => Crypto.fingerprint(pub)}
     assert TrustStore.load_trusted_plugins(workdir) == expected
@@ -66,12 +70,12 @@ defmodule Mix.Tasks.Mob.Plugin.TrustTest do
     deps_paths: deps
   } do
     send(self(), {:mix_shell_input, :yes?, true})
-    Mix.Tasks.Mob.Plugin.Trust.run_with_deps([Atom.to_string(name)], deps, workdir)
+    trust([Atom.to_string(name)], deps, workdir)
 
     first = File.read!(Path.join(workdir, "mob.exs"))
 
     send(self(), {:mix_shell_input, :yes?, true})
-    Mix.Tasks.Mob.Plugin.Trust.run_with_deps([Atom.to_string(name)], deps, workdir)
+    trust([Atom.to_string(name)], deps, workdir)
 
     assert File.read!(Path.join(workdir, "mob.exs")) == first
     assert TrustStore.load_trusted_plugins(workdir) == %{name => Crypto.fingerprint(pub)}
@@ -84,14 +88,14 @@ defmodule Mix.Tasks.Mob.Plugin.TrustTest do
   } do
     send(self(), {:mix_shell_input, :yes?, false})
 
-    Mix.Tasks.Mob.Plugin.Trust.run_with_deps([Atom.to_string(name)], deps, workdir)
+    trust([Atom.to_string(name)], deps, workdir)
 
     assert TrustStore.load_trusted_plugins(workdir) == %{}
   end
 
   test "raises when the plugin isn't a known dep", %{workdir: workdir} do
     assert_raise Mix.Error, ~r/no dependency named/, fn ->
-      Mix.Tasks.Mob.Plugin.Trust.run_with_deps(["mob_unknown"], %{}, workdir)
+      trust(["mob_unknown"], %{}, workdir)
     end
   end
 
@@ -102,7 +106,7 @@ defmodule Mix.Tasks.Mob.Plugin.TrustTest do
     deps_paths: deps
   } do
     send(self(), {:mix_shell_input, :yes?, false})
-    Mix.Tasks.Mob.Plugin.Trust.run_with_deps([Atom.to_string(name)], deps, workdir)
+    trust([Atom.to_string(name)], deps, workdir)
     assert_received {:mix_shell, :info, [review]}
 
     assert review =~ "fingerprint:  #{Crypto.fingerprint(pub)}"
@@ -125,12 +129,19 @@ defmodule Mix.Tasks.Mob.Plugin.TrustTest do
       {:ok, marker: marker, side_effect_manifest: side_effect_manifest, plugin_dir: deps[name]}
     end
 
-    defp assert_refused_unevaluated(name, deps, workdir, marker, message) do
+    defp assert_refused_unevaluated(name, deps, workdir, marker, message, deps_dir \\ nil) do
       mob_exs = File.read!(Path.join(workdir, "mob.exs"))
+      deps_dir = deps_dir || Path.join(workdir, "deps")
 
-      assert_raise Mix.Error, message, fn ->
-        Mix.Tasks.Mob.Plugin.Trust.run_with_deps([Atom.to_string(name)], deps, workdir)
-      end
+      error =
+        assert_raise Mix.Error, message, fn ->
+          Mix.Tasks.Mob.Plugin.Trust.run_with_deps(
+            [Atom.to_string(name)],
+            deps,
+            workdir,
+            deps_dir
+          )
+        end
 
       refute File.exists?(marker), "the manifest was evaluated before verification"
       refute_received {:mix_shell, :yes?, _}
@@ -140,6 +151,7 @@ defmodule Mix.Tasks.Mob.Plugin.TrustTest do
       # marker, so its absence above means the manifest never ran.
       Code.eval_file(Path.join(deps[name], "priv/mob_plugin.exs"))
       assert File.exists?(marker)
+      error
     end
 
     defp write_manifest!(plugin_dir, source),
@@ -213,6 +225,20 @@ defmodule Mix.Tasks.Mob.Plugin.TrustTest do
       )
     end
 
+    test "no priv/mob_plugin.pub and no signature: refused as unsigned", ctx do
+      File.rm!(Path.join(ctx.plugin_dir, "priv/mob_plugin.pub"))
+      File.rm!(Sign.signature_path(ctx.plugin_dir))
+      write_manifest!(ctx.plugin_dir, ctx.side_effect_manifest)
+
+      assert_refused_unevaluated(
+        ctx.plugin_name,
+        ctx.deps_paths,
+        ctx.workdir,
+        ctx.marker,
+        ~r/is not signed.*acknowledge_unsafe_plugins, \[:mob_trust_demo\]/s
+      )
+    end
+
     test "a path dependency changed after signing: refused, told to re-sign in place", ctx do
       outside = Path.join(ctx.workdir, "checkouts/plugin")
       File.mkdir_p!(Path.dirname(outside))
@@ -226,6 +252,39 @@ defmodule Mix.Tasks.Mob.Plugin.TrustTest do
         ctx.marker,
         ~r/does not verify.*path dependency.*re-sign it in its directory/s
       )
+    end
+
+    # An umbrella child's deps, or `deps_path:` / MIX_DEPS_PATH, live outside
+    # <project>/deps; a dependency there is still not a path dependency.
+    test "a dependency in a non-default deps dir changed after signing: told to reinstall",
+         ctx do
+      deps_dir = Path.join(ctx.workdir, "umbrella_deps")
+      moved = Path.join(deps_dir, "mob_trust_demo")
+      File.mkdir_p!(deps_dir)
+      File.rename!(ctx.plugin_dir, moved)
+      write_manifest!(moved, ctx.side_effect_manifest)
+
+      error =
+        assert_refused_unevaluated(
+          ctx.plugin_name,
+          %{ctx.plugin_name => moved},
+          ctx.workdir,
+          ctx.marker,
+          ~r/mix deps.clean mob_trust_demo && mix deps.get/,
+          deps_dir
+        )
+
+      refute error.message =~ "path dependency"
+    end
+
+    test "no manifest, key or signature (tier 0): told there is no manifest", ctx do
+      File.rm!(Path.join(ctx.plugin_dir, "priv/mob_plugin.exs"))
+      File.rm!(Path.join(ctx.plugin_dir, "priv/mob_plugin.pub"))
+      File.rm!(Sign.signature_path(ctx.plugin_dir))
+
+      assert_raise Mix.Error, ~r/has no priv\/mob_plugin.exs manifest/, fn ->
+        trust([Atom.to_string(ctx.plugin_name)], ctx.deps_paths, ctx.workdir)
+      end
     end
   end
 
@@ -260,7 +319,7 @@ defmodule Mix.Tasks.Mob.Plugin.TrustTest do
   describe "the version shown for review" do
     defp review_output(name, deps, workdir) do
       send(self(), {:mix_shell_input, :yes?, false})
-      Mix.Tasks.Mob.Plugin.Trust.run_with_deps([Atom.to_string(name)], deps, workdir)
+      trust([Atom.to_string(name)], deps, workdir)
       assert_received {:mix_shell, :info, [review]}
       review
     end
@@ -298,6 +357,30 @@ defmodule Mix.Tasks.Mob.Plugin.TrustTest do
       refute review =~ "(unset)"
     end
 
+    test "a dependency in a non-default deps dir is not labelled a path dependency", %{
+      workdir: workdir,
+      plugin_name: name,
+      deps_paths: deps
+    } do
+      deps_dir = Path.join(workdir, "umbrella_deps")
+      moved = Path.join(deps_dir, "mob_trust_demo")
+      File.mkdir_p!(deps_dir)
+      File.rename!(deps[name], moved)
+
+      send(self(), {:mix_shell_input, :yes?, false})
+
+      Mix.Tasks.Mob.Plugin.Trust.run_with_deps(
+        [Atom.to_string(name)],
+        %{name => moved},
+        workdir,
+        deps_dir
+      )
+
+      assert_received {:mix_shell, :info, [review]}
+
+      assert review =~ "version:      0.1.0\n"
+    end
+
     test "a path dependency with no readable version still names its location", %{
       workdir: workdir,
       priv: priv,
@@ -326,7 +409,7 @@ defmodule Mix.Tasks.Mob.Plugin.TrustTest do
     deps_paths: deps
   } do
     send(self(), {:mix_shell_input, :yes?, true})
-    Mix.Tasks.Mob.Plugin.Trust.run_with_deps([Atom.to_string(name)], deps, workdir)
+    trust([Atom.to_string(name)], deps, workdir)
     assert TrustStore.load_trusted_plugins(workdir) == %{name => Crypto.fingerprint(pub)}
 
     Mix.Tasks.Mob.Plugin.Untrust.run_in([Atom.to_string(name)], workdir)

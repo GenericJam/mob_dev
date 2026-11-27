@@ -32,19 +32,25 @@ defmodule Mix.Tasks.Mob.Plugin.Trust do
   @impl Mix.Task
   def run(args) do
     Mix.Task.run("loadpaths")
-    run_with_deps(args, Mix.Project.deps_paths(), File.cwd!())
+    run_with_deps(args, Mix.Project.deps_paths(), File.cwd!(), Mix.Project.deps_path())
   end
 
   @doc false
-  # Public for tests: lets the test inject a deps_paths map and project
-  # dir without having to fake out Mix.Project.
-  @spec run_with_deps([String.t()], %{atom() => Path.t()}, Path.t()) :: :ok
-  def run_with_deps(args, deps_paths, project_dir) do
+  # Public for tests: lets the test inject a deps_paths map, project dir and
+  # deps dir without having to fake out Mix.Project. `deps_dir` is the
+  # project's `Mix.Project.deps_path/0` (an umbrella child's is the umbrella's,
+  # and `deps_path:`/`MIX_DEPS_PATH` move it); a dependency outside it is a
+  # path dependency.
+  @spec run_with_deps([String.t()], %{atom() => Path.t()}, Path.t(), Path.t()) :: :ok
+  def run_with_deps(args, deps_paths, project_dir, deps_dir) do
     name = parse_name!(args)
     plugin_dir = resolve_dep!(name, deps_paths)
-    path_dep? = path_dep?(plugin_dir, project_dir)
-    pub = load_pubkey!(plugin_dir, name, path_dep?)
+    path_dep? = path_dep?(plugin_dir, deps_dir)
+    # Verify first: its errors say what the plugin lacks (an unsigned plugin
+    # with no key is unsigned, not keyless; a tier-0 one has no manifest), and
+    # the key read below is the one that just verified.
     manifest = load_verified_manifest!(plugin_dir, name, path_dep?)
+    pub = load_pubkey!(plugin_dir, name, path_dep?)
     fingerprint = Crypto.fingerprint(pub)
 
     existing = Map.get(TrustStore.load_trusted_plugins(project_dir), name)
@@ -52,7 +58,7 @@ defmodule Mix.Tasks.Mob.Plugin.Trust do
     print_summary(
       name,
       manifest,
-      version(manifest, plugin_dir, project_dir),
+      version(manifest, plugin_dir, deps_dir),
       fingerprint,
       existing
     )
@@ -207,22 +213,22 @@ defmodule Mix.Tasks.Mob.Plugin.Trust do
   # What to show as the plugin's version. Manifests rarely declare one, so
   # this falls back to the package's own version: Hex metadata, else the
   # `version:` in its mix.exs, read without evaluating it (the plugin is not
-  # trusted yet). A dependency outside the project's deps/ is a path
-  # dependency, and its location is shown too (MOB-334). Public for testing.
+  # trusted yet). A dependency outside the project's deps dir
+  # (`Mix.Project.deps_path/0`) is a path dependency, and its location is
+  # shown too (MOB-334). Public for testing.
   @spec version(map(), Path.t(), Path.t()) :: String.t()
-  def version(manifest, plugin_dir, project_dir) do
+  def version(manifest, plugin_dir, deps_dir) do
     declared = manifest[:version] || hex_version(plugin_dir) || mix_exs_version(plugin_dir)
 
-    if path_dep?(plugin_dir, project_dir) do
+    if path_dep?(plugin_dir, deps_dir) do
       "#{declared || "(not declared)"} (path dependency: #{plugin_dir})"
     else
       declared || "(unset)"
     end
   end
 
-  defp path_dep?(plugin_dir, project_dir) do
-    deps_dir = Path.expand("deps", project_dir)
-    not String.starts_with?(Path.expand(plugin_dir), deps_dir <> "/")
+  defp path_dep?(plugin_dir, deps_dir) do
+    not String.starts_with?(Path.expand(plugin_dir), Path.expand(deps_dir) <> "/")
   end
 
   defp hex_version(plugin_dir) do

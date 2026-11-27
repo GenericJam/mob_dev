@@ -3,7 +3,7 @@
 - Date: 2026-11-26
 - Status: accepted
 - Linear: MOB-550
-- Amends: [2026-09-11-plugin-envelope-v2-verify-before-eval.md](2026-09-11-plugin-envelope-v2-verify-before-eval.md) ("Author-side paths still eval before verify")
+- Amends: [2026-09-11-plugin-envelope-v2-verify-before-eval.md](2026-09-11-plugin-envelope-v2-verify-before-eval.md) ("Author-side paths still eval before verify"); [2026-09-30-plugin-signature-coverage.md](2026-09-30-plugin-signature-coverage.md) ("Evaluation order")
 
 ## Context
 
@@ -27,13 +27,26 @@ run, and this task contradicted it.
    v1 envelope is refused with a message naming the remedy, and `mob.exs` is
    not touched. `acknowledged_unsafe` is not passed: trust records a key
    fingerprint, so an unsigned plugin has nothing to trust. Unsigned plugins
-   are used through `config :mob, :acknowledge_unsafe_plugins`, as before.
+   are used through `config :mob, :acknowledge_unsafe_plugins`, as before. A
+   plugin missing both its key and its signature is unsigned and gets that
+   remedy, not the "generate a key" one.
+3. `Verify` requires a present `priv/mob_plugin.exs` to be one of the signed
+   files, and refuses with `:invalid_signature` before anything evaluates it
+   (including the build-input coverage check, which evaluates the manifest).
+   Rehashing covers only the files an envelope lists, so a validly signed
+   envelope that left the manifest out would otherwise have let its bytes
+   through unverified. Every `mix mob.plugin.sign` since v2 lists it, so no
+   genuine signature is affected. This applies to every caller of `Verify`,
+   not just trust.
+4. Which remedy a refusal names depends on whether the plugin is a path
+   dependency: one outside `Mix.Project.deps_path/0`, not outside
+   `<project>/deps`, so an umbrella child's deps and a moved `deps_path:` /
+   `MIX_DEPS_PATH` are still Hex/git dependencies.
 
-Signature verification here proves the files the envelope lists (every
-`mix mob.plugin.sign` since v2 lists the manifest) are the ones the holder of
-the shipped key signed. It does not prove who holds the key; the fingerprint
-shown in the review, which the user confirms, is what decides that, exactly as
-before.
+Signature verification here proves the files the envelope lists, the
+manifest among them, are the ones the holder of the shipped key signed. It
+does not prove who holds the key; the fingerprint shown in the review, which
+the user confirms, is what decides that, exactly as before.
 
 ## Audit of the other host-side manifest evaluations
 
