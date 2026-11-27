@@ -32,6 +32,17 @@ defmodule MobDev.ReleaseScriptTest do
     end
   end
 
+  describe "bundle resources" do
+    # The usage descriptions' translations (ios/<lang>.lproj/InfoPlist.strings)
+    # and the privacy manifest are only read from the bundle's root; without
+    # them App Store Connect asks for required-reason APIs (ITMS-91053).
+    test "copies ios/*.lproj and ios/PrivacyInfo.xcprivacy into the bundle", %{sh: sh} do
+      assert sh =~ ~s|for LPROJ in ios/*.lproj; do|
+      assert sh =~ ~s|cp -R "$LPROJ" "$APP/"|
+      assert sh =~ ~s|cp ios/PrivacyInfo.xcprivacy "$APP/"|
+    end
+  end
+
   describe "Apple bundle policy: strip disallowed binaries" do
     # Apple error 90171 — `.so`, `.a`, and standalone executables in the
     # bundle. Apple permits exactly one Mach-O per `.app` (the

@@ -4481,6 +4481,7 @@ defmodule MobDev.NativeBuild do
 
       true ->
         write_bundle_info_plist!(app_path, cfg, bundle_id)
+        copy_bundle_resources!(app_path)
         if File.dir?("ios/Assets.xcassets/AppIcon.appiconset"), do: compile_ios_icons(app_path)
         announce_bundle_id(bundle_id)
         {:ok, app_path}
@@ -4503,6 +4504,25 @@ defmodule MobDev.NativeBuild do
     apply_fonts_to_ios_bundle!(info_plist, app_path)
     plist_set!(info_plist, ":CFBundleIdentifier", bundle_id)
     info_plist
+  end
+
+  @doc false
+  # The app's localized resources and privacy manifest, copied to the root of
+  # the bundle at `app_path`, where iOS and App Store Connect look for them:
+  # each `ios/<lang>.lproj` directory (e.g. `fr.lproj/InfoPlist.strings`, the
+  # usage descriptions in French) and `ios/PrivacyInfo.xcprivacy`. Either may
+  # be absent. The iOS release copies the same (`release_device.sh`). Public
+  # for testing.
+  @spec copy_bundle_resources!(Path.t()) :: :ok
+  def copy_bundle_resources!(app_path) do
+    for lproj <- Path.wildcard("ios/*.lproj"), File.dir?(lproj) do
+      File.cp_r!(lproj, Path.join(app_path, Path.basename(lproj)))
+    end
+
+    if File.regular?("ios/PrivacyInfo.xcprivacy"),
+      do: File.cp!("ios/PrivacyInfo.xcprivacy", Path.join(app_path, "PrivacyInfo.xcprivacy"))
+
+    :ok
   end
 
   # The installed bundle id is what every follow-up command needs (`xcrun
@@ -4800,6 +4820,7 @@ defmodule MobDev.NativeBuild do
 
       true ->
         info_plist = write_bundle_info_plist!(app_path, cfg, bundle_id)
+        copy_bundle_resources!(app_path)
         plist_set!(info_plist, ":CFBundleExecutable", app_name)
         plist_set!(info_plist, ":CFBundleName", app_name)
         announce_bundle_id(bundle_id)

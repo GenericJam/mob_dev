@@ -992,6 +992,18 @@ defmodule MobDev.Release do
       /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable $APP_NAME"   "$APP/Info.plist"
       /usr/libexec/PlistBuddy -c "Set :CFBundleName $APP_NAME"         "$APP/Info.plist"
 
+      # The app's localized resources (ios/<lang>.lproj, e.g. the French usage
+      # descriptions in fr.lproj/InfoPlist.strings) and its privacy manifest
+      # (ios/PrivacyInfo.xcprivacy), at the bundle's root where iOS and App
+      # Store Connect look for them, as the dev build copies them
+      # (NativeBuild.copy_bundle_resources!/1).
+      for LPROJ in ios/*.lproj; do
+          if [ -d "$LPROJ" ]; then cp -R "$LPROJ" "$APP/"; fi
+      done
+      if [ -f ios/PrivacyInfo.xcprivacy ]; then
+          cp ios/PrivacyInfo.xcprivacy "$APP/"
+      fi
+
       # mob.exs ios_target_devices / ios_orientations / multi_window
       # (MobDev.IosLayoutPlist): one PlistBuddy command per line. A Delete of an
       # absent key fails harmlessly; a Print checks that multi_window: true has a
