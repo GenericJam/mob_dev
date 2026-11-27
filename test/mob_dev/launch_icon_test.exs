@@ -5,7 +5,9 @@ defmodule MobDev.LaunchIconTest do
 
   @moduletag :tmp_dir
 
-  # A catalog shaped like mob_new's: AppIcon.appiconset with one icon PNG.
+  # A catalog shaped like mob_new's (AppIcon.appiconset with the 1024 icon),
+  # plus a larger dark variant that is not a PNG at all: picking it instead of
+  # the plain icon would fail the rounding and leave the catalog plain.
   defp catalog_with_icon(tmp_dir) do
     catalog = Path.join(tmp_dir, "Assets.xcassets")
     set = Path.join(catalog, "AppIcon.appiconset")
@@ -16,7 +18,14 @@ defmodule MobDev.LaunchIconTest do
       Path.join(set, "icon_1024.png")
     )
 
-    File.write!(Path.join(set, "Contents.json"), ~s({"images":[],"info":{"version":1}}))
+    File.write!(Path.join(set, "dark_1024.png"), :binary.copy("x", 2_000_000))
+
+    File.write!(Path.join(set, "Contents.json"), ~s({"images":[
+      {"filename":"icon_1024.png","idiom":"universal","platform":"ios","size":"1024x1024"},
+      {"appearances":[{"appearance":"luminosity","value":"dark"}],
+       "filename":"dark_1024.png","idiom":"universal","platform":"ios","size":"1024x1024"}
+    ],"info":{"version":1}}))
+
     catalog
   end
 
