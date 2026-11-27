@@ -706,6 +706,10 @@ narrowing functions). Don't make them private:
   `MobDev.Server.DashboardLive.deploy_mode/1` (the deploy-mode whitelist;
   client strings never become atoms). See
   `decisions/2026-11-26-dev-dashboard-per-run-access-token.md`
+- `MobDev.GooglePlay.OAuth.open_listener/0`, `await_callback/3`,
+  `parse_callback_request/2`, `token_request_body/5` and `sign_in/6` (the
+  Google sign-in's loopback listener, `state` check and PKCE verifier; MOB-555).
+  See `decisions/2026-11-27-google-oauth-loopback-state-pkce.md`
 
 If you make any of these private, every downstream test breaks loudly — but
 you'll lose the ability to evolve the parsers safely.

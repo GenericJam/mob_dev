@@ -241,7 +241,7 @@ defmodule MobDev.GooglePlay.SetupWizard do
 
   defp step_oauth(shell, true = _dry?) do
     shell.info(dry_tag() <> " Would open browser to Google OAuth consent screen")
-    shell.info(dry_tag() <> " Would listen on a random localhost port for the callback")
+    shell.info(dry_tag() <> " Would listen on a random 127.0.0.1 port for the callback")
     shell.info(dry_tag() <> " Would exchange authorization code for access token")
     {:ok, "dry_run_token"}
   end
