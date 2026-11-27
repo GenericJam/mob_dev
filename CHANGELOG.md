@@ -15,6 +15,29 @@
   same image in the same place. An app whose icon has no PNG, or a Mac where
   `xcrun swift` fails, gets the plain launch screen as before.
 
+### Security
+
+- **`mix mob.plugin.trust` verifies a plugin's signature before it reads its
+  manifest** (MOB-550, #168). It loads `priv/mob_plugin.exs` through the same
+  verified path the build uses, and refuses an unsigned or tampered plugin or
+  a legacy v1 envelope without touching `mob.exs`. Unsigned plugins stay
+  usable in development through `config :mob, :acknowledge_unsafe_plugins`.
+- **The `mix mob.server` dashboard needs the run's access token** (MOB-551,
+  #169). Each run generates its secrets; the printed URLs and the QR code
+  carry `?token=…`, and requests or LiveView sockets without it are refused.
+  `--local` serves on localhost only.
+- **No implicit fallback to the public `mob_secret` distribution cookie**
+  (MOB-552, #170). Without `--cookie`, mob_dev presents only the project's
+  private cookie. Apps built against a mob from before MOB-49 need
+  `--cookie mob_secret` (with a warning to redeploy).
+- **Google Play sign-in binds its OAuth callback to loopback, checks `state`
+  and uses PKCE** (MOB-555, #171).
+- **Downloaded runtimes are pinned by SHA-256, and archive extraction is
+  hardened** (MOB-553, #172): OTP runtimes, MLX, Python-Apple-support,
+  Chaquopy and TFLite downloads are checked against pinned hashes, so the
+  first build after upgrading downloads them again; the release scripts
+  refuse to overwrite an existing asset.
+
 ### Fixed
 
 - **`mix mob.release --ios` bundles the activated plugins' Info.plist keys.**
