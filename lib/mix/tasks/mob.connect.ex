@@ -28,7 +28,11 @@ defmodule Mix.Tasks.Mob.Connect do
     * `--name`     — local node name for this session (default: `mob_dev@127.0.0.1`,
       or `mob_dev_<os pid>@127.0.0.1` when another process on this Mac holds it)
     * `--cookie`   — use this Erlang cookie instead of the app's private one. Only
-      needed for an app that sets a custom `cookie:` in `Mob.Dist.ensure_started/1`
+      needed for an app that sets a custom `cookie:` in `Mob.Dist.ensure_started/1`,
+      or, as `--cookie mob_secret`, for an app built against a mob from before
+      MOB-49 that you can't redeploy yet. mob_dev never tries that public cookie
+      on its own; given, it is tried after the private cookie, and the private
+      one stays this node's own cookie and the one handed to restarted apps.
     * `--ios-only` / `--android-only` — restrict discovery to one platform. iOS-only
       development on a Mac with no Android platform-tools installed works without
       this flag (adb's absence is handled gracefully), but `--ios-only` skips the
@@ -128,8 +132,10 @@ defmodule Mix.Tasks.Mob.Connect do
   `mob.connect` hands it to the app when it restarts it: Android reads it from a
   file in the app's private storage, iOS from the launch environment. An iOS app
   started from Xcode or the home screen has an ephemeral random cookie until
-  `mob.connect` restarts it. Apps built against a mob from before MOB-49 still
-  use the public `mob_secret`; `mob.connect` falls back to it with a warning.
+  `mob.connect` restarts it. Apps built against a mob from before MOB-49 accept
+  only the public `mob_secret`, which `mob.connect` does not present unless you
+  pass `--cookie mob_secret` (it then warns); redeploy them to move them to the
+  private cookie.
 
   ## Under the hood
 

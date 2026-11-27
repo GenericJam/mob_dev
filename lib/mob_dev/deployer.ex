@@ -66,8 +66,12 @@ defmodule MobDev.Deployer do
     ios_device_id = Keyword.get(opts, :ios_device, nil)
     beam_flags = Keyword.get(opts, :beam_flags, nil)
     beam_dirs = collect_beam_dirs()
-    # The private cookie first, then the legacy one a pre-MOB-49 app still
-    # uses; new launches and Android's cookie file always get the private one.
+    # Only the private cookie (MOB-552). An app built against a pre-MOB-49 mob
+    # accepts just the public legacy one, so dist doesn't reach it and it takes
+    # the filesystem path: the BEAMs are written and, unless `--no-restart`, the
+    # app restarts. That moves an Android app to the private cookie once it runs
+    # the updated mob. On iOS (simulator or device) the native launcher picks
+    # the cookie, so that takes `--native`.
     cookies = DistCookie.candidates()
     dist_cookie = hd(cookies)
 
@@ -84,7 +88,7 @@ defmodule MobDev.Deployer do
       # get BEAMs via RPC, the rest fall back to adb/cp + restart.
       # force_fs: true skips dist and always writes to the filesystem — required
       # after a native build/install where the old BEAM process is dead.
-      dist_nodes = if force_fs, do: [], else: all |> connect_dist(cookies) |> hot_load_nodes()
+      dist_nodes = if force_fs, do: [], else: connect_dist(all, cookies)
 
       # Manual overrides from `mix mob.deploy --dist-port N --node-suffix X`.
       # When set, all targeted devices share the same port/suffix (the user
@@ -1035,7 +1039,7 @@ defmodule MobDev.Deployer do
   end
 
   # Mob.Dist (MOB-49) reads this at start; an older mob ignores it and keeps
-  # the public cookie, which connect falls back to.
+  # the public cookie, which only an explicit `--cookie` reaches (MOB-552).
   defp write_dist_cookie_android(serial, cookie) do
     case Android.write_dist_cookie(serial, android_package(), app_name(), cookie) do
       :ok ->
@@ -1376,7 +1380,9 @@ defmodule MobDev.Deployer do
 
     if wifi_only? do
       {:error,
-       "device only reachable via WiFi (#{udid}) — use `mix mob.push` for BEAM-only updates, or connect via USB for a native deploy"}
+       "device only reachable via WiFi (#{udid}) — connect via USB to deploy. An app " <>
+         "built against a mob from before MOB-49 never answers over dist on this project's " <>
+         "private cookie; it needs `mix mob.deploy --native` over USB"}
     else
       do_deploy_ios_physical(device, beam_dirs, %{
         udid: udid,
@@ -1806,8 +1812,7 @@ defmodule MobDev.Deployer do
   # ── Dist push ────────────────────────────────────────────────────────────────
 
   # Try to connect via Erlang dist to each discovered device. Returns the
-  # connected nodes with the cookie each accepted. Devices that don't respond
-  # are left for the adb fallback.
+  # connected nodes. Devices that don't respond are left for the adb fallback.
   defp connect_dist(devices, cookies) do
     ensure_local_dist(hd(cookies))
 
@@ -1815,27 +1820,12 @@ defmodule MobDev.Deployer do
       node = Device.node_name(device)
 
       case DistCookie.connect(node, cookies) do
-        {:ok, cookie} -> [{device, node, cookie}]
+        {:ok, _cookie} -> [node]
         :error -> []
       end
     end)
   rescue
     _ -> []
-  end
-
-  @doc false
-  # Which connected nodes take the hot-load path. A node that accepted only
-  # the legacy cookie is running a `Mob.Dist` from before MOB-49: hot loading
-  # the new mob into it would leave its cookie and all-interface listener as
-  # they are, because `Mob.Dist` only runs at start. It takes the filesystem
-  # path instead, which writes the private cookie and restarts the app. A
-  # physical iPhone stays on the hot-load path: its filesystem write is unsafe
-  # from here (see `persistable?/1`), and only `--native` moves it anyway.
-  @spec hot_load_nodes([{Device.t(), node(), atom()}]) :: [node()]
-  def hot_load_nodes(connected) do
-    for {device, node, cookie} <- connected,
-        cookie != DistCookie.legacy_cookie() or not persistable?(device),
-        do: node
   end
 
   # A taken default name (another mob.connect or deploy on this Mac) falls back

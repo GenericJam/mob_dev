@@ -27,7 +27,10 @@ defmodule Mix.Tasks.Mob.Attest do
                       `mix mob.deploy` pushes, which is the only scope that
                       cannot drift from what was actually shipped
     * `--node NAME` — attest one node instead of every connected one
-    * `--cookie C`  — use this cookie instead of the app's private one
+    * `--cookie C`  — use this cookie instead of the app's private one.
+                      `mob_secret` (apps built against a mob from before
+                      MOB-49) is tried after the private cookie instead; any
+                      other value is used alone
     * `--json`      — machine-readable result on stdout, progress on stderr
 
   ## Exit status
@@ -77,11 +80,19 @@ defmodule Mix.Tasks.Mob.Attest do
         Run `mix mob.connect --no-iex` first. Reporting success here would be
         the failure this task exists to catch: a check that could not run is
         not a check that passed.
+        #{cookie_hint(opts)}\
         """)
 
       {nodes, down} ->
         results = Enum.map(nodes, &attest_node(&1, opts))
         report(results, down, opts)
+    end
+  end
+
+  defp cookie_hint(opts) do
+    case MobDev.DistCookie.connect_failure_hint(opts[:cookie]) do
+      nil -> ""
+      hint -> "\n#{hint}\n"
     end
   end
 

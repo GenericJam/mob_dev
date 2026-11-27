@@ -108,8 +108,9 @@ defmodule MobDev.DistCookieTest do
   end
 
   describe "candidates/2" do
-    test "private cookie first, then the legacy public one" do
-      assert DistCookie.candidates(nil, fn -> :private end) == [:private, :mob_secret]
+    # MOB-552: the public legacy cookie is never presented implicitly.
+    test "without an explicit cookie, the private cookie is the only candidate" do
+      assert DistCookie.candidates(nil, fn -> :private end) == [:private]
     end
 
     test "an explicit cookie is the only candidate" do
@@ -118,6 +119,28 @@ defmodule MobDev.DistCookieTest do
       assert DistCookie.candidates(" chosen ", never) == [:chosen]
       assert DistCookie.candidates(:chosen, never) == [:chosen]
       assert_raise Mix.Error, ~r/1 to 255 bytes/, fn -> DistCookie.candidates("  ", never) end
+    end
+
+    # The first candidate becomes the Mac node's default cookie and the cookie
+    # handed to restarted apps; the public one must never be either.
+    test "an explicit legacy cookie is honoured, after the private one" do
+      assert DistCookie.candidates("mob_secret", fn -> :private end) == [:private, :mob_secret]
+      assert DistCookie.candidates(:mob_secret, fn -> :private end) == [:private, :mob_secret]
+    end
+  end
+
+  describe "connect_failure_hint/1" do
+    test "without an explicit cookie, says how to reach a legacy app" do
+      hint = DistCookie.connect_failure_hint(nil)
+
+      assert hint =~ "private cookie"
+      assert hint =~ "--cookie mob_secret"
+      assert hint =~ "mix mob.deploy"
+    end
+
+    test "an explicit cookie gets no hint: the user chose it" do
+      assert DistCookie.connect_failure_hint("custom") == nil
+      assert DistCookie.connect_failure_hint("mob_secret") == nil
     end
   end
 end
@@ -170,20 +193,30 @@ defmodule MobDev.DistCookieConnectTest do
 
     output =
       capture_io(:stderr, fn ->
-        assert DistCookie.connect(node, [:private_cookie_a, :mob_secret]) ==
-                 {:ok, :private_cookie_a}
+        assert DistCookie.connect(node, [:private_cookie_a]) == {:ok, :private_cookie_a}
       end)
 
     assert node in Node.list()
     assert output == ""
   end
 
-  test "an app on the legacy cookie still connects, with a warning to redeploy" do
+  # MOB-552: without `--cookie`, mob_dev never presents the public cookie.
+  test "an app on the legacy cookie is not reached without an explicit cookie" do
     node = start_peer(:mob_secret)
+    candidates = DistCookie.candidates(nil, fn -> :private_cookie_b end)
+
+    assert DistCookie.connect(node, candidates) == :error
+    refute node in Node.list()
+    assert :erlang.get_cookie(node) == :private_cookie_b
+  end
+
+  test "an explicit --cookie mob_secret reaches a legacy app, with a warning to redeploy" do
+    node = start_peer(:mob_secret)
+    candidates = DistCookie.candidates("mob_secret", fn -> :private_cookie_f end)
 
     output =
       capture_io(:stderr, fn ->
-        assert DistCookie.connect(node, [:private_cookie_b, :mob_secret]) == {:ok, :mob_secret}
+        assert DistCookie.connect(node, candidates) == {:ok, :mob_secret}
       end)
 
     assert node in Node.list()
@@ -191,10 +224,16 @@ defmodule MobDev.DistCookieConnectTest do
     assert output =~ "mix mob.deploy"
   end
 
-  test "an explicit cookie gets no legacy fallback" do
-    node = start_peer(:mob_secret)
-    assert DistCookie.connect(node, [:explicit_cookie]) == :error
-    refute node in Node.list()
+  test "with --cookie mob_secret, an up-to-date app still connects on its private cookie" do
+    node = start_peer(:private_cookie_g)
+    candidates = DistCookie.candidates("mob_secret", fn -> :private_cookie_g end)
+
+    output =
+      capture_io(:stderr, fn ->
+        assert DistCookie.connect(node, candidates) == {:ok, :private_cookie_g}
+      end)
+
+    assert output == ""
   end
 
   # A per-node cookie also authenticates connections *from* that node name, so
@@ -207,17 +246,25 @@ defmodule MobDev.DistCookieConnectTest do
   end
 
   # OTP reports an existing connection as success without a handshake, so a
-  # second call must not re-try the private cookie and overwrite the legacy one
-  # the node really accepted (reconnects would then fail).
-  test "an already connected legacy node keeps the cookie it accepted" do
+  # later call must not overwrite the cookie the node really accepted
+  # (reconnects would then fail).
+  test "an already connected node keeps the cookie it accepted" do
     node = start_peer(:mob_secret)
-    candidates = [:private_cookie_d, :mob_secret]
 
     capture_io(:stderr, fn ->
-      assert DistCookie.connect(node, candidates) == {:ok, :mob_secret}
+      assert DistCookie.connect(node, [:mob_secret]) == {:ok, :mob_secret}
     end)
 
-    assert DistCookie.connect(node, candidates) == {:ok, :mob_secret}
+    assert DistCookie.connect(node, [:private_cookie_d]) == {:ok, :mob_secret}
     assert :erlang.get_cookie(node) == :mob_secret
+  end
+
+  # MOB-552: the iOS battery bench presents only the cookie it launched the
+  # app with, never the public legacy one.
+  test "the iOS battery bench does not reach a legacy app" do
+    node = start_peer(:mob_secret)
+
+    assert Mix.Tasks.Mob.BatteryBenchIos.dist_connect(node, :private_cookie_e) == :error
+    refute node in Node.list()
   end
 end
