@@ -68,9 +68,10 @@ defmodule MobDev.Deployer do
     beam_dirs = collect_beam_dirs()
     # Only the private cookie (MOB-552). An app built against a pre-MOB-49 mob
     # accepts just the public legacy one, so dist doesn't reach it and it takes
-    # the filesystem path: a write and restart, which moves an Android or
-    # simulator app to the private cookie once it runs the updated mob. On iOS
-    # the cookie is chosen by the native launcher, so that takes `--native`.
+    # the filesystem path: the BEAMs are written and, unless `--no-restart`, the
+    # app restarts. That moves an Android app to the private cookie once it runs
+    # the updated mob. On iOS (simulator or device) the native launcher picks
+    # the cookie, so that takes `--native`.
     cookies = DistCookie.candidates()
     dist_cookie = hd(cookies)
 

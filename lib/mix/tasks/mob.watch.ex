@@ -14,7 +14,10 @@ defmodule Mix.Tasks.Mob.Watch do
   Press Ctrl-C to stop.
 
   Options:
-    --cookie        Use this cookie instead of the app's private one
+    --cookie        Use this cookie instead of the app's private one.
+                    `mob_secret` (apps built against a mob from before MOB-49)
+                    is tried after the private cookie instead; any other value
+                    is used alone
     --debounce      ms to wait after a change before compiling (default: 300)
     --interval      ms between file-change polls (default: 500)
 

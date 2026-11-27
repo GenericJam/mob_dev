@@ -15,7 +15,8 @@ defmodule Mix.Tasks.Mob.Deploy do
   modules are hot-loaded in place with no restart; otherwise the BEAMs are
   written to the device and the app is restarted to pick them up. An app built
   against a pre-MOB-49 mob accepts only the public `mob_secret`, which deploy
-  never presents, so it always takes the write-and-restart path; that moves it
+  never presents, so it always takes the filesystem path: the BEAMs are written
+  and, unless you pass `--no-restart`, the app is restarted. A restart moves it
   to its private cookie once it runs the updated mob, which on iOS takes
   `--native`.
 

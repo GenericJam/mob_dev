@@ -40,9 +40,10 @@ credential to whatever node answered under the expected name.
   explicit cookie they print nothing extra. `mob.deploy`, which has no
   `--cookie`, says in its WiFi-only iPhone error that a legacy app never
   answers and needs `--native` over USB.
-- `mob.deploy` never reaches a legacy app over dist, so it always writes the
-  BEAMs and restarts it; `Deployer.hot_load_nodes/1`, which routed legacy
-  nodes to that path, is gone.
+- `mob.deploy` never reaches a legacy app over dist, so it always takes the
+  filesystem path: it writes the BEAMs and, unless `--no-restart` is given,
+  restarts the app. `Deployer.hot_load_nodes/1`, which routed legacy nodes to
+  that path, is gone.
 - `mix mob.adopt` templates call `Mob.Dist.ensure_started/1` without a
   `cookie:`, so adopted apps use the private cookie mob_dev hands them.
 
