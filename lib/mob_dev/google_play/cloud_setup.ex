@@ -26,6 +26,9 @@ defmodule MobDev.GooglePlay.CloudSetup do
   @service_usage "https://serviceusage.googleapis.com/v1"
   @publisher_api "androidpublisher.googleapis.com"
   @service_account_id "play-publisher"
+  # Waits between key creation attempts while a new service account
+  # propagates (~90 s in total).
+  @key_retry_delays_ms [2_000, 4_000, 8_000, 15_000, 30_000, 30_000]
 
   # ── Projects ─────────────────────────────────────────────────────────────────
 
@@ -38,13 +41,28 @@ defmodule MobDev.GooglePlay.CloudSetup do
   @spec list_projects(String.t()) :: {:ok, [map()]} | {:error, String.t()}
   def list_projects(token) do
     HTTP.ensure_started!()
-    url = "#{@crm}/projects?pageSize=100"
+    url = build_list_projects_url()
 
     case HTTP.get(url, HTTP.json_headers(token)) do
       {:ok, %{"projects" => projects}} -> {:ok, projects}
       {:ok, resp} -> {:ok, Map.get(resp, "projects", [])}
       {:error, _} = err -> err
     end
+  end
+
+  @doc """
+  Builds the Cloud Resource Manager URL that lists the user's projects.
+
+  Uses v3 `projects:search`, which returns every project the caller can
+  access. v3 `projects.list` (`GET /v3/projects`) requires a `parent`
+  (an organization or folder) and fails with "invalid parent name"
+  without one.
+
+  Pure function — useful for testing and debugging.
+  """
+  @spec build_list_projects_url() :: String.t()
+  def build_list_projects_url do
+    "#{@crm}/projects:search?pageSize=100"
   end
 
   @doc """
@@ -69,20 +87,37 @@ defmodule MobDev.GooglePlay.CloudSetup do
     HTTP.ensure_started!()
     url = build_enable_api_url(project_id, @publisher_api)
 
-    case HTTP.post(url, HTTP.json_headers(token), "{}") do
-      {:ok, %{"name" => op_name}} ->
-        poll_operation(token, op_name)
-
-      {:ok, %{"done" => true}} ->
-        :ok
-
-      {:ok, resp} ->
-        {:error, "Unexpected enable API response: #{inspect(resp)}"}
-
-      {:error, _} = err ->
-        err
+    with {:ok, resp} <- HTTP.post(url, HTTP.json_headers(token), "{}") do
+      case classify_enable_response(resp) do
+        {:poll, op_name} -> poll_operation(token, op_name)
+        result -> result
+      end
     end
   end
+
+  @doc """
+  Decides what to do with the long-running operation returned by a Service
+  Usage `:enable` call.
+
+  Returns `:ok` when the operation is already done, `{:poll, op_name}` when it
+  is still running, or `{:error, reason}`.
+
+  `done` is checked before `name`: an operation that completes immediately
+  (e.g. the API is already enabled) comes back with `done: true` and a
+  placeholder name such as `"operations/noop.DONE_OPERATION"`, which the
+  operations endpoint rejects with HTTP 400 "Invalid operation id".
+
+  Pure function — useful for testing and debugging.
+  """
+  @spec classify_enable_response(map()) :: :ok | {:poll, String.t()} | {:error, String.t()}
+  def classify_enable_response(%{"done" => true, "error" => err}),
+    do: {:error, "Operation failed: #{inspect(err)}"}
+
+  def classify_enable_response(%{"done" => true}), do: :ok
+  def classify_enable_response(%{"name" => op_name}), do: {:poll, op_name}
+
+  def classify_enable_response(resp),
+    do: {:error, "Unexpected enable API response: #{inspect(resp)}"}
 
   @doc """
   Builds the Service Usage API URL for enabling a specific service.
@@ -145,7 +180,7 @@ defmodule MobDev.GooglePlay.CloudSetup do
     HTTP.ensure_started!()
     url = "#{@iam}/projects/#{project_id}/serviceAccounts/#{service_account_email}/keys"
 
-    case HTTP.post(url, HTTP.json_headers(token), "{}") do
+    case post_key(url, token, @key_retry_delays_ms) do
       {:ok, %{"privateKeyData" => b64_json}} ->
         save_key_file(b64_json, filename)
 
@@ -156,6 +191,37 @@ defmodule MobDev.GooglePlay.CloudSetup do
         err
     end
   end
+
+  # A service account can take 60 seconds or more to become usable after it
+  # is created; until then IAM answers 404 "does not exist" for it.
+  defp post_key(url, token, delays) do
+    result = HTTP.post(url, HTTP.json_headers(token), "{}")
+
+    case delays do
+      [delay | rest] ->
+        if retry_key_creation?(result) do
+          Process.sleep(delay)
+          post_key(url, token, rest)
+        else
+          result
+        end
+
+      [] ->
+        result
+    end
+  end
+
+  @doc """
+  Whether a key creation result means the service account is not visible yet.
+
+  IAM is eventually consistent: right after `create_service_account/3`, the
+  keys endpoint answers HTTP 404 for the new account.
+
+  Pure function — useful for testing and debugging.
+  """
+  @spec retry_key_creation?({:ok, map()} | {:error, String.t()}) :: boolean()
+  def retry_key_creation?({:error, "HTTP 404: " <> _}), do: true
+  def retry_key_creation?(_), do: false
 
   @doc """
   Decodes a base64url-encoded service account JSON key and saves it to disk.

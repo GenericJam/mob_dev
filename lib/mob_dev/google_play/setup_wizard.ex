@@ -366,7 +366,7 @@ defmodule MobDev.GooglePlay.SetupWizard do
     end
   end
 
-  defp step_grant_access(shell, _token, sa_email, _package_name, true = _dry?) do
+  defp step_grant_access(shell, _token, sa_email, package_name, true = _dry?) do
     shell.info("")
     shell.info(yellow() <> "── Manual step required ──" <> reset())
     shell.info("")
@@ -380,14 +380,34 @@ defmodule MobDev.GooglePlay.SetupWizard do
       dry_tag() <> " Would prompt for developer account ID (the number in the Play Console URL)"
     )
 
-    shell.info(dry_tag() <> " Would POST to Play Developer API accounts.grants.create:")
+    shell.info(dry_tag() <> " Would POST to Play Developer API users.create:")
 
     shell.info(
-      "           androidpublisher.googleapis.com/androidpublisher/v3/accounts/{id}/grants"
+      "           androidpublisher.googleapis.com/androidpublisher/v3/developers/{id}/users"
     )
 
-    shell.info("           grantee: #{sa_email}")
-    shell.info("           permissions: CAN_MANAGE_RELEASES, CAN_ACCESS_DRAFT_APPS")
+    shell.info("           email: #{sa_email}")
+
+    if package_name do
+      shell.info(dry_tag() <> " Would POST to Play Developer API grants.create:")
+
+      shell.info(
+        "           androidpublisher.googleapis.com/androidpublisher/v3/developers/{id}/users/{email}/grants"
+      )
+
+      shell.info("           packageName: #{package_name}")
+
+      shell.info(
+        "           permissions: " <>
+          Enum.join(PlaySetup.release_manager_permissions(:app), ", ")
+      )
+    else
+      shell.info(
+        "           permissions: " <>
+          Enum.join(PlaySetup.release_manager_permissions(:developer), ", ")
+      )
+    end
+
     shell.info(dry_tag() <> " Falls back to printing manual instructions if API grant fails")
     :ok
   end

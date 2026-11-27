@@ -22,6 +22,27 @@ defmodule MobDev.ReleaseScriptTest do
     {:ok, sh: Release.release_device_sh()}
   end
 
+  describe "Mix env" do
+    # A MIX_ENV=prod release compiles into _build/prod; a hard-coded
+    # _build/dev shipped stale dev BEAMs, or none at all.
+    test "copies BEAMs from MOB_BUILD_PATH, never _build/dev", %{sh: sh} do
+      assert sh =~ ~s|BUILD_LIB="${MOB_BUILD_PATH:?MOB_BUILD_PATH not set}/lib"|
+      assert sh =~ ~s|for lib_dir in "$BUILD_LIB"/*/ebin; do|
+      refute sh =~ "_build/dev"
+    end
+  end
+
+  describe "bundle resources" do
+    # The usage descriptions' translations (ios/<lang>.lproj/InfoPlist.strings)
+    # and the privacy manifest are only read from the bundle's root; without
+    # them App Store Connect asks for required-reason APIs (ITMS-91053).
+    test "copies ios/*.lproj and ios/PrivacyInfo.xcprivacy into the bundle", %{sh: sh} do
+      assert sh =~ ~s|for LPROJ in ios/*.lproj; do|
+      assert sh =~ ~s|cp -R "$LPROJ" "$APP/"|
+      assert sh =~ ~s|cp ios/PrivacyInfo.xcprivacy "$APP/"|
+    end
+  end
+
   describe "Apple bundle policy: strip disallowed binaries" do
     # Apple error 90171 — `.so`, `.a`, and standalone executables in the
     # bundle. Apple permits exactly one Mach-O per `.app` (the

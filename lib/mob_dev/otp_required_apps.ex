@@ -47,13 +47,28 @@ defmodule MobDev.OtpRequiredApps do
 
   @doc """
   The apps the `.app` file at `path` needs started or loaded: its
-  `applications` and `included_applications`. `[]` when it can't be read.
+  `applications` and `included_applications`, minus its
+  `optional_applications`. `[]` when it can't be read.
+
+  An optional application is not needed: the app runs without it. Following
+  it would ship whatever happens to be compiled — under `MIX_ENV=prod`, the
+  build tools a `runtime: false` dep such as mob_dev brings (`igniter` through
+  `gettext_sigils`, `plug` through `req`). A project that uses one at runtime
+  lists it as a dependency of its own, and that keeps it.
   """
   @spec app_dependencies(Path.t()) :: [String.t()]
   def app_dependencies(path) do
-    case read_app(path) do
-      {:ok, _name, deps} -> deps
-      :error -> []
+    case :file.consult(String.to_charlist(path)) do
+      {:ok, [{:application, _name, props}]} when is_list(props) ->
+        optional = Keyword.get(props, :optional_applications, [])
+
+        (Keyword.get(props, :applications, []) ++
+           Keyword.get(props, :included_applications, []))
+        |> Enum.reject(&(&1 in optional))
+        |> Enum.map(&to_string/1)
+
+      _ ->
+        []
     end
   end
 

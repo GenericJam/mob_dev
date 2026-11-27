@@ -76,11 +76,10 @@ defmodule MobDev.Release do
       File.write!(script_path, release_device_sh())
       File.chmod!(script_path, 0o755)
 
-      # The script copies every `_build/dev/lib/*/ebin`; the app's own carries
-      # the generated mob_app_config.beam (see MobDev.AppConfig), evaluated for
-      # the Mix env this task runs in.
-      app = to_string(Mix.Project.config()[:app])
-      MobDev.AppConfig.write!(Path.join(["_build", "dev", "lib", app, "ebin"]))
+      # The script copies every `$MOB_BUILD_PATH/lib/*/ebin`; the app's own
+      # carries the generated mob_app_config.beam (see MobDev.AppConfig),
+      # evaluated for the Mix env this task runs in.
+      MobDev.AppConfig.write!(Mix.Project.compile_path())
 
       project_env = project_release_env(project_swift_sources, project_nifs, plugin_archives)
       env = release_env(cfg, otp_root, plugin_env, project_env)
@@ -421,6 +420,9 @@ defmodule MobDev.Release do
       {"MOB_IOS_PROFILE_UUID", cfg[:ios_dist_profile_uuid]},
       {"MOB_APP_NAME", app_name},
       {"MOB_APP_MODULE", app_module},
+      # The current Mix env's build dir (`_build/prod` for a MIX_ENV=prod
+      # release), where the script's `mix compile` writes the BEAMs it ships.
+      {"MOB_BUILD_PATH", Mix.Project.build_path()},
       screenshot_build_env(cfg),
       layout_plist_env(cfg),
       url_types_plist_env(cfg, "ios/Info.plist")
@@ -722,6 +724,7 @@ defmodule MobDev.Release do
     APP_NAME="${MOB_APP_NAME:?MOB_APP_NAME not set}"
     APP_MODULE="${MOB_APP_MODULE:?MOB_APP_MODULE not set}"
     OUTPUT_DIR="${MOB_RELEASE_OUTPUT_DIR:?MOB_RELEASE_OUTPUT_DIR not set}"
+    BUILD_LIB="${MOB_BUILD_PATH:?MOB_BUILD_PATH not set}/lib"
     """ <>
       release_scratch_sh() <>
       "# exqlite's SQLite defines (MobDev.Exqlite, MOB-487)\n" <>
@@ -764,21 +767,21 @@ defmodule MobDev.Release do
       # shims into this (reused) dir for LiveView apps; on -pa they shadow
       # lib/ssl-* and lib/crypto-* (the shim's verify/5 always returned true).
       rm -f "$BEAMS_DIR/ssl.beam" "$BEAMS_DIR/ssl.app" "$BEAMS_DIR/crypto.beam" "$BEAMS_DIR/crypto.app"
-      for lib_dir in _build/dev/lib/*/ebin; do
+      for lib_dir in "$BUILD_LIB"/*/ebin; do
           cp "$lib_dir"/* "$BEAMS_DIR/" 2>/dev/null || true
       done
 
       SQLITE_STATIC_LIB=""
-      if [ -d "_build/dev/lib/exqlite" ]; then
+      if [ -d "$BUILD_LIB/exqlite" ]; then
           EXQLITE_VSN=$(grep '"exqlite"' mix.lock \
               | grep -o '"[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"' | head -1 | tr -d '"')
           [ -z "$EXQLITE_VSN" ] && EXQLITE_VSN=$(grep -o '{vsn,"[^"]*"}' \
-              _build/dev/lib/exqlite/ebin/exqlite.app | grep -o '"[^"]*"' | tr -d '"')
+              "$BUILD_LIB/exqlite/ebin/exqlite.app" | grep -o '"[^"]*"' | tr -d '"')
           EXQLITE_LIB_DIR="$OTP_ROOT/lib/exqlite-${EXQLITE_VSN}"
           rm -rf "$OTP_ROOT/lib/exqlite-"*
           mkdir -p "$EXQLITE_LIB_DIR/ebin" "$EXQLITE_LIB_DIR/priv"
-          cp _build/dev/lib/exqlite/ebin/*.beam "$EXQLITE_LIB_DIR/ebin/"
-          cp _build/dev/lib/exqlite/ebin/exqlite.app "$EXQLITE_LIB_DIR/ebin/"
+          cp "$BUILD_LIB"/exqlite/ebin/*.beam "$EXQLITE_LIB_DIR/ebin/"
+          cp "$BUILD_LIB/exqlite/ebin/exqlite.app" "$EXQLITE_LIB_DIR/ebin/"
 
           EXQLITE_SRC="deps/exqlite/c_src"
           BUILD_DIR_TMP="$MOB_RELEASE_SCRATCH/exqlite"
@@ -988,6 +991,18 @@ defmodule MobDev.Release do
       /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" "$APP/Info.plist"
       /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable $APP_NAME"   "$APP/Info.plist"
       /usr/libexec/PlistBuddy -c "Set :CFBundleName $APP_NAME"         "$APP/Info.plist"
+
+      # The app's localized resources (ios/<lang>.lproj, e.g. the French usage
+      # descriptions in fr.lproj/InfoPlist.strings) and its privacy manifest
+      # (ios/PrivacyInfo.xcprivacy), at the bundle's root where iOS and App
+      # Store Connect look for them, as the dev build copies them
+      # (NativeBuild.copy_bundle_resources!/1).
+      for LPROJ in ios/*.lproj; do
+          if [ -d "$LPROJ" ]; then cp -R "$LPROJ" "$APP/"; fi
+      done
+      if [ -f ios/PrivacyInfo.xcprivacy ]; then
+          cp ios/PrivacyInfo.xcprivacy "$APP/"
+      fi
 
       # mob.exs ios_target_devices / ios_orientations / multi_window
       # (MobDev.IosLayoutPlist): one PlistBuddy command per line. A Delete of an

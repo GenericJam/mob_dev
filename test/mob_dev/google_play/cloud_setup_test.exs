@@ -3,6 +3,29 @@ defmodule MobDev.GooglePlay.CloudSetupTest do
 
   alias MobDev.GooglePlay.CloudSetup
 
+  # ── retry_key_creation?/1 ────────────────────────────────────────────────────
+
+  describe "retry_key_creation?/1" do
+    # Regression: step 5 of `mix mob.setup.google_play` failed when it asked
+    # for a key right after step 4 created the service account.
+    test "retries while a new service account is not visible yet" do
+      result =
+        {:error,
+         "HTTP 404: Service account projects/p/serviceAccounts/play-publisher@p.iam.gserviceaccount.com does not exist."}
+
+      assert CloudSetup.retry_key_creation?(result)
+    end
+
+    test "does not retry other errors" do
+      refute CloudSetup.retry_key_creation?({:error, "HTTP 403: Permission denied"})
+      refute CloudSetup.retry_key_creation?({:error, "HTTP request failed: :timeout"})
+    end
+
+    test "does not retry a success" do
+      refute CloudSetup.retry_key_creation?({:ok, %{"privateKeyData" => "e30="}})
+    end
+  end
+
   # ── build_enable_api_url/2 ───────────────────────────────────────────────────
 
   describe "build_enable_api_url/2" do
@@ -21,6 +44,43 @@ defmodule MobDev.GooglePlay.CloudSetupTest do
     test "appends :enable action" do
       url = CloudSetup.build_enable_api_url("proj", "api.googleapis.com")
       assert String.ends_with?(url, ":enable")
+    end
+  end
+
+  # ── classify_enable_response/1 ───────────────────────────────────────────────
+
+  describe "classify_enable_response/1" do
+    # Regression: polling this placeholder name failed step 3 of
+    # `mix mob.setup.google_play` with HTTP 400 "Invalid operation id".
+    test "treats an immediately done operation as success without polling" do
+      resp = %{"name" => "operations/noop.DONE_OPERATION", "done" => true, "response" => %{}}
+      assert CloudSetup.classify_enable_response(resp) == :ok
+    end
+
+    test "reports the error of an immediately failed operation" do
+      resp = %{"name" => "operations/abc", "done" => true, "error" => %{"code" => 7}}
+      assert {:error, "Operation failed: " <> _} = CloudSetup.classify_enable_response(resp)
+    end
+
+    test "polls a running operation by name" do
+      assert CloudSetup.classify_enable_response(%{"name" => "operations/acf.p2-123"}) ==
+               {:poll, "operations/acf.p2-123"}
+    end
+
+    test "rejects a response that is neither done nor named" do
+      assert {:error, "Unexpected enable API response: " <> _} =
+               CloudSetup.classify_enable_response(%{})
+    end
+  end
+
+  # ── build_list_projects_url/0 ────────────────────────────────────────────────
+
+  describe "build_list_projects_url/0" do
+    # Regression: v3 `GET /projects` requires a `parent` and failed step 2 of
+    # `mix mob.setup.google_play` with "invalid parent name".
+    test "searches all accessible projects with Cloud Resource Manager v3" do
+      assert CloudSetup.build_list_projects_url() ==
+               "https://cloudresourcemanager.googleapis.com/v3/projects:search?pageSize=100"
     end
   end
 

@@ -20,4 +20,45 @@ defmodule MobDev.ReleaseAndroidTest do
       refute String.contains?(path, "src/main/assets")
     end
   end
+
+  describe "exqlite_ebin!/2" do
+    @describetag :tmp_dir
+
+    test "reads exqlite from the given build path, not _build/dev", %{tmp_dir: dir} do
+      ebin = Path.join([dir, "_build", "prod", "lib", "exqlite", "ebin"])
+      File.mkdir_p!(ebin)
+      File.write!(Path.join(ebin, "exqlite.app"), ~s|{application,exqlite,[{vsn,"0.30.1"}]}.|)
+
+      assert {:ok, "0.30.1", ^ebin} =
+               ReleaseAndroid.exqlite_ebin!(
+                 MapSet.new(["exqlite"]),
+                 Path.join([dir, "_build", "prod"])
+               )
+    end
+
+    test "raises when the app ships exqlite but it is not compiled", %{tmp_dir: dir} do
+      assert_raise Mix.Error, ~r/exqlite is a runtime dependency/, fn ->
+        ReleaseAndroid.exqlite_ebin!(MapSet.new(["exqlite"]), Path.join(dir, "_build/prod"))
+      end
+    end
+
+    test "is :none when the app does not ship exqlite (stale lock entry)", %{tmp_dir: dir} do
+      assert :none = ReleaseAndroid.exqlite_ebin!(MapSet.new(["ecto"]), dir)
+    end
+  end
+
+  describe "prune_otp_lib!/2" do
+    @describetag :tmp_dir
+
+    test "removes every version of the lib, and only that lib", %{tmp_dir: dir} do
+      for lib <- ~w(exqlite-0.36.0 exqlite-0.37.0 exqlite_extra-1.0.0 kernel-11.0) do
+        File.mkdir_p!(Path.join([dir, "lib", lib, "ebin"]))
+      end
+
+      assert :ok = ReleaseAndroid.prune_otp_lib!(dir, "exqlite")
+
+      assert dir |> Path.join("lib") |> File.ls!() |> Enum.sort() ==
+               ~w(exqlite_extra-1.0.0 kernel-11.0)
+    end
+  end
 end
