@@ -128,18 +128,23 @@ defmodule MobDev.Server.DashboardLive do
   @impl Phoenix.LiveView
   @spec handle_event(String.t(), map(), Phoenix.LiveView.Socket.t()) ::
           {:noreply, Phoenix.LiveView.Socket.t()}
-  def handle_event("deploy", %{"serial" => serial, "mode" => mode}, socket) do
-    deploying = Map.put(socket.assigns.deploying, serial, String.to_atom(mode))
+  def handle_event("deploy", %{"serial" => serial, "mode" => raw_mode}, socket) do
     device = Enum.find(socket.assigns.devices, &(&1.serial == serial))
 
-    socket =
-      assign(socket,
-        deploying: deploying,
-        deploy_output: Map.put(socket.assigns.deploy_output, serial, [])
-      )
+    case {deploy_mode(raw_mode), device} do
+      {{:ok, mode}, %{platform: platform}} ->
+        socket =
+          assign(socket,
+            deploying: Map.put(socket.assigns.deploying, serial, mode),
+            deploy_output: Map.put(socket.assigns.deploy_output, serial, [])
+          )
 
-    spawn_deploy(serial, String.to_atom(mode), device.platform, self())
-    {:noreply, socket}
+        spawn_deploy(serial, mode, platform, self())
+        {:noreply, socket}
+
+      _unknown_mode_or_device ->
+        {:noreply, socket}
+    end
   end
 
   def handle_event("toggle_watch", _, socket) do
@@ -242,6 +247,14 @@ defmodule MobDev.Server.DashboardLive do
   end
 
   # ── Deploy task ──────────────────────────────────────────────────────────────
+
+  @doc false
+  # The deploy modes the dashboard offers. The mode arrives from the client,
+  # so it is matched against this list, never converted to an atom.
+  @spec deploy_mode(term()) :: {:ok, :update | :first_deploy} | :error
+  def deploy_mode("update"), do: {:ok, :update}
+  def deploy_mode("first_deploy"), do: {:ok, :first_deploy}
+  def deploy_mode(_mode), do: :error
 
   defp spawn_deploy(serial, mode, platform, lv_pid) do
     mix = System.find_executable("mix") || "mix"

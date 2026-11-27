@@ -655,7 +655,9 @@ narrowing functions). Don't make them private:
 - `MobDev.DeviceLeases.parse_status/1`, `current_session/1`, `foreign_claim/2`
   and `partition/2` (which agent-device claims block auto-selection), and
   `MobDev.Plugin.TrustStore.trust_stanza/1` / `Mix.Tasks.Mob.Plugin.Trust.version/3`
-  (the one-entry-per-line trust map and the version shown for review)
+  (the one-entry-per-line trust map and the version shown for review) /
+  `Mix.Tasks.Mob.Plugin.Trust.refusal_message/3` (why trust refuses a plugin whose
+  signature does not verify, and the remedy for a Hex/git vs. a path dependency)
 - `Release.plugin_ios_swift_env/3` and `plugin_ios_swift_env_written/3` (which
   Swift files the iOS release script compiles: the plugins' plus the bootstrap
   that defines `mob_register_plugins`, by the dev path's
@@ -698,6 +700,16 @@ narrowing functions). Don't make them private:
   `NativeBuild.apply_android_url_schemes!/1`,
   `NativeBuild.write_bundle_info_plist!/3` and
   `Mix.Tasks.Mob.Doctor.__project_checks__/0`
+- `Mix.Tasks.Mob.Server.endpoint_config/3` (the dev dashboard's per-run
+  `secret_key_base`, bind address and allowed websocket origins),
+  `MobDev.Server.Auth` (its per-run access token, MOB-551) and
+  `MobDev.Server.DashboardLive.deploy_mode/1` (the deploy-mode whitelist;
+  client strings never become atoms). See
+  `decisions/2026-11-26-dev-dashboard-per-run-access-token.md`
+- `MobDev.GooglePlay.OAuth.open_listener/0`, `await_callback/3`,
+  `parse_callback_request/2`, `token_request_body/5` and `sign_in/6` (the
+  Google sign-in's loopback listener, `state` check and PKCE verifier; MOB-555).
+  See `decisions/2026-11-27-google-oauth-loopback-state-pkce.md`
 
 If you make any of these private, every downstream test breaks loudly — but
 you'll lose the ability to evolve the parsers safely.
@@ -824,8 +836,9 @@ In an `iex --name me@127.0.0.1 -S mix` session, run
 
 The cookie is per app, kept under `~/.mob/dist_cookies/` and handed to the app
 at deploy/connect time (Android: a file in its private storage; iOS: the launch
-environment). An app built against a mob from before MOB-49 still uses the
-public `mob_secret`; mob_dev's tasks fall back to it with a warning. `--name`
+environment). An app built against a mob from before MOB-49 accepts only the
+public `mob_secret`, which mob_dev's tasks never try on their own (MOB-552):
+pass `--cookie mob_secret` explicitly, or redeploy it. `--name`
 (long names) is required when the device node uses a numeric host like
 `@10.0.0.120`.
 

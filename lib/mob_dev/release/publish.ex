@@ -2,8 +2,10 @@ defmodule MobDev.Release.Publish do
   @moduledoc """
   Replaces `scripts/release/publish.sh` — uploads built tarballs to a
   GitHub release tagged `otp-<hash>`. The release is created if it
-  doesn't exist; existing assets with matching names are deleted before
-  upload (`gh release upload` won't replace by default).
+  doesn't exist. Published assets are immutable: if an asset with the
+  same name is already on the release, nothing is uploaded (a rebuilt
+  runtime is published under a new hash). Each uploaded asset's SHA-256
+  is returned as the pin line for `MobDev.Download.Pins`.
 
   ## Why this module carries the most error categories
 
@@ -21,7 +23,9 @@ defmodule MobDev.Release.Publish do
       down. Detail carries the first line of `gh`'s stderr so it's
       obvious what to check on status.github.com.
     * `:precondition_failed` — no tarballs in `out_dir` matching
-      `hash`. Hint points the user at `mix mob.release.tarball all`.
+      `hash`, or an asset of the same name is already on the release.
+      Hint points the user at `mix mob.release.tarball all`, or at a
+      new hash.
     * `:cmd_failed` — fallback for unexpected `gh` failures (e.g.
       malformed tag, write permission denied on a non-our repo).
 
@@ -35,35 +39,45 @@ defmodule MobDev.Release.Publish do
       MobDev.Release.Publish.publish(repo: "fork/mob")    # publish to fork
       MobDev.Release.Publish.publish(assets: ["otp-android"])  # subset
 
-  Returns `{:ok, %{tag, repo, assets}}` on success or a tagged error.
+  Returns `{:ok, %{tag, repo, assets, pins}}` on success or a tagged error.
 
   ## What it does end-to-end
 
     1. Resolve `repo`, `hash`, `out_dir` (env or opts).
-    2. Discover which of the four canonical tarball basenames are
+    2. Discover which of the five canonical tarball basenames are
        present in `out_dir` for this hash. At least one must exist.
-    3. `gh release view otp-<hash>` — exists?
+    3. SHA-256 every tarball to upload.
+    4. `gh release view otp-<hash>` — exists?
        - If not (`release not found`), `gh release create`.
        - If 401/403, `:auth_required`.
        - If 5xx/network, `:infra_unreachable`.
-    4. List the release's existing assets. For each one that overlaps
-       with what we're about to upload, `gh release delete-asset`.
-    5. Single `gh release upload otp-<hash> <paths…>`.
-    6. Verify by re-listing assets — returned in `info.assets`.
+    5. List the release's existing assets. If any overlaps with what we're
+       about to upload, stop with `:precondition_failed`: every released
+       mob_dev pins the bytes behind that URL, so replacing them breaks it.
+    6. Single `gh release upload otp-<hash> <paths…>`.
+    7. Verify by re-listing assets — returned in `info.assets`; the
+       uploaded assets' URL/SHA-256 pairs are in `info.pins`.
   """
 
   alias MobDev.Release.{Errors, Helpers, Shell}
 
   @default_repo "GenericJam/mob"
+  # Every runtime MobDev.OtpDownloader can request, so each one's pin is printed.
   @candidate_basenames [
     "otp-android",
     "otp-android-arm32",
+    "otp-android-x86_64",
     "otp-ios-sim",
     "otp-ios-device"
   ]
 
   @typedoc "Successful publish result."
-  @type info :: %{tag: String.t(), repo: String.t(), assets: [String.t()]}
+  @type info :: %{
+          tag: String.t(),
+          repo: String.t(),
+          assets: [String.t()],
+          pins: [{String.t(), String.t()}]
+        }
 
   @doc "Canonical tarball basenames the publisher knows how to upload."
   @spec candidate_basenames() :: [String.t()]
@@ -85,7 +99,7 @@ defmodule MobDev.Release.Publish do
     * `:assets` — list of tarball basenames to upload. Each may be
       either the bare base (`"otp-android"`) — in which case
       `-<hash>.tar.gz` is appended — or the full filename. Default:
-      auto-discover any of the four canonical names that exist.
+      auto-discover any of the five canonical names that exist.
   """
   @spec publish(keyword()) :: {:ok, info()} | Errors.t()
   def publish(opts \\ []) do
@@ -96,14 +110,21 @@ defmodule MobDev.Release.Publish do
     with {:ok, hash} <- resolve_hash(opts),
          tag = tag_for(hash),
          {:ok, assets} <- resolve_assets(shell, opts, out_dir, hash),
+         {:ok, shas} <- hash_assets(shell, out_dir, assets),
          :ok <- ensure_release(shell, repo, tag, hash),
          {:ok, existing} <- list_assets(shell, repo, tag),
-         :ok <- delete_existing(shell, repo, tag, existing, assets),
+         :ok <- refuse_existing(existing, assets, tag),
          :ok <- upload_assets(shell, repo, tag, out_dir, assets),
          {:ok, uploaded} <- list_assets(shell, repo, tag) do
-      {:ok, %{tag: tag, repo: repo, assets: uploaded}}
+      pins = Enum.zip_with(assets, shas, &{asset_url(repo, tag, &1), &2})
+      {:ok, %{tag: tag, repo: repo, assets: uploaded, pins: pins}}
     end
   end
+
+  @doc "Public download URL of `asset` on release `tag` (the key in `MobDev.Download.Pins`)."
+  @spec asset_url(String.t(), String.t(), String.t()) :: String.t()
+  def asset_url(repo, tag, asset),
+    do: "https://github.com/#{repo}/releases/download/#{tag}/#{asset}"
 
   @doc """
   Asset basenames that exist in `out_dir` for the given `hash`. Returns
@@ -267,17 +288,30 @@ defmodule MobDev.Release.Publish do
     end
   end
 
-  defp delete_existing(shell, repo, tag, existing, planned) do
-    to_delete = Enum.filter(planned, &(&1 in existing))
+  defp hash_assets(shell, out_dir, assets) do
+    results = Enum.map(assets, &shell.sha256(Path.join(out_dir, &1)))
 
-    Enum.reduce_while(to_delete, :ok, fn name, :ok ->
-      argv = ["gh", "release", "delete-asset", tag, name, "--repo", repo, "--yes"]
+    case Enum.find(results, &match?({:error, _}, &1)) do
+      nil -> {:ok, Enum.map(results, fn {:ok, sha} -> sha end)}
+      err -> err
+    end
+  end
 
-      case shell.cmd(argv, []) do
-        {:ok, _} -> {:cont, :ok}
-        err -> {:halt, reclassify(err)}
-      end
-    end)
+  # Every released mob_dev pins the bytes behind an asset URL, so an asset
+  # is never replaced in place. See
+  # decisions/2026-11-26-pinned-runtime-downloads.md.
+  defp refuse_existing(existing, planned, tag) do
+    case Enum.filter(planned, &(&1 in existing)) do
+      [] ->
+        :ok
+
+      clash ->
+        Errors.precondition(
+          "#{Enum.join(clash, ", ")} already on release #{tag}; published assets are " <>
+            "never replaced, because released mob_dev versions pin their sha256. " <>
+            "Publish the rebuilt runtime under a new hash (build_release.md, Step 1)."
+        )
+    end
   end
 
   defp upload_assets(shell, repo, tag, out_dir, assets) do

@@ -255,7 +255,8 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
     ensure_tunnels(device)
 
     # Mob.Dist reads its cookie file once, at start.
-    MobDev.Discovery.Android.write_dist_cookie(device, pkg, app, MobDev.DistCookie.for_project!())
+    dist_cookie = MobDev.DistCookie.for_project!()
+    MobDev.Discovery.Android.write_dist_cookie(device, pkg, app, dist_cookie)
 
     IO.puts("")
     IO.puts("=== Launching app ===")
@@ -300,7 +301,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
           platform: :android,
           node: active_node,
           host: "127.0.0.1",
-          cookie: dist_cookie(active_node),
+          cookie: dist_cookie,
           bundle_id: pkg,
           adb_serial: device,
           require_keep_alive: opts[:no_keep_alive] != true
@@ -346,7 +347,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
         Logger.open(log_path, start_ts_ms: System.monotonic_time(:millisecond))
       end
 
-    reconnector = Reconnector.new(active_node || :unset@unset, dist_cookie(active_node))
+    reconnector = Reconnector.new(active_node || :unset@unset, dist_cookie)
 
     observer =
       DeviceObserver.subscribe(active_node, categories: [:app, :display, :memory])
@@ -992,11 +993,6 @@ defmodule Mix.Tasks.Mob.BatteryBenchAndroid do
   rescue
     _ -> false
   end
-
-  # The cookie the node accepted (the private one, or the legacy cookie of an
-  # app built against an older mob), so later reconnects use it too.
-  defp dist_cookie(nil), do: MobDev.DistCookie.for_project!()
-  defp dist_cookie(node), do: :erlang.get_cookie(node)
 
   # Repeatedly try Node.connect until success or timeout. Used right after
   # `verify_app_running!` to handle the timing window where the device-side

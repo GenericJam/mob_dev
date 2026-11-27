@@ -5,7 +5,7 @@ defmodule Mix.Tasks.Mob.Release.Publish do
   Drives `MobDev.Release.Publish.publish/1` from the CLI. Replaces
   `scripts/release/publish.sh`.
 
-      mix mob.release.publish                          # all 4 default tarballs
+      mix mob.release.publish                          # all 5 default tarballs
       mix mob.release.publish --repo myfork/mob
       mix mob.release.publish --assets otp-android,otp-ios-sim
       mix mob.release.publish --hash abc12345
@@ -20,7 +20,12 @@ defmodule Mix.Tasks.Mob.Release.Publish do
       Default: `$OUT_DIR` or `/tmp`.
     * `--assets BASES` — comma-separated tarball basenames to upload
       (e.g. `otp-android,otp-ios-sim`). Default: auto-discover any of
-      the four canonical names that exist in `--out-dir`.
+      the five canonical names that exist in `--out-dir`.
+
+  An asset already on the release is never replaced (released mob_dev
+  versions pin its SHA-256); the task fails instead. On success it prints
+  the `MobDev.Download.Pins` entries for the uploaded assets, to paste
+  into `lib/mob_dev/download/pins.ex` along with the `@otp_hash` bump.
 
   ## Errors
 
@@ -68,11 +73,17 @@ defmodule Mix.Tasks.Mob.Release.Publish do
       {:ok, info} ->
         Mix.shell().info("    ✓ release #{info.tag} on #{info.repo}")
         Enum.each(info.assets, &Mix.shell().info("       • #{&1}"))
+        Mix.shell().info("    Pin in lib/mob_dev/download/pins.ex:")
+        Enum.each(info.pins, fn {url, sha} -> Mix.shell().info(pin_line(url, sha)) end)
 
       {:error, _} = err ->
         Mix.raise(Errors.format(err))
     end
   end
+
+  @doc false
+  @spec pin_line(String.t(), String.t()) :: String.t()
+  def pin_line(url, sha), do: ~s(    "#{url}" =>\n      "#{sha}",)
 
   defp normalize_assets(opts) do
     case Keyword.fetch(opts, :assets) do

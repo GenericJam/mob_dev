@@ -40,14 +40,25 @@ the bundle id. iOS, Android and the Mac-side node all use it.
   accepted the legacy cookie is sent down the filesystem path, which writes
   the private cookie and restarts it (`Deployer.hot_load_nodes/1`). A physical
   iPhone stays on the hot-load path; only `--native` changes its launcher.
+  (Superseded by MOB-552, `2026-11-26-no-implicit-legacy-cookie.md`:
+  `mob.deploy` no longer tries the legacy cookie, so such a node is never
+  reached over dist and always takes the filesystem path;
+  `hot_load_nodes/1` is gone.)
 - **Legacy fallback.** Without `--cookie`, `MobDev.DistCookie.connect/2` tries
   the private cookie, then `mob_secret`, and warns when the second one works:
   that app was built against a mob from before MOB-49 and stays reachable
   until it is redeployed. When neither works, the node's cookie is reset to
   the private one, because a per-node cookie also authenticates *incoming*
   connections claiming that name. An explicit `--cookie` is tried alone.
+  (Superseded by MOB-552, `2026-11-26-no-implicit-legacy-cookie.md`: there is
+  no implicit fallback any more. `mob_secret` is presented only when given
+  as `--cookie`, then after the private cookie, and it warns.)
 - **Mac default cookie** is the private cookie (or the explicit one), never
   `mob_secret`, so a LAN peer claiming an unknown name is refused.
+  (Corrected by MOB-552: this was not true of an explicit
+  `--cookie mob_secret`, which became the Mac node's default cookie and the
+  cookie handed to restarted apps. Since MOB-552 the private cookie stays
+  first in that case and `mob_secret` is only ever a per-node cookie.)
 
 ## Consequences
 
@@ -65,3 +76,5 @@ the bundle id. iOS, Android and the Mac-side node all use it.
 - While a legacy app is connected, its node name carries `mob_secret` as a
   per-node cookie on the Mac. That is the old exposure, limited to that name,
   and the warning tells the developer how to end it.
+  (Superseded by MOB-552: only an explicit `--cookie mob_secret` sets it now,
+  still as a per-node cookie only.)

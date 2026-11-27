@@ -142,6 +142,45 @@ defmodule MobDev.OtpDownloaderTest do
     end
   end
 
+  # ── cached?/2 — a cache is trusted only if it came from the pinned tarball ──
+
+  describe "cached?/2" do
+    @tag :tmp_dir
+    test "a valid layout without the verification marker is not reused", %{tmp_dir: tmp} do
+      name = "otp-android-d199a49a"
+      File.mkdir_p!(Path.join(tmp, "erts-17.1.1/lib"))
+      File.write!(Path.join(tmp, "erts-17.1.1/lib/crypto.a"), "")
+      File.write!(Path.join(tmp, "erts-17.1.1/lib/libcrypto.a"), "")
+      assert OtpDownloader.valid_otp_dir?(tmp, name)
+
+      refute OtpDownloader.cached?(tmp, name)
+
+      MobDev.Download.mark_verified(tmp, String.duplicate("0", 64))
+      refute OtpDownloader.cached?(tmp, name), "a marker for another tarball must not count"
+
+      {:ok, pin} = MobDev.Download.pin(OtpDownloader.download_url(name))
+      MobDev.Download.mark_verified(tmp, pin)
+      assert OtpDownloader.cached?(tmp, name)
+    end
+  end
+
+  describe "download_urls/0" do
+    test "one tarball per runtime the ensure_* functions can fetch" do
+      urls = OtpDownloader.download_urls()
+      assert [_, _, _, _, _] = urls
+
+      for dir <- [
+            OtpDownloader.android_otp_dir("arm64-v8a"),
+            OtpDownloader.android_otp_dir("armeabi-v7a"),
+            OtpDownloader.android_otp_dir("x86_64"),
+            OtpDownloader.ios_sim_otp_dir(),
+            OtpDownloader.ios_device_otp_dir()
+          ] do
+        assert OtpDownloader.download_url(Path.basename(dir)) in urls
+      end
+    end
+  end
+
   # ── Elixir build/runtime version skew ───────────────────────────────────────
   #
   # Build Elixir ≠ device-runtime Elixir at the minor level is the Enum.__in__/2

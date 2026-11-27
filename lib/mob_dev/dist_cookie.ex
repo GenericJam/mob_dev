@@ -14,9 +14,11 @@ defmodule MobDev.DistCookie do
   keeps it out of process arguments (`--cookie` would show it in `ps`).
 
   Apps built against a mob from before MOB-49 still answer to the public
-  `:mob_secret`. Without an explicit cookie, `connect/2` tries the private
-  cookie first and falls back to that legacy one with a warning, so existing
-  apps stay reachable until they are redeployed.
+  `:mob_secret`. mob_dev never presents it on its own (MOB-552): it would hand
+  a public credential to whatever node answers. Such an app is reached only
+  with an explicit `--cookie mob_secret`, which warns, until it is redeployed.
+  Even then the private cookie stays the Mac node's own cookie and the one
+  handed to apps; the public one is only ever a per-node cookie.
   """
 
   @cookie_bytes 32
@@ -76,14 +78,45 @@ defmodule MobDev.DistCookie do
   @doc """
   Cookies to try against a device node, in order.
 
-  An explicit cookie (`--cookie`) is the only candidate. Without one, the
-  project's private cookie comes first and the legacy public cookie second.
-  The first entry is also the right default cookie for the Mac-side node.
+  Without an explicit cookie (`--cookie`) the project's private cookie is the
+  only candidate: the public legacy cookie is never tried implicitly. An
+  explicit cookie is the only candidate, except the legacy one: that opts in
+  to reaching apps built against a mob from before MOB-49, and comes after
+  the private cookie, so up-to-date apps in the same session still connect on
+  theirs.
+
+  The first entry is the Mac-side node's default cookie and the one handed to
+  restarted apps, so it is never the public legacy cookie: as a node's default
+  it would admit any peer presenting it, under any name.
   """
   @spec candidates(atom() | String.t() | nil, (-> atom())) :: [atom(), ...]
   def candidates(explicit \\ nil, loader \\ &for_project!/0)
-  def candidates(nil, loader), do: [loader.(), @legacy_cookie]
-  def candidates(explicit, _loader), do: [parse!(explicit)]
+  def candidates(nil, loader), do: [loader.()]
+
+  def candidates(explicit, loader) do
+    case parse!(explicit) do
+      @legacy_cookie -> [loader.(), @legacy_cookie]
+      cookie -> [cookie]
+    end
+  end
+
+  @doc """
+  What to tell the user when no node accepted the cookie, given the
+  `--cookie` option. Without one only the private cookie was tried, and an
+  app built against a mob from before MOB-49 accepts just the legacy cookie,
+  so the hint says how to move it or reach it as it is. An explicit cookie
+  was the user's choice, so there is nothing to add.
+  """
+  @spec connect_failure_hint(atom() | String.t() | nil) :: String.t() | nil
+  def connect_failure_hint(nil) do
+    "An app that is running but did not answer may be built against a mob from before " <>
+      "MOB-49: it accepts only the public cookie #{@legacy_cookie}, which mob_dev does not " <>
+      "try on its own. Update its mob dependency and run `mix mob.deploy` (`--native` for " <>
+      "iOS) to move it to this project's private cookie, or reach it as it is with " <>
+      "`--cookie #{@legacy_cookie}`."
+  end
+
+  def connect_failure_hint(_explicit), do: nil
 
   @doc "Validates an explicit cookie given on the command line."
   @spec parse!(atom() | String.t()) :: atom()
@@ -108,8 +141,9 @@ defmodule MobDev.DistCookie do
   candidate on it would prove nothing and overwrite the cookie that did
   authenticate. When no cookie works, the node's cookie is reset to the first
   candidate: a per-node cookie also authenticates *incoming* connections
-  claiming that name, so the legacy public cookie must not stay set for a
-  node that did not need it.
+  claiming that name, so the legacy cookie must not stay set for a node that
+  did not need it. A node reached on the legacy cookie, which only an
+  explicit `--cookie` supplies, gets a warning to redeploy it.
   """
   @spec connect(node(), [atom(), ...]) :: {:ok, atom()} | :error
   def connect(node, [first | _] = cookies) do
@@ -122,7 +156,7 @@ defmodule MobDev.DistCookie do
           :error
 
         cookie ->
-          if cookie == @legacy_cookie and cookies != [@legacy_cookie], do: warn_legacy(node)
+          if cookie == @legacy_cookie, do: warn_legacy(node)
           {:ok, cookie}
       end
     end
@@ -141,19 +175,14 @@ defmodule MobDev.DistCookie do
 
       IO.puts(
         :stderr,
-        "\n#{IO.ANSI.yellow()}warning: #{node} accepted the public cookie mob_secret: it " <>
-          "is running a mob from before MOB-49, and anyone who can reach its dist port " <>
-          "can run code in it. Update the mob dependency and run `mix mob.deploy` " <>
-          "(`--native` for iOS) without `--no-restart`: deploy restarts an app in this " <>
-          "state instead of hot-loading it, so it comes back on this project's private " <>
-          "cookie.#{IO.ANSI.reset()}"
+        "\n#{IO.ANSI.yellow()}warning: #{node} accepted the public cookie " <>
+          "#{@legacy_cookie}: it is running a mob from before MOB-49, and anyone who can " <>
+          "reach its dist port can run code in it. Update the mob dependency and run " <>
+          "`mix mob.deploy` (`--native` for iOS) without `--no-restart` to move it to this " <>
+          "project's private cookie.#{IO.ANSI.reset()}"
       )
     end
   end
-
-  @doc false
-  @spec legacy_cookie() :: atom()
-  def legacy_cookie, do: @legacy_cookie
 
   @doc false
   @spec default_path(String.t()) :: String.t()

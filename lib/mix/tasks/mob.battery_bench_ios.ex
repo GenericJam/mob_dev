@@ -265,9 +265,6 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
     # Best-effort: nil means RPC won't be available.
     IO.puts("  Connecting to device BEAM...")
     node = connect_beam_node(device_id, opts[:wifi_ip], dist_cookie)
-    # The cookie the node accepted: a pre-MOB-49 build still uses the legacy
-    # one, and Preflight/Reconnector must reconnect with the same.
-    dist_cookie = if node, do: :erlang.get_cookie(node), else: dist_cookie
 
     if node do
       IO.puts("  BEAM connected: #{node}")
@@ -1041,9 +1038,7 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
         nil
 
       true ->
-        # The private cookie, then the legacy one an app built against a mob
-        # from before MOB-49 still uses (with a warning).
-        case MobDev.DistCookie.connect(device.node, [cookie, :mob_secret]) do
+        case dist_connect(device.node, cookie) do
           {:ok, _accepted} ->
             device.node
 
@@ -1060,6 +1055,12 @@ defmodule Mix.Tasks.Mob.BatteryBenchIos do
         end
     end
   end
+
+  @doc false
+  # The bench launched the app with `cookie`, so that is the only cookie it
+  # presents; never the public legacy one (MOB-552).
+  @spec dist_connect(node(), atom()) :: {:ok, atom()} | :error
+  def dist_connect(node, cookie), do: MobDev.DistCookie.connect(node, [cookie])
 
   defp sleep_unless_last(attempt) do
     if attempt < @max_connect_attempts, do: :timer.sleep(@connect_retry_sleep_ms)

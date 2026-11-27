@@ -19,7 +19,9 @@ defmodule Mix.Tasks.Mob.Push do
 
   Options:
     --all      Push all modules, not just those changed since last compile
-    --cookie   Use this cookie instead of the app's private one
+    --cookie   Use this cookie instead of the app's private one. `mob_secret`
+               (apps built against a mob from before MOB-49) is tried after
+               the private cookie instead; any other value is used alone
 
   Examples:
       mix mob.push
@@ -63,6 +65,7 @@ defmodule Mix.Tasks.Mob.Push do
     if nodes == [] do
       IO.puts("#{IO.ANSI.yellow()}No running nodes found.#{IO.ANSI.reset()}")
       IO.puts("Start apps first: mix mob.connect")
+      if hint = MobDev.DistCookie.connect_failure_hint(cookie), do: IO.puts(hint)
     else
       IO.puts("  Connected: #{Enum.map_join(nodes, ", ", &to_string/1)}")
 

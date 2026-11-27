@@ -42,7 +42,9 @@ defmodule MobDev.PythonAndroidSupport do
 
   Same caching pattern: `~/.mob/cache/python-android-support-<version>/`,
   `valid_dir?/1` for layout validation, downloads on-demand via
-  `MobDev.NativeBuild` when Pythonx is in the user's project.
+  `MobDev.NativeBuild` when Pythonx is in the user's project. Each zip is
+  checked against its SHA-256 pin in `MobDev.Download.Pins` before it is
+  extracted, and a cache is reused only if it came from those zips.
   """
 
   @python_version "3.13"
@@ -53,6 +55,7 @@ defmodule MobDev.PythonAndroidSupport do
   @base_url "https://repo1.maven.org/maven2/com/chaquo/python/target"
 
   @abis ~w(arm64-v8a x86_64)
+  @variants @abis ++ ["stdlib"]
 
   @doc """
   Ensures Chaquopy's Python distribution is cached and extracted.
@@ -65,13 +68,24 @@ defmodule MobDev.PythonAndroidSupport do
   def ensure do
     dir = extracted_dir()
 
-    if valid_dir?(dir) do
+    if cached?(dir) do
       {:ok, dir}
     else
       if File.dir?(dir), do: File.rm_rf!(dir)
       File.mkdir_p!(dir)
       download_and_extract(dir)
     end
+  end
+
+  @doc false
+  # Reused only with the expected layout AND extracted from the pinned zips.
+  @spec cached?(String.t()) :: boolean()
+  def cached?(dir), do: valid_dir?(dir) and MobDev.Download.verified?(dir, cache_marker())
+
+  # The cache comes from three zips; it is recorded under all three pins.
+  defp cache_marker do
+    pins = Enum.map(download_urls(), &MobDev.Download.Pins.sha256/1)
+    if Enum.all?(pins), do: Enum.join(pins, "\n")
   end
 
   @doc """
@@ -148,6 +162,10 @@ defmodule MobDev.PythonAndroidSupport do
     "#{@base_url}/#{@chaquopy_target}/#{tarball_name(variant)}"
   end
 
+  @doc "Every URL this downloader can request."
+  @spec download_urls() :: [String.t()]
+  def download_urls, do: Enum.map(@variants, &download_url/1)
+
   @doc "Tarball file name for a given variant (`arm64-v8a` / `x86_64` / `stdlib`)."
   @spec tarball_name(String.t()) :: String.t()
   def tarball_name(variant), do: "target-#{@chaquopy_target}-#{variant}.zip"
@@ -179,10 +197,11 @@ defmodule MobDev.PythonAndroidSupport do
     File.mkdir_p!(dest_dir)
 
     # Each abi extracts to <dest_dir>/<abi>/, stdlib to <dest_dir>/stdlib/.
-    with :ok <- download_and_extract_abi("arm64-v8a", dest_dir),
-         :ok <- download_and_extract_abi("x86_64", dest_dir),
-         :ok <- download_and_extract_stdlib(dest_dir),
-         :ok <- verify_layout(dest_dir) do
+    with :ok <- fetch_and_unzip("arm64-v8a", Path.join(dest_dir, "arm64-v8a")),
+         :ok <- fetch_and_unzip("x86_64", Path.join(dest_dir, "x86_64")),
+         :ok <- fetch_and_unzip("stdlib", stdlib_dir(dest_dir)),
+         :ok <- verify_layout(dest_dir),
+         :ok <- MobDev.Download.mark_verified(dest_dir, cache_marker()) do
       IO.puts("  Cached at #{dest_dir}")
       {:ok, dest_dir}
     else
@@ -192,52 +211,21 @@ defmodule MobDev.PythonAndroidSupport do
     end
   end
 
-  defp download_and_extract_abi(abi, dest_dir) do
-    url = download_url(abi)
-    abi_dir = Path.join(dest_dir, abi)
-    File.mkdir_p!(abi_dir)
-    tmp_zip = Path.join(System.tmp_dir!(), tarball_name(abi))
+  defp fetch_and_unzip(variant, into_dir) do
+    url = download_url(variant)
+    File.mkdir_p!(into_dir)
+    tmp_zip = MobDev.Download.staging_path(into_dir, url)
 
-    IO.puts("  Downloading Chaquopy Python #{abi} (#{@release_tag})...")
+    IO.puts("  Downloading Chaquopy Python #{variant} (#{@release_tag})...")
     IO.puts("  URL: #{url}")
 
-    with :ok <- download(url, tmp_zip),
-         :ok <- extract_zip(tmp_zip, abi_dir) do
-      File.rm(tmp_zip)
-      :ok
-    else
-      err ->
-        File.rm(tmp_zip)
-        err
-    end
-  end
+    result =
+      with {:ok, sha} <- MobDev.Download.pin(url),
+           :ok <- MobDev.Download.fetch_verified(url, tmp_zip, sha),
+           do: MobDev.Download.unzip(tmp_zip, into_dir)
 
-  defp download_and_extract_stdlib(dest_dir) do
-    url = download_url("stdlib")
-    stdlib = stdlib_dir(dest_dir)
-    File.mkdir_p!(stdlib)
-    tmp_zip = Path.join(System.tmp_dir!(), tarball_name("stdlib"))
-
-    IO.puts("  Downloading Chaquopy Python stdlib (#{@release_tag})...")
-
-    with :ok <- download(url, tmp_zip),
-         :ok <- extract_zip(tmp_zip, stdlib) do
-      File.rm(tmp_zip)
-      :ok
-    else
-      err ->
-        File.rm(tmp_zip)
-        err
-    end
-  end
-
-  defp download(url, dest), do: MobDev.Download.curl(url, dest)
-
-  defp extract_zip(zip, dest_dir) do
-    case System.cmd("unzip", ["-q", "-o", zip, "-d", dest_dir], stderr_to_stdout: true) do
-      {_, 0} -> :ok
-      {out, rc} -> {:error, "unzip failed (exit #{rc}): #{String.trim(out)}"}
-    end
+    File.rm(tmp_zip)
+    result
   end
 
   defp verify_layout(dir) do

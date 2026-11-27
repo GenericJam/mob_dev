@@ -289,29 +289,13 @@ defmodule MobDev.Plugin.Prebuilt do
   end
 
   defp verify_sha256(path, expected, url) do
-    with {:ok, actual} <- sha256_file(path) do
+    with {:ok, actual} <- MobDev.Download.sha256_file(path) do
       if actual == expected,
         do: :ok,
         else:
           {:error,
            "prebuilt #{url} has sha256 #{actual}, but the plugin manifest pins " <>
              "#{expected}; refusing to use it"}
-    end
-  end
-
-  defp sha256_file(path) do
-    case File.open(path, [:read, :binary], &hash_device/1) do
-      {:ok, {:ok, digest}} -> {:ok, Base.encode16(digest, case: :lower)}
-      {:ok, {:error, reason}} -> posix({:error, reason}, "read #{path}")
-      {:error, reason} -> posix({:error, reason}, "open #{path}")
-    end
-  end
-
-  defp hash_device(io, ctx \\ :crypto.hash_init(:sha256)) do
-    case IO.binread(io, 2_097_152) do
-      :eof -> {:ok, :crypto.hash_final(ctx)}
-      {:error, reason} -> {:error, reason}
-      chunk -> hash_device(io, :crypto.hash_update(ctx, chunk))
     end
   end
 
