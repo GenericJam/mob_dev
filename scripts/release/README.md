@@ -14,7 +14,7 @@ narrative, the scripts carry the imperative.
 | `tarball_ios_sim.sh` | Step 3 | Stage + tar `otp-ios-sim-<hash>.tar.gz`. |
 | `tarball_android_arm64.sh` | Step 2 (arm64) | Stage + tar `otp-android-<hash>.tar.gz`. |
 | `tarball_android_arm32.sh` | Step 2 (arm32) | Stage + tar `otp-android-arm32-<hash>.tar.gz`. |
-| `publish.sh` | Step 4 | Upload (or replace) assets on the GitHub release. |
+| `publish.sh` | Step 4 | Upload new assets to the GitHub release (never replaces one) and print their `MobDev.Download.Pins` entries. |
 
 ## Common environment
 
@@ -46,11 +46,21 @@ EXQLITE_BUILD=~/code/toy_lv_app/_build/dev/lib/exqlite ./tarball_android_arm32.s
 ./tarball_ios_sim.sh
 ./tarball_ios_device.sh
 
-./publish.sh   # uploads whatever is in /tmp matching the hash
+./publish.sh   # uploads whatever is in /tmp matching the hash, prints the pins
 ```
 
-## Schema-bump-only re-upload
+Then paste the printed pin lines into `lib/mob_dev/download/pins.ex` in the
+same PR that bumps `@otp_hash` (build_release.md, Step 5). `mix test` fails
+until every asset the downloaders can request has a pin.
 
-When you only need to refresh one tarball (e.g. iOS device gained EPMD source
-without an OTP version change), just run that one script + `publish.sh`. The
-publish script auto-detects which tarballs are present and only uploads those.
+## Rebuilding a published tarball
+
+Published assets are never replaced: every released mob_dev pins the sha256
+of the asset behind each URL, so new bytes at an old URL break all of them
+(and `publish.sh` refuses to try). When a tarball's contents change without
+an OTP version change (e.g. iOS device gained EPMD source), publish it under a
+**new hash** derived from the content, as the Elixir 1.20.1 rebuild did
+(`decisions/2026-06-17-otp-hash-elixir-1.20.1.md`), and publish all five
+tarballs under it (the downloader names every runtime by the one
+`@otp_hash`; unchanged ones can be copied to the new name). See
+`decisions/2026-11-26-pinned-runtime-downloads.md`.

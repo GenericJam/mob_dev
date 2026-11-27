@@ -10,6 +10,7 @@ defmodule Mix.Tasks.Mob.Release.PublishTest do
   setup do
     Application.put_env(:mob_dev, :release_shell, MobDev.Release.ShellMock)
     on_exit(fn -> Application.delete_env(:mob_dev, :release_shell) end)
+    stub(MobDev.Release.ShellMock, :sha256, fn _ -> {:ok, String.duplicate("ab", 32)} end)
     :ok
   end
 
@@ -22,7 +23,7 @@ defmodule Mix.Tasks.Mob.Release.PublishTest do
   end
 
   describe "happy path" do
-    test "runs the publish pipeline + prints the produced asset list" do
+    test "runs the publish pipeline + prints the produced asset list and pin lines" do
       stub(MobDev.Release.ShellMock, :file?, fn _ -> true end)
 
       stub(MobDev.Release.ShellMock, :cmd, fn argv, _opts ->
@@ -33,14 +34,11 @@ defmodule Mix.Tasks.Mob.Release.PublishTest do
           match?(["gh", "release", "view" | _], argv) ->
             {:ok, "title: x\n"}
 
-          match?(["gh", "release", "delete-asset" | _], argv) ->
-            {:ok, ""}
-
           match?(["gh", "release", "upload" | _], argv) ->
             {:ok, ""}
 
           true ->
-            {:ok, ""}
+            flunk("unexpected gh call: #{inspect(argv)}")
         end
       end)
 
@@ -50,7 +48,14 @@ defmodule Mix.Tasks.Mob.Release.PublishTest do
       output =
         try do
           ExUnit.CaptureIO.capture_io(fn ->
-            PublishTask.run(["--hash", "abc12345", "--out-dir", "/tmp"])
+            PublishTask.run([
+              "--hash",
+              "abc12345",
+              "--out-dir",
+              "/tmp",
+              "--assets",
+              "otp-ios-sim"
+            ])
           end)
         after
           Mix.shell(prev_shell)
@@ -59,6 +64,32 @@ defmodule Mix.Tasks.Mob.Release.PublishTest do
       assert output =~ "otp-abc12345"
       assert output =~ "GenericJam/mob"
       assert output =~ "otp-android-abc12345.tar.gz"
+
+      assert output =~
+               ~s("https://github.com/GenericJam/mob/releases/download/otp-abc12345/otp-ios-sim-abc12345.tar.gz" =>)
+
+      assert output =~ ~s("#{String.duplicate("ab", 32)}",)
+    end
+
+    test "refuses to replace an asset already on the release" do
+      stub(MobDev.Release.ShellMock, :file?, fn _ -> true end)
+
+      stub(MobDev.Release.ShellMock, :cmd, fn argv, _opts ->
+        cond do
+          match?(["gh", "release", "view" | _], argv) and "--json" in argv ->
+            {:ok, "otp-android-abc12345.tar.gz\n"}
+
+          match?(["gh", "release", "view" | _], argv) ->
+            {:ok, "title: x\n"}
+
+          true ->
+            flunk("unexpected gh call: #{inspect(argv)}")
+        end
+      end)
+
+      assert_raise Mix.Error, ~r/already on release otp-abc12345/, fn ->
+        PublishTask.run(["--hash", "abc12345", "--out-dir", "/tmp"])
+      end
     end
   end
 

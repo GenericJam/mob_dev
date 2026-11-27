@@ -327,6 +327,29 @@ defmodule Mix.Tasks.Mob.DoctorTest do
     end
   end
 
+  describe "__otp_dir_check__/2 (MOB-553)" do
+    @tag :tmp_dir
+    test "an OTP cache not extracted from the pinned tarball warns", %{tmp_dir: tmp} do
+      dir = Path.join(tmp, "otp-android-d199a49a")
+      File.mkdir_p!(Path.join(dir, "erts-17.1.1/lib"))
+      File.write!(Path.join(dir, "erts-17.1.1/lib/crypto.a"), "")
+      File.write!(Path.join(dir, "erts-17.1.1/lib/libcrypto.a"), "")
+
+      assert {:warn, "OTP Android", detail, _fix} =
+               Mix.Tasks.Mob.Doctor.__otp_dir_check__("Android", dir)
+
+      assert detail =~ "pinned tarball"
+
+      {:ok, pin} =
+        MobDev.Download.pin(MobDev.OtpDownloader.download_url("otp-android-d199a49a"))
+
+      MobDev.Download.mark_verified(dir, pin)
+
+      assert {:ok, "OTP Android", "otp-android-d199a49a (erts-17.1.1)", nil} =
+               Mix.Tasks.Mob.Doctor.__otp_dir_check__("Android", dir)
+    end
+  end
+
   describe "__kotlin_gradle_plugin_rows__/1 (MOB-497 CVE-2026-53914)" do
     @tag :tmp_dir
     test "warns, naming the file and version, for a pre-migration mob_new app", %{

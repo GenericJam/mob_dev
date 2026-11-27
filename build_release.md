@@ -437,55 +437,64 @@ tar tzf "/tmp/otp-ios-device-$HASH.tar.gz" | grep "lib/elixir/ebin/elixir.app"
 
 ## Step 4 — Publish the GitHub release
 
-Tag format: `otp-<hash>` (e.g. `otp-7721ab74`).
+Tag format: `otp-<hash>` (e.g. `otp-7721ab74`). The runnable form is
+`mix mob.release.publish` (or `scripts/release/publish.sh`): both refuse to
+upload over an asset that is already on the release, and print the pin
+entries for Step 5.
 
 ```bash
 HASH=<hash>
 
-# Create the release (or use an existing one)
+# Create the release
 gh release create "otp-$HASH" \
     --repo GenericJam/mob \
     --title "OTP pre-built runtime $HASH" \
     --notes "Pre-built OTP for Android (aarch64 + arm32), iOS simulator (aarch64-apple-iossimulator), and iOS device (aarch64-apple-ios). OTP source commit: $HASH."
 
-# Upload tarballs (all four)
+# Upload tarballs (all five)
 gh release upload "otp-$HASH" \
     "/tmp/otp-android-$HASH.tar.gz" \
     "/tmp/otp-android-arm32-$HASH.tar.gz" \
+    "/tmp/otp-android-x86_64-$HASH.tar.gz" \
     "/tmp/otp-ios-sim-$HASH.tar.gz" \
     "/tmp/otp-ios-device-$HASH.tar.gz" \
     --repo GenericJam/mob
 
-# Verify
+# Verify, and hash for Step 5
 gh release view "otp-$HASH" --repo GenericJam/mob --json assets \
-    -q '.assets[] | "\(.name) \(.size)"'
+    -q '.assets[] | "\(.name) \(.size) \(.digest)"'
+shasum -a 256 /tmp/otp-*-$HASH.tar.gz
 ```
 
-To replace a bad asset:
-```bash
-gh release delete-asset "otp-$HASH" otp-ios-sim-$HASH.tar.gz --repo GenericJam/mob --yes
-gh release upload "otp-$HASH" /tmp/otp-ios-sim-$HASH.tar.gz --repo GenericJam/mob
-```
+### Published assets are never replaced
 
-### Re-uploading without bumping the hash (schema-bump pattern)
+Every released mob_dev pins the SHA-256 of each asset it downloads
+(`MobDev.Download.Pins`) and refuses a download that doesn't match. Replacing
+an asset in place therefore breaks every installed mob_dev that pinned the
+old bytes, and is never done — no `gh release delete-asset`, no `--clobber`.
 
 When the tarball *contents* change but the underlying OTP commit hasn't (e.g.
-adding EPMD source to the iOS device tarball), the canonical move is to
-re-upload at the same hash. `MobDev.OtpDownloader.valid_otp_dir?/2` is the
-gate that decides whether a cached extracted dir is still acceptable — if you
-add a new schema requirement there, existing users' caches fail validation
-and the next `mix mob.deploy --native` re-downloads the asset automatically.
-No hash bump, no user action needed.
+adding EPMD source to the iOS device tarball, or a new bundled Elixir),
+publish under a **new hash** derived from the content, as in
+`decisions/2026-06-17-otp-hash-elixir-1.20.1.md`, with all five tarballs
+under it. Before 2026-11 the practice here was to re-upload at the same hash
+and rely on `valid_otp_dir?/2` to invalidate old caches; that is what pinning
+replaced (`decisions/2026-11-26-pinned-runtime-downloads.md`).
 
 ---
 
-## Step 5 — Update OtpDownloader
+## Step 5 — Update OtpDownloader and the pins
 
-Edit `lib/mob_dev/otp_downloader.ex` — update the hash and ERTS version:
+Edit `lib/mob_dev/otp_downloader.ex` — update the hash:
 
 ```elixir
 @otp_hash    "7721ab74"    # ← new hash
 ```
+
+Add the five tarballs' SHA-256 to `lib/mob_dev/download/pins.ex` (the publish
+step prints the entries; point `@otp` at the new tag) and remove the old
+hash's entries. `mix test` fails until every URL the downloaders can request
+has a pin, and when a pin is left that nothing requests.
 
 If the ERTS version changed (e.g. from 16.3 to 16.4), update `build_release.md`
 to match.

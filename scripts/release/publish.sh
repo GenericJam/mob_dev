@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scripts/release/publish.sh
-# Create or replace assets on the GitHub release for this OTP hash. Mirrors
+# Upload new assets to the GitHub release for this OTP hash. Mirrors
 # Step 4 of build_release.md.
 #
 # Inputs (env or default):
@@ -12,9 +12,13 @@
 #
 # Behaviour:
 #   - Creates the release `otp-$HASH` if it doesn't exist.
-#   - For each asset that's already on the release, deletes it first
-#     (`gh release upload` won't replace by default).
+#   - Refuses (uploads nothing) if any asset is already on the release:
+#     released mob_dev versions pin each asset's sha256, so an asset is never
+#     replaced. A rebuilt runtime gets a new HASH (build_release.md, Step 1;
+#     decisions/2026-11-26-pinned-runtime-downloads.md).
 #   - Uploads everything in one `gh release upload` call.
+#   - Prints the MobDev.Download.Pins entries to paste into
+#     lib/mob_dev/download/pins.ex.
 
 set -euo pipefail
 
@@ -54,15 +58,14 @@ if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
         --title "OTP pre-built runtime $HASH" \
         --notes "Pre-built OTP for Android (aarch64, arm32, x86_64), iOS simulator (aarch64-apple-iossimulator), and iOS device (aarch64-apple-ios). OTP source commit: $HASH."
 else
-    log "release $TAG already exists; will replace existing assets..."
+    log "release $TAG already exists; adding assets..."
 fi
 
-# Delete any of the named assets that are already on the release.
-existing=$(gh release view "$TAG" --repo "$REPO" --json assets -q '.assets[].name' || true)
+# Published assets are immutable: refuse if any is already there.
+existing=$(gh release view "$TAG" --repo "$REPO" --json assets -q '.assets[].name')
 for a in $ASSETS; do
     if echo "$existing" | grep -qx "$a"; then
-        log "deleting existing asset $a..."
-        gh release delete-asset "$TAG" "$a" --repo "$REPO" --yes
+        fail "$a is already on $TAG. Published assets are never replaced (released mob_dev versions pin their sha256); publish the rebuild under a new HASH."
     fi
 done
 
@@ -76,3 +79,9 @@ gh release upload "$TAG" $upload_paths --repo "$REPO"
 
 log "done. Verifying..."
 gh release view "$TAG" --repo "$REPO" --json assets -q '.assets[] | "\(.name) \(.size)"'
+
+log "pin in lib/mob_dev/download/pins.ex:"
+for a in $ASSETS; do
+    sha=$(shasum -a 256 "$OUT_DIR/$a" | awk '{print $1}')
+    printf '    "https://github.com/%s/releases/download/%s/%s" =>\n      "%s",\n' "$REPO" "$TAG" "$a" "$sha"
+done

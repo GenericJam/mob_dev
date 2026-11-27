@@ -2,7 +2,10 @@ defmodule MobDev.OtpDownloader do
   @moduledoc """
   Downloads and caches pre-built OTP releases from GitHub for Android and iOS simulator.
 
-  Artifacts are cached at `~/.mob/cache/` and reused across projects.
+  Artifacts are cached at `~/.mob/cache/` and reused across projects. Each
+  tarball is checked against its SHA-256 pin in `MobDev.Download.Pins` before
+  it is extracted, and a cached runtime is reused only if it was extracted
+  from the pinned tarball.
   """
 
   @otp_hash "d199a49a"
@@ -15,27 +18,43 @@ defmodule MobDev.OtpDownloader do
   @ios_sim_name "otp-ios-sim-#{@otp_hash}"
   @ios_device_name "otp-ios-device-#{@otp_hash}"
 
+  @names [
+    @android_name,
+    @android_arm32_name,
+    @android_x86_64_name,
+    @ios_sim_name,
+    @ios_device_name
+  ]
+
   @doc "Ensures the Android OTP release is cached. Returns {:ok, path} or {:error, reason}."
   @spec ensure_android(String.t()) :: {:ok, String.t()} | {:error, term()}
   def ensure_android(abi \\ "arm64-v8a") do
     case abi do
-      "armeabi-v7a" -> ensure(@android_arm32_name, "#{@android_arm32_name}.tar.gz")
-      "x86_64" -> ensure(@android_x86_64_name, "#{@android_x86_64_name}.tar.gz")
-      _ -> ensure(@android_name, "#{@android_name}.tar.gz")
+      "armeabi-v7a" -> ensure(@android_arm32_name)
+      "x86_64" -> ensure(@android_x86_64_name)
+      _ -> ensure(@android_name)
     end
   end
 
   @doc "Ensures the iOS simulator OTP release is cached. Returns {:ok, path} or {:error, reason}."
   @spec ensure_ios_sim() :: {:ok, String.t()} | {:error, term()}
   def ensure_ios_sim do
-    ensure(@ios_sim_name, "#{@ios_sim_name}.tar.gz")
+    ensure(@ios_sim_name)
   end
 
   @doc "Ensures the iOS device OTP release is cached. Returns {:ok, path} or {:error, reason}."
   @spec ensure_ios_device() :: {:ok, String.t()} | {:error, term()}
   def ensure_ios_device do
-    ensure(@ios_device_name, "#{@ios_device_name}.tar.gz")
+    ensure(@ios_device_name)
   end
+
+  @doc "Every tarball URL this downloader can request."
+  @spec download_urls() :: [String.t()]
+  def download_urls, do: Enum.map(@names, &download_url/1)
+
+  @doc "Download URL of the tarball for a runtime name (e.g. `otp-android-<hash>`)."
+  @spec download_url(String.t()) :: String.t()
+  def download_url(name), do: "#{@base_url}/#{name}.tar.gz"
 
   @doc "Returns the cached Android OTP directory path (may not exist yet)."
   @spec android_otp_dir(String.t()) :: String.t()
@@ -117,34 +136,39 @@ defmodule MobDev.OtpDownloader do
   # "1.20.0-rc.5" -> ["1", "20"]; "1.19.5" -> ["1", "19"].
   defp major_minor(vsn), do: vsn |> String.split(".") |> Enum.take(2)
 
-  defp ensure(name, tarball) do
+  defp ensure(name) do
     dir = cache_dir(name)
 
     result =
-      if valid_otp_dir?(dir, name) do
+      if cached?(dir, name) do
         {:ok, dir}
       else
-        # Remove stale/incomplete directory before re-downloading.
-        # Two cases here:
-        #   1. previous download attempt failed mid-extraction (Nix curl, flaky net)
-        #   2. cached tarball predates a schema change — e.g. iOS device tarball
-        #      now ships EPMD source under `erts/epmd/src/`. Re-download picks up
-        #      the new asset at the same URL (same OTP hash, new revision uploaded).
+        # Remove a stale, incomplete or unverified directory before
+        # re-downloading: a failed extraction, or a cache from a mob_dev that
+        # did not record which tarball it came from.
         if File.dir?(dir), do: File.rm_rf!(dir)
-        download_and_extract(name, tarball, dir)
+        download_and_extract(name, dir)
       end
 
     with {:ok, otp_dir} <- result, do: warn_on_elixir_skew(otp_dir)
     result
   end
 
+  @doc false
+  # A cached runtime is reused only when it has the expected layout AND was
+  # extracted from the tarball whose SHA-256 is pinned for `name`.
+  @spec cached?(String.t(), String.t()) :: boolean()
+  def cached?(dir, name) do
+    valid_otp_dir?(dir, name) and
+      MobDev.Download.verified?(dir, MobDev.Download.Pins.sha256(download_url(name)))
+  end
+
   # A valid extracted OTP dir must contain at least one erts-* subdirectory.
   # The iOS device tarball additionally must ship EPMD source files at
   # `erts/epmd/src/`, because `build_device.sh` static-links EPMD into the app
-  # and there's no other place to source those .c files from. Older tarballs
-  # (without source) extract cleanly but fail at iOS device build time with
-  # `clang: no such file or directory: epmd.c` — so we treat them as invalid
-  # and force a re-download to pick up the schema-bumped asset.
+  # and there's no other place to source those .c files from. Tarballs without
+  # the source extract cleanly but fail at iOS device build time with
+  # `clang: no such file or directory: epmd.c`, so they are rejected here.
   @doc false
   @spec valid_otp_dir?(String.t(), String.t()) :: boolean()
   def valid_otp_dir?(dir, name) do
@@ -161,10 +185,8 @@ defmodule MobDev.OtpDownloader do
   @doc false
   @spec crypto_present?(String.t()) :: boolean()
   def crypto_present?(dir) do
-    # Schema bump (2026-05-06): tarballs now ship erts-VSN/lib/crypto.a +
+    # Schema bump (2026-05-06): tarballs ship erts-VSN/lib/crypto.a +
     # erts-VSN/lib/libcrypto.a so apps can statically link real OpenSSL.
-    # Older tarballs at the same release tag predate this change and are
-    # treated as stale — re-download picks up the new content.
     Path.wildcard(Path.join([dir, "erts-*", "lib", "crypto.a"])) != [] and
       Path.wildcard(Path.join([dir, "erts-*", "lib", "libcrypto.a"])) != []
   end
@@ -197,18 +219,20 @@ defmodule MobDev.OtpDownloader do
     Path.join(base, name)
   end
 
-  defp download_and_extract(name, tarball, dest_dir) do
-    url = "#{@base_url}/#{tarball}"
-    tmp_file = Path.join(System.tmp_dir!(), tarball)
+  defp download_and_extract(name, dest_dir) do
+    url = download_url(name)
+    tmp_file = MobDev.Download.staging_path(dest_dir, url)
 
     IO.puts("  Downloading #{name} OTP release...")
     IO.puts("  URL: #{url}")
 
     File.mkdir_p!(Path.dirname(dest_dir))
 
-    with :ok <- download(url, tmp_file),
+    with {:ok, sha} <- MobDev.Download.pin(url),
+         :ok <- MobDev.Download.fetch_verified(url, tmp_file, sha),
          :ok <- extract(tmp_file, dest_dir),
-         :ok <- verify_erts(dest_dir) do
+         :ok <- verify_erts(dest_dir),
+         :ok <- MobDev.Download.mark_verified(dest_dir, sha) do
       File.rm(tmp_file)
       IO.puts("  Cached at #{dest_dir}")
       {:ok, dest_dir}
@@ -220,17 +244,10 @@ defmodule MobDev.OtpDownloader do
     end
   end
 
-  defp download(url, dest), do: MobDev.Download.curl(url, dest)
-
   defp extract(tarball, dest_dir) do
     File.mkdir_p!(dest_dir)
-    # The tarball extracts into a single top-level directory; strip it with --strip-components=1.
-    case System.cmd("tar", ["xzf", tarball, "-C", dest_dir, "--strip-components=1"],
-           stderr_to_stdout: true
-         ) do
-      {_, 0} -> :ok
-      {out, rc} -> {:error, "tar failed (exit #{rc}): #{String.trim(out)}"}
-    end
+    # The tarball extracts into a single top-level directory; strip it.
+    MobDev.Download.untar(tarball, dest_dir, strip_components: 1)
   end
 
   defp verify_erts(dir) do

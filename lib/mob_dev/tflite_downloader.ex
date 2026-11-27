@@ -19,9 +19,13 @@ defmodule MobDev.TfliteDownloader do
   `c_api.h` surface has been stable since 2.13. Different version pins
   per platform reflect upstream packaging differences, not API drift.
 
-  Mirrors the `MobDev.MLXDownloader` pattern: hashed URL + cached
+  Mirrors the `MobDev.MLXDownloader` pattern: pinned URL + cached
   extraction at `~/.mob/cache/tflite-<version>-<target>/`, validated
-  against the expected layout. Reused across projects.
+  against the expected layout. Reused across projects. The AAR, the iOS
+  tarball and the two headers patched into the Android tree are checked
+  against their SHA-256 pins in `MobDev.Download.Pins` (the downloaded
+  AAR/tarball again on every reuse), and an extracted cache is reused
+  only if it came from the pinned archive.
 
   Used by `MobDev.NativeBuild` when the project enables TFLite via
   `mix mob.enable tflite`. The build template sources `TFLITE_DIR` from
@@ -31,9 +35,11 @@ defmodule MobDev.TfliteDownloader do
   ## Local-build override
 
   Set `MOB_TFLITE_LOCAL_TARBALL_DIR=/path/to/dir` to bypass the upstream
-  download and use locally-fetched tarballs (named exactly as
-  `tarball_name/1` returns). Useful when iterating offline or against
-  a custom TFLite build.
+  download and use `tensorflow-lite-<android_version>.aar` /
+  `TensorFlowLiteC-<ios_version>.tar.gz` from that directory. Useful when
+  iterating offline or against a custom TFLite build. A local archive is
+  your own choice, so it is not held to the pin; its hash is recorded
+  instead, and the cache it produced is replaced once the override is unset.
   """
 
   @android_version "2.16.1"
@@ -53,6 +59,13 @@ defmodule MobDev.TfliteDownloader do
   @android_targets [:android_arm64, :android_arm32]
   @ios_targets [:ios_device, :ios_sim]
 
+  # Headers the AAR's tensorflow/lite/core tree lacks; c_api_experimental.h
+  # needs them at build time.
+  @android_patch_headers [
+    "tensorflow/lite/core/c/registration_external.h",
+    "tensorflow/lite/core/async/c/types.h"
+  ]
+
   # ── Public API ──────────────────────────────────────────────────────────────
 
   @doc """
@@ -62,26 +75,24 @@ defmodule MobDev.TfliteDownloader do
   expected layout (see `valid_dir?/2`).
   """
   @spec ensure(target()) :: {:ok, String.t()} | {:error, term()}
-  def ensure(target) when target in @android_targets do
+  def ensure(target) when target in @android_targets or target in @ios_targets do
     dest = dir(target)
+    source = source(target)
 
-    if valid_dir?(target, dest) do
-      {:ok, dest}
-    else
-      if File.dir?(dest), do: File.rm_rf!(dest)
-      download_and_extract_android(target, dest)
+    with {:ok, sha} <- source_sha(source) do
+      if valid_dir?(target, dest) and MobDev.Download.verified?(dest, sha) do
+        {:ok, dest}
+      else
+        if File.dir?(dest), do: File.rm_rf!(dest)
+        extract(target, source, sha, dest)
+      end
     end
   end
 
-  def ensure(target) when target in @ios_targets do
-    dest = dir(target)
-
-    if valid_dir?(target, dest) do
-      {:ok, dest}
-    else
-      if File.dir?(dest), do: File.rm_rf!(dest)
-      download_and_extract_ios(target, dest)
-    end
+  @doc "Every URL this downloader can request."
+  @spec download_urls() :: [String.t()]
+  def download_urls do
+    [@android_aar_url, @ios_tarball_url] ++ Enum.map(@android_patch_headers, &header_url/1)
   end
 
   @doc """
@@ -156,146 +167,114 @@ defmodule MobDev.TfliteDownloader do
     end
   end
 
-  defp download_and_extract_android(target, dest) do
-    aar_dir = Path.join(cache_dir(), "tflite-#{@android_version}-android-aar")
+  # Where `target`'s archive comes from: the pinned upstream URL (downloaded
+  # once into the cache), or the developer's MOB_TFLITE_LOCAL_TARBALL_DIR.
+  defp source(target) when target in @android_targets do
+    file = "tensorflow-lite-#{@android_version}.aar"
+    archive_source(@android_aar_url, "tflite-#{@android_version}-android-aar", file)
+  end
 
-    with {:ok, aar_path} <- fetch_android_aar(aar_dir),
-         :ok <- unpack_aar(aar_path, dest, target) do
-      {:ok, dest}
+  defp source(target) when target in @ios_targets do
+    file = "TensorFlowLiteC-#{@ios_version}.tar.gz"
+    archive_source(@ios_tarball_url, "tflite-#{@ios_version}-ios-tarball", file)
+  end
+
+  defp archive_source(url, cache_slot, file) do
+    case local_tarball_dir() do
+      nil -> {:remote, url, Path.join([cache_dir(), cache_slot, file])}
+      local -> {:local, Path.join(local, file)}
     end
   end
 
-  defp fetch_android_aar(aar_dir) do
-    File.mkdir_p!(aar_dir)
-    aar_path = Path.join(aar_dir, "tensorflow-lite-#{@android_version}.aar")
+  # The SHA-256 an extracted cache is recorded under: the pin, or the hash
+  # of the developer's local archive.
+  defp source_sha({:remote, url, _cached}), do: MobDev.Download.pin(url)
 
-    cond do
-      File.regular?(aar_path) ->
-        {:ok, aar_path}
+  defp source_sha({:local, path}) do
+    if File.regular?(path),
+      do: MobDev.Download.sha256_file(path),
+      else: {:error, {:local_missing, path}}
+  end
 
-      local = local_tarball_dir() ->
-        local_aar = Path.join(local, "tensorflow-lite-#{@android_version}.aar")
+  defp extract(target, source, sha, dest) do
+    File.mkdir_p!(dest)
 
-        if File.regular?(local_aar) do
-          File.cp!(local_aar, aar_path)
-          {:ok, aar_path}
-        else
-          {:error, {:local_missing, local_aar}}
+    with {:ok, archive} <- obtain(source, sha),
+         :ok <- unpack(target, archive, dest),
+         :ok <- MobDev.Download.mark_verified(dest, sha) do
+      {:ok, dest}
+    else
+      {:error, _} = err ->
+        File.rm_rf(dest)
+        err
+    end
+  end
+
+  defp obtain({:local, path}, _sha), do: {:ok, path}
+
+  # The downloaded archive is kept for the other targets it serves and is
+  # re-verified each time it is reused; a copy that no longer matches is
+  # deleted and fetched again.
+  defp obtain({:remote, url, cached}, sha) do
+    File.mkdir_p!(Path.dirname(cached))
+
+    reusable? =
+      File.regular?(cached) and
+        case MobDev.Download.verify_sha256(cached, sha) do
+          :ok ->
+            true
+
+          {:error, reason} ->
+            IO.puts(:stderr, "  #{reason} Downloading it again.")
+            false
         end
 
-      true ->
-        case http_get(@android_aar_url, aar_path) do
-          :ok -> {:ok, aar_path}
-          err -> err
-        end
+    if reusable? do
+      {:ok, cached}
+    else
+      with :ok <- MobDev.Download.fetch_verified(url, cached, sha), do: {:ok, cached}
     end
   end
 
   # AAR is a zip; extract jni/<abi>/libtensorflowlite_jni.so + headers/.
   # The AAR ships headers/ as a peer of jni/ — both root entries.
-  defp unpack_aar(aar_path, dest, target) do
-    File.mkdir_p!(dest)
-
-    case System.cmd("unzip", ["-q", "-o", aar_path, "-d", dest], stderr_to_stdout: true) do
-      {_, 0} ->
-        # Patch in two upstream-missing headers (AAR ships an incomplete
-        # tensorflow/lite/core tree); they are needed by c_api_experimental.h
-        # at build time. Same workaround the standalone bench Makefile uses.
-        patch_missing_android_headers(dest)
-
-        if valid_dir?(target, dest) do
-          :ok
-        else
-          {:error, {:invalid_aar_layout, dest}}
-        end
-
-      {out, code} ->
-        {:error, {:unzip_failed, code, out}}
+  defp unpack(target, aar, dest) when target in @android_targets do
+    with :ok <- MobDev.Download.unzip(aar, dest),
+         :ok <- patch_missing_android_headers(dest) do
+      if valid_dir?(target, dest), do: :ok, else: {:error, {:invalid_aar_layout, dest}}
     end
   end
 
+  defp unpack(target, tarball, dest) when target in @ios_targets do
+    with :ok <- MobDev.Download.untar(tarball, dest, strip_components: 1) do
+      if valid_dir?(target, dest), do: :ok, else: {:error, {:invalid_ios_layout, dest}}
+    end
+  end
+
+  # Same workaround the standalone bench Makefile uses.
   defp patch_missing_android_headers(dest) do
-    headers_root = Path.join(dest, "headers")
-
-    [
-      "tensorflow/lite/core/c/registration_external.h",
-      "tensorflow/lite/core/async/c/types.h"
-    ]
-    |> Enum.each(fn rel ->
-      out = Path.join(headers_root, rel)
-
-      unless File.regular?(out) do
-        File.mkdir_p!(Path.dirname(out))
-
-        url =
-          "https://raw.githubusercontent.com/tensorflow/tensorflow/v#{@android_version}/#{rel}"
-
-        _ = http_get(url, out)
+    Enum.reduce_while(@android_patch_headers, :ok, fn rel, :ok ->
+      case fetch_header(rel, Path.join([dest, "headers", rel])) do
+        :ok -> {:cont, :ok}
+        err -> {:halt, err}
       end
     end)
   end
 
-  defp download_and_extract_ios(target, dest) do
-    tar_dir = Path.join(cache_dir(), "tflite-#{@ios_version}-ios-tarball")
+  defp fetch_header(rel, out) do
+    if File.regular?(out) do
+      :ok
+    else
+      File.mkdir_p!(Path.dirname(out))
+      url = header_url(rel)
 
-    with {:ok, tar_path} <- fetch_ios_tarball(tar_dir),
-         :ok <- unpack_ios(tar_path, dest, target) do
-      {:ok, dest}
+      with {:ok, sha} <- MobDev.Download.pin(url),
+           do: MobDev.Download.fetch_verified(url, out, sha)
     end
   end
 
-  defp fetch_ios_tarball(tar_dir) do
-    File.mkdir_p!(tar_dir)
-    tar_path = Path.join(tar_dir, "TensorFlowLiteC-#{@ios_version}.tar.gz")
-
-    cond do
-      File.regular?(tar_path) ->
-        {:ok, tar_path}
-
-      local = local_tarball_dir() ->
-        local_tar = Path.join(local, "TensorFlowLiteC-#{@ios_version}.tar.gz")
-
-        if File.regular?(local_tar) do
-          File.cp!(local_tar, tar_path)
-          {:ok, tar_path}
-        else
-          {:error, {:local_missing, local_tar}}
-        end
-
-      true ->
-        case http_get(@ios_tarball_url, tar_path) do
-          :ok -> {:ok, tar_path}
-          err -> err
-        end
-    end
-  end
-
-  defp unpack_ios(tar_path, dest, target) do
-    File.mkdir_p!(dest)
-
-    case System.cmd("tar", ["xzf", tar_path, "-C", dest, "--strip-components=1"],
-           stderr_to_stdout: true
-         ) do
-      {_, 0} ->
-        if valid_dir?(target, dest) do
-          :ok
-        else
-          {:error, {:invalid_ios_layout, dest}}
-        end
-
-      {out, code} ->
-        {:error, {:tar_failed, code, out}}
-    end
-  end
-
-  defp http_get(url, dest) do
-    # Use curl rather than :httpc to inherit system certs without
-    # juggling ssl options; matches MLXDownloader's approach.
-    case System.cmd("curl", ["-fsSL", "-o", dest, url], stderr_to_stdout: true) do
-      {_, 0} -> :ok
-      {out, code} -> {:error, {:http_get_failed, code, out}}
-    end
-  end
+  defp header_url(rel),
+    do: "https://raw.githubusercontent.com/tensorflow/tensorflow/v#{@android_version}/#{rel}"
 
   defp local_tarball_dir do
     case System.get_env("MOB_TFLITE_LOCAL_TARBALL_DIR") do

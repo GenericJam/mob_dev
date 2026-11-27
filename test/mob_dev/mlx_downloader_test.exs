@@ -212,6 +212,75 @@ defmodule MobDev.MLXDownloaderTest do
     end
   end
 
+  describe "ensure/1 — cache verification" do
+    @tag :tmp_dir
+    test "a cache not recorded under the source tarball's sha256 is re-extracted",
+         %{tmp_dir: tmp} do
+      tarball_dir = Path.join(tmp, "local")
+      File.mkdir_p!(tarball_dir)
+      stage_tarball(tarball_dir, :ios_device)
+
+      System.put_env("MOB_CACHE_DIR", Path.join(tmp, "cache"))
+      System.put_env("MOB_MLX_LOCAL_TARBALL_DIR", tarball_dir)
+
+      try do
+        assert {:ok, dir} = MLXDownloader.ensure(:ios_device)
+        sentinel = Path.join(dir, "sentinel.txt")
+        File.write!(sentinel, "x")
+
+        MobDev.Download.mark_verified(dir, String.duplicate("0", 64))
+
+        assert {:ok, ^dir} = MLXDownloader.ensure(:ios_device)
+        refute File.exists?(sentinel), "a cache with a foreign marker must be re-extracted"
+        assert MLXDownloader.valid_dir?(dir)
+      after
+        System.delete_env("MOB_CACHE_DIR")
+        System.delete_env("MOB_MLX_LOCAL_TARBALL_DIR")
+      end
+    end
+
+    @tag :tmp_dir
+    test "extracts into the target's own directory, not the shared cache root",
+         %{tmp_dir: tmp} do
+      tarball_dir = Path.join(tmp, "local")
+      stage_root = Path.join(tmp, "stage")
+      bundle = Path.join(stage_root, MLXDownloader.name(:ios_device))
+      stub_complete_bundle(bundle)
+      File.mkdir_p!(Path.join(stage_root, "otp-ios-device-d199a49a"))
+      File.write!(Path.join(stage_root, "otp-ios-device-d199a49a/planted"), "x")
+      File.mkdir_p!(tarball_dir)
+
+      {_, 0} =
+        System.cmd("tar", [
+          "-czf",
+          Path.join(tarball_dir, MLXDownloader.tarball_name(:ios_device)),
+          "-C",
+          stage_root,
+          MLXDownloader.name(:ios_device),
+          "otp-ios-device-d199a49a"
+        ])
+
+      cache = Path.join(tmp, "cache")
+      System.put_env("MOB_CACHE_DIR", cache)
+      System.put_env("MOB_MLX_LOCAL_TARBALL_DIR", tarball_dir)
+
+      try do
+        assert {:ok, _dir} = MLXDownloader.ensure(:ios_device)
+        refute File.exists?(Path.join(cache, "otp-ios-device-d199a49a/planted"))
+      after
+        System.delete_env("MOB_CACHE_DIR")
+        System.delete_env("MOB_MLX_LOCAL_TARBALL_DIR")
+      end
+    end
+  end
+
+  describe "download_urls/0" do
+    test "covers both iOS slices" do
+      assert MLXDownloader.download_urls() ==
+               [MLXDownloader.download_url(:ios_device), MLXDownloader.download_url(:ios_sim)]
+    end
+  end
+
   # ── metallib_path/1 ─────────────────────────────────────────────────────────
 
   describe "metallib_path/1" do

@@ -5,8 +5,10 @@ defmodule MobDev.MLXDownloader do
   cross-compiling MLX themselves.
 
   Mirrors the `MobDev.OtpDownloader` / `MobDev.PythonAppleSupport` pattern:
-  hashed URL + cached download at `~/.mob/cache/mlx-<version>-<target>/`,
-  validated against the expected layout. Reused across projects.
+  pinned URL + cached download at `~/.mob/cache/libmlx-<version>-<target>/`,
+  validated against the expected layout. Reused across projects. The tarball
+  is checked against its SHA-256 pin in `MobDev.Download.Pins` before it is
+  extracted, and a cache is reused only if it came from that tarball.
 
   Used by `MobDev.NativeBuild` when the project's deps include `:emlx` or
   `mob.exs` declares `mlx_enabled: true`. The build template sources
@@ -25,7 +27,9 @@ defmodule MobDev.MLXDownloader do
   Set `MOB_MLX_LOCAL_TARBALL_DIR=/path/to/dir` to bypass the GitHub
   download and use locally-built tarballs (named exactly as
   `tarball_name/1` returns). Useful when iterating on the cross-compile
-  scripts in `mob_dev/scripts/release/mlx/`.
+  scripts in `mob_dev/scripts/release/mlx/`. A local tarball is your own
+  build, so it is not held to the pin; its hash is recorded instead, and
+  the cache it produced is replaced once the override is unset.
   """
 
   # Pinned MLX upstream version. Bump in lock-step with EMLX (deps/emlx/mix.exs
@@ -69,13 +73,15 @@ defmodule MobDev.MLXDownloader do
   def ensure(target) when target in [:ios_device, :ios_sim] do
     dest = dir(target)
 
-    if valid_dir?(dest) do
-      {:ok, dest}
-    else
-      # Stale or partial — clean and re-download. Same rationale as
-      # OtpDownloader: previous failed extraction or schema bump.
-      if File.dir?(dest), do: File.rm_rf!(dest)
-      download_and_extract(target, dest)
+    with {:ok, source, sha} <- source(target) do
+      if valid_dir?(dest) and MobDev.Download.verified?(dest, sha) do
+        {:ok, dest}
+      else
+        # Partial, unverified, or extracted from a different tarball (a local
+        # override, or an older mob_dev): clean and re-fetch.
+        if File.dir?(dest), do: File.rm_rf!(dest)
+        fetch_and_extract(target, source, sha, dest)
+      end
     end
   end
 
@@ -140,6 +146,10 @@ defmodule MobDev.MLXDownloader do
   @doc "Download URL for the `target` tarball."
   @spec download_url(target()) :: String.t()
   def download_url(target), do: "#{@base_url}/#{tarball_name(target)}"
+
+  @doc "Every tarball URL this downloader can request."
+  @spec download_urls() :: [String.t()]
+  def download_urls, do: Enum.map([:ios_device, :ios_sim], &download_url/1)
 
   @doc "Pinned MLX upstream version (e.g. `0.25.1`)."
   @spec mlx_version() :: String.t()
@@ -206,40 +216,24 @@ defmodule MobDev.MLXDownloader do
     end
   end
 
-  defp download_and_extract(target, dest_dir) do
-    File.mkdir_p!(Path.dirname(dest_dir))
-
-    with {:ok, tarball_path} <- fetch_tarball(target),
-         :ok <- extract(tarball_path, dest_dir),
-         :ok <- verify_layout(dest_dir) do
-      # Only clean up the tarball when we downloaded it ourselves.
-      # Local-override tarballs are user-managed; don't surprise them.
-      if String.starts_with?(tarball_path, System.tmp_dir!()) do
-        File.rm(tarball_path)
-      end
-
-      IO.puts("  Cached MLX (#{target}) at #{dest_dir}")
-      {:ok, dest_dir}
-    else
-      {:error, reason} ->
-        File.rm_rf(dest_dir)
-        {:error, reason}
-    end
-  end
-
-  defp fetch_tarball(target) do
+  # The tarball to extract and the SHA-256 its cache is recorded under: the
+  # pinned release asset, or the developer's own local build.
+  defp source(target) do
     case local_tarball_dir() do
-      nil -> download(target)
-      dir -> use_local(target, dir)
+      nil ->
+        url = download_url(target)
+        with {:ok, sha} <- MobDev.Download.pin(url), do: {:ok, {:remote, url}, sha}
+
+      dir ->
+        local_source(target, dir)
     end
   end
 
-  defp use_local(target, dir) do
+  defp local_source(target, dir) do
     path = Path.join(dir, tarball_name(target))
 
     if File.regular?(path) do
-      IO.puts("  Using local MLX tarball: #{path}")
-      {:ok, path}
+      with {:ok, sha} <- MobDev.Download.sha256_file(path), do: {:ok, {:local, path}, sha}
     else
       {:error,
        "MOB_MLX_LOCAL_TARBALL_DIR is set to #{dir} but " <>
@@ -247,28 +241,40 @@ defmodule MobDev.MLXDownloader do
     end
   end
 
-  defp download(target) do
-    url = download_url(target)
-    tmp_file = Path.join(System.tmp_dir!(), tarball_name(target))
+  defp fetch_and_extract(target, {:local, path}, sha, dest_dir) do
+    IO.puts("  Using local MLX tarball: #{path}")
+    unpack(target, path, sha, dest_dir)
+  end
+
+  defp fetch_and_extract(target, {:remote, url}, sha, dest_dir) do
+    File.mkdir_p!(Path.dirname(dest_dir))
+    tmp_file = MobDev.Download.staging_path(dest_dir, url)
 
     IO.puts("  Downloading MLX #{@mlx_version} (#{target})...")
     IO.puts("  URL: #{url}")
 
-    case System.cmd("curl", ["-L", "--fail", "--progress-bar", "-o", tmp_file, url],
-           stderr_to_stdout: false
-         ) do
-      {_, 0} -> {:ok, tmp_file}
-      {out, rc} -> {:error, "curl failed (exit #{rc}): #{String.trim(out)}"}
-    end
+    result =
+      with :ok <- MobDev.Download.fetch_verified(url, tmp_file, sha),
+           do: unpack(target, tmp_file, sha, dest_dir)
+
+    File.rm(tmp_file)
+    result
   end
 
-  defp extract(tarball, dest_dir) do
-    parent = Path.dirname(dest_dir)
-    File.mkdir_p!(parent)
+  # The tarball's single top-level dir is `name/1`; strip it into `dest_dir`.
+  defp unpack(target, tarball, sha, dest_dir) do
+    File.mkdir_p!(dest_dir)
 
-    # The tarball's top-level dir matches `name/1`, so extracting into the
-    # parent of `dest_dir` lands the right layout. Verify happens afterward.
-    MobDev.Download.untar(tarball, parent)
+    with :ok <- MobDev.Download.untar(tarball, dest_dir, strip_components: 1),
+         :ok <- verify_layout(dest_dir),
+         :ok <- MobDev.Download.mark_verified(dest_dir, sha) do
+      IO.puts("  Cached MLX (#{target}) at #{dest_dir}")
+      {:ok, dest_dir}
+    else
+      {:error, reason} ->
+        File.rm_rf(dest_dir)
+        {:error, reason}
+    end
   end
 
   defp verify_layout(dir) do

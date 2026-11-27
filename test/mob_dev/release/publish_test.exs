@@ -10,6 +10,7 @@ defmodule MobDev.Release.PublishTest do
   setup do
     Application.put_env(:mob_dev, :release_shell, MobDev.Release.ShellMock)
     on_exit(fn -> Application.delete_env(:mob_dev, :release_shell) end)
+    stub(MobDev.Release.ShellMock, :sha256, &{:ok, fake_sha(&1)})
     :ok
   end
 
@@ -68,13 +69,19 @@ defmodule MobDev.Release.PublishTest do
   end
 
   describe "candidate_basenames/0 / default_repo/0" do
-    test "four canonical basenames in canonical order" do
+    test "five canonical basenames in canonical order, one per downloadable runtime" do
       assert Publish.candidate_basenames() == [
                "otp-android",
                "otp-android-arm32",
+               "otp-android-x86_64",
                "otp-ios-sim",
                "otp-ios-device"
              ]
+
+      runtimes = Enum.map(MobDev.OtpDownloader.download_urls(), &Path.basename(&1, ".tar.gz"))
+
+      assert Enum.map(runtimes, &String.replace(&1, ~r/-[0-9a-f]{8}$/, "")) ==
+               Publish.candidate_basenames()
     end
 
     test "default repo is GenericJam/mob" do
@@ -133,6 +140,11 @@ defmodule MobDev.Release.PublishTest do
       assert info.tag == "otp-abc12345"
       assert info.repo == "GenericJam/mob"
 
+      assert {"https://github.com/GenericJam/mob/releases/download/otp-abc12345/otp-android-abc12345.tar.gz",
+              fake_sha("/tmp/otp-android-abc12345.tar.gz")} in info.pins
+
+      assert [_, _, _, _, _] = info.pins
+
       calls = calls_made()
       assert Enum.any?(calls, &gh_upload?/1)
       refute Enum.any?(calls, &match?(["gh", "release", "create" | _], &1))
@@ -190,8 +202,8 @@ defmodule MobDev.Release.PublishTest do
     end
   end
 
-  describe "publish/1 — overlapping assets are deleted first" do
-    test "each overlapping basename triggers a delete-asset call" do
+  describe "publish/1 — published assets are never replaced" do
+    test "an asset already on the release is refused; nothing is deleted or uploaded" do
       with_call_recorder()
       all_present()
 
@@ -205,27 +217,33 @@ defmodule MobDev.Release.PublishTest do
           gh_view?(argv) ->
             {:ok, "title: existing\n"}
 
-          match?(["gh", "release", "delete-asset" | _], argv) ->
-            {:ok, ""}
-
-          gh_upload?(argv) ->
-            {:ok, "uploaded\n"}
-
           true ->
             flunk("unexpected gh call: #{inspect(argv)}")
         end
       end)
 
-      assert {:ok, _info} = Publish.publish(hash: "abc12345", out_dir: "/tmp")
+      assert {:error, {:precondition_failed, msg}} =
+               Publish.publish(hash: "abc12345", out_dir: "/tmp")
 
-      deletes =
-        calls_made()
-        |> Enum.filter(&match?(["gh", "release", "delete-asset" | _], &1))
+      assert msg =~ "otp-android-abc12345.tar.gz"
+      assert msg =~ "otp-ios-sim-abc12345.tar.gz"
+      assert msg =~ "new hash"
 
-      assert [_, _] = deletes
+      calls = calls_made()
+      refute Enum.any?(calls, &match?(["gh", "release", "delete-asset" | _], &1))
+      refute Enum.any?(calls, &gh_upload?/1)
+    end
 
-      assert Enum.any?(deletes, fn argv -> "otp-android-abc12345.tar.gz" in argv end)
-      assert Enum.any?(deletes, fn argv -> "otp-ios-sim-abc12345.tar.gz" in argv end)
+    test "an unreadable tarball stops before anything touches the release" do
+      with_call_recorder()
+      all_present()
+
+      stub(MobDev.Release.ShellMock, :sha256, fn _ -> {:error, {:precondition_failed, "nope"}} end)
+
+      stub(MobDev.Release.ShellMock, :cmd, fn argv, _ -> flunk("unexpected: #{inspect(argv)}") end)
+
+      assert {:error, {:precondition_failed, "nope"}} =
+               Publish.publish(hash: "abc12345", out_dir: "/tmp")
     end
   end
 
@@ -429,6 +447,8 @@ defmodule MobDev.Release.PublishTest do
   defp all_present do
     stub(MobDev.Release.ShellMock, :file?, fn _ -> true end)
   end
+
+  defp fake_sha(path), do: :crypto.hash(:sha256, path) |> Base.encode16(case: :lower)
 
   # Order matters: gh_list_assets? must be tested BEFORE gh_view?
   # since the list-assets call IS a `gh release view ... --json assets`.

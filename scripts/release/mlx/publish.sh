@@ -12,6 +12,8 @@
 #   MLX_VERSION   — defaults to the value in _lib.sh (0.25.1)
 #   OUT_DIR       — where the tarballs live (default: /tmp)
 #   GH_REPO       — repo to publish into (default: GenericJam/mob)
+#   TAG           — release tag (default: mlx-$MLX_VERSION); a rebuild of an
+#                   already-published version needs a new one
 #   DRY_RUN       — non-empty to print what would happen without uploading
 #   EMLX_SRC      — the EMLX checkout the NIFs were built from; its version
 #                   goes into the release notes (default: _lib.sh's fallback)
@@ -21,8 +23,16 @@
 #   - libmlx-<ver>-ios-device.tar.gz
 #   - libmlx-<ver>-ios-sim.tar.gz
 #
-# After uploading, bump MobDev.MLXDownloader.@mlx_version (and
-# scripts/release/mlx/_lib.sh) in lockstep if this is a new MLX version.
+# Published assets are never replaced: released mob_dev versions pin each
+# asset's sha256 (MobDev.Download.Pins), so this script refuses to upload
+# over an existing asset. A rebuild of the same MLX version goes to a new
+# release tag (TAG=mlx-<ver>-2 ./publish.sh, then point
+# MobDev.MLXDownloader.@release_tag at it). See
+# decisions/2026-11-26-pinned-runtime-downloads.md.
+#
+# After uploading, paste the printed pin lines into
+# lib/mob_dev/download/pins.ex, and bump MobDev.MLXDownloader.@mlx_version
+# (and scripts/release/mlx/_lib.sh) in lockstep if this is a new MLX version.
 # Existing apps' `mix mob.deploy --native` will re-download into
 # ~/.mob/cache/libmlx-<new-ver>-ios-<slice>/ automatically.
 
@@ -35,7 +45,7 @@ source ./_lib.sh
 : "${GH_REPO:=GenericJam/mob}"
 : "${DRY_RUN:=}"
 
-TAG="mlx-${MLX_VERSION}"
+: "${TAG:=mlx-${MLX_VERSION}}"
 TITLE="MLX ${MLX_VERSION} for Mob iOS"
 NOTES_FILE=$(mktemp)
 trap 'rm -f "$NOTES_FILE"' EXIT
@@ -106,10 +116,17 @@ if [ -n "$DRY_RUN" ]; then
     exit 0
 fi
 
-# Create the release if it doesn't exist, otherwise just upload assets.
+# Create the release if it doesn't exist, otherwise add the assets — never
+# over an existing one.
 if gh release view "$TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
-    log "release $TAG already exists — uploading (clobbering existing assets)"
-    gh release upload "$TAG" "${ASSETS[@]}" --repo "$GH_REPO" --clobber
+    existing=$(gh release view "$TAG" --repo "$GH_REPO" --json assets -q '.assets[].name')
+    for asset in "${ASSETS[@]}"; do
+        if echo "$existing" | grep -qx "$(basename "$asset")"; then
+            fail "$(basename "$asset") is already on $TAG. Published assets are never replaced (released mob_dev versions pin their sha256); publish the rebuild under a new TAG."
+        fi
+    done
+    log "release $TAG already exists — adding assets"
+    gh release upload "$TAG" "${ASSETS[@]}" --repo "$GH_REPO"
 else
     log "creating release $TAG"
     # --latest=false: this is an asset-hosting release, not a Mob version;
@@ -122,4 +139,9 @@ else
 fi
 
 log "release URL: $(gh release view "$TAG" --repo "$GH_REPO" --json url --jq .url)"
-log "MobDev.MLXDownloader will now fetch from this release on next 'mix mob.deploy --native'."
+log "pin in lib/mob_dev/download/pins.ex:"
+for asset in "${ASSETS[@]}"; do
+    sha=$(shasum -a 256 "$asset" | awk '{print $1}')
+    printf '    "https://github.com/%s/releases/download/%s/%s" =>\n      "%s",\n' "$GH_REPO" "$TAG" "$(basename "$asset")" "$sha"
+done
+log "MobDev.MLXDownloader fetches from this release once those pins and its @release_tag match."
