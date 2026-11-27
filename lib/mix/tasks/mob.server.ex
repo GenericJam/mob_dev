@@ -49,7 +49,7 @@ defmodule Mix.Tasks.Mob.Server do
         ...
       ], strategy: :one_for_one)
 
-      open "http://localhost:4040"       # macOS: open, Linux: xdg-open
+      open "http://localhost:4040/?token=<per-run token>"  # macOS: open, Linux: xdg-open
 
   The endpoint uses `Bandit.PhoenixAdapter` instead of Cowboy, so there is no
   `:plug_cowboy` dependency. Everything else is standard Phoenix LiveView.
