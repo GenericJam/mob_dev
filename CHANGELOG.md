@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+## [0.7.32] - 2026-11-27
+
 ### Added
 
 - **iOS builds compile a launch screen icon, `MobLaunchIcon`, into the app.**
