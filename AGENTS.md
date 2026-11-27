@@ -698,6 +698,12 @@ narrowing functions). Don't make them private:
   `NativeBuild.apply_android_url_schemes!/1`,
   `NativeBuild.write_bundle_info_plist!/3` and
   `Mix.Tasks.Mob.Doctor.__project_checks__/0`
+- `Mix.Tasks.Mob.Server.endpoint_config/3` (the dev dashboard's per-run
+  `secret_key_base`, bind address and allowed websocket origins),
+  `MobDev.Server.Auth` (its per-run access token, MOB-551) and
+  `MobDev.Server.DashboardLive.deploy_mode/1` (the deploy-mode whitelist;
+  client strings never become atoms). See
+  `decisions/2026-11-26-dev-dashboard-per-run-access-token.md`
 
 If you make any of these private, every downstream test breaks loudly — but
 you'll lose the ability to evolve the parsers safely.
