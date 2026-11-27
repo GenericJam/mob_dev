@@ -138,6 +138,28 @@ defmodule MobDev.PythonAndroidSupportTest do
     end
   end
 
+  describe "cached?/1" do
+    @tag :tmp_dir
+    test "a valid layout is reused only with the marker for all three pinned zips",
+         %{tmp_dir: tmp} do
+      stub_full_bundle(tmp)
+      assert PythonAndroidSupport.valid_dir?(tmp)
+      refute PythonAndroidSupport.cached?(tmp)
+
+      pins =
+        Enum.map(PythonAndroidSupport.download_urls(), fn url ->
+          {:ok, sha} = MobDev.Download.pin(url)
+          sha
+        end)
+
+      MobDev.Download.mark_verified(tmp, hd(pins))
+      refute PythonAndroidSupport.cached?(tmp)
+
+      MobDev.Download.mark_verified(tmp, Enum.join(pins, "\n"))
+      assert PythonAndroidSupport.cached?(tmp)
+    end
+  end
+
   # ── helpers ─────────────────────────────────────────────────────────────────
 
   defp stub_full_bundle(tmp) do

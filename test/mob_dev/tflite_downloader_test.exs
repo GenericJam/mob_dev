@@ -143,6 +143,67 @@ defmodule MobDev.TfliteDownloaderTest do
     end
   end
 
+  # ── ensure/1 against MOB_TFLITE_LOCAL_TARBALL_DIR (no network) ──────────────
+
+  describe "ensure/1 — cache verification" do
+    @tag :tmp_dir
+    test "a cache not recorded under the source archive's sha256 is re-extracted",
+         %{tmp_dir: tmp} do
+      local = Path.join(tmp, "local")
+      File.mkdir_p!(local)
+      stage_aar(local)
+
+      System.put_env("MOB_CACHE_DIR", Path.join(tmp, "cache"))
+      System.put_env("MOB_TFLITE_LOCAL_TARBALL_DIR", local)
+
+      try do
+        assert {:ok, dir} = TfliteDownloader.ensure(:android_arm64)
+        sentinel = Path.join(dir, "sentinel.txt")
+        File.write!(sentinel, "x")
+
+        assert {:ok, ^dir} = TfliteDownloader.ensure(:android_arm64)
+        assert File.exists?(sentinel), "a verified cache is reused"
+
+        MobDev.Download.mark_verified(dir, String.duplicate("0", 64))
+        assert {:ok, ^dir} = TfliteDownloader.ensure(:android_arm64)
+        refute File.exists?(sentinel), "a cache with a foreign marker must be re-extracted"
+      after
+        System.delete_env("MOB_CACHE_DIR")
+        System.delete_env("MOB_TFLITE_LOCAL_TARBALL_DIR")
+      end
+    end
+
+    @tag :tmp_dir
+    test "a missing local archive is an error", %{tmp_dir: tmp} do
+      System.put_env("MOB_CACHE_DIR", Path.join(tmp, "cache"))
+      System.put_env("MOB_TFLITE_LOCAL_TARBALL_DIR", tmp)
+
+      try do
+        assert {:error, {:local_missing, _}} = TfliteDownloader.ensure(:ios_device)
+      after
+        System.delete_env("MOB_CACHE_DIR")
+        System.delete_env("MOB_TFLITE_LOCAL_TARBALL_DIR")
+      end
+    end
+  end
+
+  # An AAR-shaped zip carrying the .so, c_api.h and both patch headers, so
+  # ensure/1 needs no network.
+  defp stage_aar(dir) do
+    entries =
+      for rel <- [
+            "jni/arm64-v8a/libtensorflowlite_jni.so",
+            "headers/tensorflow/lite/c/c_api.h",
+            "headers/tensorflow/lite/core/c/registration_external.h",
+            "headers/tensorflow/lite/core/async/c/types.h"
+          ],
+          do: {String.to_charlist(rel), "stub"}
+
+    aar = Path.join(dir, "tensorflow-lite-#{TfliteDownloader.android_version()}.aar")
+    {:ok, _} = :zip.create(String.to_charlist(aar), entries)
+    aar
+  end
+
   # ── version pins ───────────────────────────────────────────────────────────
 
   describe "version pins" do

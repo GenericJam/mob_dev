@@ -123,6 +123,22 @@ defmodule MobDev.PythonAppleSupportTest do
     end
   end
 
+  describe "cached?/1" do
+    @tag :tmp_dir
+    test "a valid layout is reused only with the pinned tarball's marker", %{tmp_dir: tmp} do
+      stub_full_bundle(tmp)
+      assert PythonAppleSupport.valid_dir?(tmp)
+      refute PythonAppleSupport.cached?(tmp)
+
+      MobDev.Download.mark_verified(tmp, String.duplicate("0", 64))
+      refute PythonAppleSupport.cached?(tmp)
+
+      {:ok, pin} = MobDev.Download.pin(PythonAppleSupport.download_url())
+      MobDev.Download.mark_verified(tmp, pin)
+      assert PythonAppleSupport.cached?(tmp)
+    end
+  end
+
   # ── helpers ─────────────────────────────────────────────────────────────────
 
   defp stub_full_bundle(tmp) do

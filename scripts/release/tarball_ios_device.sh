@@ -79,8 +79,7 @@ bundle_elixir_stdlib "$STAGE"
 # ── EPMD source + iOS-arm64 configure output ────────────────────────────────
 # build_device.sh static-links EPMD into the iOS app. The .c sources and the
 # arch-specific config.h must be present alongside the install tree.
-# `MobDev.OtpDownloader.valid_otp_dir?/2` validates these are present and
-# re-downloads if absent.
+# `MobDev.OtpDownloader.valid_otp_dir?/2` rejects a runtime without them.
 log "bundling EPMD source + iOS-arm64 configure output..."
 mkdir -p "$STAGE/erts/epmd/src"
 cp "$OTP_SRC/erts/epmd/src/epmd.c"     "$STAGE/erts/epmd/src/"

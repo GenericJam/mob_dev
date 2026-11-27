@@ -71,6 +71,9 @@ defmodule MobDev.Release.Shell do
   """
   @callback rm_f(Path.t()) :: :ok | Errors.t()
 
+  @doc "Lowercase hex SHA-256 of a file. Returns `{:ok, hex}` or precondition_failed."
+  @callback sha256(Path.t()) :: {:ok, String.t()} | Errors.t()
+
   # ── Default impl resolver ─────────────────────────────────────────────
 
   @doc """
@@ -131,6 +134,14 @@ defmodule MobDev.Release.Shell.System do
       :ok -> :ok
       {:error, :enoent} -> :ok
       {:error, reason} -> Errors.fs_failed(path, reason)
+    end
+  end
+
+  @impl true
+  def sha256(path) do
+    case MobDev.Download.sha256_file(path) do
+      {:ok, sha} -> {:ok, sha}
+      {:error, msg} -> Errors.precondition(msg)
     end
   end
 end

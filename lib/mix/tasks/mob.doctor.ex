@@ -1285,16 +1285,19 @@ defmodule Mix.Tasks.Mob.Doctor do
   # ── OTP cache checks ──────────────────────────────────────────────────────────
 
   defp check_otp_cache do
-    checks = [check_otp_dir("Android", MobDev.OtpDownloader.android_otp_dir())]
+    checks = [__otp_dir_check__("Android", MobDev.OtpDownloader.android_otp_dir())]
 
     if macos?() do
-      checks ++ [check_otp_dir("iOS simulator", MobDev.OtpDownloader.ios_sim_otp_dir())]
+      checks ++ [__otp_dir_check__("iOS simulator", MobDev.OtpDownloader.ios_sim_otp_dir())]
     else
       checks
     end
   end
 
-  defp check_otp_dir(label, dir) do
+  @doc false
+  @spec __otp_dir_check__(String.t(), String.t()) ::
+          {:ok | :warn | :fail, String.t(), String.t(), String.t() | nil}
+  def __otp_dir_check__(label, dir) do
     name = Path.basename(dir)
 
     cond do
@@ -1309,6 +1312,12 @@ defmodule Mix.Tasks.Mob.Doctor do
          "Remove the stale directory and re-download:\n" <>
            "      rm -rf #{dir}\n" <>
            "      mix mob.install"}
+
+      not MobDev.OtpDownloader.cached?(dir, name) ->
+        {:warn, "OTP #{label}",
+         "#{name} is incomplete or was not extracted from the pinned tarball " <>
+           "(e.g. downloaded by an older mob_dev)",
+         "The next native build re-downloads it; or run:  mix mob.install"}
 
       true ->
         erts =

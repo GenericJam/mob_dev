@@ -3,9 +3,11 @@ defmodule MobDev.PythonAppleSupport do
   Downloads and caches BeeWare's Python-Apple-support bundle so iOS
   builds can embed CPython.
 
-  Mirrors the `MobDev.OtpDownloader` pattern: hashed URL + cached download
+  Mirrors the `MobDev.OtpDownloader` pattern: pinned URL + cached download
   at `~/.mob/cache/python-apple-support-<version>/`, validated against
-  the expected `Python.xcframework` layout. Reused across projects.
+  the expected `Python.xcframework` layout. Reused across projects. The
+  tarball is checked against its SHA-256 pin in `MobDev.Download.Pins`
+  before it is extracted, and a cache is reused only if it came from it.
 
   Used by `MobDev.NativeBuild` whenever the user's project depends on
   `:pythonx` — the build templates source `PYTHON_APPLE_SUPPORT` from
@@ -38,14 +40,22 @@ defmodule MobDev.PythonAppleSupport do
   def ensure do
     dir = extracted_dir()
 
-    if valid_dir?(dir) do
+    if cached?(dir) do
       {:ok, dir}
     else
-      # Stale or partial — clean and re-download. Same rationale as
-      # OtpDownloader: previous failed extraction or schema bump.
+      # Stale, partial or unverified — clean and re-download. Same rationale
+      # as OtpDownloader.
       if File.dir?(dir), do: File.rm_rf!(dir)
       download_and_extract(dir)
     end
+  end
+
+  @doc false
+  # Reused only with the expected layout AND extracted from the pinned tarball.
+  @spec cached?(String.t()) :: boolean()
+  def cached?(dir) do
+    valid_dir?(dir) and
+      MobDev.Download.verified?(dir, MobDev.Download.Pins.sha256(download_url()))
   end
 
   @doc """
@@ -128,6 +138,10 @@ defmodule MobDev.PythonAppleSupport do
   @spec download_url() :: String.t()
   def download_url, do: "#{@base_url}/#{@release_tag}/#{@tarball_name}"
 
+  @doc "Every URL this downloader can request."
+  @spec download_urls() :: [String.t()]
+  def download_urls, do: [download_url()]
+
   @doc "Tarball file name (used for caching the downloaded artifact)."
   @spec tarball_name() :: String.t()
   def tarball_name, do: @tarball_name
@@ -152,16 +166,19 @@ defmodule MobDev.PythonAppleSupport do
   end
 
   defp download_and_extract(dest_dir) do
-    tmp_file = Path.join(System.tmp_dir!(), @tarball_name)
+    url = download_url()
+    tmp_file = MobDev.Download.staging_path(dest_dir, url)
 
     IO.puts("  Downloading BeeWare Python-Apple-support #{@release_tag}...")
-    IO.puts("  URL: #{download_url()}")
+    IO.puts("  URL: #{url}")
 
     File.mkdir_p!(Path.dirname(dest_dir))
 
-    with :ok <- download(download_url(), tmp_file),
+    with {:ok, sha} <- MobDev.Download.pin(url),
+         :ok <- MobDev.Download.fetch_verified(url, tmp_file, sha),
          :ok <- extract(tmp_file, dest_dir),
-         :ok <- verify_layout(dest_dir) do
+         :ok <- verify_layout(dest_dir),
+         :ok <- MobDev.Download.mark_verified(dest_dir, sha) do
       File.rm(tmp_file)
       IO.puts("  Cached at #{dest_dir}")
       {:ok, dest_dir}
@@ -172,8 +189,6 @@ defmodule MobDev.PythonAppleSupport do
         {:error, reason}
     end
   end
-
-  defp download(url, dest), do: MobDev.Download.curl(url, dest)
 
   defp extract(tarball, dest_dir) do
     File.mkdir_p!(dest_dir)
