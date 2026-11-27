@@ -51,12 +51,8 @@ defmodule MobDev.Release do
 
     # Before signing resolution, the OTP download and the script/bootstrap
     # writes, so a plugin the gate refuses leaves nothing built or downloaded.
-    plugin_env =
-      plugin_release_env(
-        activated,
-        Path.expand("ios/build_device.zig"),
-        MobDev.NativeBuild.ios_build_inputs_dir(:ios_device)
-      )
+    inputs_dir = MobDev.NativeBuild.ios_build_inputs_dir(:ios_device)
+    plugin_env = plugin_release_env(activated, Path.expand("ios/build_device.zig"), inputs_dir)
 
     with :ok <- check_macos(),
          :ok <- check_xcrun(),
@@ -65,6 +61,7 @@ defmodule MobDev.Release do
          # the plugin set of the last dev build (MOB-404).
          :ok <- MobDev.NativeBuild.prepare_plugin_build_state!(),
          :ok <- check_driver_table(),
+         :ok <- check_ios_info_plist(),
          {:ok, cfg} <- resolve_distribution_signing(cfg),
          {:ok, otp_root} <- MobDev.OtpDownloader.ensure_ios_device(),
          {:ok, plugin_archives} <-
@@ -83,7 +80,8 @@ defmodule MobDev.Release do
       MobDev.AppConfig.write!(Path.join(["_build", "dev", "lib", app, "ebin"]))
 
       project_env = project_release_env(project_swift_sources, project_nifs, plugin_archives)
-      env = release_env(cfg, otp_root, plugin_env, project_env)
+      info_plist = write_release_info_plist!(activated, inputs_dir)
+      env = release_env(cfg, otp_root, info_plist, plugin_env, project_env)
       output_dir = Path.expand("_build/mob_release")
       File.mkdir_p!(output_dir)
 
@@ -147,6 +145,17 @@ defmodule MobDev.Release do
        only needed for release; `mob.regen_driver_tab` without --format c emits Zig,
        which the release path does not compile.)
        """}
+    end
+  end
+
+  # The release bundles a copy of ios/Info.plist with the plugins' keys
+  # (`write_release_info_plist!/2`); without the file that copy would raise
+  # after the OTP download and the plugin archive builds.
+  defp check_ios_info_plist do
+    if File.exists?("ios/Info.plist") do
+      :ok
+    else
+      {:error, "ios/Info.plist not found. The iOS release bundles it; run from the app's root."}
     end
   end
 
@@ -396,14 +405,17 @@ defmodule MobDev.Release do
 
   @doc false
   # The whole env `release_device.sh` runs with, minus the two output vars
-  # `build_ipa/1` adds. `plugin_env` is `plugin_release_env/3`'s result and
-  # `project_env` is `project_release_env/3`'s, both required, so neither the
-  # plugin nor the project inputs can be left out of a release. Public for
-  # testing.
-  @spec release_env(keyword(), Path.t(), [{String.t(), String.t()}], [
+  # `build_ipa/1` adds. `info_plist` is `write_release_info_plist!/2`'s result,
+  # the Info.plist the script bundles and the one the URL types and fonts are
+  # computed against, as the dev build computes them against the bundle's
+  # merged copy. `plugin_env` is `plugin_release_env/3`'s result and
+  # `project_env` is `project_release_env/3`'s. All three are required, so
+  # neither the plugins' keys nor the plugin or project inputs can be left out
+  # of a release. Public for testing.
+  @spec release_env(keyword(), Path.t(), Path.t(), [{String.t(), String.t()}], [
           {String.t(), String.t()}
         ]) :: [{String.t(), String.t()}]
-  def release_env(cfg, otp_root, plugin_env, project_env) do
+  def release_env(cfg, otp_root, info_plist, plugin_env, project_env) do
     app_atom = Mix.Project.config()[:app]
     app_name = app_atom |> to_string() |> Macro.camelize()
     app_module = to_string(app_atom)
@@ -421,11 +433,12 @@ defmodule MobDev.Release do
       {"MOB_IOS_PROFILE_UUID", cfg[:ios_dist_profile_uuid]},
       {"MOB_APP_NAME", app_name},
       {"MOB_APP_MODULE", app_module},
+      {"MOB_IOS_INFO_PLIST", info_plist},
       screenshot_build_env(cfg),
       layout_plist_env(cfg),
-      url_types_plist_env(cfg, "ios/Info.plist")
+      url_types_plist_env(cfg, info_plist)
     ] ++
-      ios_fonts_release_env("ios/Info.plist", MobDev.NativeBuild.collect_all_fonts()) ++
+      ios_fonts_release_env(info_plist, MobDev.NativeBuild.collect_all_fonts()) ++
       plugin_env ++ project_env
   end
 
@@ -503,6 +516,23 @@ defmodule MobDev.Release do
   end
 
   @doc false
+  # The project's ios/Info.plist with the activated plugins' keys
+  # (`NativeBuild.apply_plugin_plist_keys!/2`, the dev bundles' merge), written
+  # to `inputs_dir` as `release_Info.plist`; `release_env/5` hands its path to
+  # release_device.sh, which bundles it. Without it a release shipped
+  # ios/Info.plist as written, without a plugin's privacy strings or Bonjour
+  # service types. The project's file is left alone. Overwritten by each
+  # release before the script reads it, so a file left by an earlier one is
+  # never bundled.
+  @spec write_release_info_plist!([MobDev.Plugin.Merge.plugin()], Path.t()) :: Path.t()
+  def write_release_info_plist!(activated, inputs_dir) do
+    info_plist = Path.join(inputs_dir, "release_Info.plist")
+    File.cp!("ios/Info.plist", info_plist)
+    MobDev.NativeBuild.apply_plugin_plist_keys!(info_plist, activated)
+    info_plist
+  end
+
+  @doc false
   # `mob.exs` `ios_target_devices` / `ios_orientations` / `multi_window` as
   # newline-separated PlistBuddy commands; `release_device.sh` runs them on the
   # bundle's Info.plist exactly as the dev build does
@@ -516,8 +546,9 @@ defmodule MobDev.Release do
 
   @doc false
   # `mob.exs` `url_schemes` as newline-separated PlistBuddy commands computed
-  # from `plist_path` (the project's `ios/Info.plist`, which release_device.sh
-  # copies into the bundle unchanged as far as CFBundleURLTypes goes):
+  # from `plist_path` (`write_release_info_plist!/2`'s file, which
+  # release_device.sh copies into the bundle unchanged as far as
+  # CFBundleURLTypes goes):
   # `MobDev.UrlSchemes.bundle_plist_commands!/3`, the dev build's commands, under
   # the iOS bundle id as CFBundleURLName. Empty without reading the plist when
   # `url_schemes` is unset. Raises on an invalid value.
@@ -543,9 +574,9 @@ defmodule MobDev.Release do
   #   line per font, from `NativeBuild.ios_font_copies!/1` (the dev build's
   #   collision and name checks).
   # - `MOB_IOS_UI_APP_FONTS` — one base64 bundle name per line for each name
-  #   `plist_path` (the project's `ios/Info.plist`, copied into the bundle as
-  #   is) doesn't already list in UIAppFonts, so the result matches the dev
-  #   build's `Assets.merge_ui_app_fonts/2`. The script adds each with
+  #   `plist_path` (`write_release_info_plist!/2`'s file, copied into the
+  #   bundle as is) doesn't already list in UIAppFonts, so the result matches
+  #   the dev build's `Assets.merge_ui_app_fonts/2`. The script adds each with
   #   `plutil -insert`, the name a single argument, never parsed.
   #
   # Both empty without reading the plist when there are no fonts.
@@ -984,7 +1015,9 @@ defmodule MobDev.Release do
       mkdir -p "$APP"
       cp "$BUILD_DIR/$APP_NAME" "$APP/"
 
-      cp ios/Info.plist "$APP/"
+      # ios/Info.plist with the activated plugins' keys
+      # (write_release_info_plist!/2).
+      cp "${MOB_IOS_INFO_PLIST:?MOB_IOS_INFO_PLIST not set}" "$APP/Info.plist"
       /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" "$APP/Info.plist"
       /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable $APP_NAME"   "$APP/Info.plist"
       /usr/libexec/PlistBuddy -c "Set :CFBundleName $APP_NAME"         "$APP/Info.plist"
@@ -1009,8 +1042,9 @@ defmodule MobDev.Release do
       fi
 
       # mob.exs url_schemes (MobDev.UrlSchemes): PlistBuddy Adds computed from
-      # ios/Info.plist, appending one CFBundleURLTypes entry after the app's own
-      # and skipping schemes it declares. Every command must succeed (set -e).
+      # the Info.plist copied above, appending one CFBundleURLTypes entry after
+      # the app's own and skipping schemes it declares. Every command must
+      # succeed (set -e).
       if [ -n "$MOB_IOS_URL_TYPES_PLIST_COMMANDS" ]; then
           while IFS= read -r CMD; do
               /usr/libexec/PlistBuddy -c "$CMD" "$APP/Info.plist"

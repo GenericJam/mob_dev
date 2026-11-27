@@ -39,7 +39,7 @@ that registers it compile together, as they do under zig).
   builds run before linking plugin code. `build_ipa/1` calls it before
   signing resolution, the OTP download, the script rewrite or the bootstrap
   write (only the empty `_build` inputs dir is created first), and
-  `release_env/3` (now `release_env/4`, MOB-373) takes its result as an
+  `release_env/3` (now `release_env/5`: MOB-373, then the merged Info.plist) takes its result as an
   argument, so a release can neither skip the gate nor leave the plugin inputs
   out.
 - **The rule is the dev path's.** Which files go in is decided by

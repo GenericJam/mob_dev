@@ -19,6 +19,12 @@ copy: plugin keys, fonts, `CFBundleIdentifier` (`NativeBuild.bundle_ios_app/3`,
 iPhone-only `UIDeviceFamily` default when the key is absent
 (`release_device.sh`). The project file itself is never rewritten.
 
+> **Correction (2026-10-25):** "plugin keys" held for the sim and device
+> bundles only. `release_device.sh` copied `ios/Info.plist` as written, so a
+> release had no `ios.plist_keys` from activated plugins. The release now
+> bundles a copy with them (`Release.write_release_info_plist!/2`, see the
+> 2026-10-25 addendum to `2026-05-28-plugin-plist-keys-merge.md`).
+
 Facts this rests on, checked 2026-10-01 against Xcode 27.0:
 
 - The iOS 27.0 SDK defines two device families: `SDKSettings.plist`
