@@ -14,9 +14,10 @@ Include what you can of:
 - steps or a proof of concept that reproduce it;
 - what it lets the attacker do.
 
-The same address covers the related packages: `mob`, `mob_new` and the `mob_*`
-plugins. If a problem spans several of them, send one report and I'll coordinate
-the fixes.
+The same address covers the related packages I maintain: `mob`, `mob_new` and
+the `mob_*` plugins published from
+[github.com/GenericJam](https://github.com/GenericJam). If a problem spans
+several of them, send one report and I'll coordinate the fixes.
 
 ## What happens next
 
@@ -43,10 +44,12 @@ code to them.
 **In scope:**
 
 - **The plugin signature and trust gate.** It is a vulnerability if the gate
-  lets through an unsigned, tampered or untrusted plugin, or if it evaluates a
-  plugin manifest before verifying the signature. See mob's
+  lets through an unsigned, tampered or untrusted plugin that the developer
+  didn't list in `config :mob, :acknowledge_unsafe_plugins`, or if any mob_dev
+  task evaluates a plugin's manifest before verifying its signature. See mob's
   [`MOB_PLUGIN_SECURITY.md`](https://github.com/GenericJam/mob/blob/master/MOB_PLUGIN_SECURITY.md).
-- **Downloaded artifacts,** such as the OTP runtime tarballs: missing or
+- **Downloaded artifacts and the OTP runtime builds,** such as the OTP runtime
+  tarballs and the build scripts and patches in `scripts/release/`: missing or
   bypassable integrity checks, and path or symlink escapes when an archive is
   extracted.
 - **The development server, dashboard, hot push, tunnels and device
@@ -65,9 +68,15 @@ code to them.
 **Not vulnerabilities on their own:**
 
 - The project's `mix.exs`, build scripts or dependencies running code on your
-  machine. Mix trusts them by design.
+  machine. Mix trusts them by design. A plugin is a Mix dependency too, so its
+  Elixir code runs like any other; the gate's promises above still have to
+  hold.
 - An authenticated development peer pushing code or running RPC calls. That
   access is the point of the connection.
 - A vulnerability that `mix mob.security_scan` finds in *your app's*
-  dependencies. Report it to that dependency. If the scanner misses a known
-  advisory, that is an ordinary bug: open an issue.
+  dependencies. Report it to that dependency. If the scan flags the OTP,
+  OpenSSL or SQLite that Mob bundles, do tell me so Mob can move to a fixed
+  version. If the scanner misses a known advisory, that is an ordinary bug: open
+  an issue.
+- Bugs in Erlang/OTP, Elixir, Android, Xcode or a third-party library. Report
+  those upstream.
