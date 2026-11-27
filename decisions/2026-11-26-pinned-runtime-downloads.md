@@ -39,7 +39,9 @@ bytes behind a URL were not fixed. Extraction relied on each platform's
   unset. TFLite now reads the local archive in place instead of copying it into
   the download cache.
 - **Extraction refuses unsafe archives.** `MobDev.Download.untar/3` and
-  `unzip/2` list members first (`:erl_tar.table`, `:zip.list_dir`) and refuse
+  `unzip/2` list members first (`:erl_tar.table`; for zips the central
+  directory is read directly, since `:zip.list_dir` reports symlinks as regular
+  files, and the Unix mode in each external-attributes field marks symlinks) and refuse
   absolute names, `..` segments, hard links/devices/FIFOs, and members stored
   beneath a symlink member (compared at the path each member lands at after
   `--strip-components`, reading a `./` prefix both as a component and not,

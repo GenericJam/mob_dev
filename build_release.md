@@ -88,8 +88,8 @@ intentional: `erts-<vsn>/` is the *install* tree (compiled artifacts), `erts/`
 is a stripped-down *source* tree fragment carrying just what `build_device.sh`
 needs to compile EPMD against the iOS arm64 SDK.
 
-`MobDev.OtpDownloader` validates these files are present after extraction;
-older tarballs without them are treated as invalid and re-downloaded.
+`MobDev.OtpDownloader` validates these files are present after extraction, so
+a tarball published without them fails at install rather than at link time.
 
 ### iOS simulator (`otp-ios-sim-<hash>.tar.gz`)
 
@@ -403,8 +403,8 @@ echo "Bundled Elixir $(elixir --version | grep Elixir | awk '{print $2}')"
 
 # ── EPMD source + iOS-arm64 configure output ─────────────────────────────────
 # build_device.sh static-links EPMD into the iOS app. The .c sources and the
-# arch-specific config.h must be present alongside the install tree. The
-# downloader's `valid_otp_dir?/2` checks for these and re-downloads if absent.
+# arch-specific config.h must be present alongside the install tree; the
+# downloader's `valid_otp_dir?/2` rejects a runtime without them.
 mkdir -p "$STAGE/erts/epmd/src"
 cp "$OTP_SRC/erts/epmd/src/epmd.c"     "$STAGE/erts/epmd/src/"
 cp "$OTP_SRC/erts/epmd/src/epmd_srv.c" "$STAGE/erts/epmd/src/"

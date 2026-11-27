@@ -152,8 +152,9 @@ defmodule MobDev.Download do
   end
 
   @doc """
-  Extract `zip` into `dest_dir` with `unzip`, refusing absolute names and
-  `..` segments up front and escaping symlinks afterwards (as `untar/3`).
+  Extract `zip` into `dest_dir` with `unzip`. The central directory is read
+  first and the same member policy as `untar/3` applied (symlink members are
+  recognised from their Unix mode); escaping symlinks are refused afterwards.
   """
   @spec unzip(Path.t(), Path.t()) :: :ok | {:error, String.t()}
   def unzip(zip, dest_dir) do
@@ -174,18 +175,89 @@ defmodule MobDev.Download do
     end
   end
 
+  # Member names and types from the zip's central directory. `:zip.list_dir`
+  # reports symlinks as regular files, so the Unix mode in the external
+  # attributes is read here instead.
   defp zip_entries(zip) do
-    case :zip.list_dir(String.to_charlist(zip)) do
-      {:ok, items} ->
-        {:ok, for({:zip_file, name, _, _, _, _} <- items, do: zip_entry(to_string(name)))}
-
-      {:error, reason} ->
-        {:error, "could not list #{zip}: #{inspect(reason)}"}
+    case File.open(zip, [:read, :binary], &read_central_directory/1) do
+      {:ok, {:ok, entries}} -> {:ok, entries}
+      {:ok, {:error, why}} -> {:error, "could not list #{zip}: #{why}"}
+      {:error, reason} -> {:error, "could not list #{zip}: #{:file.format_error(reason)}"}
     end
   end
 
-  defp zip_entry(name),
-    do: {name, if(String.ends_with?(name, "/"), do: :directory, else: :regular)}
+  defp read_central_directory(io) do
+    {:ok, size} = :file.position(io, :eof)
+    tail_len = min(size, 22 + 65_535)
+
+    with {:ok, tail} <- pread(io, size - tail_len, tail_len),
+         {:ok, count, cd_size, cd_offset} <- end_of_central_directory(tail),
+         {:ok, cd} <- pread(io, cd_offset, cd_size) do
+      central_entries(cd, count, [])
+    end
+  end
+
+  defp pread(io, offset, len) do
+    case :file.pread(io, offset, len) do
+      {:ok, data} when byte_size(data) == len -> {:ok, data}
+      _ -> {:error, "truncated archive"}
+    end
+  end
+
+  # The last signature with room for a whole 22-byte record after it (an
+  # archive comment may itself contain the signature bytes).
+  defp end_of_central_directory(tail) do
+    case for {pos, _} <- :binary.matches(tail, <<0x50, 0x4B, 0x05, 0x06>>),
+             pos + 22 <= byte_size(tail),
+             do: pos do
+      [] ->
+        {:error, "no end-of-central-directory record"}
+
+      positions ->
+        pos = List.last(positions)
+
+        case binary_part(tail, pos, byte_size(tail) - pos) do
+          <<_::32, _::binary-size(6), count::16-little, cd_size::32-little, cd_offset::32-little,
+            _::binary>>
+          when count == 0xFFFF or cd_size == 0xFFFFFFFF or cd_offset == 0xFFFFFFFF ->
+            {:error, "zip64 archives are not supported"}
+
+          <<_::32, _::binary-size(6), count::16-little, cd_size::32-little, cd_offset::32-little,
+            _::binary>> ->
+            {:ok, count, cd_size, cd_offset}
+
+          _ ->
+            {:error, "truncated end-of-central-directory record"}
+        end
+    end
+  end
+
+  defp central_entries(<<>>, 0, acc), do: {:ok, Enum.reverse(acc)}
+
+  defp central_entries(
+         <<0x50, 0x4B, 0x01, 0x02, _made_by::16, _::binary-size(22), name_len::16-little,
+           extra_len::16-little, comment_len::16-little, _disk::16, _internal::16,
+           external::32-little, _offset::32, name::binary-size(name_len),
+           _extra::binary-size(extra_len), _comment::binary-size(comment_len), rest::binary>>,
+         n,
+         acc
+       )
+       when n > 0 do
+    central_entries(rest, n - 1, [{name, zip_type(name, external)} | acc])
+  end
+
+  defp central_entries(_, _, _), do: {:error, "malformed central directory"}
+
+  # The high 16 bits of the external attributes hold the Unix st_mode when the
+  # archiver recorded one (`zip -y` stores symlinks this way, and `unzip`
+  # restores them).
+  defp zip_type(name, external) do
+    cond do
+      Bitwise.band(Bitwise.bsr(external, 16), 0o170000) == 0o120000 -> :symlink
+      String.ends_with?(name, "/") -> :directory
+      true -> :regular
+    end
+  end
 
   @doc false
   # Member-list policy shared by tar and zip. `entries` are `{name, type}`

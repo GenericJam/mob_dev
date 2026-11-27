@@ -314,6 +314,47 @@ defmodule MobDev.DownloadTest do
       assert msg =~ "absolute"
       refute File.exists?("/tmp/mob553_abs")
     end
+
+    @tag :tmp_dir
+    test "refuses a member stored beneath a symlink member (zip -y archive)", %{tmp_dir: tmp} do
+      # `a/link` is stored as a symlink (zip -y); `a/link/f` is appended from a
+      # tree where a/link is a real directory.
+      with_link = mkdir(tmp, "with_link/a")
+      File.ln_s!(".", Path.join(with_link, "link"))
+      real = mkdir(tmp, "real/a/link")
+      File.write!(Path.join(real, "f"), "through the link")
+      zip = Path.join(tmp, "y.zip")
+      {_, 0} = System.cmd("zip", ["-q", "-y", zip, "a/link"], cd: Path.join(tmp, "with_link"))
+      {_, 0} = System.cmd("zip", ["-q", "-y", zip, "a/link/f"], cd: Path.join(tmp, "real"))
+      dest = mkdir(tmp, "out")
+
+      assert {:error, msg} = Download.unzip(zip, dest)
+      assert msg =~ "is stored beneath a symlink"
+      refute File.exists?(Path.join(dest, "a"))
+    end
+
+    @tag :tmp_dir
+    test "extracts an in-tree symlink member and refuses an escaping one (zip -y)",
+         %{tmp_dir: tmp} do
+      src = mkdir(tmp, "src")
+      File.write!(Path.join(src, "f"), "f")
+      File.ln_s!("f", Path.join(src, "ok"))
+      File.ln_s!("../../outside", Path.join(src, "evil"))
+      good = Path.join(tmp, "good.zip")
+      bad = Path.join(tmp, "bad.zip")
+      {_, 0} = System.cmd("zip", ["-q", "-y", good, "f", "ok"], cd: src)
+      {_, 0} = System.cmd("zip", ["-q", "-y", bad, "f", "evil"], cd: src)
+
+      good_dest = mkdir(tmp, "good_out")
+      assert :ok = Download.unzip(good, good_dest)
+      assert File.read!(Path.join(good_dest, "ok")) == "f"
+
+      # Refused either by unzip itself or by the post-extraction link check;
+      # either way no escaping link is left.
+      bad_dest = mkdir(tmp, "bad_out")
+      assert {:error, _} = Download.unzip(bad, bad_dest)
+      refute symlink?(Path.join(bad_dest, "evil"))
+    end
   end
 
   describe "check_symlinks/1" do
