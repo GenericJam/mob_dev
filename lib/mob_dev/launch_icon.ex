@@ -9,10 +9,11 @@ defmodule MobDev.LaunchIcon do
   Mob's boot screen (`MobRootView`) then draws the same image in the same
   place and adds a loading indicator under it while the BEAM starts.
 
-  The image is made at build time from the largest PNG in
-  `AppIcon.appiconset`, so it follows `mix mob.icon` and hand-made icons and
-  nothing is stored in the project. The rounding is `priv/launch_icon.swift`
-  (CoreGraphics), cached under the system temp dir by the source PNG's hash.
+  The image is made at build time from the largest PNG of the plain app icon
+  (`AppIcon.appiconset`'s Contents.json entries without `appearances`), so it
+  follows `mix mob.icon` and hand-made icons and nothing is stored in the
+  project. The rounding is `priv/launch_icon.swift` (CoreGraphics), cached
+  under the system temp dir by the source PNG and the script.
   """
 
   @image_set "MobLaunchIcon"
