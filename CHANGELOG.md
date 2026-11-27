@@ -1,5 +1,18 @@
 ## [Unreleased]
 
+### Added
+
+- **iOS builds compile a launch screen icon, `MobLaunchIcon`, into the app.**
+  It is the app icon at 96 pt with the home screen's rounded corners, made
+  at build time from the largest PNG in `AppIcon.appiconset`
+  (`MobDev.LaunchIcon`, `priv/launch_icon.swift`), so it follows
+  `mix mob.icon` and nothing is added to the project. The sim, device and
+  release builds compile a temporary copy of `ios/Assets.xcassets` that
+  carries it. mob_new apps name it in `UILaunchScreen`, so the app's icon
+  shows from the tap until the first frame, and Mob's boot screen draws the
+  same image in the same place. An app whose icon has no PNG, or a Mac where
+  `xcrun swift` fails, gets the plain launch screen as before.
+
 ### Fixed
 
 - **`mix mob.release --ios` bundles the activated plugins' Info.plist keys.**

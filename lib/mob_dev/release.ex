@@ -99,16 +99,20 @@ defmodule MobDev.Release do
       # The script's scratch (objects, the linked binary, the .app, the IPA
       # staging dir: ~100 MB) goes in a directory removed on every exit path,
       # success or failure (MOB-425, the MOB-313 rule for the dev builds).
+      # The asset catalog to compile is handed over as MOB_ASSET_CATALOG: a
+      # copy carrying the launch screen's icon (MobDev.LaunchIcon).
       status =
         MobDev.NativeBuild.with_temp_build_dir("release", fn build_dir ->
-          {_, status} =
-            System.cmd("bash", [script_path],
-              env: [{"MOB_RELEASE_BUILD_DIR", build_dir} | env],
-              stderr_to_stdout: true,
-              into: IO.stream()
-            )
+          MobDev.LaunchIcon.with_catalog(fn catalog ->
+            {_, status} =
+              System.cmd("bash", [script_path],
+                env: [{"MOB_RELEASE_BUILD_DIR", build_dir}, {"MOB_ASSET_CATALOG", catalog} | env],
+                stderr_to_stdout: true,
+                into: IO.stream()
+              )
 
-          status
+            status
+          end)
         end)
 
       if status == 0 do
@@ -1140,7 +1144,7 @@ defmodule MobDev.Release do
 
       if [ -d "ios/Assets.xcassets/AppIcon.appiconset" ]; then
           ACTOOL_PLIST="$MOB_RELEASE_SCRATCH/actool_partial.plist"
-          xcrun actool ios/Assets.xcassets \
+          xcrun actool "${MOB_ASSET_CATALOG:-ios/Assets.xcassets}" \
               --compile "$APP" --platform iphoneos \
               --minimum-deployment-target 17.0 \
               --app-icon AppIcon \

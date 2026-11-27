@@ -4534,25 +4534,29 @@ defmodule MobDev.NativeBuild do
     # actool can be flaky and is non-critical (the binary still runs without
     # icons compiled — just shows the system default). Mirror the build.sh
     # `2>/dev/null || true` posture so a broken Assets.xcassets doesn't kill
-    # an otherwise-successful native build.
-    case System.cmd(
-           "xcrun",
-           [
-             "actool",
-             "ios/Assets.xcassets",
-             "--compile",
-             app_path,
-             "--platform",
-             "iphonesimulator",
-             "--minimum-deployment-target",
-             "17.0",
-             "--app-icon",
-             "AppIcon",
-             "--output-partial-info-plist",
-             actool_plist
-           ],
-           stderr_to_stdout: true
-         ) do
+    # an otherwise-successful native build. The catalog compiled carries the
+    # launch screen's icon too (MobDev.LaunchIcon).
+    MobDev.LaunchIcon.with_catalog(fn catalog ->
+      System.cmd(
+        "xcrun",
+        [
+          "actool",
+          catalog,
+          "--compile",
+          app_path,
+          "--platform",
+          "iphonesimulator",
+          "--minimum-deployment-target",
+          "17.0",
+          "--app-icon",
+          "AppIcon",
+          "--output-partial-info-plist",
+          actool_plist
+        ],
+        stderr_to_stdout: true
+      )
+    end)
+    |> case do
       {_, 0} ->
         _ =
           System.cmd(
@@ -6014,24 +6018,27 @@ defmodule MobDev.NativeBuild do
     actool_plist =
       Path.join(System.tmp_dir!(), "mob_actool_#{System.unique_integer([:positive])}.plist")
 
-    case System.cmd(
-           "xcrun",
-           [
-             "actool",
-             "ios/Assets.xcassets",
-             "--compile",
-             app_path,
-             "--platform",
-             "iphoneos",
-             "--minimum-deployment-target",
-             "17.0",
-             "--app-icon",
-             "AppIcon",
-             "--output-partial-info-plist",
-             actool_plist
-           ],
-           stderr_to_stdout: true
-         ) do
+    MobDev.LaunchIcon.with_catalog(fn catalog ->
+      System.cmd(
+        "xcrun",
+        [
+          "actool",
+          catalog,
+          "--compile",
+          app_path,
+          "--platform",
+          "iphoneos",
+          "--minimum-deployment-target",
+          "17.0",
+          "--app-icon",
+          "AppIcon",
+          "--output-partial-info-plist",
+          actool_plist
+        ],
+        stderr_to_stdout: true
+      )
+    end)
+    |> case do
       {_, 0} ->
         _ =
           System.cmd(
