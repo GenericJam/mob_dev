@@ -10,16 +10,24 @@ defmodule Mix.Tasks.Mob.Plugin.Trust do
       mix mob.plugin.trust <plugin_name>
 
   Resolves the plugin via `Mix.Project.deps_paths/0`, reads its
-  `priv/mob_plugin.pub` + manifest, displays the declared capabilities
-  (frameworks, permissions, gradle deps, plist keys) plus the
-  fingerprint, and prompts `y/N` before recording the entry.
+  `priv/mob_plugin.pub`, verifies its v2 signature envelope
+  (`MobDev.Plugin.Verify.load_verified/1`), and only then evaluates the
+  manifest. It displays the fingerprint and the capabilities the verified
+  manifest declares (frameworks, permissions, gradle deps, plist keys) and
+  prompts `y/N` before recording the entry.
+
+  A plugin whose signature is missing, does not verify, or is a legacy v1
+  envelope is refused, and a manifest that has not verified is never
+  evaluated: there is nothing to trust without a valid signature (MOB-550).
+  An unsigned plugin can still be used during development through
+  `config :mob, :acknowledge_unsafe_plugins`.
 
   Key rotation: if a different fingerprint is already trusted for this
   plugin name, this task warns and prompts for explicit confirmation
   before replacing the entry.
   """
 
-  alias MobDev.Plugin.{Crypto, Manifest, TrustStore, Verify}
+  alias MobDev.Plugin.{Crypto, TrustStore, Verify}
 
   @impl Mix.Task
   def run(args) do
@@ -34,8 +42,9 @@ defmodule Mix.Tasks.Mob.Plugin.Trust do
   def run_with_deps(args, deps_paths, project_dir) do
     name = parse_name!(args)
     plugin_dir = resolve_dep!(name, deps_paths)
-    pub = load_pubkey!(plugin_dir, name)
-    manifest = load_manifest!(plugin_dir, name)
+    path_dep? = path_dep?(plugin_dir, project_dir)
+    pub = load_pubkey!(plugin_dir, name, path_dep?)
+    manifest = load_verified_manifest!(plugin_dir, name, path_dep?)
     fingerprint = Crypto.fingerprint(pub)
 
     existing = Map.get(TrustStore.load_trusted_plugins(project_dir), name)
@@ -89,16 +98,13 @@ defmodule Mix.Tasks.Mob.Plugin.Trust do
     end
   end
 
-  defp load_pubkey!(plugin_dir, name) do
+  defp load_pubkey!(plugin_dir, name, path_dep?) do
     case Verify.load_pubkey(plugin_dir) do
       {:ok, pub} ->
         pub
 
       {:error, :missing} ->
-        Mix.raise(
-          "plugin #{inspect(name)} ships no priv/mob_plugin.pub — " <>
-            "ask the author to run `mix mob.plugin.keygen` and re-publish"
-        )
+        Mix.raise(refusal_message(name, :missing_pubkey, path_dep?))
 
       {:error, :malformed} ->
         Mix.raise(
@@ -108,8 +114,10 @@ defmodule Mix.Tasks.Mob.Plugin.Trust do
     end
   end
 
-  defp load_manifest!(plugin_dir, name) do
-    case Manifest.load(plugin_dir) do
+  # Verification runs before priv/mob_plugin.exs is evaluated; a manifest that
+  # has not verified never runs (MOB-550).
+  defp load_verified_manifest!(plugin_dir, name, path_dep?) do
+    case Verify.load_verified(plugin_dir) do
       {:ok, manifest} when is_map(manifest) ->
         manifest
 
@@ -117,8 +125,63 @@ defmodule Mix.Tasks.Mob.Plugin.Trust do
         Mix.raise("plugin #{inspect(name)} has no priv/mob_plugin.exs manifest")
 
       {:error, reason} ->
-        Mix.raise("could not load manifest for #{inspect(name)}: #{reason}")
+        Mix.raise(refusal_message(name, reason, path_dep?))
     end
+  end
+
+  @doc false
+  # Why `mix mob.plugin.trust` refuses a plugin, for each
+  # `Verify.load_verified/1` error. A binary reason is a manifest that
+  # verified but failed to evaluate. A path dependency (a local checkout) is
+  # not changed by `deps.get`/`deps.update`, so its remedy is re-signing in
+  # place. Public for testing.
+  @spec refusal_message(atom(), Verify.verify_error() | String.t(), boolean()) :: String.t()
+  def refusal_message(name, :missing_signature, _path_dep?) do
+    "plugin #{inspect(name)} is not signed (no priv/mob_plugin.sig), so there is " <>
+      "nothing to trust. Ask the author to run `mix mob.plugin.sign` and re-publish. " <>
+      "To use it unsigned during development, add\n" <>
+      "    config :mob, :acknowledge_unsafe_plugins, [#{inspect(name)}]\n" <>
+      "to mob.exs instead. mob.exs is unchanged."
+  end
+
+  def refusal_message(name, :missing_pubkey, _path_dep?) do
+    "plugin #{inspect(name)} ships no priv/mob_plugin.pub — " <>
+      "ask the author to run `mix mob.plugin.keygen` and re-publish"
+  end
+
+  def refusal_message(name, :invalid_signature, path_dep?) do
+    "the signature for plugin #{inspect(name)} does not verify against its " <>
+      "priv/mob_plugin.pub, or a file changed after it was signed. mob.exs is unchanged. " <>
+      invalid_signature_remedy(name, path_dep?)
+  end
+
+  def refusal_message(name, :envelope_v1_unsupported, path_dep?) do
+    "plugin #{inspect(name)} ships a legacy v1 signature, which mob_dev does not " <>
+      "accept. mob.exs is unchanged. " <> v1_remedy(name, path_dep?)
+  end
+
+  def refusal_message(name, reason, _path_dep?) when is_binary(reason) do
+    "could not load manifest for #{inspect(name)}: #{reason}"
+  end
+
+  defp invalid_signature_remedy(name, true = _path_dep?), do: resign_in_place(name)
+
+  defp invalid_signature_remedy(name, false = _path_dep?) do
+    "Reinstall it (`mix deps.clean #{name} && mix deps.get`); if it still does not " <>
+      "verify, report it to the plugin author."
+  end
+
+  defp v1_remedy(name, true = _path_dep?), do: resign_in_place(name)
+
+  defp v1_remedy(name, false = _path_dep?) do
+    "Update it to a v2-signed release with `mix deps.update #{name}` (a git dependency " <>
+      "pinned with ref:/tag: needs a v2-signed ref), or ask the author to re-sign with " <>
+      "`mix mob.plugin.sign` on mob_dev 0.7.2 or later."
+  end
+
+  defp resign_in_place(name) do
+    "It is a path dependency, which deps.get does not change: re-sign it in its " <>
+      "directory with `mix mob.plugin.sign` (key: ~/.mob/keys/#{name}.priv)."
   end
 
   defp print_summary(name, manifest, version, fingerprint, existing) do

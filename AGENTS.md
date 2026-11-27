@@ -655,7 +655,9 @@ narrowing functions). Don't make them private:
 - `MobDev.DeviceLeases.parse_status/1`, `current_session/1`, `foreign_claim/2`
   and `partition/2` (which agent-device claims block auto-selection), and
   `MobDev.Plugin.TrustStore.trust_stanza/1` / `Mix.Tasks.Mob.Plugin.Trust.version/3`
-  (the one-entry-per-line trust map and the version shown for review)
+  (the one-entry-per-line trust map and the version shown for review) /
+  `Mix.Tasks.Mob.Plugin.Trust.refusal_message/3` (why trust refuses a plugin whose
+  signature does not verify, and the remedy for a Hex/git vs. a path dependency)
 - `Release.plugin_ios_swift_env/3` and `plugin_ios_swift_env_written/3` (which
   Swift files the iOS release script compiles: the plugins' plus the bootstrap
   that defines `mob_register_plugins`, by the dev path's
