@@ -59,6 +59,12 @@ end
 - **Watch mode toggle** — auto-push changed BEAMs on file save without running a separate terminal
 - **QR code** — LAN URL for opening the dashboard on a physical device
 
+Each run prints URLs carrying a random access token (`?token=...`); the QR code
+carries it too. Open one of them: the browser gets a session cookie for that
+run, and every request or LiveView connection without it is refused. Restarting
+the server invalidates earlier links. `mix mob.server --local` listens on
+`127.0.0.1` only and prints no LAN URL.
+
 Run with IEx for an interactive terminal alongside the dashboard:
 
 ```bash
