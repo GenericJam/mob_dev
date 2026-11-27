@@ -44,14 +44,17 @@ code to them.
 **In scope:**
 
 - **The plugin signature and trust gate.** It is a vulnerability if the gate
-  lets through an unsigned, tampered or untrusted plugin that the developer
-  didn't list in `config :mob, :acknowledge_unsafe_plugins`, or if any mob_dev
-  task evaluates a plugin's manifest before verifying its signature. See mob's
+  lets through a tampered or untrusted plugin, or an unsigned one the developer
+  didn't list in `config :mob, :acknowledge_unsafe_plugins`. It is also one if a
+  task run in a host project evaluates a dependency's plugin manifest before
+  verifying its signature, apart from an unsigned plugin the developer
+  acknowledged. See mob's
   [`MOB_PLUGIN_SECURITY.md`](https://github.com/GenericJam/mob/blob/master/MOB_PLUGIN_SECURITY.md).
-- **Downloaded artifacts and the OTP runtime builds,** such as the OTP runtime
-  tarballs and the build scripts and patches in `scripts/release/`: missing or
+- **Downloaded artifacts,** such as the OTP runtime tarballs: missing or
   bypassable integrity checks, and path or symlink escapes when an archive is
   extracted.
+- **Mob's OTP runtime builds:** a bug that the patches or build settings in
+  `scripts/release/` introduce into the runtime that ships in apps.
 - **The development server, dashboard, hot push, tunnels and device
   discovery:**
   - access without authentication;
@@ -75,8 +78,9 @@ code to them.
   access is the point of the connection.
 - A vulnerability that `mix mob.security_scan` finds in *your app's*
   dependencies. Report it to that dependency. If the scan flags the OTP,
-  OpenSSL or SQLite that Mob bundles, do tell me so Mob can move to a fixed
-  version. If the scanner misses a known advisory, that is an ordinary bug: open
-  an issue.
+  Elixir, OpenSSL or SQLite that Mob bundles, do tell me so Mob can move to a
+  fixed version. If the scanner misses a known advisory, that is an ordinary
+  bug: open an issue.
 - Bugs in Erlang/OTP, Elixir, Android, Xcode or a third-party library. Report
-  those upstream.
+  those upstream, unless Mob's own patches or build settings introduced them
+  (see above).
