@@ -414,6 +414,63 @@ defmodule MobDev.Plugin.VerifyTest do
     end
   end
 
+  # MOB-550: a validly signed envelope that does not list priv/mob_plugin.exs
+  # leaves the manifest bytes unverified, so it is refused before anything
+  # evaluates the manifest — including the coverage check, which evaluates it.
+  describe "a signed envelope that omits the manifest" do
+    setup %{dir: dir, manifest: manifest} do
+      marker = Path.join(dir, "manifest_evaluated")
+
+      write!(dir, "priv/mob_plugin.exs", """
+      File.write!(#{inspect(marker)}, "evaluated")
+      #{inspect(manifest, limit: :infinity)}
+      """)
+
+      {:ok, marker: marker}
+    end
+
+    defp sign_listing!(dir, priv, file_hashes) do
+      signature = Crypto.sign(Sign.build_payload(file_hashes), priv)
+
+      bytes =
+        Crypto.canonical_encode(%{
+          signature: signature,
+          file_hashes: file_hashes,
+          envelope_version: 2
+        })
+
+      File.write!(Sign.signature_path(dir), bytes)
+    end
+
+    defp assert_refused_unevaluated(dir, marker) do
+      assert {:error, :invalid_signature} = Verify.verify_plugin(dir)
+      assert {:error, :invalid_signature} = Verify.load_verified(dir)
+      refute File.exists?(marker), "the unsigned manifest was evaluated"
+
+      # The probe's precondition: evaluating this manifest writes the marker.
+      Manifest.load(dir)
+      assert File.exists?(marker)
+    end
+
+    test "an empty file_hashes list is refused", %{dir: dir, priv: priv, marker: marker} do
+      sign_listing!(dir, priv, [])
+      assert_refused_unevaluated(dir, marker)
+    end
+
+    test "a coverage-marked list without the manifest is refused before the coverage check",
+         %{dir: dir, priv: priv, marker: marker} do
+      sign_listing!(dir, priv, [{"priv/mob_plugin.coverage-2", :crypto.hash(:sha256, <<>>)}])
+      assert_refused_unevaluated(dir, marker)
+    end
+
+    test "a tier-0 plugin (no manifest) with a signature still verifies",
+         %{dir: dir, priv: priv} do
+      File.rm!(Path.join(dir, "priv/mob_plugin.exs"))
+      sign_listing!(dir, priv, [])
+      assert :ok = Verify.verify_plugin(dir)
+    end
+  end
+
   # mob_dev 0.7.2's verification, copied from its lib/mob_dev/plugin/verify.ex
   # (`decode_envelope/1`, `check_files_match/2`) and sign.ex (`build_payload/1`
   # inlined as the literal payload). Hosts that have not upgraded run exactly

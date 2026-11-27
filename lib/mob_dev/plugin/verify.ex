@@ -12,16 +12,19 @@ defmodule MobDev.Plugin.Verify do
   4. Re-hashes each file the envelope declares and compares against the
      signed hash — proving the on-disk state has not been tampered with
      since the author signed it.
-  5. When the signed list carries the build-input coverage marker
+  5. Requires `priv/mob_plugin.exs`, when present, to be one of the signed
+     files (MOB-550) — every v2 signer lists it, and an envelope that omits it
+     would leave the manifest's bytes unverified.
+  6. When the signed list carries the build-input coverage marker
      (MOB-297, see `Sign`), evaluates the now-verified manifest and
      requires every `Sign.build_inputs/2` file to be listed — proving no
      file the build reads was added outside the signature. Envelopes
      without the marker (signed before MOB-297) skip this step.
 
   Because the envelope carries `file_hashes` on disk (v2, see
-  `Sign` moduledoc for the version history), steps 1–4 do not need the
+  `Sign` moduledoc for the version history), steps 1–5 do not need the
   eval'd manifest map — so the safe order is **verify → then eval**, and
-  step 5's eval runs only on manifest bytes that already matched their
+  step 6's eval runs only on manifest bytes that already matched their
   signed hash. This closes the MOB-74 class of bug where a malicious
   `priv/mob_plugin.exs` could execute arbitrary code during plugin
   activation because the eval ran before the signature check.
@@ -32,6 +35,7 @@ defmodule MobDev.Plugin.Verify do
   - `:missing_pubkey` — no `priv/mob_plugin.pub`.
   - `:invalid_signature` — sig present but doesn't verify, or on-disk
     files no longer match the signed hashes (tamper detected), or a
+    present manifest is not among the signed files, or a
     build input is missing from a coverage-marked signature (or its
     manifest cannot be evaluated to check), or the envelope is malformed.
   - `:envelope_v1_unsupported` — a legacy v1 envelope was found. v1
@@ -50,6 +54,7 @@ defmodule MobDev.Plugin.Verify do
 
   @signature_file "priv/mob_plugin.sig"
   @pubkey_file "priv/mob_plugin.pub"
+  @manifest_file "priv/mob_plugin.exs"
 
   # Atom keys that appear in the v2 signed envelope term (see
   # `Sign.sign_plugin/2`). `load_envelope/1` decodes the envelope with
@@ -178,15 +183,15 @@ defmodule MobDev.Plugin.Verify do
   Verifies that the plugin in `plugin_dir` has a valid v2 signature and
   that the on-disk files match what the author signed.
 
-  Steps 1–4 (see the moduledoc) run entirely off the envelope's embedded
-  `file_hashes` list — the manifest is one of those files, and rehashing
+  Steps 1–5 (see the moduledoc) run entirely off the envelope's embedded
+  `file_hashes` list — the manifest must be one of those files, and rehashing
   its bytes on disk detects tampering without any `Code.eval_file` call.
   That is the MOB-74 fix: verification is safe to run *before* eval,
   closing the RCE window where a malicious `priv/mob_plugin.exs` could
   execute arbitrary code during plugin activation.
 
   For a signature carrying the build-input coverage marker (MOB-297),
-  step 5 then evaluates the manifest — only after its bytes matched the
+  step 6 then evaluates the manifest — only after its bytes matched the
   signed hash and the signature verified — to recompute
   `Sign.build_inputs/2` and refuse any build input the signature omits.
 
@@ -205,7 +210,7 @@ defmodule MobDev.Plugin.Verify do
     end
   end
 
-  # `:ok`, or `{:ok, manifest}` when step 5 had to evaluate the verified
+  # `:ok`, or `{:ok, manifest}` when step 6 had to evaluate the verified
   # manifest (so `load_verified/2` does not evaluate it a second time). A
   # manifest that fails to evaluate returns `Manifest.load/1`'s message.
   defp verify(plugin_dir) do
@@ -213,7 +218,8 @@ defmodule MobDev.Plugin.Verify do
          {:ok, pub} <- normalise_pubkey_error(load_pubkey(plugin_dir)),
          :ok <- check_files_match(plugin_dir, envelope.file_hashes),
          payload = Sign.build_payload(envelope.file_hashes),
-         :ok <- normalise_verify(Crypto.verify(payload, envelope.signature, pub)) do
+         :ok <- normalise_verify(Crypto.verify(payload, envelope.signature, pub)),
+         :ok <- check_manifest_signed(plugin_dir, envelope.file_hashes) do
       check_build_input_coverage(plugin_dir, envelope.file_hashes)
     end
   end
@@ -287,7 +293,17 @@ defmodule MobDev.Plugin.Verify do
     if mismatch, do: {:error, :invalid_signature}, else: :ok
   end
 
-  # Step 5. Runs only after every listed file (the manifest included) matched
+  # Step 5. The rehash above covers only listed files, so a manifest the
+  # envelope does not list would reach `Manifest.load/1` unverified, both in
+  # step 6 and in `load_verified/2` (MOB-550).
+  defp check_manifest_signed(plugin_dir, file_hashes) do
+    if Manifest.manifest_present?(plugin_dir) and
+         not List.keymember?(file_hashes, @manifest_file, 0),
+       do: {:error, :invalid_signature},
+       else: :ok
+  end
+
+  # Step 6. Runs only after every listed file (the manifest included) matched
   # its signed hash and the signature verified, so `Manifest.load/1` evaluates
   # bytes the author signed — the same order `load_verified/2` has always used.
   # A signature without the marker predates MOB-297 and listed a narrower set;

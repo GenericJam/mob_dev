@@ -1,7 +1,7 @@
 # Plugin envelope v2 — verify signature before eval
 
 - Date: 2026-09-11
-- Status: accepted; point 5 amended by [2026-09-30-v1-envelope-transition.md](2026-09-30-v1-envelope-transition.md) (MOB-287); points 1 and 3 amended by [2026-09-30-plugin-signature-coverage.md](2026-09-30-plugin-signature-coverage.md) (MOB-297)
+- Status: accepted; point 5 amended by [2026-09-30-v1-envelope-transition.md](2026-09-30-v1-envelope-transition.md) (MOB-287); points 1 and 3 amended by [2026-09-30-plugin-signature-coverage.md](2026-09-30-plugin-signature-coverage.md) (MOB-297); the author-side consequence amended by [2026-11-26-plugin-trust-verifies-before-eval.md](2026-11-26-plugin-trust-verifies-before-eval.md) (MOB-550)
 
 ## Context
 
@@ -123,6 +123,15 @@ Move to envelope v2, which flips the trust chain end-to-end:
   no attack vector for the author's own plugin. All four are noted as
   separate follow-ups (MOB-185/186/187 lay out the longer-term path
   to data-only manifests, which closes the class entirely).
+
+  **Correction (2026-11-26, MOB-550):** `mix mob.plugin.trust` did not belong
+  in this list. It is not author-side: it evaluates a *dependency's*
+  manifest on the consumer's machine, so evaluating before verifying broke
+  the property this record establishes. It now reads the manifest through
+  `Verify.load_verified/1` and refuses unsigned, tampered and v1-signed
+  plugins without evaluating them. The author-side exemption holds for the
+  other three only. See
+  [2026-11-26-plugin-trust-verifies-before-eval.md](2026-11-26-plugin-trust-verifies-before-eval.md).
 - **`SignatureGate.check_activated/1` tier-0 detection** switched from
   "`is_map(manifest)`" (the old proxy) to
   "`Manifest.manifest_present?(dir)`". This is necessary because a
