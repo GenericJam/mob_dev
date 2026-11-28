@@ -6,11 +6,13 @@ defmodule MobDev.IOSInstalls do
   apps off a device without touching anything else on it.
 
   Physical-device Mob apps each start an in-process EPMD bound to
-  `0.0.0.0:4369` (`mob/ios/mob_beam.m`), so only one can run at a time —
-  launching a second gets EADDRINUSE and no BEAM. Clearing the others before
-  launch is therefore necessary. What is *not* necessary, and what this module
-  exists to prevent, is deciding which processes to kill by pattern-matching
-  the running process list: every third-party app on the phone runs from
+  `0.0.0.0:4369` (`mob/ios/mob_beam.m`), and iOS suspends a background app,
+  EPMD included, so only one can run with distribution at a time — a second
+  stops on its startup error screen (older mob: exits silently). Clearing
+  the others before launch is therefore necessary. What is *not* necessary,
+  and what this module exists to prevent, is deciding which processes to kill
+  by pattern-matching the running process list: every third-party app on the
+  phone runs from
   `/private/var/containers/Bundle/Application/`, so that pattern matches
   Spotify, a banking app and everything else the owner had open (MOB-70).
 

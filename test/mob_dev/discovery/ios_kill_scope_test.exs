@@ -24,10 +24,13 @@ defmodule MobDev.Discovery.IOSKillScopeTest do
        36   /Applications/News.app/News
   """
 
+  defp pids(process_output, ours, except),
+    do: process_output |> IOS.mob_processes_to_kill(ours, except) |> Enum.map(&elem(&1, 0))
+
   describe "only our own apps are killable" do
     test "a third-party app is never selected, however it is spelled" do
       # The bug in one line: these are the apps that were being killed.
-      pids = IOS.mob_pids_to_kill(@processes, ["DemoOne", "DemoTwo"], nil)
+      pids = pids(@processes, ["DemoOne", "DemoTwo"], nil)
 
       assert pids == [7911, 7914]
 
@@ -36,24 +39,33 @@ defmodule MobDev.Discovery.IOSKillScopeTest do
       refute 7940 in pids, "killed TestFlight"
     end
 
+    test "each process comes with the app name the caller reports stopping" do
+      # MOB-371: another agent's app vanishing is only explicable if the
+      # launching side says which app it stopped.
+      assert IOS.mob_processes_to_kill(@processes, ["DemoOne", "DemoTwo"], nil) == [
+               {7911, "DemoOne"},
+               {7914, "DemoTwo"}
+             ]
+    end
+
     test "an unknown device kills nothing rather than everything" do
       # The whole point. No record of what we installed is not licence to
       # clear the phone; it is the reason to touch none of it.
-      assert IOS.mob_pids_to_kill(@processes, [], nil) == []
+      assert pids(@processes, [], nil) == []
     end
 
     test "the app being launched is left alone" do
       # The caller launches it with --terminate-existing straight after, so
       # killing it here is redundant, and racing that is how you get a launch
       # into a process that is still dying.
-      pids = IOS.mob_pids_to_kill(@processes, ["DemoOne", "DemoTwo"], "DemoOne")
+      pids = pids(@processes, ["DemoOne", "DemoTwo"], "DemoOne")
 
       assert pids == [7914]
       refute 7911 in pids
     end
 
     test "a recorded app that is not running contributes no pid" do
-      assert IOS.mob_pids_to_kill(@processes, ["NotRunning"], nil) == []
+      assert pids(@processes, ["NotRunning"], nil) == []
     end
 
     test "system processes are never matched, even on an exact name collision" do
@@ -62,9 +74,9 @@ defmodule MobDev.Discovery.IOSKillScopeTest do
       # project name, so a project called :news or :springboard produces
       # exactly the bundle name Apple ships. Name equality alone is not a
       # safety property.
-      refute 412 in IOS.mob_pids_to_kill(@processes, ["backboardd", "DemoOne"], nil)
-      assert IOS.mob_pids_to_kill(@processes, ["SpringBoard"], nil) == []
-      assert IOS.mob_pids_to_kill(@processes, ["News"], nil) == []
+      refute 412 in pids(@processes, ["backboardd", "DemoOne"], nil)
+      assert pids(@processes, ["SpringBoard"], nil) == []
+      assert pids(@processes, ["News"], nil) == []
     end
   end
 
@@ -72,12 +84,12 @@ defmodule MobDev.Discovery.IOSKillScopeTest do
     test "an app name is matched whole, not as a substring" do
       # "Demo" must not match "DemoOne.app" — otherwise a short recorded name
       # silently widens the blast radius to every app sharing its prefix.
-      assert IOS.mob_pids_to_kill(@processes, ["Demo"], nil) == []
+      assert pids(@processes, ["Demo"], nil) == []
     end
 
     test "empty and malformed output are handled without raising" do
-      assert IOS.mob_pids_to_kill("", ["DemoOne"], nil) == []
-      assert IOS.mob_pids_to_kill("garbage\n\n  \n", ["DemoOne"], nil) == []
+      assert pids("", ["DemoOne"], nil) == []
+      assert pids("garbage\n\n  \n", ["DemoOne"], nil) == []
     end
   end
 
@@ -107,7 +119,7 @@ defmodule MobDev.Discovery.IOSKillScopeTest do
 
     test "end to end: the launching app survives, its sibling does not" do
       except = IOS.except_app_name_for(@ours, "com.example.one")
-      pids = IOS.mob_pids_to_kill(@processes, ["DemoOne", "DemoTwo"], except)
+      pids = pids(@processes, ["DemoOne", "DemoTwo"], except)
 
       assert pids == [7914]
     end

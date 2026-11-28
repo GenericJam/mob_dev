@@ -114,6 +114,9 @@ defmodule MobDev.Deployer do
           platform_opts = [
             restart: restart,
             dist_port: dist_port,
+            # A physical iPhone takes only an explicit port: with nothing set
+            # it listens on 9101, the one mob app per phone (MOB-371).
+            dist_port_override: dist_port_override,
             node_suffix: node_suffix_override,
             beam_flags: beam_flags,
             dist_cookie: dist_cookie
@@ -1361,6 +1364,7 @@ defmodule MobDev.Deployer do
     restart = Keyword.get(opts, :restart, true)
     beam_flags = Keyword.get(opts, :beam_flags, nil)
     dist_cookie = Keyword.fetch!(opts, :dist_cookie)
+    dist_port = Keyword.get(opts, :dist_port_override)
     bundle = ios_bundle_id()
     app = app_name()
     compile_path = Mix.Project.compile_path()
@@ -1392,7 +1396,8 @@ defmodule MobDev.Deployer do
         active_bootstrap: active_bootstrap,
         restart: restart,
         beam_flags: beam_flags,
-        dist_cookie: dist_cookie
+        dist_cookie: dist_cookie,
+        dist_port: dist_port
       })
     end
   end
@@ -1405,7 +1410,8 @@ defmodule MobDev.Deployer do
          active_bootstrap: active_bootstrap,
          restart: restart,
          beam_flags: beam_flags,
-         dist_cookie: dist_cookie
+         dist_cookie: dist_cookie,
+         dist_port: dist_port
        }) do
     # Stage all BEAMs (and priv/) into a temp dir named <app>.
     # PID-qualified: unique_integer restarts low in a fresh VM, so two
@@ -1533,7 +1539,10 @@ defmodule MobDev.Deployer do
       if restart do
         clear_ios_loaded_dir(udid, bundle, staging_parent)
 
-        case IOS.restart_app_physical(udid, bundle, dist_cookie: Atom.to_string(dist_cookie)) do
+        case IOS.restart_app_physical(udid, bundle,
+               dist_cookie: Atom.to_string(dist_cookie),
+               dist_port: dist_port
+             ) do
           {_, 0} -> confirm_ios_code_loaded(udid, bundle, code_dir, staging_parent)
           # Not launched (a locked phone, say): nothing booted to confirm.
           _ -> :ok

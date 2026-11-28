@@ -1,5 +1,19 @@
 ## [Unreleased]
 
+### Fixed
+
+- **`mix mob.deploy --dist-port` now reaches a physical iPhone.** It was
+  passed to simulators (`SIMCTL_CHILD_MOB_DIST_PORT`) and Android (the
+  `mob_dist_port` extra) but not to `devicectl launch`, so a physical iPhone
+  always listened on 9101. It now gets `DEVICECTL_CHILD_MOB_DIST_PORT`.
+  Without the flag the iPhone still uses 9101. (MOB-371)
+- **Launching on a physical iPhone names the Mob apps it stops.** A phone
+  runs one Mob app with distribution at a time (each needs the in-process
+  EPMD on 4369, and iOS suspends the other), so `mix mob.deploy` and
+  `mix mob.connect` stop the other Mob apps they installed there. They did
+  it silently, and to another agent sharing the phone its app just vanished.
+  Each stop now prints "Stopping <App> on this device". (MOB-371)
+
 ## [0.7.32] - 2026-11-27
 
 ### Added

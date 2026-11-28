@@ -57,8 +57,9 @@ defmodule Mix.Tasks.Mob.Deploy do
     * `--dist-port <N>`       — pin the BEAM dist listen port (default: derived per
                               device from the device serial and app name, in
                               `9100..9899`, moved past ports another device already
-                              uses; `mix mob.connect` derives the same port). Use to
-                              resolve a collision with a non-BEAM listener on that port.
+                              uses; `mix mob.connect` derives the same port; a
+                              physical iPhone uses 9101). Use to resolve a collision
+                              with a non-BEAM listener on that port.
     * `--node-suffix <S>`     — append `_<S>` to the BEAM node name (default: auto-derived
                               from device serial on Android, SIMULATOR_UDID on iOS sim). Use
                               for scripted scenarios where you need a specific naming scheme.
