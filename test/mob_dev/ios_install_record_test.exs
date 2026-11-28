@@ -62,6 +62,6 @@ defmodule MobDev.IOSInstallRecordTest do
        7911   /private/var/containers/Bundle/Application/AAAA/#{name}.app/#{name}
     """
 
-    assert MobDev.Discovery.IOS.mob_pids_to_kill(processes, [name], nil) == [7911]
+    assert MobDev.Discovery.IOS.mob_processes_to_kill(processes, [name], nil) == [{7911, name}]
   end
 end

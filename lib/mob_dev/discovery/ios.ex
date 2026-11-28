@@ -772,10 +772,11 @@ defmodule MobDev.Discovery.IOS do
   @doc """
   Restarts the app on a physical iOS device via xcrun devicectl.
 
-  First clears other Mob apps that `mob_dev` installed on this device — they
-  each hold EPMD 4369 and only one can run at a time — then launches the
-  target app fresh. Apps `mob_dev` did not install are never touched, whoever
-  they belong to. See `MobDev.IOSInstalls` and MOB-70.
+  First stops other Mob apps that `mob_dev` installed on this device, naming
+  them: a phone runs one Mob app with distribution at a time, since each needs
+  the in-process EPMD on 4369 and iOS suspends the other (MOB-371). Then
+  launches the target app fresh. Apps `mob_dev` did not install are never
+  touched, whoever they belong to. See `MobDev.IOSInstalls` and MOB-70.
   """
   @spec restart_app_physical(String.t(), String.t(), keyword()) ::
           {String.t(), non_neg_integer()}
@@ -802,12 +803,14 @@ defmodule MobDev.Discovery.IOS do
 
   @doc """
   The `devicectl device process launch` environment for a physical iPhone
-  (`DEVICECTL_CHILD_*` reaches the app): the dist cookie (`:dist_cookie`) and
+  (`DEVICECTL_CHILD_*` reaches the app): the dist cookie (`:dist_cookie`),
   the host the node must be named after (`:node_host`, an IPv4 the Mac
-  reaches the phone at). mob_beam.m (mob ≥ 0.9.16) takes `MOB_NODE_HOST`
+  reaches the phone at) and an explicit dist port (`:dist_port`, from `mix
+  mob.deploy --dist-port`). mob_beam.m (mob ≥ 0.9.16) takes `MOB_NODE_HOST`
   when it is one of the phone's own addresses; without it the phone names
   its node after its WiFi address, which the Mac can't dial when that WiFi is
-  a network the Mac isn't on (MOB-428). Older mob ignores it.
+  a network the Mac isn't on (MOB-428). Older mob ignores it. Without
+  `MOB_DIST_PORT` the app listens on 9101.
   """
   @spec physical_launch_env(keyword()) :: [{String.t(), String.t()}]
   def physical_launch_env(opts) do
@@ -828,11 +831,21 @@ defmodule MobDev.Discovery.IOS do
           []
       end
 
-    cookie ++ host
+    port =
+      case Keyword.get(opts, :dist_port) do
+        p when is_integer(p) and p in 1..65_535 ->
+          [{"DEVICECTL_CHILD_MOB_DIST_PORT", Integer.to_string(p)}]
+
+        _ ->
+          []
+      end
+
+    cookie ++ host ++ port
   end
 
   @doc """
-  Process ids on the device that belong to Mob apps we may kill.
+  `{pid, app_name}` for each process on the device that belongs to a Mob app
+  we may stop.
 
   Pure, so the decision that used to be untestable is now the testable part.
   `process_output` is `devicectl device info processes` output; `ours` is what
@@ -849,8 +862,9 @@ defmodule MobDev.Discovery.IOS do
   every app the owner had open (MOB-70). An empty `ours` returns `[]`: not
   knowing what is ours means killing nothing.
   """
-  @spec mob_pids_to_kill(String.t(), [String.t()], String.t() | nil) :: [pos_integer()]
-  def mob_pids_to_kill(process_output, ours, except_app_name \\ nil) do
+  @spec mob_processes_to_kill(String.t(), [String.t()], String.t() | nil) ::
+          [{pos_integer(), String.t()}]
+  def mob_processes_to_kill(process_output, ours, except_app_name \\ nil) do
     killable = MapSet.new(ours) |> MapSet.delete(except_app_name)
 
     process_output
@@ -867,7 +881,9 @@ defmodule MobDev.Discovery.IOS do
       # anchor only removes the 24 system processes that were never candidates.
       case Regex.run(~r{^\s*(\d+)\s+.*/Bundle/Application/[^/]+/([^/]+)\.app/}, line) do
         [_, pid_str, app_name] ->
-          if MapSet.member?(killable, app_name), do: [String.to_integer(pid_str)], else: []
+          if MapSet.member?(killable, app_name),
+            do: [{String.to_integer(pid_str), app_name}],
+            else: []
 
         _ ->
           []
@@ -891,24 +907,27 @@ defmodule MobDev.Discovery.IOS do
   # Clear other Mob apps off the device before launching.
   #
   # Physical-device Mob apps each start an in-process EPMD on 0.0.0.0:4369
-  # (mob/ios/mob_beam.m), so only one can run at a time — a second gets
-  # EADDRINUSE and never boots. Clearing the others is genuinely required.
+  # (mob/ios/mob_beam.m), and iOS suspends a background app, EPMD included,
+  # so only one can run with distribution at a time: a second one stops on
+  # its startup error screen (older mob: dies silently). Clearing the others
+  # is genuinely required, and naming them is what tells an agent sharing the
+  # phone why its app went away.
   #
-  # What is not required is guessing. See `mob_pids_to_kill/3`.
+  # What is not required is guessing. See `mob_processes_to_kill/3`.
   defp kill_other_user_apps_physical(udid, except_bundle) do
     ours = MobDev.IOSInstalls.installed(udid)
     app_names = Enum.map(ours, & &1.app_name)
 
     # The trade this fix makes, said out loud. A Mob app installed by some
     # other route — Xcode, TestFlight, a colleague's build — is no longer
-    # cleared, so it keeps EPMD 4369 and the incoming app's BEAM dies inside a
-    # launch that otherwise reports success. Left unexplained that is a worse
-    # failure than the one being fixed, because it is silent.
+    # cleared, so it keeps EPMD 4369 and the incoming app can't start
+    # distribution. Left unexplained that is a worse failure than the one
+    # being fixed.
     if app_names == [] do
       IO.puts(
         "  ⚠  No record of mob_dev installs on this device — nothing was cleared.\n" <>
-          "     If the app launches but never joins the network, another Mob app may\n" <>
-          "     be holding EPMD 4369; quit it on the device and retry."
+          "     If the app says another mob app holds EPMD port 4369, or launches but\n" <>
+          "     never joins the network, quit the other Mob app on the device and retry."
       )
     end
 
@@ -920,8 +939,13 @@ defmodule MobDev.Discovery.IOS do
       )
 
     out
-    |> mob_pids_to_kill(app_names, except_app_name)
-    |> Enum.each(fn pid ->
+    |> mob_processes_to_kill(app_names, except_app_name)
+    |> Enum.each(fn {pid, name} ->
+      # Starts its own line: callers have "Restarting app…"/"pushing..." open.
+      IO.puts(
+        "\n  Stopping #{name} on this device: one Mob app per phone can run with distribution"
+      )
+
       System.cmd(
         "xcrun",
         [

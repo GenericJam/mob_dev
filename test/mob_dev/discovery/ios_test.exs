@@ -234,6 +234,21 @@ defmodule MobDev.Discovery.IOSTest do
                ]
       end
     end
+
+    # MOB-371: `mix mob.deploy --dist-port` reached simulators and Android but
+    # never a physical iPhone, which always listened on 9101.
+    test "passes an explicit dist port; anything but a valid port is dropped" do
+      assert IOS.physical_launch_env(dist_cookie: "c", dist_port: 9500) == [
+               {"DEVICECTL_CHILD_MOB_DIST_COOKIE", "c"},
+               {"DEVICECTL_CHILD_MOB_DIST_PORT", "9500"}
+             ]
+
+      for bad <- [nil, 0, 65_536, "9500"] do
+        assert IOS.physical_launch_env(dist_cookie: "c", dist_port: bad) == [
+                 {"DEVICECTL_CHILD_MOB_DIST_COOKIE", "c"}
+               ]
+      end
+    end
   end
 
   # ── EPMD node resolution (MOB-283) ───────────────────────────────────────────
